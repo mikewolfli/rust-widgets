@@ -9,6 +9,7 @@
 use core::fmt::Write as _;
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::capability::coercion::{expect_f64, expect_string};
@@ -27,6 +28,29 @@ const ALPHABET_SAMPLE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuv
 /// Digit sample string.
 const DIGIT_SAMPLE: &str = "0123456789";
 
+/// Top padding inside the panel.
+const PANEL_TOP: i32 = 10;
+/// Height of the info line's box.
+const INFO_LINE_HEIGHT: i32 = 18;
+/// Gap between the info line and the preview.
+const INFO_GAP: i32 = 8;
+/// Gap above the separator rule.
+const SEPARATOR_BEFORE: i32 = 4;
+/// Gap below the separator rule.
+const SEPARATOR_AFTER: i32 = 10;
+/// Vertical pitch of one sample row.
+const SAMPLE_STEP: i32 = 22;
+/// Pixels one wheel line scrolls.
+const SCROLL_STEP: i32 = SAMPLE_STEP;
+/// Width of the scrollbar hint.
+const SCROLLBAR_WIDTH: u32 = 4;
+/// The weight axis shown when the host has not supplied a family's own weights.
+///
+/// The crate's [`Font`] models regular and bold, so those are the two tokens that
+/// are always meaningful for it. A host that knows a variable family's real axis
+/// writes it through [`FontPreview::set_font_weights`].
+const DEFAULT_WEIGHT_AXIS: [u16; 2] = [Font::REGULAR_WEIGHT, Font::BOLD_WEIGHT];
+
 /// A font preview widget that displays a font family at configurable sizes
 /// with sample text, alphabet samples, and pangrams.
 pub struct FontPreview {
@@ -37,6 +61,16 @@ pub struct FontPreview {
     sample_texts: Vec<String>,
     bold: bool,
     italic: bool,
+    /// Whether the weight-axis strip is drawn. Off by default, so the resting
+    /// panel keeps its previous pixels.
+    show_weights: bool,
+    /// The selected family's available weights, in the order the host supplied.
+    /// Empty means "use [`DEFAULT_WEIGHT_AXIS`]".
+    font_weights: Vec<u16>,
+    /// Vertical scroll offset of the specimen, in pixels, clamped to the content.
+    scroll_offset: i32,
+    /// An in-progress pointer drag: the press position and the offset it started from.
+    drag: Option<(Point, i32)>,
 }
 
 impl FontPreview {
@@ -54,6 +88,10 @@ impl FontPreview {
             ],
             bold: false,
             italic: false,
+            show_weights: false,
+            font_weights: Vec::new(),
+            scroll_offset: 0,
+            drag: None,
         }
     }
 
@@ -78,6 +116,7 @@ impl FontPreview {
             return;
         }
         self.font_size = size;
+        self.clamp_scroll_offset();
         self.base.request_redraw();
     }
 
@@ -92,6 +131,7 @@ impl FontPreview {
             return;
         }
         self.preview_text = text.to_string();
+        self.clamp_scroll_offset();
         self.base.request_redraw();
     }
 
@@ -126,6 +166,144 @@ impl FontPreview {
         self.italic
     }
 
+    /// Returns whether the weight-axis preview strip is enabled.
+    pub fn show_weights(&self) -> bool {
+        self.show_weights
+    }
+
+    /// Enables or disables the weight-axis preview strip.
+    ///
+    /// When enabled **and** the selected family has more than one available weight,
+    /// the panel draws one sample line per weight token below the ordinary samples.
+    /// Off by default, so a caller that does not opt in sees the previous panel
+    /// unchanged.
+    pub fn set_show_weights(&mut self, on: bool) {
+        if self.show_weights == on {
+            return;
+        }
+        self.show_weights = on;
+        self.clamp_scroll_offset();
+        self.base.request_redraw();
+    }
+
+    /// Returns the weight tokens the preview treats as available.
+    ///
+    /// The host-supplied list when one was written, otherwise
+    /// [`DEFAULT_WEIGHT_AXIS`].
+    pub fn font_weights(&self) -> &[u16] {
+        if self.font_weights.is_empty() {
+            &DEFAULT_WEIGHT_AXIS
+        } else {
+            &self.font_weights
+        }
+    }
+
+    /// Sets the selected family's available weights.
+    ///
+    /// Values are normalised to the CSS 100..=900 hundreds, sorted, and de-duplicated.
+    /// An empty list restores the default regular/bold axis. The renderer in this
+    /// crate does not enumerate a font family's faces, so the host is the only party
+    /// that can answer this question for a variable family; this write is how its
+    /// answer reaches the strip.
+    pub fn set_font_weights(&mut self, weights: Vec<u16>) {
+        let mut weights: Vec<u16> = weights.into_iter().map(Font::normalize_weight).collect();
+        weights.sort_unstable();
+        weights.dedup();
+        if self.font_weights == weights {
+            return;
+        }
+        self.font_weights = weights;
+        self.clamp_scroll_offset();
+        self.base.request_redraw();
+    }
+
+    /// Returns the specimen's vertical scroll offset in pixels.
+    pub fn scroll_offset(&self) -> i32 {
+        self.scroll_offset
+    }
+
+    /// Sets the specimen's vertical scroll offset, clamped to the content.
+    ///
+    /// The setter is public so a host with its own scrollbar can drive the same
+    /// offset the pointer and wheel paths produce. A value past either end is
+    /// clamped rather than wrapped.
+    pub fn set_scroll_offset(&mut self, offset: i32) {
+        let offset = offset.clamp(0, self.max_scroll_offset());
+        if self.scroll_offset == offset {
+            return;
+        }
+        self.scroll_offset = offset;
+        self.base.request_redraw();
+    }
+
+    /// The height the specimen would occupy at its natural layout.
+    fn content_height(&self) -> i32 {
+        let mut height = PANEL_TOP + INFO_LINE_HEIGHT + INFO_GAP;
+        if !self.preview_text.is_empty() {
+            height += (self.font_size * 1.4) as i32;
+        }
+        height += SEPARATOR_BEFORE + SEPARATOR_AFTER;
+        height += self.sample_texts.len() as i32 * SAMPLE_STEP;
+        if self.show_weights && self.font_weights().len() > 1 {
+            height += self.font_weights().len() as i32 * SAMPLE_STEP;
+        }
+        height
+    }
+
+    /// The largest offset that still shows content.
+    fn max_scroll_offset(&self) -> i32 {
+        (self.content_height() - self.geometry().height as i32).max(0)
+    }
+
+    /// Keeps the offset inside the content after a layout-changing write.
+    fn clamp_scroll_offset(&mut self) {
+        self.scroll_offset = self.scroll_offset.clamp(0, self.max_scroll_offset());
+    }
+
+    /// Sets the offset from a signed number of wheel lines.
+    ///
+    /// Positive lines mean the content moves down, which is the sign
+    /// [`Event::Wheel`] carries; the offset moves the other way because it counts
+    /// from the top of the content.
+    fn scroll_by_lines(&mut self, lines: i32) {
+        if lines == 0 {
+            return;
+        }
+        let next = self.scroll_offset.saturating_sub(lines.saturating_mul(SCROLL_STEP));
+        self.set_scroll_offset(next);
+    }
+
+    /// Draws a proportional scrollbar hint on the right edge.
+    ///
+    /// It is a hint rather than a control: the wheel and the pointer move the offset,
+    /// and the thumb's length reports how much of the specimen is visible. Nothing is
+    /// emitted at all when the content fits, so the resting panel is unchanged.
+    fn draw_scrollbar(&self, context: &mut RenderContext, track_color: Color, thumb_color: Color) {
+        let max = self.max_scroll_offset();
+        let rect = self.geometry();
+        if max <= 0 || rect.height <= 4 || rect.width <= SCROLLBAR_WIDTH + 4 {
+            return;
+        }
+        let track = Rect::new(
+            rect.x + rect.width as i32 - SCROLLBAR_WIDTH as i32 - 2,
+            rect.y + 2,
+            SCROLLBAR_WIDTH,
+            rect.height - 4,
+        );
+        let view = rect.height as f32;
+        let content = self.content_height().max(1) as f32;
+        let thumb_height = ((view * view / content) as u32).clamp(8, track.height);
+        let travel = track.height - thumb_height;
+        let progress = self.scroll_offset as f32 / max as f32;
+        let thumb_y = track.y + (travel as f32 * progress) as i32;
+        context.fill_rounded_rect(track, SCROLLBAR_WIDTH / 2, track_color);
+        context.fill_rounded_rect(
+            Rect::new(track.x, thumb_y, track.width, thumb_height),
+            SCROLLBAR_WIDTH / 2,
+            thumb_color,
+        );
+    }
+
     /// Returns the sample texts.
     pub fn sample_texts(&self) -> &[String] {
         &self.sample_texts
@@ -133,7 +311,11 @@ impl FontPreview {
 
     /// Sets the sample texts for the preview.
     pub fn set_sample_texts(&mut self, texts: Vec<String>) {
+        if self.sample_texts == texts {
+            return;
+        }
         self.sample_texts = texts;
+        self.clamp_scroll_offset();
         self.base.request_redraw();
     }
 
@@ -275,14 +457,26 @@ impl Draw for FontPreview {
             Color::BLACK,
         );
 
-        let mut y: u32 = (rect.y + 10) as u32;
+        let mut y: i32 = rect.y + PANEL_TOP - self.scroll_offset;
         let margin = 10u32;
+        // A scrollbar is drawn at the right edge only when the specimen is taller than
+        // the panel, so the text budget gives it room only in that case. A resting panel
+        // with short content keeps the previous `rect.width - 20` budget exactly.
+        let scrollbar_visible = self.max_scroll_offset() > 0;
+        let text_w = rect
+            .width
+            .saturating_sub(margin * 2 + if scrollbar_visible { SCROLLBAR_WIDTH + 2 } else { 0 });
         // Every string in this panel is a *sample* of the configured font, not a label:
         // a pangram is 43 characters whatever the widget is wide, and at the default 24 pt
         // it advances ten times the control's width. The budget is therefore the panel's own
         // inner width, shared by all three runs so the info line, the preview and the sample
         // rows are truncated by the same rule instead of each drifting past the right edge.
-        let text_w = rect.width.saturating_sub(margin * 2);
+        let clipped = self.scroll_offset > 0;
+        if clipped {
+            // Only a scrolled specimen needs a clip: at offset zero the sample rows still
+            // stop at the panel's foot, which keeps the resting frame byte-identical.
+            context.push_clip(rect.x, rect.y, rect.width, rect.height);
+        }
 
         // --- Font family name and style info ---
         let info_font = Self::info_font();
@@ -302,15 +496,14 @@ impl Draw for FontPreview {
         // just as the samples can. It painted in the same grey as a sample row, so the two
         // overflows were indistinguishable in the snapshot.
         context.draw_text_fitted_cow(
-            Rect::new(rect.x + margin as i32, y as i32, text_w, info_font.size() as u32),
+            Rect::new(rect.x + margin as i32, y, text_w, info_font.size() as u32),
             info_text.as_str(),
             info_font,
             muted,
             HorizontalAlignment::Left,
         );
 
-        let line_height = 18;
-        y += line_height as u32 + 8;
+        y += INFO_LINE_HEIGHT + INFO_GAP;
 
         // --- Preview text at configured size ---
         if !self.preview_text.is_empty() {
@@ -320,52 +513,117 @@ impl Draw for FontPreview {
             // ellipsis. Fitting is therefore the correct fix here, not scaling.
             let preview_font = self.build_font(self.font_size);
             context.draw_text_fitted_cow(
-                Rect::new(rect.x + margin as i32, y as i32, text_w, preview_font.size() as u32),
+                Rect::new(rect.x + margin as i32, y, text_w, preview_font.size() as u32),
                 &self.preview_text,
                 &preview_font,
                 ink,
                 HorizontalAlignment::Left,
             );
-            y += (self.font_size * 1.4) as u32;
+            y += (self.font_size * 1.4) as i32;
         }
 
         // --- Separator line ---
-        y += 4;
-        // `y` is already absolute (it starts at `rect.y + 10`); adding `rect.y` again drew the
-        // separator one control-height too low, and the same double count in the sample-row
-        // budget ended the samples early.
-        let baseline_y = y;
+        y += SEPARATOR_BEFORE;
+        // `y` is already absolute (it starts at `rect.y + PANEL_TOP`); adding `rect.y` again
+        // drew the separator one control-height too low, and the same double count in the
+        // sample-row budget ended the samples early.
         context.draw_line(
-            Point::new(rect.x + margin as i32, baseline_y as i32),
-            Point::new(rect.x + rect.width as i32 - margin as i32, baseline_y as i32),
+            Point::new(rect.x + margin as i32, y),
+            Point::new(rect.x + rect.width as i32 - margin as i32, y),
             separator,
         );
-        y += 10;
+        y += SEPARATOR_AFTER;
 
         // --- Sample texts ---
         let sample_font = self.build_font(14.0);
-        let bottom = rect.y as u32 + rect.height;
+        let bottom = rect.y + rect.height as i32;
         for text in &self.sample_texts {
-            if y + 20 > bottom {
+            if !clipped && y + 20 > bottom {
                 break; // Don't draw past the widget boundary
             }
             // The alphabet and the pangram are longer than any panel this widget is sized
             // for, so each row is fitted to the same inner width as the preview above it.
             context.draw_text_fitted_cow(
-                Rect::new(rect.x + margin as i32, y as i32, text_w, sample_font.size() as u32),
+                Rect::new(rect.x + margin as i32, y, text_w, sample_font.size() as u32),
                 text,
                 &sample_font,
                 muted,
                 HorizontalAlignment::Left,
             );
-            y += 22;
+            y += SAMPLE_STEP;
         }
+
+        // --- Weight axis ---
+        let weights = self.font_weights();
+        if self.show_weights && weights.len() > 1 {
+            let specimen = if self.preview_text.is_empty() {
+                DEFAULT_PANGRAM
+            } else {
+                self.preview_text.as_str()
+            };
+            for weight in weights {
+                if !clipped && y + 20 > bottom {
+                    break;
+                }
+                let font = self.build_font(14.0).with_weight_value(*weight);
+                // Rendered in place: this loop runs once per weight per frame, and the
+                // label is a number plus the specimen the panel already holds.
+                let mut line = String::new();
+                let _ = write!(line, "{weight}  {specimen}");
+                context.draw_text_fitted_cow(
+                    Rect::new(rect.x + margin as i32, y, text_w, font.size() as u32),
+                    &line,
+                    &font,
+                    muted,
+                    HorizontalAlignment::Left,
+                );
+                y += SAMPLE_STEP;
+            }
+        }
+
+        if clipped {
+            context.pop_clip();
+        }
+        // Drawn after the content so the thumb is never covered by a sample row.
+        self.draw_scrollbar(context, separator.blend(&panel, 0.6), muted.blend(&panel, 0.2));
     }
 }
 
 impl EventHandler for FontPreview {
+    /// Scrolls the specimen by wheel or by dragging it vertically.
+    ///
+    /// The offset is clamped inside [`Self::set_scroll_offset`], so neither gesture
+    /// can run past either end of the content. A press inside the panel starts a drag
+    /// from the current offset; the drag applies the pointer's vertical travel rather
+    /// than a fixed step, which is what makes dragging feel attached to the specimen.
     fn handle_event(&mut self, event: &Event) {
-        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
+                if self.geometry().contains_point(*pos) {
+                    self.drag = Some((*pos, self.scroll_offset));
+                }
+            }
+            Event::MouseMove { pos } => {
+                if let Some((anchor, start)) = self.drag {
+                    self.set_scroll_offset(start + (anchor.y - pos.y));
+                } else {
+                    self.base.handle_event(event);
+                }
+            }
+            Event::MouseRelease { button: 1, .. } => {
+                self.drag = None;
+            }
+            Event::Wheel { delta, modifiers, .. } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                self.scroll_by_lines(scroll.lines_y);
+            }
+            _ => {
+                self.base.handle_event(event);
+            }
+        }
     }
 }
 
@@ -510,5 +768,105 @@ mod tests {
         let font = fp.build_font(12.0);
         assert_eq!(font.family(), "Times New Roman");
         assert!((font.size() - 12.0).abs() < 0.01);
+    }
+
+    /// The weight strip is off by default and adds one sample run per weight token.
+    #[test]
+    fn font_preview_weight_strip_is_opt_in() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut fp = FontPreview::new("Arial", Rect::new(0, 0, 300, 500));
+        assert!(!fp.show_weights());
+        assert_eq!(fp.font_weights(), &[Font::REGULAR_WEIGHT, Font::BOLD_WEIGHT]);
+        let resting = crate::widget::svg::render_to_svg(&mut fp);
+        let resting_runs = crate::widget::svg::text_ink_boxes(&resting).len();
+
+        fp.set_show_weights(true);
+        assert!(fp.show_weights());
+        let weighted = crate::widget::svg::render_to_svg(&mut fp);
+        let weighted_runs = crate::widget::svg::text_ink_boxes(&weighted).len();
+        assert!(
+            weighted_runs >= resting_runs + 2,
+            "one line per default weight token: {resting_runs} -> {weighted_runs}"
+        );
+
+        // A family with a single weight has no axis to preview, so the strip disappears
+        // even though the switch is on.
+        fp.set_font_weights(vec![400]);
+        assert_eq!(fp.font_weights(), &[400]);
+        let single = crate::widget::svg::render_to_svg(&mut fp);
+        assert_eq!(resting, single, "a single weight restores the resting drawing");
+
+        // Host weights are normalised (350 rounds to 400), sorted and de-duplicated.
+        fp.set_font_weights(vec![900, 350, 400, 350]);
+        assert_eq!(fp.font_weights(), &[400, 900]);
+        fp.set_show_weights(false);
+        let off = crate::widget::svg::render_to_svg(&mut fp);
+        assert_eq!(resting, off, "turning the strip off restores the resting drawing");
+    }
+
+    /// The wheel scrolls the specimen and clamps at both ends.
+    #[test]
+    fn font_preview_wheel_scrolls_and_clamps() {
+        let mut fp = FontPreview::new("Arial", Rect::new(0, 0, 300, 100));
+        let samples: Vec<String> = (0..20).map(|n| format!("Sample {n}")).collect();
+        fp.set_sample_texts(samples);
+        assert_eq!(fp.scroll_offset(), 0);
+        assert!(fp.max_scroll_offset() > 0, "the fixture must be scrollable");
+
+        // A negative delta moves the content up, i.e. reveals the rows below.
+        fp.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, -1), modifiers: 0 });
+        assert_eq!(fp.scroll_offset(), SCROLL_STEP);
+        fp.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, 1), modifiers: 0 });
+        assert_eq!(fp.scroll_offset(), 0);
+        // Spinning past the top clamps rather than wrapping.
+        fp.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, 1), modifiers: 0 });
+        assert_eq!(fp.scroll_offset(), 0);
+
+        for _ in 0..100 {
+            fp.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, -1), modifiers: 0 });
+        }
+        assert_eq!(fp.scroll_offset(), fp.max_scroll_offset(), "the offset clamps at the content");
+    }
+
+    /// A vertical drag moves the specimen by the pointer's own travel.
+    #[test]
+    fn font_preview_drag_scrolls_and_clamps() {
+        let mut fp = FontPreview::new("Arial", Rect::new(0, 0, 300, 100));
+        let samples: Vec<String> = (0..20).map(|n| format!("Sample {n}")).collect();
+        fp.set_sample_texts(samples);
+
+        fp.handle_event(&Event::mouse_press(150, 80, 1));
+        fp.handle_event(&Event::mouse_move(150, 50));
+        assert_eq!(fp.scroll_offset(), 30, "dragging up 30 px scrolls down 30 px");
+
+        // Dragging back past the start clamps at zero.
+        fp.handle_event(&Event::mouse_move(150, 1000));
+        assert_eq!(fp.scroll_offset(), 0);
+
+        // A move without a press is not a drag.
+        fp.handle_event(&Event::mouse_release(150, 50, 1));
+        fp.handle_event(&Event::mouse_move(150, 10));
+        assert_eq!(fp.scroll_offset(), 0);
+    }
+
+    /// The scrollbar hint is drawn only when the specimen overflows the panel.
+    #[test]
+    fn font_preview_scrollbar_hint_appears_only_when_needed() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut short = FontPreview::new("Arial", Rect::new(0, 0, 300, 500));
+        let short_svg = crate::widget::svg::render_to_svg(&mut short);
+        assert!(
+            !short_svg.contains("width=\"4\" height="),
+            "a specimen that fits has no scrollbar: {short_svg}"
+        );
+
+        let mut long = FontPreview::new("Arial", Rect::new(0, 0, 300, 100));
+        let samples: Vec<String> = (0..20).map(|n| format!("Sample {n}")).collect();
+        long.set_sample_texts(samples);
+        let long_svg = crate::widget::svg::render_to_svg(&mut long);
+        assert!(
+            long_svg.contains("width=\"4\" height="),
+            "an overflowing specimen shows the hint: {long_svg}"
+        );
     }
 }

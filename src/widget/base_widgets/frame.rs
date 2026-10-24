@@ -2,17 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 //! Frame widget.
-use crate::compat::{Rc, RefCell, ToString};
+use crate::compat::{format, Rc, RefCell, ToString};
 use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 
 use crate::render::{Bevel, BevelDirection};
-use crate::widget::capability::coercion::{expect_f32, expect_string};
+use crate::style::EdgeOffsets;
+use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, InteractionFade, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -29,6 +30,24 @@ pub struct Frame {
     frame_shadow: FrameShadow,
     line_width: f32,
     mid_line_width: f32,
+    /// The frame's drawn width, when it is not the same as [`Frame::line_width`].
+    ///
+    /// The reference toolkit's `frameWidth` is the width the frame actually paints and
+    /// `lineWidth` is the style-sheet spelling of the same fact; keeping them as two fields means
+    /// a caller that sets one does not silently rewrite the other, and the painter reads the
+    /// effective value through [`Frame::frame_width`].
+    frame_width: Option<f32>,
+    /// Space kept between the frame's own rectangle and its content.
+    ///
+    /// Zero by default, so the historical behaviour — the child draws wherever its own geometry
+    /// says — is unchanged until a caller asks for margins.
+    contents_margins: EdgeOffsets,
+    /// Whether the bevel's two tones come from the theme's surface instead of fixed greys.
+    ///
+    /// Off by default: the fixed pair is what the exported `frame_*` snapshots contain, and a
+    /// visual change behind a flag is the only way to keep those byte-identical while still
+    /// offering the theme-derived expression.
+    theme_bevel: bool,
     widget: Option<ObjectId>,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
@@ -118,6 +137,43 @@ impl FrameShadow {
         })
     }
 }
+/// Parses a `top,right,bottom,left` margin string.
+///
+/// The same spelling [`format_margins`] writes, so the property round-trips. A missing or extra
+/// component is a parse failure rather than a defaulted side: silently treating `"4"` as four
+/// equal sides would hide a malformed document behind a plausible picture.
+fn parse_margins(text: &str) -> Option<EdgeOffsets> {
+    let mut parts = text.split(',');
+    let mut side = || -> Option<u32> { parts.next()?.trim().parse().ok() };
+    let top = side()?;
+    let right = side()?;
+    let bottom = side()?;
+    let left = side()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(EdgeOffsets { top, right, bottom, left })
+}
+
+/// Writes a margin as `top,right,bottom,left`, the inverse of [`parse_margins`].
+fn format_margins(margins: EdgeOffsets) -> crate::compat::String {
+    format!("{},{},{},{}", margins.top, margins.right, margins.bottom, margins.left)
+}
+
+/// The corner radius a **stroke** should follow.
+///
+/// A theme's own default radius belongs to its fill treatment, not to the frame's rule: the
+/// exported frame appearances paint a rounded panel face with a square border, and that is what
+/// the committed snapshots contain. A radius the caller declared explicitly (so the style is no
+/// longer theme-derived) is a statement about the shape and is honoured for the stroke too.
+fn stroke_radius(style: &crate::style::WidgetStyle) -> u32 {
+    if style.theme_derived {
+        0
+    } else {
+        style.border_radius.unwrap_or(0)
+    }
+}
+
 impl Frame {
     /// Creates a frame.
     pub fn new(geometry: Rect) -> Self {
@@ -127,6 +183,9 @@ impl Frame {
             frame_shadow: FrameShadow::Plain,
             line_width: 1.0,
             mid_line_width: 0.0,
+            frame_width: None,
+            contents_margins: EdgeOffsets::all(0),
+            theme_bevel: false,
             widget: None,
             registry: None,
             fade: InteractionFade::new(),
@@ -202,6 +261,148 @@ impl Frame {
         self.mid_line_width = width;
         self.base.request_redraw();
     }
+    /// The width the frame actually paints.
+    ///
+    /// Returns the explicit [`Frame::set_frame_width`] value when one was set, and the line width
+    /// otherwise — so a frame whose caller never distinguished the two behaves exactly as before.
+    pub fn frame_width(&self) -> f32 {
+        self.frame_width.unwrap_or(self.line_width)
+    }
+
+    /// Sets the width the frame paints.
+    ///
+    /// Floored at zero first, so a negative width is the same write as zero.
+    pub fn set_frame_width(&mut self, width: f32) {
+        let width = width.max(0.0);
+        if self.frame_width == Some(width) {
+            return;
+        }
+        self.frame_width = Some(width);
+        self.base.request_redraw();
+    }
+
+    /// The integer stroke width the painter uses.
+    ///
+    /// Rounded rather than truncated: a caller who asks for `1.5` pixels means "two-pixel-looking",
+    /// and the renderer's stroke width is an integer. A width that rounds to zero paints no frame,
+    /// which is what `frameWidth(0)` means.
+    fn painted_width(&self) -> u32 {
+        self.frame_width().round().max(0.0) as u32
+    }
+
+    /// The space kept between the frame's rectangle and its content.
+    pub fn contents_margins(&self) -> EdgeOffsets {
+        self.contents_margins
+    }
+
+    /// Sets the space between the frame and its content.
+    ///
+    /// The margin is subtracted from the frame's own rectangle when the child is positioned, so a
+    /// caller can reserve the frame's chrome without computing the inset itself. A non-zero margin
+    /// moves the registered child through [`crate::widget::SimpleRegistry::set_widget_geometry`];
+    /// zero leaves the child's geometry untouched (the historical behaviour).
+    pub fn set_contents_margins(&mut self, margins: EdgeOffsets) {
+        if self.contents_margins == margins {
+            return;
+        }
+        self.contents_margins = margins;
+        self.relayout_contents();
+        self.base.request_redraw();
+    }
+
+    /// The rectangle a child of this frame occupies: the frame's geometry inset by the margins.
+    pub fn contents_rect(&self) -> Rect {
+        ControlMetrics::content_box(self.geometry(), self.contents_margins)
+    }
+
+    /// Whether the bevel's tones are derived from the active theme.
+    pub fn theme_bevel(&self) -> bool {
+        self.theme_bevel
+    }
+
+    /// Selects theme-derived bevel tones instead of the fixed light/dark pair.
+    ///
+    /// The derived highlights are the active theme's background stepped 50% toward white and its
+    /// shade stepped 50% toward black. That is the same relationship the fixed pair expresses, but
+    /// taken from the surface the frame is actually on, so a custom palette gets a bevel that
+    /// belongs to it rather than two greys that only suit a light one.
+    ///
+    /// Opt-in because the fixed pair is what the exported frame snapshots contain.
+    pub fn set_theme_bevel(&mut self, themed: bool) {
+        if self.theme_bevel == themed {
+            return;
+        }
+        self.theme_bevel = themed;
+        self.base.request_redraw();
+    }
+
+    /// Positions the registered child inside [`Frame::contents_rect`].
+    ///
+    /// A frame with zero margins keeps the child where it was: moving it by "geometry minus zero"
+    /// would be a no-op for an already-correct child but a silent move for one that the caller had
+    /// deliberately offset.
+    fn relayout_contents(&mut self) {
+        let margins = self.contents_margins;
+        if margins.top == 0 && margins.right == 0 && margins.bottom == 0 && margins.left == 0 {
+            return;
+        }
+        let (Some(child), Some(registry)) = (self.widget, self.registry.as_ref()) else {
+            return;
+        };
+        let contents = self.contents_rect();
+        registry.borrow_mut().set_widget_geometry(child, contents);
+    }
+
+    /// The bevel tones the painter should use.
+    ///
+    /// Returns `None` when the historical fixed pair applies. When [`Frame::theme_bevel`] is on and
+    /// a theme is active, the tones come from the theme's background: the highlight is that
+    /// surface stepped halfway to white and the shade halfway to black, which is the same pair of
+    /// relationships [`crate::render::Bevel::from_base`] states — only taken from the page rather
+    /// than from a fixed grey.
+    fn themed_bevel_tones(&self) -> Option<(Color, Color)> {
+        if !self.theme_bevel {
+            return None;
+        }
+        let base = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme()?.colors.background
+        };
+        Some((base.blend(&Color::WHITE, 0.5), base.blend(&Color::BLACK, 0.5)))
+    }
+
+    /// Strokes a two-tone ring around a rounded rectangle.
+    ///
+    /// Used only when a caller asked for both a bevel and a corner radius: a four-line bevel cannot
+    /// turn a corner, so the two tones are stated as two concentric rings instead. The leading tone
+    /// is the outer ring, which is where a raised face catches the light; the trailing tone is one
+    /// stroke width in.
+    fn stroke_rounded_bevel(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        radius: u32,
+        bevel: Bevel,
+        width: u32,
+    ) {
+        let width = width.max(1);
+        context.draw_rounded_rect_stroke(rect, radius, bevel.leading_tone(), width);
+        if rect.width > width && rect.height > width {
+            let inner = Rect::new(
+                rect.x.saturating_add(width as i32),
+                rect.y.saturating_add(width as i32),
+                rect.width - width,
+                rect.height - width,
+            );
+            context.draw_rounded_rect_stroke(
+                inner,
+                radius.saturating_sub(width),
+                bevel.trailing_tone(),
+                width,
+            );
+        }
+    }
+
     /// Sets widget.
     pub fn set_widget(&mut self, widget: Option<ObjectId>) {
         // Remove old child from widget tree before replacing
@@ -222,6 +423,7 @@ impl Frame {
             #[cfg(not(alloc_frugal))]
             crate::set_widget_visible(widget_id, true);
         }
+        self.relayout_contents();
         self.base.request_redraw();
     }
     /// Returns widget.
@@ -287,8 +489,19 @@ impl Frame {
         let border = self.interactive_border(raw_border);
         match self.frame_shadow {
             FrameShadow::Plain => {
-                // Draw single border
-                context.draw_rect(rect, border);
+                // Draw single border, honouring the declared corner radius when there is one.
+                // A zero radius keeps the historical `draw_rect` call byte-for-byte; a non-zero
+                // one draws the same line as a rounded stroke instead of a square rule through
+                // the middle of the corners.
+                let width = self.painted_width();
+                let radius = stroke_radius(style);
+                if width > 0 && radius > 0 {
+                    context.draw_rounded_rect_stroke(rect, radius, border, width);
+                } else if width > 0 {
+                    context.draw_rect(rect, border);
+                }
+                // `frameWidth(0)` is the reference toolkit's "no frame", so a zero width paints
+                // nothing rather than a hairline nobody asked for.
             }
             FrameShadow::Raised => {
                 // Draw raised border
@@ -312,6 +525,9 @@ impl Frame {
                 // highlight invented on top of it.
                 let bevel = if plain {
                     Bevel::from_tones(border, border, border)
+                } else if let Some((light, shade)) = self.themed_bevel_tones() {
+                    // The theme-derived pair; see `Frame::themed_bevel_tones`.
+                    Bevel::from_tones(border, light, shade)
                 } else if themed {
                     Bevel::from_base(border)
                 } else {
@@ -326,9 +542,18 @@ impl Frame {
                     )
                 }
                 .with_direction(BevelDirection::Raised);
-                // One pixel, because that is what the `draw_line` calls this replaces painted; the
-                // primitive's width support is for callers that state a `line_width`.
-                bevel.stroke(context, rect, 1);
+                // The painted width is `frameWidth`, which falls back to `lineWidth` — the
+                // historical hard-coded 1 px is now the default value of that derivation rather
+                // than a number stated at the paint site.
+                let width = self.painted_width();
+                let radius = stroke_radius(style);
+                if width > 0 {
+                    if radius > 0 {
+                        self.stroke_rounded_bevel(context, rect, radius, bevel, width);
+                    } else {
+                        bevel.stroke(context, rect, width);
+                    }
+                }
 
                 // The mid lines are a **four-line groove**, not the inner half of a two-line bevel:
                 // a softer highlight and a *deeper* shade, which is why they keep their own weights
@@ -355,6 +580,8 @@ impl Frame {
                 // this raised" was a copy-paste edit across a dozen lines instead of one token.
                 let bevel = if plain {
                     Bevel::from_tones(border, border, border)
+                } else if let Some((light, shade)) = self.themed_bevel_tones() {
+                    Bevel::from_tones(border, light, shade)
                 } else if themed {
                     Bevel::from_base(border)
                 } else {
@@ -368,8 +595,15 @@ impl Frame {
                     )
                 }
                 .with_direction(BevelDirection::Inset);
-                // One pixel, because that is what the `draw_line` calls this replaces painted.
-                bevel.stroke(context, rect, 1);
+                let width = self.painted_width();
+                let radius = stroke_radius(style);
+                if width > 0 {
+                    if radius > 0 {
+                        self.stroke_rounded_bevel(context, rect, radius, bevel, width);
+                    } else {
+                        bevel.stroke(context, rect, width);
+                    }
+                }
 
                 // Draw mid line if needed — the same four-line groove the `Raised` arm keeps,
                 // with the pair exchanged.
@@ -395,11 +629,12 @@ impl Frame {
         mid_light: Color,
         mid_dark: Color,
     ) {
-        let line_width = self.line_width;
+        let line_width = self.painted_width();
         let mid_line_width = self.mid_line_width;
-        if mid_line_width <= 0.0 {
+        if mid_line_width <= 0.0 || line_width == 0 {
             return;
         }
+        let line_width = line_width as f32;
         context.draw_line(
             Point::from_f32(rect.x as f32 + line_width, rect.y as f32 + line_width),
             Point::from_f32(
@@ -452,7 +687,15 @@ impl Frame {
             Color::BLACK,
         );
         let border = self.interactive_border(style.border_color.unwrap_or(Color::rgb(64, 64, 64)));
-        context.draw_rect(rect, border);
+        let width = self.painted_width();
+        if width > 0 {
+            let radius = stroke_radius(style);
+            if radius > 0 {
+                context.draw_rounded_rect_stroke(rect, radius, border, width);
+            } else {
+                context.draw_rect(rect, border);
+            }
+        }
     }
     /// Draws styled panel frame.
     fn draw_styled_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
@@ -474,11 +717,15 @@ impl Frame {
         let y = rect.y + (rect.height as i32) / 2;
         let color =
             self.interactive_border(self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)));
+        let width = self.painted_width();
+        if width == 0 {
+            return;
+        }
         context.draw_line_stroke(
             Point::new(rect.x, y),
             Point::new(rect.x + rect.width as i32, y),
             color,
-            self.line_width as u32,
+            width,
         );
     }
     /// Draws vertical line frame.
@@ -486,11 +733,15 @@ impl Frame {
         let x = rect.x + (rect.width as i32) / 2;
         let color =
             self.interactive_border(self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)));
+        let width = self.painted_width();
+        if width == 0 {
+            return;
+        }
         context.draw_line_stroke(
             Point::new(x, rect.y),
             Point::new(x, rect.y + rect.height as i32),
             color,
-            self.line_width as u32,
+            width,
         );
     }
     /// Draws Windows panel frame.
@@ -518,21 +769,44 @@ impl Frame {
         // are two strokes with opposite directions rather than sixteen hand-placed lines — the
         // whole point of the primitive being that "which edges are lit" is a direction and not
         // the order of two blocks. The tones are stated with `from_tones` rather than derived
-        // from the fill: as the note above says, the white/grey pair *is* the illusion.
-        let (light_color, dark_color) = (Color::rgb(255, 255, 255), Color::rgb(128, 128, 128));
-        Bevel::from_tones(bg_color, light_color, dark_color)
-            .with_direction(BevelDirection::Inset)
-            .stroke(context, rect, 1);
-        // Inner border (raised)
+        // from the fill: as the note above says, the white/grey pair *is* the illusion — unless
+        // the caller asked for the theme-derived pair, which replaces both tones at once.
+        let (light_color, dark_color) = self
+            .themed_bevel_tones()
+            .unwrap_or((Color::rgb(255, 255, 255), Color::rgb(128, 128, 128)));
+        let width = self.painted_width();
+        if width == 0 {
+            return;
+        }
+        let radius = stroke_radius(style);
+        let outer = Bevel::from_tones(bg_color, light_color, dark_color)
+            .with_direction(BevelDirection::Inset);
+        if radius > 0 {
+            self.stroke_rounded_bevel(context, rect, radius, outer, width);
+        } else {
+            outer.stroke(context, rect, width);
+        }
+        // Inner border (raised), one stroke width in so the double edge keeps its thickness at
+        // every `frameWidth` instead of always occupying exactly one pixel.
         let inner_rect = Rect::new(
-            rect.x + 1,
-            rect.y + 1,
-            rect.width.saturating_sub(2),
-            rect.height.saturating_sub(2),
+            rect.x.saturating_add(width as i32),
+            rect.y.saturating_add(width as i32),
+            rect.width.saturating_sub(width.saturating_mul(2)),
+            rect.height.saturating_sub(width.saturating_mul(2)),
         );
-        Bevel::from_tones(bg_color, light_color, dark_color)
-            .with_direction(BevelDirection::Raised)
-            .stroke(context, inner_rect, 1);
+        let inner = Bevel::from_tones(bg_color, light_color, dark_color)
+            .with_direction(BevelDirection::Raised);
+        if radius > 0 {
+            self.stroke_rounded_bevel(
+                context,
+                inner_rect,
+                radius.saturating_sub(width),
+                inner,
+                width,
+            );
+        } else {
+            inner.stroke(context, inner_rect, width);
+        }
     }
 }
 // Implement Widget trait
@@ -550,6 +824,17 @@ impl Widget for Frame {
 
     fn size_hint(&self) -> Size {
         Size::new(dimensions::FRAME_DEFAULT_WIDTH, dimensions::FRAME_DEFAULT_HEIGHT)
+    }
+
+    /// Moves the frame and keeps a margined child inside it.
+    ///
+    /// A frame that positions its content from [`Frame::contents_rect`] has to redo that
+    /// positioning when its own rectangle moves; otherwise the child stays at the old inset and
+    /// the margin slowly stops being a margin. Zero margins are a no-op, so the historical
+    /// "the child owns its own geometry" behaviour is unchanged.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.relayout_contents();
     }
 
     // The outline is what a frame paints, so a hovered or pressed frame owes frames while
@@ -591,6 +876,11 @@ impl WidgetProperties for Frame {
             "frame_shadow" => Ok(CapabilityValue::String(self.frame_shadow.as_str().to_string())),
             "line_width" => Ok(CapabilityValue::Float(self.line_width as f64)),
             "mid_line_width" => Ok(CapabilityValue::Float(self.mid_line_width as f64)),
+            "frame_width" => Ok(CapabilityValue::Float(self.frame_width() as f64)),
+            "contents_margins" => {
+                Ok(CapabilityValue::String(format_margins(self.contents_margins)))
+            }
+            "theme_bevel" => Ok(CapabilityValue::Bool(self.theme_bevel)),
             _ => base_property_get(self, name),
         }
     }
@@ -621,6 +911,22 @@ impl WidgetProperties for Frame {
                 self.set_mid_line_width(expect_f32(value)?);
                 Ok(())
             }
+            "frame_width" => {
+                self.set_frame_width(expect_f32(value)?);
+                Ok(())
+            }
+            "contents_margins" => {
+                let text = expect_string(value)?;
+                let Some(margins) = parse_margins(&text) else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_contents_margins(margins);
+                Ok(())
+            }
+            "theme_bevel" => {
+                self.set_theme_bevel(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -632,6 +938,9 @@ impl WidgetProperties for Frame {
             "frame_shadow",
             "line_width",
             "mid_line_width",
+            "frame_width",
+            "contents_margins",
+            "theme_bevel",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1218,5 +1527,177 @@ mod tests {
         if let Some(previous) = previous {
             install_environment(previous);
         }
+    }
+
+    // ── Contents margins, frame width and radius (R010–R012) ───────────
+
+    #[test]
+    fn frame_width_falls_back_to_the_line_width() {
+        let mut f = Frame::new(Rect::new(0, 0, 40, 20));
+        assert!((f.frame_width() - 1.0).abs() < f32::EPSILON, "the default is the line width");
+        f.set_frame_width(3.0);
+        assert!((f.frame_width() - 3.0).abs() < f32::EPSILON);
+        assert!((f.line_width() - 1.0).abs() < f32::EPSILON, "the two are independent");
+        assert_eq!(f.painted_width(), 3);
+        f.set_frame_width(-2.0);
+        assert_eq!(f.frame_width(), 0.0);
+        assert_eq!(f.painted_width(), 0, "zero is the reference toolkit's 'no frame'");
+    }
+
+    #[test]
+    fn contents_margins_inset_the_contents_rect() {
+        let mut f = Frame::new(Rect::new(10, 20, 100, 60));
+        assert_eq!(f.contents_rect(), Rect::new(10, 20, 100, 60), "zero margins are identity");
+        f.set_contents_margins(EdgeOffsets::new(2, 3, 4, 5));
+        assert_eq!(
+            f.contents_rect(),
+            Rect::new(15, 22, 92, 54),
+            "left/top are added and the right/bottom are removed"
+        );
+        assert_eq!(f.contents_margins(), EdgeOffsets::new(2, 3, 4, 5));
+    }
+
+    #[test]
+    fn a_margined_frame_positions_its_registered_child() {
+        use crate::compat::Rc;
+        use crate::render::RenderContext;
+        use std::sync::{Arc, Mutex};
+
+        let recorded: Arc<Mutex<Option<Rect>>> = Arc::new(Mutex::new(None));
+        let sink = recorded.clone();
+        let mut registry = SimpleRegistry::new();
+        registry.register_with_geometry(
+            7,
+            |_context: &mut RenderContext| {},
+            |_event: &Event| {},
+            move |geometry: Rect| {
+                if let Ok(mut slot) = sink.lock() {
+                    *slot = Some(geometry);
+                }
+            },
+        );
+
+        let mut frame = Frame::new(Rect::new(10, 20, 100, 60));
+        frame.set_registry(Rc::new(RefCell::new(registry)));
+        frame.set_widget(Some(7));
+        assert_eq!(*recorded.lock().unwrap(), None, "zero margins leave the child alone");
+
+        frame.set_contents_margins(EdgeOffsets::all(4));
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            Some(Rect::new(14, 24, 92, 52)),
+            "the child is placed inside the contents rectangle"
+        );
+
+        frame.set_geometry(Rect::new(0, 0, 50, 30));
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            Some(Rect::new(4, 4, 42, 22)),
+            "moving the frame moves the margined child with it"
+        );
+    }
+
+    #[test]
+    fn margins_round_trip_through_the_property_contract() {
+        let mut f = Frame::new(Rect::new(0, 0, 20, 20));
+        f.set("contents_margins", CapabilityValue::String("1,2,3,4".into()))
+            .expect("the four-part spelling is accepted");
+        assert_eq!(f.get("contents_margins"), Ok(CapabilityValue::String("1,2,3,4".into())));
+        assert_eq!(
+            f.set("contents_margins", CapabilityValue::String("1,2".into())),
+            Err(CapabilityAccessError::TypeMismatch),
+            "a partial spelling is refused rather than half-applied"
+        );
+        f.set("frame_width", CapabilityValue::Float(2.0)).expect("frame_width is writable");
+        assert_eq!(f.get("frame_width"), Ok(CapabilityValue::Float(2.0)));
+    }
+
+    #[test]
+    fn a_declared_radius_rounds_the_plain_border() {
+        use crate::core::{Color, Size};
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+
+        let rect = Rect::new(4, 4, 20, 16);
+        let mut frame = Frame::new(rect);
+        frame.set_style(WidgetStyle::default().with_border(Color::rgb(0, 0, 0), 1, 6));
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(32, 28), 1.0);
+        backend.begin_frame(Color::rgba(0, 0, 0, 0));
+        {
+            let mut context = RenderContext::new(&mut backend);
+            frame.draw(&mut context);
+        }
+        backend.end_frame();
+        let rgba = backend.frame_rgba();
+        let pixel = |x: i32, y: i32| -> Color {
+            let at = ((y as u32 * 32 + x as u32) * 4) as usize;
+            Color::rgba(rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3])
+        };
+
+        assert_eq!(pixel(rect.x + 10, rect.y), Color::rgb(0, 0, 0), "the straight edge is drawn");
+        assert_ne!(
+            pixel(rect.x, rect.y),
+            Color::rgb(0, 0, 0),
+            "a rounded corner leaves its extreme corner pixel unpainted"
+        );
+    }
+
+    #[test]
+    fn every_published_property_is_readable() {
+        let f = Frame::new(Rect::new(0, 0, 20, 20));
+        for name in f.property_names() {
+            assert!(f.get(name).is_ok(), "{name:?} is published but not readable");
+        }
+    }
+
+    /// The opt-in bevel derives its highlight from the theme's own surface.
+    ///
+    /// The default pair is a fixed white/grey, which is the only pair that suits a light page and
+    /// is what the committed snapshots contain. `theme_bevel` replaces it with the active
+    /// background stepped halfway to white and black, so a dark palette gets a highlight that
+    /// belongs to it. This test reads the rendered pixel, not the field, so a draw path that
+    /// stopped consulting the derivation would fail it.
+    #[test]
+    #[cfg(device_profile)]
+    fn the_theme_bevel_derives_its_tones_from_the_surface() {
+        use crate::core::Size;
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Dark);
+
+        let rect = Rect::new(4, 4, 12, 8);
+        let mut frame = Frame::new(rect);
+        frame.set_frame_shadow(FrameShadow::Raised);
+        frame.set_theme_bevel(true);
+        crate::theme::apply_theme_to_widget(&mut frame);
+        let background = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .expect("a preset is active");
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(24, 20), 1.0);
+        backend.begin_frame(Color::rgba(0, 0, 0, 0));
+        {
+            let mut context = RenderContext::new(&mut backend);
+            frame.draw(&mut context);
+        }
+        backend.end_frame();
+        let rgba = backend.frame_rgba();
+        let at = (((rect.y as u32) * 24) + (rect.x as u32 + 6)) * 4;
+        let top = Color::rgba(
+            rgba[at as usize],
+            rgba[at as usize + 1],
+            rgba[at as usize + 2],
+            rgba[at as usize + 3],
+        );
+
+        assert_eq!(
+            top,
+            background.blend(&Color::WHITE, 0.5),
+            "the lit edge is the theme surface stepped toward white"
+        );
+        assert_ne!(top, Color::rgb(255, 255, 255), "not the fixed historical highlight");
     }
 }

@@ -6,10 +6,7 @@
 use crate::core::Point;
 use crate::event::{Event, TouchId};
 
-use super::{
-    distance, point_delta, point_delta_abs, GestureRecognizer, LONG_PRESS_MAX_MOVE,
-    LONG_PRESS_MIN_MS, PAN_MIN_DISTANCE,
-};
+use super::{distance, point_delta, point_delta_abs, tuning, GestureKind, GestureRecognizer};
 
 // ────────────────────────────────────────────
 // LongPressGesture
@@ -32,6 +29,10 @@ impl LongPressGesture {
 }
 
 impl GestureRecognizer for LongPressGesture {
+    fn kind(&self) -> GestureKind {
+        GestureKind::LongPress
+    }
+
     fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
         // If already fired, wait for the matching finger's release before
         // re-arming. An unrelated finger's end must not reset a fired gesture.
@@ -65,7 +66,7 @@ impl GestureRecognizer for LongPressGesture {
                 if self.touch_id == Some(*touch_id) {
                     if let Some(start) = self.start_pos {
                         // Cancel if finger moved too far
-                        if distance(start, *pos) > LONG_PRESS_MAX_MOVE {
+                        if distance(start, *pos) > tuning().long_press_max_move {
                             self.reset();
                         }
                     }
@@ -77,7 +78,7 @@ impl GestureRecognizer for LongPressGesture {
                 // on any non-touch event, not just Timer.
                 if let Some(start_time) = self.start_time {
                     let elapsed = now_ms.saturating_sub(start_time);
-                    if elapsed >= LONG_PRESS_MIN_MS {
+                    if elapsed >= tuning().long_press_min_ms {
                         if let Some(pos) = self.start_pos {
                             self.fired = true;
                             return Some(Event::LongPress { pos });
@@ -149,6 +150,10 @@ impl PanGesture {
 }
 
 impl GestureRecognizer for PanGesture {
+    fn kind(&self) -> GestureKind {
+        GestureKind::Pan
+    }
+
     fn process(&mut self, event: &Event, _now_ms: u64) -> Option<Event> {
         match event {
             Event::TouchBegin { pos, touch_id } if !self.active => {
@@ -168,7 +173,7 @@ impl GestureRecognizer for PanGesture {
                 // that happened to cross the threshold.
                 if !self.dragging {
                     let travelled = super::distance(self.start_pos?, *pos);
-                    if travelled < PAN_MIN_DISTANCE {
+                    if travelled < tuning().pan_min_distance {
                         // Below threshold: hold the position back so the accumulated
                         // displacement is not silently discarded.
                         return None;
@@ -248,6 +253,10 @@ impl LongPressDragGesture {
 }
 
 impl GestureRecognizer for LongPressDragGesture {
+    fn kind(&self) -> GestureKind {
+        GestureKind::LongPressDrag
+    }
+
     fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
         match event {
             Event::TouchBegin { pos, touch_id } if self.start_pos.is_none() => {
@@ -286,7 +295,9 @@ impl GestureRecognizer for LongPressDragGesture {
                 // Before long press fired — check if movement exceeds threshold
                 if let Some(start) = self.start_pos {
                     let (dx, dy) = point_delta_abs(start, *pos);
-                    if (dx as f32) > LONG_PRESS_MAX_MOVE || (dy as f32) > LONG_PRESS_MAX_MOVE {
+                    if (dx as f32) > tuning().long_press_max_move
+                        || (dy as f32) > tuning().long_press_max_move
+                    {
                         // Moved too much — cancel
                         self.reset();
                     }
@@ -302,7 +313,7 @@ impl GestureRecognizer for LongPressDragGesture {
                 if !self.long_press_fired && !self.dragging {
                     if let (Some(start_pos), Some(start)) = (self.start_pos, self.start_time) {
                         if now_ms >= start
-                            && now_ms - start >= LONG_PRESS_MIN_MS
+                            && now_ms - start >= tuning().long_press_min_ms
                             && matches!(event, Event::Timer { .. })
                         {
                             self.long_press_fired = true;
@@ -394,7 +405,8 @@ mod tests {
         assert!(gesture
             .process(&Event::TouchEnd { pos: Point::new(99, 99), touch_id: 2 }, 100)
             .is_none());
-        let produced = gesture.process(&Event::Timer { id: 0 }, super::LONG_PRESS_MIN_MS + 1);
+        let produced =
+            gesture.process(&Event::Timer { id: 0 }, super::tuning().long_press_min_ms + 1);
         assert!(
             matches!(produced, Some(Event::LongPress { pos }) if pos == Point::new(10, 20)),
             "the tracked finger must still fire LongPress after an unrelated end, got {produced:?}"
@@ -409,7 +421,8 @@ mod tests {
         assert!(gesture
             .process(&Event::TouchBegin { pos: Point::new(10, 20), touch_id: 1 }, 0)
             .is_none());
-        let produced = gesture.process(&Event::Timer { id: 0 }, super::LONG_PRESS_MIN_MS + 1);
+        let produced =
+            gesture.process(&Event::Timer { id: 0 }, super::tuning().long_press_min_ms + 1);
         assert!(matches!(produced, Some(Event::LongPress { .. })));
 
         // Fired: an unrelated finger's end must not clear the fired state.
@@ -435,7 +448,8 @@ mod tests {
         assert!(gesture
             .process(&Event::TouchBegin { pos: Point::new(50, 60), touch_id: 2 }, 100)
             .is_none());
-        let produced = gesture.process(&Event::Timer { id: 0 }, super::LONG_PRESS_MIN_MS + 1);
+        let produced =
+            gesture.process(&Event::Timer { id: 0 }, super::tuning().long_press_min_ms + 1);
         assert!(
             matches!(produced, Some(Event::LongPress { pos }) if pos == Point::new(10, 20)),
             "a second finger must not reassign the hold, got {produced:?}"

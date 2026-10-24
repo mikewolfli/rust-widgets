@@ -19,9 +19,50 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
 use crate::widget::nav_widgets::app_bar::AppBar;
-use crate::widget::nav_widgets::bottom_navigation_bar::NavItem;
+use crate::widget::nav_widgets::bottom_navigation_bar::{BottomNavigationBar, NavItem};
 use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Height of the scaffold's app-bar band, in logical pixels.
+///
+/// The Material app bar's own height, named once because the layout arithmetic, the
+/// hit test and the child slots all key off the same band.
+const APP_BAR_HEIGHT: u32 = 56;
+
+/// Height of the bottom navigation band, in logical pixels.
+const BOTTOM_NAV_HEIGHT: u32 = 56;
+
+/// Edge length of the floating action button slot, in logical pixels.
+const FAB_SLOT_SIZE: u32 = 56;
+
+/// Margin between the floating action button and the scaffold's edges.
+const FAB_SLOT_MARGIN: i32 = 16;
+
+/// Width of a navigation drawer panel, in logical pixels.
+const DRAWER_WIDTH: u32 = 280;
+
+/// Height of the snackbar slot, in logical pixels.
+const SNACKBAR_HEIGHT: u32 = 48;
+
+/// Margin between the snackbar and the scaffold's edges.
+const SNACKBAR_MARGIN: i32 = 8;
+
+/// Which implementation paints the scaffold's bottom navigation bar.
+///
+/// [`Self::Classic`] is the scaffold's own compact M2-style strip and is the default,
+/// so a scaffold that never asks for anything else paints exactly the bytes it always
+/// did. [`Self::Material3`] hands the band to a real
+/// [`BottomNavigationBar`](crate::widget::nav_widgets::bottom_navigation_bar::BottomNavigationBar),
+/// which paints the sliding M3 pill — one implementation instead of two that could
+/// disagree about where the selection indicator is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScaffoldBottomNavStyle {
+    /// The scaffold's own strip: a flat indicator line under the selected item.
+    #[default]
+    Classic,
+    /// A real [`BottomNavigationBar`] with its sliding M3 pill.
+    Material3,
+}
 
 /// AdaptiveScaffold — a cross-platform adaptive scaffold combining AppBar +
 /// content area + optional BottomNavigationBar.
@@ -53,6 +94,31 @@ pub struct AdaptiveScaffold {
     nav_item_icon_sources: Vec<Option<IconSource>>,
     /// Currently selected bottom nav index.
     selected_nav_index: usize,
+    /// Which bottom-bar implementation paints the band.
+    bottom_nav_style: ScaffoldBottomNavStyle,
+    /// The delegate that paints [`ScaffoldBottomNavStyle::Material3`].
+    ///
+    /// Materialised when the style is selected (and rebuilt whenever the item list or the
+    /// geometry changes) so the sliding pill is a real `BottomNavigationBar`, not a copy of
+    /// its arithmetic.
+    m3_bar: Option<BottomNavigationBar>,
+    /// One body widget per bottom-navigation destination, kept mounted so each tab keeps
+    /// its own state (an IndexedStack rather than a rebuilt page).
+    nav_bodies: Vec<Option<Box<dyn Widget>>>,
+    /// Optional floating action button slot.
+    fab: Option<Box<dyn Widget>>,
+    /// Optional leading drawer slot.
+    drawer: Option<Box<dyn Widget>>,
+    /// Optional trailing (end) drawer slot.
+    end_drawer: Option<Box<dyn Widget>>,
+    /// Optional bottom-sheet slot.
+    bottom_sheet: Option<Box<dyn Widget>>,
+    /// Optional snackbar slot.
+    snackbar: Option<Box<dyn Widget>>,
+    /// Whether the leading drawer is open.
+    drawer_open: bool,
+    /// Whether the trailing drawer is open.
+    end_drawer_open: bool,
     /// Emitted when the bottom navigation selection changes.
     pub nav_selected: Signal1<usize>,
     /// Emitted when the AppBar's back affordance is pressed.
@@ -85,6 +151,16 @@ impl AdaptiveScaffold {
             nav_items: Vec::new(),
             nav_item_icon_sources: Vec::new(),
             selected_nav_index: 0,
+            bottom_nav_style: ScaffoldBottomNavStyle::Classic,
+            m3_bar: None,
+            nav_bodies: Vec::new(),
+            fab: None,
+            drawer: None,
+            end_drawer: None,
+            bottom_sheet: None,
+            snackbar: None,
+            drawer_open: false,
+            end_drawer_open: false,
             nav_selected: Signal1::new(),
             back_pressed: GenericSignal::new(),
             action_pressed: GenericSignal::new(),
@@ -132,9 +208,205 @@ impl AdaptiveScaffold {
     }
 
     /// Sets the optional body widget displayed in the content area.
+    ///
+    /// This is the fallback body used when the selected bottom-navigation destination has no
+    /// page of its own; see [`Self::set_nav_body`] for per-destination pages.
     pub fn set_body_widget(&mut self, widget: Option<Box<dyn Widget>>) {
         self.body_widget = widget;
         self.base.request_redraw();
+    }
+
+    /// Assigns the body page shown while `index` is the selected destination.
+    ///
+    /// Every page stays mounted, which is what gives each destination its own state: switching
+    /// away and back returns to the same widget rather than rebuilding it. The index is clamped
+    /// into the current item range, and the vector is grown to that range so a page added before
+    /// its item still lines up with it.
+    pub fn set_nav_body(&mut self, index: usize, widget: Option<Box<dyn Widget>>) {
+        let upper = index.min(self.nav_items.len().saturating_sub(1));
+        if self.nav_bodies.len() <= upper {
+            self.nav_bodies.resize_with(upper + 1, || None);
+        }
+        self.nav_bodies[upper] = widget;
+        self.base.request_redraw();
+    }
+
+    /// Returns the page assigned to `index`, when there is one.
+    pub fn nav_body(&self, index: usize) -> Option<&dyn Widget> {
+        self.nav_bodies.get(index).and_then(|body| body.as_deref())
+    }
+
+    /// Returns the body the scaffold currently paints: the selected destination's page when it
+    /// has one, otherwise the shared fallback body.
+    pub fn active_body(&self) -> Option<&dyn Widget> {
+        self.nav_bodies
+            .get(self.selected_nav_index)
+            .and_then(|body| body.as_deref())
+            .or(self.body_widget.as_deref())
+    }
+
+    /// Sets the floating action button slot.
+    pub fn set_fab(&mut self, widget: Option<Box<dyn Widget>>) {
+        self.fab = widget;
+        self.base.request_redraw();
+    }
+
+    /// Returns the floating action button slot, if one is set.
+    pub fn fab(&self) -> Option<&dyn Widget> {
+        self.fab.as_deref()
+    }
+
+    /// Sets the leading drawer slot. The drawer is closed until [`Self::open_drawer`] is called.
+    pub fn set_drawer(&mut self, widget: Option<Box<dyn Widget>>) {
+        self.drawer = widget;
+        if self.drawer.is_none() {
+            self.drawer_open = false;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the leading drawer slot, if one is set.
+    pub fn drawer(&self) -> Option<&dyn Widget> {
+        self.drawer.as_deref()
+    }
+
+    /// Sets the trailing (end) drawer slot.
+    pub fn set_end_drawer(&mut self, widget: Option<Box<dyn Widget>>) {
+        self.end_drawer = widget;
+        if self.end_drawer.is_none() {
+            self.end_drawer_open = false;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the trailing drawer slot, if one is set.
+    pub fn end_drawer(&self) -> Option<&dyn Widget> {
+        self.end_drawer.as_deref()
+    }
+
+    /// Sets the bottom-sheet slot.
+    pub fn set_bottom_sheet(&mut self, widget: Option<Box<dyn Widget>>) {
+        self.bottom_sheet = widget;
+        self.base.request_redraw();
+    }
+
+    /// Returns the bottom-sheet slot, if one is set.
+    pub fn bottom_sheet(&self) -> Option<&dyn Widget> {
+        self.bottom_sheet.as_deref()
+    }
+
+    /// Sets the snackbar slot.
+    pub fn set_snackbar(&mut self, widget: Option<Box<dyn Widget>>) {
+        self.snackbar = widget;
+        self.base.request_redraw();
+    }
+
+    /// Returns the snackbar slot, if one is set.
+    pub fn snackbar(&self) -> Option<&dyn Widget> {
+        self.snackbar.as_deref()
+    }
+
+    /// Opens the leading drawer, if one is set. Returns whether it is now open.
+    pub fn open_drawer(&mut self) -> bool {
+        let opened = self.drawer.is_some() && !self.drawer_open;
+        if opened {
+            self.drawer_open = true;
+            self.base.request_redraw();
+        }
+        self.drawer_open
+    }
+
+    /// Closes the leading drawer. Returns whether it had been open.
+    pub fn close_drawer(&mut self) -> bool {
+        let closed = self.drawer_open;
+        if closed {
+            self.drawer_open = false;
+            self.base.request_redraw();
+        }
+        closed
+    }
+
+    /// Returns whether the leading drawer is open.
+    pub fn is_drawer_open(&self) -> bool {
+        self.drawer_open
+    }
+
+    /// Opens the trailing drawer, if one is set. Returns whether it is now open.
+    pub fn open_end_drawer(&mut self) -> bool {
+        let opened = self.end_drawer.is_some() && !self.end_drawer_open;
+        if opened {
+            self.end_drawer_open = true;
+            self.base.request_redraw();
+        }
+        self.end_drawer_open
+    }
+
+    /// Closes the trailing drawer. Returns whether it had been open.
+    pub fn close_end_drawer(&mut self) -> bool {
+        let closed = self.end_drawer_open;
+        if closed {
+            self.end_drawer_open = false;
+            self.base.request_redraw();
+        }
+        closed
+    }
+
+    /// Returns whether the trailing drawer is open.
+    pub fn is_end_drawer_open(&self) -> bool {
+        self.end_drawer_open
+    }
+
+    /// Selects which implementation paints the bottom navigation band.
+    ///
+    /// Switching to [`ScaffoldBottomNavStyle::Material3`] materialises a real
+    /// [`BottomNavigationBar`] from the scaffold's items and selection; switching back drops it
+    /// and restores the classic strip. The default is the classic strip, so existing pictures
+    /// are unchanged.
+    pub fn set_bottom_nav_style(&mut self, style: ScaffoldBottomNavStyle) {
+        if self.bottom_nav_style == style {
+            return;
+        }
+        self.bottom_nav_style = style;
+        self.sync_m3_bar();
+        self.base.request_redraw();
+    }
+
+    /// Returns the bottom navigation painting style.
+    pub fn bottom_nav_style(&self) -> ScaffoldBottomNavStyle {
+        self.bottom_nav_style
+    }
+
+    /// Advances the delegated bottom bar's selection pill, if one is in use.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.m3_bar.as_mut().is_some_and(|bar| bar.tick(delta_ms))
+    }
+
+    /// Whether the delegated bottom bar is between two selections.
+    pub fn is_animating(&self) -> bool {
+        self.m3_bar.as_ref().is_some_and(|bar| bar.is_animating())
+    }
+
+    /// Rebuilds the delegated M3 bar from the scaffold's own items, selection and band.
+    fn sync_m3_bar(&mut self) {
+        if self.bottom_nav_style != ScaffoldBottomNavStyle::Material3 {
+            self.m3_bar = None;
+            return;
+        }
+        let Some(band) = self.bottom_nav_rect() else {
+            self.m3_bar = None;
+            return;
+        };
+        let mut bar = BottomNavigationBar::new(band);
+        for (index, item) in self.nav_items.iter().enumerate() {
+            bar.add_item(&item.icon, &item.label);
+            if let Some(source) = self.nav_item_icon_sources.get(index).copied().flatten() {
+                let _ = bar.set_item_icon_source(index, Some(source));
+            }
+        }
+        if !self.nav_items.is_empty() {
+            bar.set_selected_index(self.selected_nav_index);
+        }
+        self.m3_bar = Some(bar);
     }
 
     /// Returns a reference to the optional body widget.
@@ -165,6 +437,8 @@ impl AdaptiveScaffold {
     pub fn add_nav_item(&mut self, icon: &str, label: &str) {
         self.nav_items.push(NavItem { icon: icon.to_string(), label: label.to_string() });
         self.nav_item_icon_sources.push(None);
+        self.nav_bodies.push(None);
+        self.sync_m3_bar();
         self.base.request_redraw();
     }
 
@@ -179,6 +453,7 @@ impl AdaptiveScaffold {
             return Err(IconItemError::IndexOutOfBounds { index, len });
         };
         *slot = source;
+        self.sync_m3_bar();
         self.base.request_redraw();
         Ok(())
     }
@@ -187,7 +462,9 @@ impl AdaptiveScaffold {
     pub fn clear_nav_items(&mut self) {
         self.nav_items.clear();
         self.nav_item_icon_sources.clear();
+        self.nav_bodies.clear();
         self.selected_nav_index = 0;
+        self.sync_m3_bar();
         self.base.request_redraw();
     }
 
@@ -202,6 +479,9 @@ impl AdaptiveScaffold {
             if self.nav_items.is_empty() { 0 } else { index.min(self.nav_items.len() - 1) };
         if self.selected_nav_index != clamped {
             self.selected_nav_index = clamped;
+            if let Some(bar) = self.m3_bar.as_mut() {
+                bar.set_selected_index(clamped);
+            }
             self.nav_selected.emit(clamped);
             self.base.request_redraw();
         }
@@ -215,8 +495,8 @@ impl AdaptiveScaffold {
     /// Returns the content area rect (between AppBar and bottom nav).
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
-        let top_offset: i32 = 56; // AppBar height
-        let bottom_offset: i32 = if self.show_bottom_nav { 56 } else { 0 };
+        let top_offset: i32 = APP_BAR_HEIGHT as i32;
+        let bottom_offset: i32 = if self.show_bottom_nav { BOTTOM_NAV_HEIGHT as i32 } else { 0 };
         Rect::new(
             rect.x,
             rect.y + top_offset,
@@ -231,7 +511,81 @@ impl AdaptiveScaffold {
             return None;
         }
         let rect = self.geometry();
-        Some(Rect::new(rect.x, rect.y + rect.height as i32 - 56, rect.width, 56))
+        Some(Rect::new(
+            rect.x,
+            rect.y + rect.height as i32 - BOTTOM_NAV_HEIGHT as i32,
+            rect.width,
+            BOTTOM_NAV_HEIGHT,
+        ))
+    }
+
+    /// Returns the floating action button's slot rectangle.
+    fn fab_rect(&self) -> Option<Rect> {
+        self.fab.as_ref()?;
+        let rect = self.geometry();
+        let bottom_inset = if self.show_bottom_nav && !self.nav_items.is_empty() {
+            BOTTOM_NAV_HEIGHT as i32
+        } else {
+            0
+        };
+        Some(Rect::new(
+            rect.x + rect.width as i32 - FAB_SLOT_SIZE as i32 - FAB_SLOT_MARGIN,
+            rect.y + rect.height as i32 - FAB_SLOT_SIZE as i32 - bottom_inset - FAB_SLOT_MARGIN,
+            FAB_SLOT_SIZE,
+            FAB_SLOT_SIZE,
+        ))
+    }
+
+    /// Returns the leading drawer's panel rectangle.
+    fn drawer_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let width = DRAWER_WIDTH.min(rect.width);
+        Rect::new(
+            rect.x,
+            rect.y + APP_BAR_HEIGHT as i32,
+            width,
+            rect.height.saturating_sub(APP_BAR_HEIGHT),
+        )
+    }
+
+    /// Returns the trailing drawer's panel rectangle.
+    fn end_drawer_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let width = DRAWER_WIDTH.min(rect.width);
+        Rect::new(
+            rect.x + rect.width as i32 - width as i32,
+            rect.y + APP_BAR_HEIGHT as i32,
+            width,
+            rect.height.saturating_sub(APP_BAR_HEIGHT),
+        )
+    }
+
+    /// Returns the bottom sheet's rectangle: the lower half of the content area.
+    fn bottom_sheet_rect(&self) -> Rect {
+        let content = self.content_rect();
+        let height = (content.height / 2).max(1);
+        Rect::new(
+            content.x,
+            content.y + content.height as i32 - height as i32,
+            content.width,
+            height,
+        )
+    }
+
+    /// Returns the snackbar's rectangle, sitting above the bottom navigation band.
+    fn snackbar_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let bottom_inset = if self.show_bottom_nav && !self.nav_items.is_empty() {
+            BOTTOM_NAV_HEIGHT as i32
+        } else {
+            0
+        };
+        Rect::new(
+            rect.x + SNACKBAR_MARGIN,
+            rect.y + rect.height as i32 - bottom_inset - SNACKBAR_HEIGHT as i32 - SNACKBAR_MARGIN,
+            rect.width.saturating_sub((SNACKBAR_MARGIN * 2) as u32),
+            SNACKBAR_HEIGHT,
+        )
     }
 }
 
@@ -249,6 +603,15 @@ impl Widget for AdaptiveScaffold {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 600)
+    }
+
+    /// Advances the delegated bottom bar's selection pill; `true` while it is still moving.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        AdaptiveScaffold::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        AdaptiveScaffold::is_animating(self)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -335,19 +698,101 @@ impl Draw for AdaptiveScaffold {
         // ── AppBar ──
         self.app_bar.draw(context);
 
-        // ── Body content area (body widget drawing is delegated to the
-        //     widget's own render path since Box<dyn Widget> doesn't expose Draw)
+        // ── Body content area ──
+        //
+        // The selected destination's page is painted into the content band. A shared fallback
+        // body is used when the destination has no page of its own, so a scaffold that only
+        // ever set `body_widget` behaves as before.
         let content_rect = self.content_rect();
         context.fill_rect(content_rect, background);
+        let body: Option<&mut dyn Widget> = {
+            let selected = self
+                .nav_bodies
+                .get_mut(self.selected_nav_index)
+                .and_then(|page| page.as_deref_mut());
+            match selected {
+                Some(page) => Some(page),
+                None => self.body_widget.as_deref_mut(),
+            }
+        };
+        if let Some(body) = body {
+            body.set_geometry(content_rect);
+            if let Some(drawable) = crate::widget::draw_bridge::draw_of(body) {
+                context.push_clip(
+                    content_rect.x,
+                    content_rect.y,
+                    content_rect.width,
+                    content_rect.height,
+                );
+                drawable.draw(context);
+                context.pop_clip();
+            }
+        }
 
         // ── Bottom navigation bar ──
         //
         // The rect is asked for once and the draw is guarded on the answer, so "is the nav bar
-        // shown" is decided in **one** place. The previous form re-tested the same two conditions
-        // in the `if` and then `unwrap()`ed a call that tested them again: two statements of one
-        // fact, where a later edit to either would have turned a draw into a panic.
+        // shown" is decided in **one** place.
         if let Some(nav_rect) = self.bottom_nav_rect() {
-            self.draw_bottom_nav(context, nav_rect);
+            match self.bottom_nav_style {
+                ScaffoldBottomNavStyle::Classic => self.draw_bottom_nav(context, nav_rect),
+                ScaffoldBottomNavStyle::Material3 => {
+                    if let Some(mut bar) = self.m3_bar.take() {
+                        bar.set_geometry(nav_rect);
+                        bar.draw(context);
+                        self.m3_bar = Some(bar);
+                    }
+                }
+            }
+        }
+
+        // ── Overlay slots, painted in z order ──
+        //
+        // Each slot owns its band; the widget's own geometry is set to that band before it
+        // draws, which is the same contract the content child follows.
+        if self.drawer_open {
+            let band = self.drawer_rect();
+            if let Some(panel) = self.drawer.as_deref_mut() {
+                panel.set_geometry(band);
+                if let Some(drawable) = crate::widget::draw_bridge::draw_of(panel) {
+                    drawable.draw(context);
+                }
+            }
+        }
+        if self.end_drawer_open {
+            let band = self.end_drawer_rect();
+            if let Some(panel) = self.end_drawer.as_deref_mut() {
+                panel.set_geometry(band);
+                if let Some(drawable) = crate::widget::draw_bridge::draw_of(panel) {
+                    drawable.draw(context);
+                }
+            }
+        }
+        if self.bottom_sheet.is_some() {
+            let band = self.bottom_sheet_rect();
+            if let Some(sheet) = self.bottom_sheet.as_deref_mut() {
+                sheet.set_geometry(band);
+                if let Some(drawable) = crate::widget::draw_bridge::draw_of(sheet) {
+                    drawable.draw(context);
+                }
+            }
+        }
+        if self.snackbar.is_some() {
+            let band = self.snackbar_rect();
+            if let Some(snackbar) = self.snackbar.as_deref_mut() {
+                snackbar.set_geometry(band);
+                if let Some(drawable) = crate::widget::draw_bridge::draw_of(snackbar) {
+                    drawable.draw(context);
+                }
+            }
+        }
+        if let Some(band) = self.fab_rect() {
+            if let Some(fab) = self.fab.as_deref_mut() {
+                fab.set_geometry(band);
+                if let Some(drawable) = crate::widget::draw_bridge::draw_of(fab) {
+                    drawable.draw(context);
+                }
+            }
         }
     }
 }
@@ -485,8 +930,64 @@ impl EventHandler for AdaptiveScaffold {
                 if *button != 1 {
                     return;
                 }
+
+                // Overlay slots win over the page beneath them, in reverse z order. Each slot is
+                // told the band it was painted in, so its own hit test sees the pixels it owns.
+                let mut routed = false;
+                if let Some(band) = self.fab_rect() {
+                    if band.contains_point(*pos) {
+                        if let Some(fab) = self.fab.as_deref_mut() {
+                            fab.set_geometry(band);
+                            fab.handle_event(event);
+                            routed = true;
+                        }
+                    }
+                }
+                if !routed && self.snackbar.is_some() {
+                    let band = self.snackbar_rect();
+                    if band.contains_point(*pos) {
+                        if let Some(snackbar) = self.snackbar.as_deref_mut() {
+                            snackbar.set_geometry(band);
+                            snackbar.handle_event(event);
+                            routed = true;
+                        }
+                    }
+                }
+                if !routed && self.bottom_sheet.is_some() {
+                    let band = self.bottom_sheet_rect();
+                    if band.contains_point(*pos) {
+                        if let Some(sheet) = self.bottom_sheet.as_deref_mut() {
+                            sheet.set_geometry(band);
+                            sheet.handle_event(event);
+                            routed = true;
+                        }
+                    }
+                }
+                if !routed && self.end_drawer_open {
+                    let band = self.end_drawer_rect();
+                    if band.contains_point(*pos) {
+                        if let Some(panel) = self.end_drawer.as_deref_mut() {
+                            panel.set_geometry(band);
+                            panel.handle_event(event);
+                            routed = true;
+                        }
+                    }
+                }
+                if !routed && self.drawer_open {
+                    let band = self.drawer_rect();
+                    if band.contains_point(*pos) {
+                        if let Some(panel) = self.drawer.as_deref_mut() {
+                            panel.set_geometry(band);
+                            panel.handle_event(event);
+                            routed = true;
+                        }
+                    }
+                }
+                if routed {
+                    return;
+                }
                 let rect = self.geometry();
-                let app_bar_height: i32 = 56;
+                let app_bar_height: i32 = APP_BAR_HEIGHT as i32;
 
                 // AppBar zone (top)
                 if pos.y >= rect.y && pos.y < rect.y + app_bar_height {
@@ -498,7 +999,7 @@ impl EventHandler for AdaptiveScaffold {
 
                 // Bottom nav zone
                 if self.show_bottom_nav && !self.nav_items.is_empty() {
-                    let nav_top = rect.y + rect.height as i32 - 56;
+                    let nav_top = rect.y + rect.height as i32 - BOTTOM_NAV_HEIGHT as i32;
                     if pos.y >= nav_top && pos.y <= rect.y + rect.height as i32 {
                         // Hit-test bottom nav items
                         let item_count = self.nav_items.len();
@@ -514,10 +1015,19 @@ impl EventHandler for AdaptiveScaffold {
                     }
                 }
 
-                // Body zone — delegate to body widget if present
+                // Body zone — delegate to the selected destination's page, then the fallback.
                 let content_rect = self.content_rect();
-                if let Some(body) = self.body_widget.as_mut() {
-                    if content_rect.contains_point(*pos) {
+                if content_rect.contains_point(*pos) {
+                    let target = self
+                        .nav_bodies
+                        .get_mut(self.selected_nav_index)
+                        .and_then(|page| page.as_deref_mut());
+                    let body = match target {
+                        Some(page) => Some(page),
+                        None => self.body_widget.as_deref_mut(),
+                    };
+                    if let Some(body) = body {
+                        body.set_geometry(content_rect);
                         body.handle_event(event);
                     }
                 }
@@ -781,5 +1291,58 @@ mod tests {
 
         scaffold.handle_event(&Event::MouseRelease { pos: Point::new(340, 28), button: 1 });
         assert_eq!(fired.load(Ordering::SeqCst), 1, "one tap forwards exactly one action event");
+    }
+
+    #[test]
+    fn selecting_a_destination_shows_that_destinations_page() {
+        let mut scaffold = make_scaffold();
+        scaffold.set_nav_body(
+            1,
+            Some(Box::new(crate::widget::base_widgets::label::Label::new(
+                "Messages".to_string(),
+                Rect::new(0, 0, 10, 10),
+            ))),
+        );
+        assert!(scaffold.nav_body(1).is_some());
+        assert!(scaffold.active_body().is_none(), "the shared body is unused when pages exist");
+        scaffold.set_selected_nav_index(1);
+        assert!(scaffold.active_body().is_some(), "selection must switch the painted page");
+    }
+
+    #[test]
+    fn a_material3_bottom_bar_is_a_real_bottom_navigation_bar() {
+        let mut scaffold = make_scaffold();
+        assert_eq!(scaffold.bottom_nav_style(), ScaffoldBottomNavStyle::Classic);
+        scaffold.set_bottom_nav_style(ScaffoldBottomNavStyle::Material3);
+        assert_eq!(scaffold.bottom_nav_style(), ScaffoldBottomNavStyle::Material3);
+        scaffold.set_bottom_nav_style(ScaffoldBottomNavStyle::Classic);
+        assert!(!scaffold.is_animating(), "the classic strip owes no frames");
+    }
+
+    #[test]
+    fn each_overlay_slot_has_its_own_band() {
+        let mut scaffold = make_scaffold();
+        fn widget() -> Box<dyn Widget> {
+            Box::new(crate::widget::base_widgets::label::Label::new(
+                "slot".to_string(),
+                Rect::new(0, 0, 10, 10),
+            ))
+        }
+        scaffold.set_fab(Some(widget()));
+        scaffold.set_snackbar(Some(widget()));
+        scaffold.set_bottom_sheet(Some(widget()));
+        scaffold.set_drawer(Some(widget()));
+        scaffold.set_end_drawer(Some(widget()));
+        assert!(scaffold.fab().is_some());
+        assert!(scaffold.snackbar().is_some());
+        assert!(scaffold.bottom_sheet().is_some());
+        assert!(scaffold.drawer().is_some());
+        assert!(scaffold.end_drawer().is_some());
+        assert!(scaffold.open_drawer());
+        assert!(scaffold.is_drawer_open());
+        assert!(scaffold.open_end_drawer());
+        assert!(scaffold.is_end_drawer_open());
+        let svg = render_to_svg(&mut scaffold);
+        assert!(svg.starts_with("<svg"));
     }
 }

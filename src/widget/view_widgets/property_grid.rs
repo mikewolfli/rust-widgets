@@ -72,6 +72,12 @@ pub struct PropertyGrid {
     scroll_offset: u32,
     /// Emitted when a property row is selected via click.
     pub selected: Signal1<usize>,
+    /// The row being edited and its scratch buffer.
+    editing: Option<(usize, String)>,
+    /// Emitted when an edit commits `(row, text)`.
+    pub cell_changed: Signal1<(usize, String)>,
+    /// Emitted when the context menu is requested at a point.
+    pub context_menu_requested: Signal1<crate::core::Point>,
 }
 
 impl PropertyGrid {
@@ -133,6 +139,9 @@ impl PropertyGrid {
             hovered_row: None,
             scroll_offset: 0,
             selected: Signal1::new(),
+            editing: None,
+            cell_changed: Signal1::new(),
+            context_menu_requested: Signal1::new(),
         }
     }
 
@@ -205,6 +214,11 @@ impl PropertyGrid {
     /// Returns a reference to the properties slice.
     pub fn properties(&self) -> &[PropertyItem] {
         &self.properties
+    }
+
+    /// The row whose editor is open, if any.
+    pub fn editing_entry(&self) -> Option<usize> {
+        self.editing.as_ref().map(|(index, _)| *index)
     }
 
     /// Returns a mutable reference to the properties slice.
@@ -504,6 +518,12 @@ impl Draw for PropertyGrid {
             } else {
                 ink
             };
+            let value_text = match self.editing.as_ref() {
+                Some((editing, buffer)) if *editing == i => {
+                    std::borrow::Cow::Owned(std::format!("{buffer}|"))
+                }
+                _ => std::borrow::Cow::Borrowed(self.properties[i].value.as_str()),
+            };
             context.draw_text_fitted_cow(
                 Rect::new(
                     row_rect.x + name_col_width as i32 + 4,
@@ -511,7 +531,7 @@ impl Draw for PropertyGrid {
                     row_rect.width.saturating_sub(name_col_width).saturating_sub(8),
                     row_line.height.max(1),
                 ),
-                &self.properties[i].value,
+                &value_text,
                 &value_font,
                 value_color,
                 HorizontalAlignment::Left,
@@ -536,6 +556,10 @@ impl EventHandler for PropertyGrid {
         }
         match event {
             Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
+                if *button == 3 {
+                    self.context_menu_requested.emit(*pos);
+                    return;
+                }
                 if *button == 1 {
                     let content = self.content_rect();
 
@@ -612,6 +636,18 @@ impl EventHandler for PropertyGrid {
                 }
                 self.base.handle_event(event);
             }
+            Event::MouseDoubleClick { pos, button: 1 } => {
+                if let Some(row) = self.row_index_at(*pos) {
+                    if let Some(property) = self.properties.get(row) {
+                        if property.editable {
+                            self.editing = Some((row, property.value.clone()));
+                            self.selected_index = Some(row);
+                            self.base.request_redraw();
+                        }
+                    }
+                }
+            }
+            Event::ContextMenu { pos } => self.context_menu_requested.emit(*pos),
             Event::Wheel { delta, .. } => {
                 // `max_scroll` and the visible count both come from the shared helpers, so the
                 // wheel can never park the view past what `draw` paints. This arm used to recompute
@@ -629,6 +665,28 @@ impl EventHandler for PropertyGrid {
                 self.base.request_redraw();
             }
             Event::KeyPress { key, .. } => {
+                if let Some((row, buffer)) = self.editing.as_mut() {
+                    match *key {
+                        crate::event::key_codes::ENTER => {
+                            let text = buffer.clone();
+                            let row = *row;
+                            self.editing = None;
+                            self.cell_changed.emit((row, text));
+                        }
+                        crate::event::key_codes::ESCAPE => self.editing = None,
+                        crate::event::key_codes::BACKSPACE => {
+                            buffer.pop();
+                        }
+                        32..=126 => {
+                            if let Some(character) = char::from_u32(*key) {
+                                buffer.push(character);
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.base.request_redraw();
+                    return;
+                }
                 let max_scroll = self.max_scroll();
                 // Keyboard navigation is refused when no row is painted. `draw` renders
                 // `[scroll_offset, scroll_offset + visible_row_count)`, and at a short geometry
@@ -695,6 +753,28 @@ impl EventHandler for PropertyGrid {
                             let visible = self.visible_row_count();
                             self.scroll_offset =
                                 (last as u32 + 1).saturating_sub(visible).min(max_scroll);
+                            self.base.request_redraw();
+                        }
+                    }
+                    crate::event::key_codes::PAGE_UP => {
+                        let current = self.selected_index.unwrap_or(0);
+                        let page = self.visible_row_count().max(1) as usize;
+                        let next = current.saturating_sub(page);
+                        self.selected_index = Some(next);
+                        self.selected.emit(next);
+                        self.scroll_offset = next as u32;
+                        self.base.request_redraw();
+                    }
+                    crate::event::key_codes::PAGE_DOWN => {
+                        if !self.properties.is_empty() {
+                            let current = self.selected_index.unwrap_or(0);
+                            let page = self.visible_row_count().max(1) as usize;
+                            let next = (current + page).min(self.properties.len() - 1);
+                            self.selected_index = Some(next);
+                            self.selected.emit(next);
+                            let visible = self.visible_row_count();
+                            self.scroll_offset =
+                                (next as u32 + 1).saturating_sub(visible).min(max_scroll);
                             self.base.request_redraw();
                         }
                     }
@@ -1184,5 +1264,38 @@ mod tests {
         let rows_top = pg.content_rect().y + FIRST_ROW_TOP as i32;
         pg.handle_event(&Event::MouseMove { pos: Point::new(10, rows_top + 12) });
         assert_eq!(pg.hovered_row, None);
+    }
+
+    /// Double-click editing, page keys and the change signal are wired.
+    #[test]
+    fn editing_paging_and_change_signal_are_wired() {
+        use crate::event::EventHandler;
+        let mut grid = PropertyGrid::new(Rect::new(0, 0, 320, 200));
+        for index in 0..20 {
+            grid.add_property(format!("p{index}"), format!("v{index}"), true);
+        }
+        let row = grid.content_rect().y + FIRST_ROW_TOP as i32 + 12;
+        grid.handle_event(&Event::MouseDoubleClick { pos: Point::new(200, row), button: 1 });
+        assert_eq!(grid.editing_entry(), Some(0));
+        grid.handle_event(&Event::KeyPress { key: 120, modifiers: 0 });
+        let changed = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&changed);
+        grid.cell_changed.connect(move |cell| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some((*cell).clone());
+            }
+        });
+        grid.handle_event(&Event::KeyPress { key: crate::event::key_codes::ENTER, modifiers: 0 });
+        assert!(
+            changed.lock().map(|slot| slot.is_some()).unwrap_or(false),
+            "committing emits cell_changed"
+        );
+
+        grid.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        grid.handle_event(&Event::KeyPress {
+            key: crate::event::key_codes::PAGE_DOWN,
+            modifiers: 0,
+        });
+        assert!(grid.selected_index.unwrap_or(0) > 0);
     }
 }

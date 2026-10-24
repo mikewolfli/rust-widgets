@@ -31,7 +31,7 @@
 //! [`Node::child_if`]: crate::view::Node::child_if
 
 use crate::core::Size;
-use crate::widget::metrics::dimensions::{BREAKPOINT_COMPACT_MAX, BREAKPOINT_MEDIUM_MAX};
+use crate::style::theme::breakpoint_tokens;
 
 /// A size tier a subtree can be declared to live in.
 ///
@@ -58,12 +58,14 @@ impl Breakpoint {
     /// horizontal one. So a tall window is not mistaken for a wide one, which a diagonal or
     /// area-based rule would do.
     ///
-    /// The thresholds are read from the metric table rather than written here, so the boundary is
-    /// the theme's/device's fact and not a second copy of it (see the module docs).
+    /// The thresholds are read from [`breakpoint_tokens`] rather than written here, so the
+    /// boundary is a token a theme (or a host) can move in one place instead of a second copy of
+    /// the metric table. The defaults are that table's values.
     pub fn of(available: Size) -> Self {
-        if available.width <= BREAKPOINT_COMPACT_MAX {
+        let tokens = breakpoint_tokens();
+        if available.width <= tokens.compact_max {
             Breakpoint::Compact
-        } else if available.width <= BREAKPOINT_MEDIUM_MAX {
+        } else if available.width <= tokens.medium_max {
             Breakpoint::Medium
         } else {
             Breakpoint::Expanded
@@ -156,27 +158,44 @@ mod tests {
     /// them — the property a table with an off-by-one would violate.
     #[test]
     fn the_width_classifies_into_exactly_one_tier() {
+        let tokens = crate::style::theme::BreakpointTokens::default();
         assert_eq!(Breakpoint::of(Size::new(0, 1000)), Breakpoint::Compact);
         assert_eq!(Breakpoint::of(Size::new(320, 640)), Breakpoint::Compact);
         assert_eq!(
-            Breakpoint::of(Size::new(BREAKPOINT_COMPACT_MAX, 1000)),
+            Breakpoint::of(Size::new(tokens.compact_max, 1000)),
             Breakpoint::Compact,
             "the compact bound is inclusive"
         );
         assert_eq!(
-            Breakpoint::of(Size::new(BREAKPOINT_COMPACT_MAX + 1, 1000)),
+            Breakpoint::of(Size::new(tokens.compact_max + 1, 1000)),
             Breakpoint::Medium,
             "one pixel past it is medium, with no gap"
         );
         assert_eq!(
-            Breakpoint::of(Size::new(BREAKPOINT_MEDIUM_MAX, 1000)),
+            Breakpoint::of(Size::new(tokens.medium_max, 1000)),
             Breakpoint::Medium,
             "the medium bound is inclusive"
         );
         assert_eq!(
-            Breakpoint::of(Size::new(BREAKPOINT_MEDIUM_MAX + 1, 1000)),
+            Breakpoint::of(Size::new(tokens.medium_max + 1, 1000)),
             Breakpoint::Expanded,
             "and one past it is expanded"
+        );
+    }
+
+    /// A theme-level override moves the classification without touching the call site.
+    #[test]
+    fn token_overrides_move_the_boundary_and_are_restored() {
+        let previous = crate::style::theme::set_breakpoint_tokens(Some(
+            crate::style::theme::BreakpointTokens { compact_max: 400, medium_max: 700 },
+        ));
+        assert_eq!(Breakpoint::of(Size::new(500, 800)), Breakpoint::Medium);
+        assert_eq!(Breakpoint::of(Size::new(701, 800)), Breakpoint::Expanded);
+        crate::style::theme::set_breakpoint_tokens(previous);
+        assert_eq!(
+            Breakpoint::of(Size::new(500, 800)),
+            Breakpoint::Compact,
+            "the metric defaults are restored"
         );
     }
 

@@ -27,11 +27,11 @@
 //! copy would be the "two answers to one question" defect.
 
 use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
-use crate::style::SemanticColor;
-use crate::widget::capability::coercion::expect_string;
+use crate::style::{MotionSlot, PropertyDriver, SemanticColor};
+use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -173,12 +173,13 @@ fn advance(font: &Font) -> u32 {
 /// The action row's button rectangles, laid out right to left in `labels` order.
 ///
 /// Returned in `labels` order (the first label is the leftmost button), so a caller indexing
-/// the row by its own button index cannot be off by a mirror.
-fn button_rects(rect: Rect, labels: &[&str], font: &Font) -> Vec<Rect> {
+/// the row by its own button index cannot be off by a mirror. Each button's width comes from
+/// the renderer's own measurement, so a CJK or other wide label is sized by the ink it will
+/// paint instead of by a character count that treats every glyph as one Latin advance.
+fn button_rects(context: &RenderContext, rect: Rect, labels: &[&str], font: &Font) -> Vec<Rect> {
     if labels.is_empty() || rect.width == 0 || rect.height == 0 {
         return Vec::new();
     }
-    let glyph = advance(font);
     let height = BUTTON_HEIGHT.min(rect.height);
     let y = rect
         .y
@@ -188,8 +189,7 @@ fn button_rects(rect: Rect, labels: &[&str], font: &Font) -> Vec<Rect> {
     let mut right = rect.x.saturating_add(rect.width as i32).saturating_sub(CARD_PADDING as i32);
     let mut rects = vec![Rect::new(0, 0, 0, 0); labels.len()];
     for (index, label) in labels.iter().enumerate().rev() {
-        let width = (label.chars().count() as u32)
-            .saturating_mul(glyph)
+        let width = (context.measure_text(label, font).width)
             .saturating_add(2 * BUTTON_PADDING)
             .min(rect.width);
         let x = right.saturating_sub(width as i32);
@@ -204,6 +204,14 @@ fn button_rects(rect: Rect, labels: &[&str], font: &Font) -> Vec<Rect> {
 /// A word longer than the line is hard-split rather than dropped, so a long URL in a message is
 /// still readable instead of vanishing. The renderer's advance is one glyph per cluster, so a
 /// character budget and a pixel budget are the same number.
+///
+/// # Why this is not `text_utils::wrap_to_width`
+///
+/// The rule here is **fill the line, then continue**: the part of a long word that fits in the
+/// room left beside the previous words stays on that line, and only the remainder moves down.
+/// The shared splitter moves such a word down whole and splits it only when it is alone on a
+/// line, so adopting it would re-flow every dialog body (and change the dialog snapshots). Until
+/// `wrap_to_width` takes a policy for that choice, this loop is the deliberate local answer.
 fn wrap_words(text: &str, columns: usize) -> Vec<String> {
     if columns == 0 {
         return Vec::new();
@@ -247,23 +255,88 @@ fn wrap_words(text: &str, columns: usize) -> Vec<String> {
     lines
 }
 
-/// Paints the shared card, its title, its severity glyph and its message, and returns the
-/// action row's rects. The glyph comes from `role`, so a caller cannot mismatch them.
+/// Everything a card paints, grouped so adding a row cannot silently leave one dialog behind.
+struct CardContent<'a> {
+    role: &'a str,
+    title: &'a str,
+    message: &'a str,
+    /// A second, smaller line below the message (`informativeText`).
+    informative: &'a str,
+    /// A further, muted block below the informative line (`detailedText`).
+    detailed: &'a str,
+    /// Extra label/value rows (`AboutDialog`'s application and version).
+    extra_lines: &'a [String],
+    buttons: &'a [&'a str],
+    hovered: Option<usize>,
+    /// A caller-supplied severity glyph; `None` keeps the role's own glyph.
+    icon: Option<IconName>,
+    /// An optional check box row above the buttons: its label and its state.
+    check_box: Option<(&'a str, bool)>,
+    /// Whether the card dims the page behind it.
+    modal: bool,
+    /// How far the card has revealed, `0.0` hidden and `1.0` settled.
+    reveal: f32,
+}
+
+/// The typography and stopping rule for one block of wrapped text.
+struct BlockStyle<'a> {
+    font: &'a Font,
+    ink: Color,
+    columns: usize,
+    line_height: i32,
+    stop_y: i32,
+}
+
+/// Paints one block of wrapped text and advances `y` past it.
+fn paint_block(
+    ctx: &mut RenderContext,
+    rect: Rect,
+    y: &mut i32,
+    text: &str,
+    style: &BlockStyle<'_>,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let content_width = rect.width.saturating_sub(2 * CARD_PADDING);
+    for line in wrap_words(text, style.columns) {
+        if *y + style.line_height > style.stop_y {
+            break;
+        }
+        let band = Rect::new(
+            rect.x.saturating_add(CARD_PADDING as i32),
+            *y,
+            content_width,
+            style.line_height as u32,
+        );
+        ctx.draw_text_line(band, &line, style.font, style.ink, HorizontalAlignment::Left);
+        *y += style.line_height;
+    }
+}
+
+/// Paints the shared card and returns the action row, the check box row (when present) and
+/// the frame it painted into.
 fn paint_card(
     ctx: &mut RenderContext,
     base: &BaseWidget,
-    role: &str,
-    title: &str,
-    message: &str,
-    extra_lines: &[String],
-    buttons: &[&str],
-    hovered: Option<usize>,
-) -> Vec<Rect> {
-    let rect = base.geometry();
-    if rect.width == 0 || rect.height == 0 {
-        return Vec::new();
+    card: &CardContent<'_>,
+) -> (Rect, Vec<Rect>, Option<Rect>) {
+    let geometry = base.geometry();
+    let reveal = card.reveal.clamp(0.0, 1.0);
+    if reveal <= 0.0 {
+        return (Rect::new(0, 0, 0, 0), Vec::new(), None);
     }
-    let palette = card_palette(base, role);
+    if card.modal {
+        super::draw_modal_scrim_scaled(ctx, geometry, reveal);
+    }
+    let rect = super::scale_about_centre(
+        geometry,
+        super::REVEAL_MIN_SCALE + (1.0 - super::REVEAL_MIN_SCALE) * reveal,
+    );
+    if rect.width == 0 || rect.height == 0 {
+        return (rect, Vec::new(), None);
+    }
+    let palette = card_palette(base, card.role);
     // The card is a raised surface: a fill a hair off the window's own, over a border, which is
     // what makes it read as a panel in both appearances.
     ctx.fill_rounded_rect(rect, CARD_RADIUS, palette.surface);
@@ -279,24 +352,32 @@ fn paint_card(
     let mut y = rect.y.saturating_add(CARD_PADDING as i32);
     let mut text_left = rect.x.saturating_add(CARD_PADDING as i32);
     let mut text_width = content_width;
-    if let Some(icon) = CardIcon::for_role(role) {
+    let icon = card.icon.or_else(|| CardIcon::for_role(card.role).map(CardIcon::name));
+    if let Some(icon) = icon {
         // One glyph square, sized from the title's own metrics and clamped to the card, so a
         // squeezed card shrinks the glyph instead of letting it escape the frame.
         let side = advance(&palette.title_font).max(12).min(rect.width).min(rect.height);
         let icon_rect = Rect::new(text_left, y, side, side);
-        crate::widget::draw_icon_at(ctx, icon_rect, icon.color(), icon.name());
+        // A caller-supplied glyph is painted in the card's ink; the role's own glyph keeps the
+        // semantic severity colour, which is the part that carries meaning.
+        let color = if card.icon.is_some() {
+            palette.ink
+        } else {
+            CardIcon::for_role(card.role).map(CardIcon::color).unwrap_or(palette.ink)
+        };
+        crate::widget::draw_icon_at(ctx, icon_rect, color, icon);
         let gutter = side as i32 + ICON_TITLE_GAP as i32;
         text_left = text_left.saturating_add(gutter);
         text_width = text_width.saturating_sub(gutter as u32);
-        if title.is_empty() {
+        if card.title.is_empty() {
             y = y.saturating_add(side as i32).saturating_add(TITLE_GAP as i32);
         }
     }
-    if !title.is_empty() {
+    if !card.title.is_empty() {
         let band = Rect::new(text_left, y, text_width, advance(&palette.title_font) + 4);
         ctx.draw_text_line(
             band,
-            title,
+            card.title,
             &palette.title_font,
             palette.ink,
             HorizontalAlignment::Left,
@@ -305,39 +386,123 @@ fn paint_card(
     }
 
     let max_columns = (content_width / glyph.max(1)).max(1) as usize;
-    let line_height = glyph + 2;
+    let line_height = glyph as i32 + 2;
     let body_ink = palette.ink.with_alpha_f32(0.85);
+    let stop_y = rect
+        .y
+        .saturating_add(rect.height as i32)
+        .saturating_sub(CARD_PADDING as i32)
+        .saturating_sub(BUTTON_HEIGHT as i32)
+        .saturating_sub(BUTTON_GAP as i32);
 
     // Extra label/value lines (the `AboutDialog`'s application and version rows) come before
     // the message, because they identify the subject rather than describe it.
-    for line in extra_lines {
-        let band =
-            Rect::new(rect.x.saturating_add(CARD_PADDING as i32), y, content_width, line_height);
+    for line in card.extra_lines {
+        let band = Rect::new(
+            rect.x.saturating_add(CARD_PADDING as i32),
+            y,
+            content_width,
+            line_height as u32,
+        );
         ctx.draw_text_line(band, line, &palette.font, body_ink, HorizontalAlignment::Left);
-        y = y.saturating_add(line_height as i32);
+        y = y.saturating_add(line_height);
     }
 
-    for line in wrap_words(message, max_columns) {
-        // A message longer than the card is cut at the action row rather than painted over it.
-        if y + line_height as i32
-            > rect
-                .y
-                .saturating_add(rect.height as i32)
-                .saturating_sub(CARD_PADDING as i32)
-                .saturating_sub(BUTTON_HEIGHT as i32)
-                .saturating_sub(BUTTON_GAP as i32)
-        {
-            break;
+    paint_block(
+        ctx,
+        rect,
+        &mut y,
+        card.message,
+        &BlockStyle {
+            font: &palette.font,
+            ink: body_ink,
+            columns: max_columns,
+            line_height,
+            stop_y,
+        },
+    );
+    // The informative line is a step stronger than the body: it qualifies the message rather
+    // than repeating it, and the distinction is what a two-level alert is for.
+    paint_block(
+        ctx,
+        rect,
+        &mut y,
+        card.informative,
+        &BlockStyle {
+            font: &palette.font,
+            ink: palette.ink,
+            columns: max_columns,
+            line_height,
+            stop_y,
+        },
+    );
+    paint_block(
+        ctx,
+        rect,
+        &mut y,
+        card.detailed,
+        &BlockStyle {
+            font: &palette.font,
+            ink: palette.ink.with_alpha_f32(0.7),
+            columns: max_columns,
+            line_height,
+            stop_y,
+        },
+    );
+
+    let rects = button_rects(ctx, rect, card.buttons, &palette.font);
+    let check_box_rect = card.check_box.map(|(label, checked)| {
+        let row_h = BUTTON_HEIGHT.min(rect.height);
+        let row_y = rects
+            .first()
+            .map(|first| first.y.saturating_sub(row_h as i32).saturating_sub(4))
+            .unwrap_or_else(|| {
+                rect.y
+                    .saturating_add(rect.height as i32)
+                    .saturating_sub(CARD_PADDING as i32)
+                    .saturating_sub(row_h as i32)
+            });
+        let row = Rect::new(
+            rect.x.saturating_add(CARD_PADDING as i32),
+            row_y,
+            rect.width.saturating_sub(2 * CARD_PADDING),
+            row_h,
+        );
+        let box_side = (row_h.saturating_sub(8)).min(14);
+        let box_rect =
+            Rect::new(row.x, row.y + ((row_h - box_side) / 2) as i32, box_side, box_side);
+        ctx.fill_rect(box_rect, palette.surface);
+        ctx.draw_rect(box_rect, palette.border);
+        if checked {
+            let inset = 3.min(box_side as i32 / 2);
+            ctx.fill_rect(
+                Rect::new(
+                    box_rect.x + inset,
+                    box_rect.y + inset,
+                    box_side.saturating_sub((inset * 2) as u32),
+                    box_side.saturating_sub((inset * 2) as u32),
+                ),
+                palette.accent,
+            );
         }
-        let band =
-            Rect::new(rect.x.saturating_add(CARD_PADDING as i32), y, content_width, line_height);
-        ctx.draw_text_line(band, &line, &palette.font, body_ink, HorizontalAlignment::Left);
-        y = y.saturating_add(line_height as i32);
-    }
+        let label_band = Rect::new(
+            box_rect.x + box_side as i32 + BUTTON_GAP as i32,
+            row.y,
+            row.width.saturating_sub(box_side + BUTTON_GAP),
+            row_h,
+        );
+        ctx.draw_text_line(
+            label_band,
+            label,
+            &palette.font,
+            palette.ink,
+            HorizontalAlignment::Left,
+        );
+        row
+    });
 
-    let rects = button_rects(rect, buttons, &palette.font);
     for (index, rect) in rects.iter().enumerate() {
-        let (fill, text_ink, border) = if hovered == Some(index) {
+        let (fill, text_ink, border) = if card.hovered == Some(index) {
             (palette.accent, palette.accent.contrast_color(), palette.accent)
         } else {
             (
@@ -350,18 +515,101 @@ fn paint_card(
         ctx.draw_rounded_rect_stroke(*rect, 4, border, 1);
         ctx.draw_text_line(
             *rect,
-            buttons[index],
+            card.buttons[index],
             &palette.font,
             text_ink,
             HorizontalAlignment::Center,
         );
     }
-    rects
+    (rect, rects, check_box_rect)
 }
 
 /// The index of the button under `point`, if any.
 fn button_at(rects: &[Rect], point: crate::core::Point) -> Option<usize> {
     rects.iter().position(|rect| rect.contains(point))
+}
+
+/// The state every notice card shares: severity glyph override, the two extra text levels,
+/// the default action, the optional check box, its own preferred size and its reveal.
+///
+/// Grouped rather than copied into each of the three dialogs because these are the fields a
+/// fourth notice would otherwise forget: the three cards draw from one painter, so their state
+/// should travel as one value.
+struct CardState {
+    /// Whether the card dims the page behind it.
+    modal: bool,
+    /// A caller-supplied severity glyph; `None` keeps the role's own.
+    icon: Option<IconName>,
+    /// The `informativeText` line below the message.
+    informative_text: String,
+    /// The `detailedText` block below the informative line.
+    detailed_text: String,
+    /// The index of the action Enter activates.
+    default_button: usize,
+    /// The check box label; empty means no check box is painted.
+    check_box_text: String,
+    /// The check box state.
+    check_box_checked: bool,
+    /// The size the control asks a layout for.
+    preferred_size: Size,
+    /// How far the card has revealed.
+    reveal: PropertyDriver,
+    /// The base visibility sampled on the last tick.
+    new_visible: bool,
+}
+
+impl CardState {
+    /// A settled, visible, modal card at `preferred_size`.
+    fn new(preferred_size: Size) -> Self {
+        Self {
+            modal: true,
+            icon: None,
+            informative_text: String::new(),
+            detailed_text: String::new(),
+            default_button: 0,
+            check_box_text: String::new(),
+            check_box_checked: false,
+            preferred_size,
+            // A freshly built dialog is visible and settled: the reveal is what a later
+            // show/hide moves, not what the first frame fades in from.
+            reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
+            new_visible: true,
+        }
+    }
+
+    /// Follows the base visibility and advances the reveal.
+    fn tick(&mut self, visible: bool, delta_ms: u32) -> bool {
+        if visible != self.new_visible {
+            self.new_visible = visible;
+            self.reveal.set_target(if visible { 1.0 } else { 0.0 });
+        }
+        self.reveal.tick(delta_ms)
+    }
+
+    /// Aims the reveal at the state a show/hide just selected.
+    fn aim(&mut self, visible: bool) {
+        self.new_visible = visible;
+        self.reveal.set_target(if visible { 1.0 } else { 0.0 });
+    }
+
+    /// Whether the reveal is between two states.
+    fn is_animating(&self) -> bool {
+        self.reveal.is_moving()
+    }
+
+    /// The drawn reveal fraction.
+    fn reveal(&self) -> f32 {
+        self.reveal.value()
+    }
+}
+
+/// Builds the buttons for a card on the press path, where there is no render context.
+fn measured_buttons(geometry: Rect, role: &str, base: &BaseWidget, labels: &[&str]) -> Vec<Rect> {
+    let size = Size::new(geometry.width.max(1), geometry.height.max(1));
+    let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
+    let context = RenderContext::new(&mut backend);
+    let font = card_palette(base, role).font;
+    button_rects(&context, geometry, labels, &font)
 }
 
 // ── AlertDialog ─────────────────────────────────────────────────────────────
@@ -373,8 +621,12 @@ pub struct AlertDialog {
     message: String,
     button_text: String,
     hovered: Option<usize>,
+    /// Shared notice-card state: modality, glyph, extra text, default action, check box, reveal.
+    card: CardState,
     /// Emitted when the acknowledgement button is pressed.
     pub accepted: GenericSignal,
+    /// Emitted when the dialog is dismissed without acknowledging (Escape or a close request).
+    pub rejected: GenericSignal,
 }
 
 impl AlertDialog {
@@ -386,7 +638,9 @@ impl AlertDialog {
             message: message.to_string(),
             button_text: "OK".to_string(),
             hovered: None,
+            card: CardState::new(Size::new(320, 160)),
             accepted: GenericSignal::new(),
+            rejected: GenericSignal::new(),
         }
     }
 
@@ -434,8 +688,151 @@ impl AlertDialog {
 
     /// The action row's rects.
     fn buttons(&self) -> Vec<Rect> {
-        let font = card_palette(&self.base, "alert_dialog").font;
-        button_rects(self.geometry(), &[self.button_text.as_str()], &font)
+        measured_buttons(self.geometry(), "alert_dialog", &self.base, &[self.button_text.as_str()])
+    }
+
+    /// Whether the card dims the page behind it. Defaults to `true`.
+    pub fn is_modal(&self) -> bool {
+        self.card.modal
+    }
+
+    /// Sets the modality intent and repaints when it changes.
+    pub fn set_modal(&mut self, modal: bool) {
+        if self.card.modal == modal {
+            return;
+        }
+        self.card.modal = modal;
+        self.base.request_redraw();
+    }
+
+    /// The caller-supplied severity glyph, or `None` for the role's own.
+    pub fn icon(&self) -> Option<IconName> {
+        self.card.icon
+    }
+
+    /// Replaces the severity glyph and repaints. `None` restores the alert glyph.
+    pub fn set_icon(&mut self, icon: Option<IconName>) {
+        if self.card.icon == icon {
+            return;
+        }
+        self.card.icon = icon;
+        self.base.request_redraw();
+    }
+
+    /// The informative text painted below the message.
+    pub fn informative_text(&self) -> &str {
+        &self.card.informative_text
+    }
+
+    /// Replaces the informative text and repaints.
+    pub fn set_informative_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.card.informative_text == text {
+            return;
+        }
+        self.card.informative_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The detailed text painted below the informative line.
+    pub fn detailed_text(&self) -> &str {
+        &self.card.detailed_text
+    }
+
+    /// Replaces the detailed text and repaints.
+    pub fn set_detailed_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.card.detailed_text == text {
+            return;
+        }
+        self.card.detailed_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The action Enter activates, as an index into the card's button row.
+    pub fn default_button(&self) -> usize {
+        self.card.default_button
+    }
+
+    /// Sets the action Enter activates and repaints when the highlighted button changes.
+    pub fn set_default_button(&mut self, index: usize) {
+        if self.card.default_button == index {
+            return;
+        }
+        self.card.default_button = index;
+        self.base.request_redraw();
+    }
+
+    /// The optional check box row's label, or `""` when no row is painted.
+    pub fn check_box_text(&self) -> &str {
+        &self.card.check_box_text
+    }
+
+    /// Installs a check box row above the actions. An empty label removes it.
+    pub fn set_check_box(&mut self, label: impl Into<String>) {
+        let label = label.into();
+        if self.card.check_box_text == label {
+            return;
+        }
+        self.card.check_box_text = label;
+        self.base.request_redraw();
+    }
+
+    /// Whether the check box is checked.
+    pub fn is_check_box_checked(&self) -> bool {
+        self.card.check_box_checked
+    }
+
+    /// Sets the check box state and repaints when it changes.
+    pub fn set_check_box_checked(&mut self, checked: bool) {
+        if self.card.check_box_checked == checked {
+            return;
+        }
+        self.card.check_box_checked = checked;
+        self.base.request_redraw();
+    }
+
+    /// How far the card has revealed, `0.0` hidden and `1.0` settled.
+    pub fn reveal_progress(&self) -> f32 {
+        self.card.reveal()
+    }
+
+    /// Advances the reveal and reports whether another frame is needed.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.card.tick(self.base.is_visible(), delta_ms)
+    }
+
+    /// Whether the reveal is moving.
+    pub fn is_animating(&self) -> bool {
+        self.card.is_animating()
+    }
+
+    /// The check box row's rect, if a row is installed and the card has been painted.
+    fn check_box_rect(&self) -> Option<Rect> {
+        if self.card.check_box_text.is_empty() {
+            return None;
+        }
+        let row_h = BUTTON_HEIGHT.min(self.geometry().height);
+        let buttons = self.buttons();
+        let row_y = buttons
+            .first()
+            .map(|first| first.y.saturating_sub(row_h as i32).saturating_sub(4))
+            .unwrap_or_else(|| {
+                self.geometry().y + self.geometry().height as i32
+                    - CARD_PADDING as i32
+                    - row_h as i32
+            });
+        Some(Rect::new(
+            self.geometry().x + CARD_PADDING as i32,
+            row_y,
+            self.geometry().width.saturating_sub(2 * CARD_PADDING),
+            row_h,
+        ))
+    }
+
+    /// Routes an activated action index: the alert has one acknowledgement.
+    fn activate(&mut self, _index: usize) {
+        self.accepted.emit();
     }
 }
 
@@ -451,13 +848,34 @@ impl Widget for AlertDialog {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(320, 160)
+        self.card.preferred_size
+    }
+
+    fn show(&mut self) {
+        self.base.show();
+        self.card.aim(true);
+        self.base.request_redraw();
+    }
+
+    fn hide(&mut self) {
+        self.base.hide();
+        self.card.aim(false);
+        self.base.request_redraw();
+    }
+
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.card.tick(self.base.is_visible(), delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.card.is_animating()
     }
 
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
             "accepted" => Some(EventSignalRef::unit("accepted", &self.accepted)),
+            "rejected" => Some(EventSignalRef::unit("rejected", &self.rejected)),
             _ => None,
         }
     }
@@ -472,6 +890,15 @@ impl WidgetProperties for AlertDialog {
             "title" => Ok(CapabilityValue::String(self.title.clone())),
             "message" => Ok(CapabilityValue::String(self.message.clone())),
             "button_text" => Ok(CapabilityValue::String(self.button_text.clone())),
+            "informative_text" => Ok(CapabilityValue::String(self.informative_text().to_string())),
+            "detailed_text" => Ok(CapabilityValue::String(self.detailed_text().to_string())),
+            "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
+            "default_button" => Ok(CapabilityValue::UInt(self.default_button() as u64)),
+            "check_box" => Ok(CapabilityValue::String(self.check_box_text().to_string())),
+            "check_box_checked" => Ok(CapabilityValue::Bool(self.is_check_box_checked())),
+            "icon" => Ok(CapabilityValue::String(
+                self.icon().map(|icon| icon.as_str().to_string()).unwrap_or_default(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -490,33 +917,93 @@ impl WidgetProperties for AlertDialog {
                 self.set_button_text(expect_string(value)?);
                 Ok(())
             }
+            "informative_text" => {
+                self.set_informative_text(expect_string(value)?);
+                Ok(())
+            }
+            "detailed_text" => {
+                self.set_detailed_text(expect_string(value)?);
+                Ok(())
+            }
+            "modal" => {
+                self.set_modal(expect_bool(value)?);
+                Ok(())
+            }
+            "default_button" => {
+                let index = match value {
+                    CapabilityValue::UInt(v) => v as usize,
+                    CapabilityValue::Int(v) if v >= 0 => v as usize,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_default_button(index);
+                Ok(())
+            }
+            "check_box" => {
+                self.set_check_box(expect_string(value)?);
+                Ok(())
+            }
+            "check_box_checked" => {
+                self.set_check_box_checked(expect_bool(value)?);
+                Ok(())
+            }
+            "icon" => {
+                let token = expect_string(value)?;
+                let icon = if token.is_empty() {
+                    None
+                } else {
+                    Some(IconName::from_name(&token).ok_or(CapabilityAccessError::OutOfRange)?)
+                };
+                self.set_icon(icon);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "message", "button_text", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "message",
+            "button_text",
+            "informative_text",
+            "detailed_text",
+            "modal",
+            "default_button",
+            "check_box",
+            "check_box_checked",
+            "icon",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
 impl Draw for AlertDialog {
     fn draw(&mut self, ctx: &mut RenderContext) {
-        paint_card(
-            ctx,
-            &self.base,
-            "alert_dialog",
-            &self.title,
-            &self.message,
-            &[],
-            &[self.button_text.as_str()],
-            self.hovered,
-        );
+        let content = CardContent {
+            role: "alert_dialog",
+            title: &self.title,
+            message: &self.message,
+            informative: &self.card.informative_text,
+            detailed: &self.card.detailed_text,
+            extra_lines: &[],
+            buttons: &[self.button_text.as_str()],
+            hovered: self.hovered,
+            icon: self.card.icon,
+            check_box: (!self.card.check_box_text.is_empty())
+                .then_some((self.card.check_box_text.as_str(), self.card.check_box_checked)),
+            modal: self.card.modal,
+            reveal: self.card.reveal(),
+        };
+        let _ = paint_card(ctx, &self.base, &content);
     }
 }
 
 impl EventHandler for AlertDialog {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MouseMove { pos } => {
                 let hovered = button_at(&self.buttons(), *pos);
@@ -525,11 +1012,22 @@ impl EventHandler for AlertDialog {
                     self.base.request_redraw();
                 }
             }
-            Event::MousePress { pos, button: 1, .. }
-                if button_at(&self.buttons(), *pos).is_some() =>
-            {
-                self.accepted.emit();
-                self.base.request_redraw();
+            Event::MousePress { pos, button: 1, .. } => {
+                if let Some(index) = button_at(&self.buttons(), *pos) {
+                    self.activate(index);
+                    self.base.request_redraw();
+                    return;
+                }
+                if self.check_box_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.set_check_box_checked(!self.card.check_box_checked);
+                }
+            }
+            Event::KeyPress { key, .. } => {
+                if *key == key_codes::ENTER || *key == key_codes::LINE_FEED {
+                    self.activate(self.card.default_button);
+                } else if *key == key_codes::ESCAPE {
+                    self.rejected.emit();
+                }
             }
             _ => {}
         }
@@ -550,6 +1048,8 @@ pub struct ConfirmDialog {
     accept_text: String,
     reject_text: String,
     hovered: Option<usize>,
+    /// Shared notice-card state.
+    card: CardState,
     /// Emitted when the confirming action is pressed.
     pub accepted: GenericSignal,
     /// Emitted when the dismissing action is pressed.
@@ -566,9 +1066,126 @@ impl ConfirmDialog {
             accept_text: "OK".to_string(),
             reject_text: "Cancel".to_string(),
             hovered: None,
+            card: CardState::new(Size::new(360, 170)),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
         }
+    }
+
+    /// Whether the card dims the page behind it. Defaults to `true`.
+    pub fn is_modal(&self) -> bool {
+        self.card.modal
+    }
+
+    /// Sets the modality intent and repaints when it changes.
+    pub fn set_modal(&mut self, modal: bool) {
+        if self.card.modal == modal {
+            return;
+        }
+        self.card.modal = modal;
+        self.base.request_redraw();
+    }
+
+    /// The caller-supplied severity glyph, or `None` for the confirmation glyph.
+    pub fn icon(&self) -> Option<IconName> {
+        self.card.icon
+    }
+
+    /// Replaces the severity glyph and repaints. `None` restores the question glyph.
+    pub fn set_icon(&mut self, icon: Option<IconName>) {
+        if self.card.icon == icon {
+            return;
+        }
+        self.card.icon = icon;
+        self.base.request_redraw();
+    }
+
+    /// The informative text painted below the message.
+    pub fn informative_text(&self) -> &str {
+        &self.card.informative_text
+    }
+
+    /// Replaces the informative text and repaints.
+    pub fn set_informative_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.card.informative_text == text {
+            return;
+        }
+        self.card.informative_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The detailed text painted below the informative line.
+    pub fn detailed_text(&self) -> &str {
+        &self.card.detailed_text
+    }
+
+    /// Replaces the detailed text and repaints.
+    pub fn set_detailed_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.card.detailed_text == text {
+            return;
+        }
+        self.card.detailed_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The action Enter activates, as an index into the row (0 rejects, 1 accepts).
+    pub fn default_button(&self) -> usize {
+        self.card.default_button
+    }
+
+    /// Sets the action Enter activates and repaints when it changes.
+    pub fn set_default_button(&mut self, index: usize) {
+        if self.card.default_button == index {
+            return;
+        }
+        self.card.default_button = index;
+        self.base.request_redraw();
+    }
+
+    /// The optional check box row's label, or `""` when none is painted.
+    pub fn check_box_text(&self) -> &str {
+        &self.card.check_box_text
+    }
+
+    /// Installs a check box row above the actions. An empty label removes it.
+    pub fn set_check_box(&mut self, label: impl Into<String>) {
+        let label = label.into();
+        if self.card.check_box_text == label {
+            return;
+        }
+        self.card.check_box_text = label;
+        self.base.request_redraw();
+    }
+
+    /// Whether the check box is checked.
+    pub fn is_check_box_checked(&self) -> bool {
+        self.card.check_box_checked
+    }
+
+    /// Sets the check box state and repaints when it changes.
+    pub fn set_check_box_checked(&mut self, checked: bool) {
+        if self.card.check_box_checked == checked {
+            return;
+        }
+        self.card.check_box_checked = checked;
+        self.base.request_redraw();
+    }
+
+    /// How far the card has revealed.
+    pub fn reveal_progress(&self) -> f32 {
+        self.card.reveal()
+    }
+
+    /// Advances the reveal and reports whether another frame is needed.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.card.tick(self.base.is_visible(), delta_ms)
+    }
+
+    /// Whether the reveal is moving.
+    pub fn is_animating(&self) -> bool {
+        self.card.is_animating()
     }
 
     /// The dialog's title.
@@ -634,9 +1251,40 @@ impl ConfirmDialog {
 
     /// The action row's rects, in [`Self::labels`] order.
     fn buttons(&self) -> Vec<Rect> {
-        let font = card_palette(&self.base, "confirm_dialog").font;
         let labels = self.labels();
-        button_rects(self.geometry(), &labels, &font)
+        measured_buttons(self.geometry(), "confirm_dialog", &self.base, &labels)
+    }
+
+    /// The check box row's rect, when a row is installed.
+    fn check_box_rect(&self) -> Option<Rect> {
+        if self.card.check_box_text.is_empty() {
+            return None;
+        }
+        let row_h = BUTTON_HEIGHT.min(self.geometry().height);
+        let row_y = self
+            .buttons()
+            .first()
+            .map(|first| first.y.saturating_sub(row_h as i32).saturating_sub(4))
+            .unwrap_or_else(|| {
+                self.geometry().y + self.geometry().height as i32
+                    - CARD_PADDING as i32
+                    - row_h as i32
+            });
+        Some(Rect::new(
+            self.geometry().x + CARD_PADDING as i32,
+            row_y,
+            self.geometry().width.saturating_sub(2 * CARD_PADDING),
+            row_h,
+        ))
+    }
+
+    /// Routes an activated action index (0 rejects, everything else accepts).
+    fn activate(&mut self, index: usize) {
+        if index == 0 {
+            self.rejected.emit();
+        } else {
+            self.accepted.emit();
+        }
     }
 }
 
@@ -652,7 +1300,27 @@ impl Widget for ConfirmDialog {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(360, 170)
+        self.card.preferred_size
+    }
+
+    fn show(&mut self) {
+        self.base.show();
+        self.card.aim(true);
+        self.base.request_redraw();
+    }
+
+    fn hide(&mut self) {
+        self.base.hide();
+        self.card.aim(false);
+        self.base.request_redraw();
+    }
+
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.card.tick(self.base.is_visible(), delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.card.is_animating()
     }
 
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
@@ -675,6 +1343,15 @@ impl WidgetProperties for ConfirmDialog {
             "message" => Ok(CapabilityValue::String(self.message.clone())),
             "accept_text" => Ok(CapabilityValue::String(self.accept_text.clone())),
             "reject_text" => Ok(CapabilityValue::String(self.reject_text.clone())),
+            "informative_text" => Ok(CapabilityValue::String(self.informative_text().to_string())),
+            "detailed_text" => Ok(CapabilityValue::String(self.detailed_text().to_string())),
+            "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
+            "default_button" => Ok(CapabilityValue::UInt(self.default_button() as u64)),
+            "check_box" => Ok(CapabilityValue::String(self.check_box_text().to_string())),
+            "check_box_checked" => Ok(CapabilityValue::Bool(self.is_check_box_checked())),
+            "icon" => Ok(CapabilityValue::String(
+                self.icon().map(|icon| icon.as_str().to_string()).unwrap_or_default(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -697,34 +1374,95 @@ impl WidgetProperties for ConfirmDialog {
                 self.set_reject_text(expect_string(value)?);
                 Ok(())
             }
+            "informative_text" => {
+                self.set_informative_text(expect_string(value)?);
+                Ok(())
+            }
+            "detailed_text" => {
+                self.set_detailed_text(expect_string(value)?);
+                Ok(())
+            }
+            "modal" => {
+                self.set_modal(expect_bool(value)?);
+                Ok(())
+            }
+            "default_button" => {
+                let index = match value {
+                    CapabilityValue::UInt(v) => v as usize,
+                    CapabilityValue::Int(v) if v >= 0 => v as usize,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_default_button(index);
+                Ok(())
+            }
+            "check_box" => {
+                self.set_check_box(expect_string(value)?);
+                Ok(())
+            }
+            "check_box_checked" => {
+                self.set_check_box_checked(expect_bool(value)?);
+                Ok(())
+            }
+            "icon" => {
+                let token = expect_string(value)?;
+                let icon = if token.is_empty() {
+                    None
+                } else {
+                    Some(IconName::from_name(&token).ok_or(CapabilityAccessError::OutOfRange)?)
+                };
+                self.set_icon(icon);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "message", "accept_text", "reject_text", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "message",
+            "accept_text",
+            "reject_text",
+            "informative_text",
+            "detailed_text",
+            "modal",
+            "default_button",
+            "check_box",
+            "check_box_checked",
+            "icon",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
 impl Draw for ConfirmDialog {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let labels = self.labels();
-        paint_card(
-            ctx,
-            &self.base,
-            "confirm_dialog",
-            &self.title,
-            &self.message,
-            &[],
-            &labels,
-            self.hovered,
-        );
+        let content = CardContent {
+            role: "confirm_dialog",
+            title: &self.title,
+            message: &self.message,
+            informative: &self.card.informative_text,
+            detailed: &self.card.detailed_text,
+            extra_lines: &[],
+            buttons: &labels,
+            hovered: self.hovered,
+            icon: self.card.icon,
+            check_box: (!self.card.check_box_text.is_empty())
+                .then_some((self.card.check_box_text.as_str(), self.card.check_box_checked)),
+            modal: self.card.modal,
+            reveal: self.card.reveal(),
+        };
+        let _ = paint_card(ctx, &self.base, &content);
     }
 }
 
 impl EventHandler for ConfirmDialog {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MouseMove { pos } => {
                 let hovered = button_at(&self.buttons(), *pos);
@@ -733,13 +1471,22 @@ impl EventHandler for ConfirmDialog {
                     self.base.request_redraw();
                 }
             }
-            Event::MousePress { pos, button: 1, .. } => match button_at(&self.buttons(), *pos) {
-                // Index 0 is the reject action and index 1 the accept action; the row is
-                // returned in label order, so this is the same order the painter drew.
-                Some(0) => self.rejected.emit(),
-                Some(_) => self.accepted.emit(),
-                None => {}
-            },
+            Event::MousePress { pos, button: 1, .. } => {
+                if let Some(index) = button_at(&self.buttons(), *pos) {
+                    self.activate(index);
+                    return;
+                }
+                if self.check_box_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.set_check_box_checked(!self.card.check_box_checked);
+                }
+            }
+            Event::KeyPress { key, .. } => {
+                if *key == key_codes::ENTER || *key == key_codes::LINE_FEED {
+                    self.activate(self.card.default_button);
+                } else if *key == key_codes::ESCAPE {
+                    self.rejected.emit();
+                }
+            }
             _ => {}
         }
     }
@@ -759,6 +1506,8 @@ pub struct AboutDialog {
     version: String,
     message: String,
     hovered: Option<usize>,
+    /// Shared notice-card state.
+    card: CardState,
     /// Emitted when the dismissal action is pressed.
     pub closed: GenericSignal,
 }
@@ -773,8 +1522,125 @@ impl AboutDialog {
             version: version.to_string(),
             message: String::new(),
             hovered: None,
+            card: CardState::new(Size::new(360, 200)),
             closed: GenericSignal::new(),
         }
+    }
+
+    /// Whether the card dims the page behind it. Defaults to `true`.
+    pub fn is_modal(&self) -> bool {
+        self.card.modal
+    }
+
+    /// Sets the modality intent and repaints when it changes.
+    pub fn set_modal(&mut self, modal: bool) {
+        if self.card.modal == modal {
+            return;
+        }
+        self.card.modal = modal;
+        self.base.request_redraw();
+    }
+
+    /// The caller-supplied severity glyph, or `None` for the information mark.
+    pub fn icon(&self) -> Option<IconName> {
+        self.card.icon
+    }
+
+    /// Replaces the glyph and repaints. `None` restores the information mark.
+    pub fn set_icon(&mut self, icon: Option<IconName>) {
+        if self.card.icon == icon {
+            return;
+        }
+        self.card.icon = icon;
+        self.base.request_redraw();
+    }
+
+    /// The informative text painted below the message.
+    pub fn informative_text(&self) -> &str {
+        &self.card.informative_text
+    }
+
+    /// Replaces the informative text and repaints.
+    pub fn set_informative_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.card.informative_text == text {
+            return;
+        }
+        self.card.informative_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The detailed text painted below the informative line.
+    pub fn detailed_text(&self) -> &str {
+        &self.card.detailed_text
+    }
+
+    /// Replaces the detailed text and repaints.
+    pub fn set_detailed_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.card.detailed_text == text {
+            return;
+        }
+        self.card.detailed_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The action Enter activates.
+    pub fn default_button(&self) -> usize {
+        self.card.default_button
+    }
+
+    /// Sets the action Enter activates and repaints when it changes.
+    pub fn set_default_button(&mut self, index: usize) {
+        if self.card.default_button == index {
+            return;
+        }
+        self.card.default_button = index;
+        self.base.request_redraw();
+    }
+
+    /// The optional check box row's label, or `""` when none is painted.
+    pub fn check_box_text(&self) -> &str {
+        &self.card.check_box_text
+    }
+
+    /// Installs a check box row above the actions. An empty label removes it.
+    pub fn set_check_box(&mut self, label: impl Into<String>) {
+        let label = label.into();
+        if self.card.check_box_text == label {
+            return;
+        }
+        self.card.check_box_text = label;
+        self.base.request_redraw();
+    }
+
+    /// Whether the check box is checked.
+    pub fn is_check_box_checked(&self) -> bool {
+        self.card.check_box_checked
+    }
+
+    /// Sets the check box state and repaints when it changes.
+    pub fn set_check_box_checked(&mut self, checked: bool) {
+        if self.card.check_box_checked == checked {
+            return;
+        }
+        self.card.check_box_checked = checked;
+        self.base.request_redraw();
+    }
+
+    /// How far the card has revealed.
+    pub fn reveal_progress(&self) -> f32 {
+        self.card.reveal()
+    }
+
+    /// Advances the reveal and reports whether another frame is needed.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.card.tick(self.base.is_visible(), delta_ms)
+    }
+
+    /// Whether the reveal is moving.
+    pub fn is_animating(&self) -> bool {
+        self.card.is_animating()
     }
 
     /// The dialog's title.
@@ -847,8 +1713,30 @@ impl AboutDialog {
 
     /// The action row's rects.
     fn buttons(&self) -> Vec<Rect> {
-        let font = card_palette(&self.base, "about_dialog").font;
-        button_rects(self.geometry(), &["Close"], &font)
+        measured_buttons(self.geometry(), "about_dialog", &self.base, &["Close"])
+    }
+
+    /// The check box row's rect, when a row is installed.
+    fn check_box_rect(&self) -> Option<Rect> {
+        if self.card.check_box_text.is_empty() {
+            return None;
+        }
+        let row_h = BUTTON_HEIGHT.min(self.geometry().height);
+        let row_y = self
+            .buttons()
+            .first()
+            .map(|first| first.y.saturating_sub(row_h as i32).saturating_sub(4))
+            .unwrap_or_else(|| {
+                self.geometry().y + self.geometry().height as i32
+                    - CARD_PADDING as i32
+                    - row_h as i32
+            });
+        Some(Rect::new(
+            self.geometry().x + CARD_PADDING as i32,
+            row_y,
+            self.geometry().width.saturating_sub(2 * CARD_PADDING),
+            row_h,
+        ))
     }
 }
 
@@ -864,7 +1752,27 @@ impl Widget for AboutDialog {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(360, 200)
+        self.card.preferred_size
+    }
+
+    fn show(&mut self) {
+        self.base.show();
+        self.card.aim(true);
+        self.base.request_redraw();
+    }
+
+    fn hide(&mut self) {
+        self.base.hide();
+        self.card.aim(false);
+        self.base.request_redraw();
+    }
+
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.card.tick(self.base.is_visible(), delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.card.is_animating()
     }
 
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
@@ -886,6 +1794,15 @@ impl WidgetProperties for AboutDialog {
             "application_name" => Ok(CapabilityValue::String(self.application_name.clone())),
             "version" => Ok(CapabilityValue::String(self.version.clone())),
             "message" => Ok(CapabilityValue::String(self.message.clone())),
+            "informative_text" => Ok(CapabilityValue::String(self.informative_text().to_string())),
+            "detailed_text" => Ok(CapabilityValue::String(self.detailed_text().to_string())),
+            "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
+            "default_button" => Ok(CapabilityValue::UInt(self.default_button() as u64)),
+            "check_box" => Ok(CapabilityValue::String(self.check_box_text().to_string())),
+            "check_box_checked" => Ok(CapabilityValue::Bool(self.is_check_box_checked())),
+            "icon" => Ok(CapabilityValue::String(
+                self.icon().map(|icon| icon.as_str().to_string()).unwrap_or_default(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -908,34 +1825,95 @@ impl WidgetProperties for AboutDialog {
                 self.set_message(expect_string(value)?);
                 Ok(())
             }
+            "informative_text" => {
+                self.set_informative_text(expect_string(value)?);
+                Ok(())
+            }
+            "detailed_text" => {
+                self.set_detailed_text(expect_string(value)?);
+                Ok(())
+            }
+            "modal" => {
+                self.set_modal(expect_bool(value)?);
+                Ok(())
+            }
+            "default_button" => {
+                let index = match value {
+                    CapabilityValue::UInt(v) => v as usize,
+                    CapabilityValue::Int(v) if v >= 0 => v as usize,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_default_button(index);
+                Ok(())
+            }
+            "check_box" => {
+                self.set_check_box(expect_string(value)?);
+                Ok(())
+            }
+            "check_box_checked" => {
+                self.set_check_box_checked(expect_bool(value)?);
+                Ok(())
+            }
+            "icon" => {
+                let token = expect_string(value)?;
+                let icon = if token.is_empty() {
+                    None
+                } else {
+                    Some(IconName::from_name(&token).ok_or(CapabilityAccessError::OutOfRange)?)
+                };
+                self.set_icon(icon);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "application_name", "version", "message", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "application_name",
+            "version",
+            "message",
+            "informative_text",
+            "detailed_text",
+            "modal",
+            "default_button",
+            "check_box",
+            "check_box_checked",
+            "icon",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
 impl Draw for AboutDialog {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let lines = self.identity_lines();
-        paint_card(
-            ctx,
-            &self.base,
-            "about_dialog",
-            &self.title,
-            &self.message,
-            &lines,
-            &["Close"],
-            self.hovered,
-        );
+        let content = CardContent {
+            role: "about_dialog",
+            title: &self.title,
+            message: &self.message,
+            informative: &self.card.informative_text,
+            detailed: &self.card.detailed_text,
+            extra_lines: &lines,
+            buttons: &["Close"],
+            hovered: self.hovered,
+            icon: self.card.icon,
+            check_box: (!self.card.check_box_text.is_empty())
+                .then_some((self.card.check_box_text.as_str(), self.card.check_box_checked)),
+            modal: self.card.modal,
+            reveal: self.card.reveal(),
+        };
+        let _ = paint_card(ctx, &self.base, &content);
     }
 }
 
 impl EventHandler for AboutDialog {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MouseMove { pos } => {
                 let hovered = button_at(&self.buttons(), *pos);
@@ -944,11 +1922,22 @@ impl EventHandler for AboutDialog {
                     self.base.request_redraw();
                 }
             }
-            Event::MousePress { pos, button: 1, .. }
-                if button_at(&self.buttons(), *pos).is_some() =>
+            Event::MousePress { pos, button: 1, .. } => {
+                if button_at(&self.buttons(), *pos).is_some() {
+                    self.closed.emit();
+                    self.base.request_redraw();
+                    return;
+                }
+                if self.check_box_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.set_check_box_checked(!self.card.check_box_checked);
+                }
+            }
+            Event::KeyPress { key, .. }
+                if *key == key_codes::ENTER
+                    || *key == key_codes::LINE_FEED
+                    || *key == key_codes::ESCAPE =>
             {
                 self.closed.emit();
-                self.base.request_redraw();
             }
             _ => {}
         }
@@ -1132,5 +2121,72 @@ mod tests {
         // must stay distinct so a warning never reads as an information mark.
         assert_ne!(CardIcon::Warning.color_fallback(), CardIcon::Info.color_fallback());
         assert_eq!(CardIcon::Question.color_fallback(), CardIcon::Info.color_fallback());
+    }
+
+    #[test]
+    fn informative_and_detailed_text_add_their_own_lines() {
+        let mut dialog = AlertDialog::new("Notice", "Body", Rect::new(0, 0, 340, 220));
+        let before =
+            crate::widget::svg::text_ink_boxes(&crate::widget::svg::render_to_svg(&mut dialog))
+                .len();
+        dialog.set_informative_text("Details that qualify the message");
+        dialog.set_detailed_text("A further explanation");
+        let after =
+            crate::widget::svg::text_ink_boxes(&crate::widget::svg::render_to_svg(&mut dialog))
+                .len();
+        assert!(after > before, "the two extra levels must paint: {before} -> {after}");
+        assert_eq!(dialog.informative_text(), "Details that qualify the message");
+        assert_eq!(dialog.detailed_text(), "A further explanation");
+    }
+
+    #[test]
+    fn a_custom_icon_replaces_the_role_glyph() {
+        let mut dialog = AlertDialog::new("Notice", "Body", Rect::new(0, 0, 320, 160));
+        assert_eq!(dialog.icon(), None, "the role's glyph is the default");
+        dialog.set_icon(Some(IconName::Info));
+        assert_eq!(dialog.icon(), Some(IconName::Info));
+        dialog.set_icon(None);
+        assert_eq!(dialog.icon(), None);
+    }
+
+    #[test]
+    fn enter_activates_and_escape_rejects_an_alert() {
+        let mut dialog = AlertDialog::new("Notice", "Body", Rect::new(0, 0, 320, 160));
+        let accepted = counter(&dialog.accepted);
+        let rejected = counter(&dialog.rejected);
+        dialog.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
+        dialog.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+        assert_eq!(rejected.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_check_box_row_toggles_when_pressed() {
+        let mut dialog = AlertDialog::new("Notice", "Body", Rect::new(0, 0, 340, 200));
+        dialog.set_check_box("Remember my answer");
+        assert!(!dialog.is_check_box_checked());
+        let row = dialog.check_box_rect().expect("the row is installed");
+        dialog.handle_event(&Event::MousePress {
+            pos: Point::new(row.x + 2, row.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(dialog.is_check_box_checked());
+    }
+
+    #[test]
+    fn showing_a_notice_card_reveals_it() {
+        let mut dialog = AlertDialog::new("Notice", "Body", Rect::new(0, 0, 320, 160));
+        assert_eq!(dialog.reveal_progress(), 1.0);
+        dialog.hide();
+        while dialog.tick(1000) {}
+        assert_eq!(dialog.reveal_progress(), 0.0, "the exit settles first");
+        dialog.show();
+        assert!(dialog.is_animating(), "a re-shown card owes frames");
+        assert!(dialog.tick(16));
+        let mid = dialog.reveal_progress();
+        assert!(mid > 0.0 && mid < 1.0, "the card must pass through an interior reveal: {mid}");
+        while dialog.tick(1000) {}
+        assert_eq!(dialog.reveal_progress(), 1.0);
     }
 }

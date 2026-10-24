@@ -9,7 +9,7 @@
 #![cfg(test)]
 
 use super::shape::FreeformShapeWidget;
-use super::types::{BubbleTailDirection, PathSegment, ShapePath};
+use super::types::{BubbleTailDirection, PathSegment, ShapePath, UnitPathSegment};
 use crate::core::{Color, Point, Rect};
 use crate::event::EventHandler;
 use crate::widget::{Widget, WidgetKind};
@@ -380,6 +380,11 @@ fn freeform_shape_path_enum_variants() {
             PathSegment::LineTo(Point::new(100, 0)),
             PathSegment::Close,
         ]),
+        ShapePath::UnitCustom(vec![
+            UnitPathSegment::MoveTo(0.0, 0.0),
+            UnitPathSegment::LineTo(1.0, 0.0),
+            UnitPathSegment::Close,
+        ]),
     ];
 
     // Check all paths are different (no duplicates)
@@ -387,5 +392,34 @@ fn freeform_shape_path_enum_variants() {
         for j in (i + 1)..paths.len() {
             assert_ne!(paths[i], paths[j], "path variant {} should differ from {}", i, j);
         }
+    }
+}
+
+/// A unit-square custom path scales with the widget instead of tracking its pixels.
+#[test]
+fn freeform_shape_unit_custom_path_scales_with_the_widget() {
+    let square = |size: u32| {
+        FreeformShapeWidget::new(
+            Rect::new(0, 0, size, size),
+            ShapePath::UnitCustom(vec![
+                UnitPathSegment::MoveTo(0.0, 0.0),
+                UnitPathSegment::LineTo(1.0, 0.0),
+                UnitPathSegment::LineTo(1.0, 1.0),
+                UnitPathSegment::LineTo(0.0, 1.0),
+                UnitPathSegment::Close,
+            ]),
+        )
+    };
+
+    for size in [40, 100, 250] {
+        let shape = square(size);
+        assert!(
+            shape.contains(Point::new(size as i32 / 2, size as i32 / 2)),
+            "the unit square covers the centre at {size}px"
+        );
+        assert!(
+            shape.contains(Point::new(size as i32 - 1, size as i32 - 1)),
+            "the unit square covers the far corner at {size}px"
+        );
     }
 }

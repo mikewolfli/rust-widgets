@@ -72,6 +72,24 @@ pub struct RefreshControl {
     /// springing back. This is the same split as `Switch`'s `checked` versus `travel`, and the same
     /// defect `swipe_to_dismiss` records: a gesture that ends with a jump instead of a settle.
     settle: PropertyDriver,
+    /// How far the refreshing spinner has turned, in turns.
+    ///
+    /// Advanced by [`RefreshControl::tick`] while a refresh is in flight, which is what makes
+    /// the spinner *spin*: the previous draw painted a fixed circle and arrow, so a control
+    /// whose whole state was "working" was indistinguishable from a frozen one.
+    spin: PropertyDriver,
+    /// The pull arrow's half-turn, `0.0` pointing down and `1.0` pointing up.
+    arrow_flip: PropertyDriver,
+    /// Whether the indicator band grows with the pull distance instead of opening at its full
+    /// height at once.
+    ///
+    /// Disabled by default, which keeps the historical fixed-band picture.
+    elastic_indicator: bool,
+    /// Whether the pull applies rubber-band resistance.
+    ///
+    /// Disabled by default: the historical mapping is 1:1, and a pull distance is a value a
+    /// caller may already depend on. A control that wants the damped feel opts in.
+    elastic_pull: bool,
     /// Emitted when the pull distance exceeds the threshold and the user releases.
     pub refresh_triggered: GenericSignal,
 }
@@ -92,6 +110,10 @@ impl RefreshControl {
             // At the resting end: a freshly built control shows no reveal band, and must not
             // animate one *away* on its first frame.
             settle: PropertyDriver::at(0.0, MotionSlot::Normal),
+            spin: PropertyDriver::at(0.0, MotionSlot::Normal),
+            arrow_flip: PropertyDriver::at(0.0, MotionSlot::Normal),
+            elastic_indicator: false,
+            elastic_pull: false,
             refresh_triggered: GenericSignal::new(),
         }
     }
@@ -106,6 +128,12 @@ impl RefreshControl {
     /// have been positioned against a second derivation of the same number.
     fn indicator_height(&self) -> u32 {
         if self.is_refreshing || self.settle_distance() > 5.0 {
+            if self.elastic_indicator && !self.is_refreshing {
+                // The band opens with the gesture rather than at its full height on the first
+                // pulled pixel. Clamped so a pull past the threshold does not grow it further.
+                let ratio = (self.settle_distance() / self.threshold.max(1.0)).clamp(0.0, 1.0);
+                return (dimensions::REFRESH_INDICATOR_HEIGHT as f32 * ratio) as u32;
+            }
             dimensions::REFRESH_INDICATOR_HEIGHT
         } else {
             0
@@ -230,7 +258,16 @@ impl RefreshControl {
         if self.state == RefreshState::Idle {
             self.state = RefreshState::Dragging;
         }
-        self.pull_distance = (self.pull_distance + delta).max(0.0).min(self.threshold * 2.0);
+        // Rubber-band resistance: the further the band has already opened, the less a further
+        // pixel of drag moves it. Opt-in, because the default mapping is a documented 1:1 and a
+        // caller may be reading the measured distance directly.
+        let resistance = if self.elastic_pull {
+            1.0 / (1.0 + self.pull_distance / self.threshold.max(1.0))
+        } else {
+            1.0
+        };
+        self.pull_distance =
+            (self.pull_distance + delta * resistance).max(0.0).min(self.threshold * 2.0);
         // The gesture is live, so the drawn distance follows it exactly and any leftover settle
         // from the previous pull is adopted rather than replayed.
         self.settle.jump_to(self.pull_distance);
@@ -266,14 +303,56 @@ impl RefreshControl {
         self.settle.value()
     }
 
-    /// Advances the spring-back by `delta_ms`; `true` while it is still moving.
+    /// Advances the spring-back, the spinner and the arrow flip by `delta_ms`.
+    ///
+    /// Returns `true` while any of them still owes frames. The spinner is deliberately
+    /// unbounded: a refresh in flight is a live animation, so the frame bus must keep painting
+    /// until [`Self::set_is_refreshing`] clears it.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        self.settle.tick(delta_ms)
+        let settling = self.settle.tick(delta_ms);
+        let flipping = self.arrow_flip.tick(delta_ms);
+        let spinning = if self.is_refreshing {
+            let turns = delta_ms as f32 / 1000.0;
+            self.spin.jump_to((self.spin.value() + turns).fract());
+            self.base.request_redraw();
+            true
+        } else {
+            false
+        };
+        settling || flipping || spinning
     }
 
-    /// Whether the reveal band is between two distances -- answers only, never advances.
+    /// Whether the reveal band, the arrow or the spinner is between two states.
     pub fn is_animating(&self) -> bool {
-        self.settle.is_moving()
+        self.is_refreshing || self.settle.is_moving() || self.arrow_flip.is_moving()
+    }
+
+    /// Whether the indicator band follows the pull distance.
+    pub fn is_indicator_elastic(&self) -> bool {
+        self.elastic_indicator
+    }
+
+    /// Enables or disables a band whose height follows the pull distance.
+    pub fn set_elastic_indicator(&mut self, elastic: bool) {
+        if self.elastic_indicator == elastic {
+            return;
+        }
+        self.elastic_indicator = elastic;
+        self.base.request_redraw();
+    }
+
+    /// Whether the pull applies rubber-band resistance.
+    pub fn is_pull_elastic(&self) -> bool {
+        self.elastic_pull
+    }
+
+    /// Enables or disables rubber-band resistance on the pull.
+    pub fn set_elastic_pull(&mut self, elastic: bool) {
+        if self.elastic_pull == elastic {
+            return;
+        }
+        self.elastic_pull = elastic;
+        self.base.request_redraw();
     }
 
     /// Returns the current refresh state.
@@ -434,26 +513,27 @@ impl Draw for RefreshControl {
             let center_y = rect.y + (indicator_height as i32) / 2;
 
             if self.is_refreshing {
-                // Draw spinning indicator (circle with arc)
-                let radius: u32 = 10;
-                context.draw_circle_stroke(Point::new(center_x, center_y), radius, accent, 3);
-                // Draw arrow inside
-                let tip_y = center_y - 5;
-                context.draw_line(
-                    Point::new(center_x, tip_y - 3),
-                    Point::new(center_x, tip_y + 4),
-                    accent,
+                // Draw a spinner arc that turns with the elapsed time. The arc is a stroked run
+                // of short segments at the driver's phase, so the control looks busy rather
+                // than showing a frozen circle.
+                let phase = self.spin.value();
+                let radius = 10.0f32;
+                let sweep = core::f32::consts::PI * 1.5;
+                let start = phase * core::f32::consts::TAU;
+                let segments = 12;
+                let mut previous = Point::new(
+                    center_x + (radius * start.cos()) as i32,
+                    center_y + (radius * start.sin()) as i32,
                 );
-                context.draw_line(
-                    Point::new(center_x - 4, tip_y + 1),
-                    Point::new(center_x, tip_y - 3),
-                    accent,
-                );
-                context.draw_line(
-                    Point::new(center_x + 4, tip_y + 1),
-                    Point::new(center_x, tip_y - 3),
-                    accent,
-                );
+                for step in 1..=segments {
+                    let angle = start + sweep * step as f32 / segments as f32;
+                    let next = Point::new(
+                        center_x + (radius * angle.cos()) as i32,
+                        center_y + (radius * angle.sin()) as i32,
+                    );
+                    context.draw_line(previous, next, accent);
+                    previous = next;
+                }
 
                 // Draw "Loading..." text below. The origin is the glyph box's top edge, so the
                 // label hangs from `center_y + 14` itself; the old `+ ascent` pushed it half a
@@ -480,27 +560,32 @@ impl Draw for RefreshControl {
                 // the instant the finger lifted.
                 let progress = (self.settle_distance() / self.threshold).min(1.0);
                 // Past the threshold the release is actionable, so the arrow picks up
-                // the accent colour; below it stays muted chrome.
+                // the accent colour; below it stays muted chrome. The flip itself is a driver,
+                // so the arrow turns into place rather than swapping direction in one frame.
                 let arrow_color = if progress >= 1.0 { accent } else { idle_arrow };
+                self.arrow_flip.set_target(if progress >= 1.0 { 1.0 } else { 0.0 });
+                let angle = self.arrow_flip.value() * core::f32::consts::PI;
+                let (sin, cos) = angle.sin_cos();
+                let rotate = |dx: f32, dy: f32| (dx * cos - dy * sin, dx * sin + dy * cos);
 
-                // Downward arrow
-                let arrow_size = 12;
-                let arrow_top = center_y - arrow_size / 2;
+                // Downward arrow, rotated by the flip driver about its own centre.
+                let arrow_size = 12.0f32;
+                let arrow_top = -arrow_size / 2.0;
+                let (x0, y0) = rotate(0.0, arrow_top);
+                let (x1, y1) = rotate(0.0, arrow_top + arrow_size);
                 context.draw_line(
-                    Point::new(center_x, arrow_top),
-                    Point::new(center_x, arrow_top + arrow_size),
+                    Point::new(center_x + x0 as i32, center_y + y0 as i32),
+                    Point::new(center_x + x1 as i32, center_y + y1 as i32),
                     arrow_color,
                 );
-                context.draw_line(
-                    Point::new(center_x - 4, arrow_top + arrow_size - 4),
-                    Point::new(center_x, arrow_top + arrow_size),
-                    arrow_color,
-                );
-                context.draw_line(
-                    Point::new(center_x + 4, arrow_top + arrow_size - 4),
-                    Point::new(center_x, arrow_top + arrow_size),
-                    arrow_color,
-                );
+                for side in [-4.0f32, 4.0] {
+                    let (ax, ay) = rotate(side, arrow_top + arrow_size - 4.0);
+                    context.draw_line(
+                        Point::new(center_x + ax as i32, center_y + ay as i32),
+                        Point::new(center_x + x1 as i32, center_y + y1 as i32),
+                        arrow_color,
+                    );
+                }
 
                 // Progress text. Top edge origin again, so the descent from the arrow is the
                 // 14px offset alone rather than 14 plus a full ascent.
@@ -947,6 +1032,34 @@ mod tests {
             seen.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "the same threshold is not a change"
+        );
+    }
+
+    #[test]
+    fn a_refresh_in_flight_keeps_the_spinner_turning() {
+        let mut control = make_refresh_control();
+        assert!(!control.is_animating());
+        control.set_is_refreshing(true);
+        assert!(control.is_animating(), "a live refresh owes frames");
+        assert!(control.tick(16));
+        // It is still working, so it still owes frames until the refresh is cleared.
+        assert!(control.tick(16));
+        control.set_is_refreshing(false);
+        while control.tick(16) {}
+        assert!(!control.is_animating());
+    }
+
+    #[test]
+    fn pulling_further_costs_more_than_the_first_pixel() {
+        let mut control = make_refresh_control();
+        control.set_elastic_pull(true);
+        control.update_pull(30.0);
+        let first = control.pull_distance();
+        control.update_pull(30.0);
+        let second = control.pull_distance() - first;
+        assert!(
+            second < first,
+            "a rubber-band pull resists the second 30 px: {first} then {second}"
         );
     }
 }

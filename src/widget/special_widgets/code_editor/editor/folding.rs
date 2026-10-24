@@ -37,19 +37,56 @@ impl CodeEditor {
 
     /// Folds the innermost bracket region enclosing `line`.
     pub fn fold_block_at(&mut self, line: usize) -> bool {
-        let start = match self.enclosing_bracket_start(line) {
-            Some(start) => start,
-            None => return false,
-        };
-        let end = match self.matching_bracket_line(start) {
-            Some(end) => end,
-            None => return false,
-        };
-        if end <= start {
+        let Some((start, end)) = self.enclosing_bracket_pair(line) else {
             return false;
-        }
+        };
         self.fold(start, end);
         true
+    }
+
+    /// Folds every multi-line bracket block in the document.
+    ///
+    /// One pass over the cached bracket-pair index, so the cost is proportional to
+    /// the number of blocks rather than one backwards scan per line.
+    pub fn fold_all(&mut self) -> usize {
+        let pairs = self.bracket_pairs().to_vec();
+        let mut folded = 0usize;
+        for (open, close) in pairs {
+            if close.line > open.line {
+                self.fold(open.line, close.line);
+                folded += 1;
+            }
+        }
+        if folded > 0 {
+            self.after_fold_change();
+        }
+        folded
+    }
+
+    /// Folds the blocks whose opening line is indented at `level` indent units.
+    ///
+    /// A level is measured in the configured tab width, so "level 1" means the
+    /// direct children of the top-level block. This is the hierarchy control the
+    /// audit asked for; `fold_all` is the same pass without the depth filter.
+    pub fn fold_level(&mut self, level: usize) -> usize {
+        let width = self.config.tab_width.max(1);
+        let target = level.saturating_mul(width);
+        let pairs = self.bracket_pairs().to_vec();
+        let mut folded = 0usize;
+        for (open, close) in pairs {
+            if close.line <= open.line {
+                continue;
+            }
+            let indent = self.line_indent(open.line).chars().count();
+            if indent == target {
+                self.fold(open.line, close.line);
+                folded += 1;
+            }
+        }
+        if folded > 0 {
+            self.after_fold_change();
+        }
+        folded
     }
 
     /// Expands the region starting at `start_line`.
@@ -154,7 +191,21 @@ impl CodeEditor {
         self.model.borrow().is_hidden(line)
     }
 
+    /// Returns how many lines the fold starting at `line` hides, or 0.
+    pub fn hidden_lines_at(&self, line: usize) -> usize {
+        self.model
+            .borrow()
+            .folds
+            .iter()
+            .find(|region| region.start_line == line && region.folded)
+            .map(FoldRegion::hidden_lines)
+            .unwrap_or(0)
+    }
+
     pub(super) fn after_fold_change(&mut self) {
+        if self.config.animate_folds {
+            self.fold_reveal = 0.0;
+        }
         self.refresh_derived_state();
         self.fold_changed.emit(self.folded_line_count());
         self.base.request_layout();
@@ -180,46 +231,62 @@ impl CodeEditor {
         }
     }
 
-    /// Finds the line containing the bracket that encloses `line`.
-    pub(super) fn enclosing_bracket_start(&self, line: usize) -> Option<usize> {
-        let model = self.model.borrow();
-        let line = line.min(model.lines.len().saturating_sub(1));
-        let mut depth = 0isize;
-        for index in (0..=line).rev() {
-            for ch in model.line(index).chars().rev() {
-                match ch {
-                    '}' | ')' | ']' => depth += 1,
-                    '{' | '(' | '[' => {
-                        depth -= 1;
-                        if depth < 0 {
-                            return Some(index);
-                        }
-                    }
-                    _ => {}
-                }
+    /// Finds the line range of the innermost block enclosing `line`.
+    ///
+    /// Answered from the cached pair index. The previous implementation scanned
+    /// upwards to the start of the document and then downwards to its end on every
+    /// call, which made folding a block in a large file an O(file) operation per
+    /// fold.
+    fn enclosing_bracket_pair(&mut self, line: usize) -> Option<(usize, usize)> {
+        let probe = line.min(self.line_count().saturating_sub(1));
+        let pairs = self.bracket_pairs();
+        for (open, close) in pairs.iter().rev() {
+            // An opener later on the same line still encloses the line: the
+            // question is "which block does this line belong to", not "which
+            // block starts before the line's first column".
+            if open.line <= probe && close.line >= probe && close.line > open.line {
+                return Some((open.line, close.line));
             }
         }
         None
     }
 
-    /// Returns the line of the bracket closing the opener at `start`.
-    pub(super) fn matching_bracket_line(&self, start: usize) -> Option<usize> {
-        let mut depth = 0isize;
-        for line in start..self.line_count() {
-            let length = self.line_len(line);
-            for column in 0..length {
-                match self.char_at(TextPosition::new(line, column)) {
-                    Some('{') | Some('(') | Some('[') => depth += 1,
-                    Some('}') | Some(')') | Some(']') => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return Some(line);
-                        }
+    /// Returns the cached bracket-pair index, rebuilding it when the text moved.
+    ///
+    /// Pairs are matched with a stack over the whole document once per revision;
+    /// every fold query afterwards is a binary search or a short backwards scan.
+    fn bracket_pairs(&mut self) -> &[(TextPosition, TextPosition)] {
+        let stale =
+            self.bracket_index.as_ref().is_none_or(|(revision, _)| *revision != self.revision);
+        if stale {
+            let mut stack: Vec<(TextPosition, char)> = Vec::new();
+            let mut matched: Vec<(TextPosition, TextPosition)> = Vec::new();
+            for line in 0..self.line_count() {
+                let text = self.line_text(line).unwrap_or_default();
+                for (column, ch) in text.chars().enumerate() {
+                    if !matches!(ch, '(' | '[' | '{' | ')' | ']' | '}') {
+                        continue;
                     }
-                    _ => {}
+                    let position = TextPosition::new(line, column);
+                    if matches!(ch, '(' | '[' | '{') {
+                        stack.push((position, ch));
+                    } else if let Some(index) =
+                        stack.iter().rposition(|(_, open)| pairs::closing_for(*open) == Some(ch))
+                    {
+                        let (open, _) = stack.remove(index);
+                        matched.push((open, position));
+                    }
                 }
             }
+            matched.sort_by_key(|(open, close)| (*open, *close));
+            self.bracket_index = Some((self.revision, matched));
         }
-        None
+        self.bracket_index.as_ref().map(|(_, pairs)| pairs.as_slice()).unwrap_or(&[])
+    }
+
+    /// Number of matched bracket pairs in the cache, for tests.
+    #[cfg(test)]
+    pub(crate) fn cached_bracket_pairs(&self) -> usize {
+        self.bracket_index.as_ref().map(|(_, pairs)| pairs.len()).unwrap_or(0)
     }
 }

@@ -104,7 +104,7 @@ impl SoftwareSurface {
             let row_len = (right - left) as usize * 4;
             let stride = width as usize * 4;
             let mut start = top as usize * stride + left as usize * 4;
-            for chunk in frame[start..start + row_len].chunks_exact_mut(4) {
+            for chunk in frame[start..start + row_len].as_chunks_mut::<4>().0 {
                 chunk.copy_from_slice(&pattern);
             }
             for _ in top + 1..bottom {
@@ -789,6 +789,88 @@ impl SoftwareSurface {
             }
         }
     }
+    /// Fills a quadrilateral with per-pixel coverage taken from its projected edges.
+    ///
+    /// This is the rasteriser the pseudo-3D `3d` path uses for a perspective-divided quad: the
+    /// four corners come from the batch replay's `FillQuadAA`, where opposite edges need not be
+    /// parallel. The quad is split along the `0–2` diagonal into two triangles, each sampled on a
+    /// [`QUAD_AA_SAMPLES`]-by-[`QUAD_AA_SAMPLES`] grid; a sample counts when it lies inside the
+    /// triangle under a top-left fill rule, so the shared diagonal is covered exactly once. The
+    /// resulting coverage is applied through the same blend-aware pixel write every other
+    /// primitive uses.
+    ///
+    /// # Why not reuse `fill_polygon`
+    ///
+    /// `fill_polygon` is a scanline fill: it rounds a span's ends to whole pixels, so a sloped
+    /// projected edge becomes a stair-step. That is correct for an affine quad whose corners are
+    /// already rounded, and visibly wrong for the near and far edges of a turned card, which are
+    /// the two edges the perspective divide makes non-parallel.
+    #[cfg(feature = "3d")]
+    pub fn fill_quad_aa(&mut self, corners: [Point; 4], color: Color) {
+        self.fill_triangle_aa(corners[0], corners[1], corners[2], color);
+        self.fill_triangle_aa(corners[0], corners[2], corners[3], color);
+    }
+
+    /// One antialiased triangle of [`Self::fill_quad_aa`].
+    #[cfg(feature = "3d")]
+    fn fill_triangle_aa(&mut self, a: Point, b: Point, c: Point, color: Color) {
+        let size = self.buffer.size();
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        let ax = a.x as f32;
+        let ay = a.y as f32;
+        let mut bx = b.x as f32;
+        let mut by = b.y as f32;
+        let mut cx = c.x as f32;
+        let mut cy = c.y as f32;
+        let area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        if area.abs() < f32::EPSILON {
+            return;
+        }
+        // Normalise the winding so "inside" is `edge >= 0` for all three edges. The sign only
+        // decides which triangle owns a shared boundary sample, never which pixels are inside.
+        if area < 0.0 {
+            core::mem::swap(&mut bx, &mut cx);
+            core::mem::swap(&mut by, &mut cy);
+        }
+        let min_x = a.x.min(b.x).min(c.x).max(0);
+        let min_y = a.y.min(b.y).min(c.y).max(0);
+        let max_x = a.x.max(b.x).max(c.x).min(size.width as i32 - 1);
+        let max_y = a.y.max(b.y).max(c.y).min(size.height as i32 - 1);
+        if max_x < min_x || max_y < min_y {
+            return;
+        }
+        let clip = self.current_clip();
+        let blend = self.blend_mode;
+        let width = size.width;
+        let frame = self.buffer.back_mut();
+        let sample_step = 1.0 / QUAD_AA_SAMPLES as f32;
+        let sample_count = (QUAD_AA_SAMPLES * QUAD_AA_SAMPLES) as f32;
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                if !pixel_visible(clip, x, y) {
+                    continue;
+                }
+                let mut inside = 0u32;
+                for sy in 0..QUAD_AA_SAMPLES {
+                    let py = y as f32 + (sy as f32 + 0.5) * sample_step;
+                    for sx in 0..QUAD_AA_SAMPLES {
+                        let px = x as f32 + (sx as f32 + 0.5) * sample_step;
+                        if inside_top_left(ax, ay, bx, by, cx, cy, px, py) {
+                            inside += 1;
+                        }
+                    }
+                }
+                if inside == 0 {
+                    continue;
+                }
+                let coverage = inside as f32 / sample_count;
+                write_pixel_with_mode(blend, frame, width, x as u32, y as u32, color, coverage);
+            }
+        }
+    }
+
     /// Fills a triangle using scanline rasterization (no AA).
     fn fill_triangle(&mut self, v0: Point, v1: Point, v2: Point, color: Color) {
         let mut vs = [v0, v1, v2];
@@ -857,6 +939,13 @@ impl SoftwareSurface {
         color: Color,
         alignment: HorizontalAlignment,
     ) {
+        // Opt-in glyph-level painting. It is tried first and falls back to the cluster renderer
+        // when the build has no face for the named family, so the default path (and every
+        // existing snapshot) is untouched.
+        #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+        if self.glyph_run_text && self.draw_text_glyph_run(origin, text, font, color, alignment) {
+            return;
+        }
         // # One shaping pass, not two
         //
         // This used to call `measure_text` (which shapes the line) and then `shape_text` again,
@@ -961,6 +1050,74 @@ impl SoftwareSurface {
         // overwrite it in place without reallocating.
         self.text_coverage_scratch = coverage;
     }
+
+    /// Paints `text` as a run of shaped glyph ids, with the face's ligatures enabled.
+    ///
+    /// Returns `false` when this build has no face for `font.family()`; the caller then uses the
+    /// cluster renderer. Returns `true` for a degenerate run as well (an empty string or a
+    /// zero-height line box draws nothing but has still been handled).
+    ///
+    /// Each glyph is outlined at the run's line-box height and filled through the same non-zero
+    /// polygon path [`Self::fill_path_non_zero`] uses, translated to the position the shaper gave
+    /// it. That is what makes a ligature possible: the shaper may return one glyph for several
+    /// characters, and painting glyph ids draws that one shape instead of the characters.
+    /// `letter_spacing` is added between glyphs, so a tracked font keeps its spacing.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+    fn draw_text_glyph_run(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    ) -> bool {
+        use crate::render::text::{
+            outline_glyph, shaping, Cell, OutlinePoint, OUTLINE_MAX_CONTOURS, OUTLINE_MAX_POINTS,
+        };
+
+        let scale = self.dpi_scale();
+        let Some(run) = shaping::glyph_run_for_family(text, font, scale) else {
+            return false;
+        };
+        let line = crate::render::TextMetrics::for_font(font, scale);
+        if line.height == 0 {
+            return true;
+        }
+        let tracking = font.letter_spacing() * scale;
+        let glyph_count = run.glyph_ids.len();
+        let total_width = run.width + tracking * glyph_count.saturating_sub(1) as f32;
+        let width = total_width.round().max(0.0) as u32;
+        let origin_x = match alignment {
+            HorizontalAlignment::Left => origin.x,
+            HorizontalAlignment::Center => origin.x - (width / 2) as i32,
+            HorizontalAlignment::Right => origin.x - width as i32,
+        };
+        let cell = Cell::new(width.max(1), line.height);
+        let mut points = vec![OutlinePoint { x: 0.0, y: 0.0 }; OUTLINE_MAX_POINTS];
+        let mut contours = vec![(0usize, 0usize); OUTLINE_MAX_CONTOURS];
+        let mut polygon: Vec<Point> = Vec::new();
+        for (index, (&glyph_id, &(x_offset, y_offset))) in
+            run.glyph_ids.iter().zip(run.positions.iter()).enumerate()
+        {
+            let Some(count) =
+                outline_glyph(glyph_id as u16, cell, font.family(), &mut points, &mut contours)
+            else {
+                continue;
+            };
+            let vertex_count = contours[..count].iter().map(|&(_, end)| end).max().unwrap_or(0);
+            if vertex_count == 0 {
+                continue;
+            }
+            polygon.clear();
+            polygon.extend(points[..vertex_count].iter().map(|point| {
+                let x = origin_x as f32 + x_offset + tracking * index as f32 + point.x;
+                let y = origin.y as f32 + y_offset + point.y;
+                Point::new(x.round() as i32, y.round() as i32)
+            }));
+            let _ = self.fill_path_non_zero_borrowed(&polygon, &contours[..count], color, 0, 0);
+        }
+        true
+    }
     /// Draws an RGBA image at the specified position and size.
     /// Pixels are copied directly from the source data, performing alpha blending.
     ///
@@ -1002,45 +1159,54 @@ impl SoftwareSurface {
             let source_start = (row - y) as usize * stride + (left - x) as usize;
             let source = &data[source_start * 4..(source_start + columns) * 4];
             let destination_start = (row as u32 * screen_width + left as u32) as usize * 4;
-            if source.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255) {
-                frame[destination_start..destination_start + columns * 4].copy_from_slice(source);
-                continue;
-            }
-            for (offset, pixel) in source.as_chunks::<4>().0.iter().enumerate() {
-                blend_source_pixel(
-                    frame,
-                    screen_width,
-                    (left as usize + offset) as u32,
-                    row as u32,
-                    pixel[0],
-                    pixel[1],
-                    pixel[2],
-                    pixel[3],
-                );
+            let destination = &mut frame[destination_start..destination_start + columns * 4];
+            // Walk the row in **runs**: an opaque run is a plain copy and only the translucent
+            // pixels pay for the composite. A captured widget layer is transparent at its edges and
+            // opaque inside, so the interior of the row takes the copy path while the outline
+            // still blends — one test per pixel either way, but no blend arithmetic for the bulk.
+            let source_pixels = source.as_chunks::<4>().0;
+            let destination_pixels = destination.as_chunks_mut::<4>().0;
+            let mut index = 0;
+            while index < source_pixels.len() {
+                if source_pixels[index][3] == 255 {
+                    let mut end = index;
+                    while end < source_pixels.len() && source_pixels[end][3] == 255 {
+                        end += 1;
+                    }
+                    for (target, pixel) in
+                        destination_pixels[index..end].iter_mut().zip(&source_pixels[index..end])
+                    {
+                        *target = *pixel;
+                    }
+                    index = end;
+                } else {
+                    blend_source_over(&mut destination_pixels[index], source_pixels[index]);
+                    index += 1;
+                }
             }
         }
     }
 
-    /// Draws an RGBA image mapped onto the parallelogram spanned by `corners`.
+    /// Draws an RGBA image mapped onto the quadrilateral spanned by `corners`.
     ///
     /// `corners` are the destination positions of the source grid's top-left, top-right,
     /// bottom-right and bottom-left corners, in perimeter order. `source_width` and
     /// `source_height` describe the grid the data was laid out in before the transform, which is
     /// the rectangle the batch path drew under a 2D transform.
     ///
-    /// # Why the inverse mapping is two divisions
+    /// # Parallelograms and projective quads
     ///
     /// An affine transform maps a rectangle to a parallelogram, so the destination point
     /// `p = p00 + u * (p10 - p00) + v * (p01 - p00)` inverts with the determinant of the two edge
-    /// vectors. Each destination pixel is then sampled from the source grid at `(u, v)`. The
-    /// fourth corner is not read: for a parallelogram it is implied, and a projective quad is
-    /// not something an affine transform can produce.
+    /// vectors. A perspective divide produces a general quadrilateral instead; when the fourth
+    /// corner is not implied by the other three, the mapping is solved as a homography from the
+    /// unit square so the texture follows the projected edges (a turned card's texture narrows
+    /// toward its far edge, as it should). Both paths sample the source grid bilinearly.
     ///
-    /// Sampling is **bilinear**, which is what the plan for the affine layer specifies: a
-    /// rotated or scaled image is resampled, not block-copied. At an identity transform the
-    /// destination pixel centres land exactly on source texel centres, so the weights are `0`/`1`
-    /// and the result is bit-for-bit the axis-aligned copy — the interpolation can only soften a
-    /// picture the transform actually moved.
+    /// Sampling is **bilinear**: a rotated or scaled image is resampled, not block-copied. At an
+    /// identity transform the destination pixel centres land exactly on source texel centres, so
+    /// the weights are `0`/`1` and the result is bit-for-bit the axis-aligned copy — the
+    /// interpolation can only soften a picture the transform actually moved.
     pub fn draw_image_quad(
         &mut self,
         corners: [Point; 4],
@@ -1053,6 +1219,10 @@ impl SoftwareSurface {
         }
         let expected_len = (source_width as usize) * (source_height as usize) * 4;
         if data.len() < expected_len {
+            return;
+        }
+        if !corners_are_parallelogram(&corners) {
+            self.draw_image_quad_projective(corners, source_width, source_height, data);
             return;
         }
         let [p00, p10, _, p01] = corners;
@@ -1100,6 +1270,129 @@ impl SoftwareSurface {
             }
         }
     }
+
+    /// Draws an image onto a general quadrilateral with a homography.
+    ///
+    /// The four corners define a map from the unit square to the quad. Inverting that map once
+    /// and evaluating it per destination pixel is what makes the texture follow a perspective
+    /// divide: the pixels near the short (far) edge read a wider band of the source, exactly the
+    /// way a photographed card does. The parallelogram path in [`Self::draw_image_quad`] is kept
+    /// because it is cheaper and exact, and because every affine transform produces it.
+    fn draw_image_quad_projective(
+        &mut self,
+        corners: [Point; 4],
+        source_width: u32,
+        source_height: u32,
+        data: &[u8],
+    ) {
+        let Some(inverse) = inverse_quad_homography(&corners) else {
+            return;
+        };
+        let size = self.buffer.size();
+        let clip = self.current_clip();
+        let screen_width = size.width;
+        let max_x = corners.iter().map(|p| p.x).max().unwrap_or(0);
+        let max_y = corners.iter().map(|p| p.y).max().unwrap_or(0);
+        let min_x = corners.iter().map(|p| p.x).min().unwrap_or(0);
+        let min_y = corners.iter().map(|p| p.y).min().unwrap_or(0);
+        let frame = self.buffer.back_mut();
+        for y in min_y..=max_y {
+            if y < 0 || y as u32 >= size.height {
+                continue;
+            }
+            for x in min_x..=max_x {
+                if x < 0 || x as u32 >= screen_width {
+                    continue;
+                }
+                if !pixel_visible(clip, x, y) {
+                    continue;
+                }
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                let w = inverse[6] * px + inverse[7] * py + inverse[8];
+                if w.abs() < f32::EPSILON {
+                    continue;
+                }
+                let u = (inverse[0] * px + inverse[1] * py + inverse[2]) / w;
+                let v = (inverse[3] * px + inverse[4] * py + inverse[5]) / w;
+                if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
+                    continue;
+                }
+                let [r, g, b, a] = sample_bilinear(data, source_width, source_height, u, v);
+                blend_source_pixel(frame, screen_width, x as u32, y as u32, r, g, b, a);
+            }
+        }
+    }
+}
+
+/// Whether the four corners form a parallelogram.
+fn corners_are_parallelogram(corners: &[Point; 4]) -> bool {
+    let [p00, p10, p20, p01] = corners;
+    let implied_x = p10.x as i64 + p01.x as i64 - p00.x as i64;
+    let implied_y = p10.y as i64 + p01.y as i64 - p00.y as i64;
+    (p20.x as i64 - implied_x).abs() <= 1 && (p20.y as i64 - implied_y).abs() <= 1
+}
+
+/// The inverse of the homography that maps the unit square to `corners`.
+///
+/// The returned array is row-major `[[a, b, c], [d, e, f], [g, h, i]]`, so a destination point
+/// `(x, y)` maps to `((a x + b y + c) / w, (d x + e y + f) / w)` with `w = g x + h y + i`. The
+/// construction follows the standard unit-square-to-quad solution; a degenerate quad (zero area)
+/// answers `None` rather than producing NaNs.
+fn inverse_quad_homography(corners: &[Point; 4]) -> Option<[f32; 9]> {
+    let [p00, p10, p20, p01] = *corners;
+    let (x0, y0) = (p00.x as f32, p00.y as f32);
+    let (x1, y1) = (p10.x as f32, p10.y as f32);
+    let (x2, y2) = (p20.x as f32, p20.y as f32);
+    let (x3, y3) = (p01.x as f32, p01.y as f32);
+    let dx1 = x1 - x2;
+    let dx2 = x3 - x2;
+    let dx3 = x0 - x1 + x2 - x3;
+    let dy1 = y1 - y2;
+    let dy2 = y3 - y2;
+    let dy3 = y0 - y1 + y2 - y3;
+    let (a, b, c, d, e, f, g, h);
+    if dx3.abs() < f32::EPSILON && dy3.abs() < f32::EPSILON {
+        // Affine: the fourth corner is implied, so there is no perspective term.
+        a = x1 - x0;
+        b = x3 - x0;
+        c = x0;
+        d = y1 - y0;
+        e = y3 - y0;
+        f = y0;
+        g = 0.0;
+        h = 0.0;
+    } else {
+        let denominator = dx1 * dy2 - dx2 * dy1;
+        if denominator.abs() < f32::EPSILON {
+            return None;
+        }
+        g = (dx3 * dy2 - dx2 * dy3) / denominator;
+        h = (dx1 * dy3 - dx3 * dy1) / denominator;
+        a = x1 - x0 + g * x1;
+        b = x3 - x0 + h * x3;
+        c = x0;
+        d = y1 - y0 + g * y1;
+        e = y3 - y0 + h * y3;
+        f = y0;
+    }
+    // Inverse of [[a, b, c], [d, e, f], [g, h, 1]] by the cofactor formula.
+    let determinant = a * (e - f * h) - b * (d - f * g) + c * (d * h - e * g);
+    if determinant.abs() < f32::EPSILON {
+        return None;
+    }
+    let scale = 1.0 / determinant;
+    Some([
+        (e - f * h) * scale,
+        (c * h - b) * scale,
+        (b * f - c * e) * scale,
+        (f * g - d) * scale,
+        (a - c * g) * scale,
+        (c * d - a * f) * scale,
+        (d * h - e * g) * scale,
+        (b * g - a * h) * scale,
+        (a * e - b * d) * scale,
+    ])
 }
 
 /// Samples an RGBA grid bilinearly at `(u, v)`, both in `0.0..=1.0`.
@@ -1163,27 +1456,86 @@ fn blend_source_pixel(
     b: u8,
     a: u8,
 ) {
-    if a == 0 {
+    let index = ((y * screen_width + x) as usize) * 4;
+    blend_source_over(&mut frame[index..index + 4], [r, g, b, a]);
+}
+
+/// Alpha-composites one straight-RGBA source pixel over one destination pixel.
+///
+/// Both sides are straight (non-premultiplied) RGBA, and the composite is the W3C source-over
+/// formula in that space: the result is the source weighted by its own alpha plus the destination
+/// weighted by what the source leaves uncovered, renormalised by the resulting alpha.
+///
+/// # Why a `&mut [u8]` and not `&mut [u8; 4]`
+///
+/// The callers hold the destination as a `&mut [u8]` row (or a four-byte slice of one). Taking the
+/// slice form keeps the `as_chunks_mut` and `frame[..]` callers from having to convert, and the
+/// four-byte precondition is the one thing they already guarantee.
+#[inline]
+fn blend_source_over(destination: &mut [u8], source: [u8; 4]) {
+    if source[3] == 0 {
         return;
     }
-    let dst_idx = ((y * screen_width + x) as usize) * 4;
-    if a == 255 {
-        frame[dst_idx] = r;
-        frame[dst_idx + 1] = g;
-        frame[dst_idx + 2] = b;
-        frame[dst_idx + 3] = 255;
+    if source[3] == 255 {
+        destination[..4].copy_from_slice(&source);
         return;
     }
-    let src_alpha = a as f32 / 255.0;
-    let dst_alpha = frame[dst_idx + 3] as f32 / 255.0;
+    let src_alpha = source[3] as f32 / 255.0;
+    let dst_alpha = destination[3] as f32 / 255.0;
     let out_alpha = src_alpha + dst_alpha * (1.0 - src_alpha);
     if out_alpha <= 0.0 {
         return;
     }
     let src_weight = src_alpha / out_alpha;
     let dst_weight = dst_alpha * (1.0 - src_alpha) / out_alpha;
-    frame[dst_idx] = (r as f32 * src_weight + frame[dst_idx] as f32 * dst_weight) as u8;
-    frame[dst_idx + 1] = (g as f32 * src_weight + frame[dst_idx + 1] as f32 * dst_weight) as u8;
-    frame[dst_idx + 2] = (b as f32 * src_weight + frame[dst_idx + 2] as f32 * dst_weight) as u8;
-    frame[dst_idx + 3] = (out_alpha * 255.0) as u8;
+    for channel in 0..3 {
+        destination[channel] =
+            (source[channel] as f32 * src_weight + destination[channel] as f32 * dst_weight) as u8;
+    }
+    destination[3] = (out_alpha * 255.0) as u8;
+}
+
+/// Samples per axis used by [`SoftwareSurface::fill_quad_aa`].
+#[cfg(feature = "3d")]
+const QUAD_AA_SAMPLES: u32 = 4;
+
+/// Twice the signed area of `(a, b, p)`, i.e. the edge function of `p` for the directed edge
+/// `a → b`.
+#[cfg(feature = "3d")]
+#[inline]
+fn quad_edge(ax: f32, ay: f32, bx: f32, by: f32, px: f32, py: f32) -> f32 {
+    (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+}
+
+/// Whether the directed edge `a → b` is a top or left edge.
+///
+/// The predicate is antisymmetric under reversing the edge: an edge and its reverse cannot both
+/// answer `true`. That is what makes the shared diagonal of the two quad triangles covered by
+/// exactly one of them, so a translucent quad has no double-blended seam.
+#[cfg(feature = "3d")]
+#[inline]
+fn quad_edge_is_top_left(ax: f32, ay: f32, bx: f32, by: f32) -> bool {
+    // Screen coordinates grow downward, so an edge pointing down is a "top" edge.
+    by > ay || (by == ay && bx < ax)
+}
+
+/// Whether `(px, py)` is inside the triangle `(a, b, c)` under the top-left fill rule.
+///
+/// The caller has already normalised the winding so every interior point has a non-negative edge
+/// value. A sample exactly on an edge belongs to the triangle only when that edge is a top or left
+/// edge, which is the rule that keeps a shared edge from being painted twice.
+#[cfg(feature = "3d")]
+#[inline]
+fn inside_top_left(ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32, px: f32, py: f32) -> bool {
+    let edges = [(ax, ay, bx, by), (bx, by, cx, cy), (cx, cy, ax, ay)];
+    for (ex0, ey0, ex1, ey1) in edges {
+        let value = quad_edge(ex0, ey0, ex1, ey1, px, py);
+        if value < 0.0 {
+            return false;
+        }
+        if value == 0.0 && !quad_edge_is_top_left(ex0, ey0, ex1, ey1) {
+            return false;
+        }
+    }
+    true
 }

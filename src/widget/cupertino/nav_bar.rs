@@ -50,8 +50,18 @@ pub struct CupertinoNavigationBar {
     collapse: PropertyDriver,
     back_button_visible: bool,
     back_button_text: String,
+    /// Custom leading items drawn after the back affordance.
+    leading_items: Vec<String>,
+    /// Custom trailing items drawn from the bar's trailing edge inward.
+    trailing_items: Vec<String>,
+    /// The x where an edge-swipe back gesture started.
+    edge_drag_x: Option<f32>,
     /// Emitted when the back button is pressed.
     pub back_pressed: Signal1<()>,
+    /// Emitted with the index of a custom leading item that was tapped.
+    pub leading_item_pressed: Signal1<usize>,
+    /// Emitted with the index of a custom trailing item that was tapped.
+    pub trailing_item_pressed: Signal1<usize>,
 }
 
 impl CupertinoNavigationBar {
@@ -69,7 +79,12 @@ impl CupertinoNavigationBar {
             collapse: PropertyDriver::at(1.0, MotionSlot::Normal),
             back_button_visible: false,
             back_button_text: "Back".to_string(),
+            leading_items: Vec::new(),
+            trailing_items: Vec::new(),
+            edge_drag_x: None,
             back_pressed: Signal1::new(),
+            leading_item_pressed: Signal1::new(),
+            trailing_item_pressed: Signal1::new(),
         }
     }
 
@@ -164,6 +179,66 @@ impl CupertinoNavigationBar {
     /// Returns the back button text.
     pub fn back_button_text(&self) -> &str {
         &self.back_button_text
+    }
+
+    /// Replaces the custom items shown after the back affordance.
+    pub fn set_leading_items(&mut self, items: Vec<String>) {
+        if self.leading_items == items {
+            return;
+        }
+        self.leading_items = items;
+        self.base.request_redraw();
+    }
+
+    /// Returns the custom leading items.
+    pub fn leading_items(&self) -> &[String] {
+        &self.leading_items
+    }
+
+    /// Replaces the custom items shown at the trailing edge.
+    pub fn set_trailing_items(&mut self, items: Vec<String>) {
+        if self.trailing_items == items {
+            return;
+        }
+        self.trailing_items = items;
+        self.base.request_redraw();
+    }
+
+    /// Returns the custom trailing items.
+    pub fn trailing_items(&self) -> &[String] {
+        &self.trailing_items
+    }
+
+    /// The bar band the control paints: the top strip, sized by the collapse fraction.
+    fn bar_band(&self) -> Rect {
+        let height = lerp_u32(
+            dimensions::NAV_BAR_HEIGHT,
+            dimensions::NAV_BAR_LARGE_HEIGHT,
+            self.collapse.value(),
+        );
+        ControlMetrics::top_band(self.geometry(), height)
+    }
+
+    /// The x where each custom leading item starts, given its measured width.
+    fn leading_item_x(&self, index: usize, widths: &[u32]) -> Option<i32> {
+        self.leading_items.get(index)?;
+        let band = self.bar_band();
+        let mut x = band.x + if self.back_button_visible { BACK_BUTTON_WIDTH as i32 } else { 8 };
+        for width in widths.iter().take(index) {
+            x += *width as i32 + 8;
+        }
+        Some(x)
+    }
+
+    /// The trailing edge x of each custom trailing item, in right-to-left draw order.
+    fn trailing_item_x(&self, index: usize, widths: &[u32]) -> Option<i32> {
+        self.trailing_items.get(index)?;
+        let band = self.bar_band();
+        let mut right = band.right() - 8;
+        for width in widths.iter().take(index) {
+            right -= *width as i32 + 8;
+        }
+        Some(right)
     }
 }
 
@@ -360,7 +435,7 @@ impl Draw for CupertinoNavigationBar {
         // settled at either end draws exactly what it drew before.
         if !self.title.is_empty() {
             let title_font =
-                role_font(style, lerp_f32(18.0, 34.0, collapse)).with_bold(collapse > 0.5);
+                role_font(style, lerp_f32(17.0, 34.0, collapse)).with_bold(collapse > 0.5);
             let metrics = context.measure_text(&self.title, &title_font);
             let leading_x = bar_rect.x + 16;
             let centred_x = bar_rect.x + (bar_rect.width as i32 - metrics.width as i32) / 2;
@@ -412,43 +487,122 @@ impl Draw for CupertinoNavigationBar {
                 );
             }
         }
+
+        // ── Custom leading and trailing items ──
+        let item_font = role_font(style, 17.0);
+        let action = primary.contrast_color().blend(&primary, 0.85);
+        let leading_widths: Vec<u32> = self
+            .leading_items
+            .iter()
+            .map(|label| context.measure_text(label, &item_font).width)
+            .collect();
+        for (index, label) in self.leading_items.iter().enumerate() {
+            if let Some(x) = self.leading_item_x(index, &leading_widths) {
+                let line = context.text_line(bar_rect, &item_font);
+                context.draw_text(
+                    Point::new(x, line.y),
+                    label,
+                    &item_font,
+                    action,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
+        let trailing_widths: Vec<u32> = self
+            .trailing_items
+            .iter()
+            .map(|label| context.measure_text(label, &item_font).width)
+            .collect();
+        for (index, label) in self.trailing_items.iter().enumerate() {
+            if let Some(right) = self.trailing_item_x(index, &trailing_widths) {
+                let width = trailing_widths.get(index).copied().unwrap_or(0) as i32;
+                let line = context.text_line(bar_rect, &item_font);
+                context.draw_text(
+                    Point::new(right - width, line.y),
+                    label,
+                    &item_font,
+                    action,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
     }
 }
 
 impl EventHandler for CupertinoNavigationBar {
     fn handle_event(&mut self, event: &Event) {
+        if !self.base.is_enabled() {
+            self.base.handle_event(event);
+            return;
+        }
         match event {
-            Event::MouseRelease { pos, button } => {
-                // A disabled nav bar must not emit navigation. Without this,
-                // `set_enabled(false)` had no effect: the back button still fired.
-                if !self.base.is_enabled() {
-                    self.base.handle_event(event);
-                    return;
-                }
+            Event::MousePress { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
-
-                // Only handle back button area clicks
-                if !self.back_button_visible {
+                // The leading edge starts an interactive back gesture. The strip is the same
+                // width on both sides so a right-to-left interface mirrors it.
+                let bar_rect = self.bar_band();
+                let edge =
+                    Rect::new(bar_rect.x, bar_rect.y, 20.min(bar_rect.width), bar_rect.height);
+                self.edge_drag_x = edge.contains_point(*pos).then_some(pos.x as f32);
+            }
+            Event::MouseMove { .. } => {}
+            Event::MouseRelease { pos, button } => {
+                if *button != 1 {
                     return;
                 }
+                // An edge swipe that travelled far enough is a back gesture.
+                if let Some(start) = self.edge_drag_x.take() {
+                    if pos.x as f32 - start > 40.0 {
+                        self.back_pressed.emit(());
+                        self.base.request_redraw();
+                        return;
+                    }
+                }
 
+                let bar_rect = self.bar_band();
                 // The back area is the leading end of the bar itself, so it tracks the band the
                 // bar is painted in rather than a fixed 80x44 literal: the clickable region and
                 // the ink the user aims at are the same rectangle by construction.
-                let rect = self.geometry();
-                let bar_height = if self.large_title {
-                    dimensions::NAV_BAR_LARGE_HEIGHT
-                } else {
-                    dimensions::NAV_BAR_HEIGHT
+                if self.back_button_visible {
+                    let back_area =
+                        Rect::new(bar_rect.x, bar_rect.y, BACK_BUTTON_WIDTH, bar_rect.height);
+                    if back_area.contains_point(*pos) {
+                        self.back_pressed.emit(());
+                        self.base.request_redraw();
+                        return;
+                    }
+                }
+
+                // Custom items are hit-tested against the boxes they were painted in.
+                let font = role_font(self.base.style(), 17.0);
+                let measure = |label: &str| -> u32 {
+                    crate::widget::metrics::estimate_text_width(label, &font, 1.0)
                 };
-                let bar_rect = ControlMetrics::top_band(rect, bar_height);
-                let back_area =
-                    Rect::new(bar_rect.x, bar_rect.y, BACK_BUTTON_WIDTH, bar_rect.height);
-                if back_area.contains_point(*pos) {
-                    self.back_pressed.emit(());
-                    self.base.request_redraw();
+                let leading_widths: Vec<u32> =
+                    self.leading_items.iter().map(|label| measure(label)).collect();
+                for index in 0..self.leading_items.len() {
+                    if let Some(x) = self.leading_item_x(index, &leading_widths) {
+                        let width = leading_widths[index];
+                        if pos.x >= x && pos.x < x + width as i32 {
+                            self.leading_item_pressed.emit(index);
+                            self.base.request_redraw();
+                            return;
+                        }
+                    }
+                }
+                let trailing_widths: Vec<u32> =
+                    self.trailing_items.iter().map(|label| measure(label)).collect();
+                for index in 0..self.trailing_items.len() {
+                    if let Some(right) = self.trailing_item_x(index, &trailing_widths) {
+                        let width = trailing_widths[index] as i32;
+                        if pos.x >= right - width && pos.x < right {
+                            self.trailing_item_pressed.emit(index);
+                            self.base.request_redraw();
+                            return;
+                        }
+                    }
                 }
             }
             _ => {
@@ -610,5 +764,34 @@ mod tests {
             );
             assert!(svg.contains(&rule), "the rule must sit on the bar's bottom edge:\n{svg}");
         }
+    }
+
+    #[test]
+    fn custom_items_report_the_index_that_was_tapped() {
+        let mut bar = CupertinoNavigationBar::new(Rect::new(0, 0, 375, 96));
+        bar.set_title("Inbox");
+        bar.set_leading_items(vec!["Edit".to_string()]);
+        bar.set_trailing_items(vec!["Done".to_string(), "More".to_string()]);
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        let f = fired.clone();
+        bar.trailing_item_pressed.connect(move |index: std::sync::Arc<usize>| {
+            f.store(*index, std::sync::atomic::Ordering::SeqCst);
+        });
+        // The trailing-most item is index zero and lives nearest the trailing edge.
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(360, 30), button: 1 });
+        assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn an_edge_drag_presses_back() {
+        let mut bar = CupertinoNavigationBar::new(Rect::new(0, 0, 375, 96));
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let f = fired.clone();
+        bar.back_pressed.connect(move |_: std::sync::Arc<()>| {
+            f.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        bar.handle_event(&Event::MousePress { pos: Point::new(4, 30), button: 1, modifiers: 0 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(80, 30), button: 1 });
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

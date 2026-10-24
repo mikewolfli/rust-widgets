@@ -48,6 +48,20 @@ pub enum AnimatedImageFormat {
     WebP,
 }
 
+/// How a decoded frame is mapped into the control's rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnimatedImageFit {
+    /// Draw at the frame's own pixel size, centred and clipped (the historical behaviour).
+    #[default]
+    Original,
+    /// Scale to fit inside the rectangle, preserving aspect ratio (letterbox).
+    Contain,
+    /// Scale to cover the rectangle, preserving aspect ratio and cropping the overflow.
+    Cover,
+    /// Stretch to the rectangle on both axes, without preserving aspect ratio.
+    Fill,
+}
+
 /// AnimatedImage widget for playing animated image sequences.
 pub struct AnimatedImage {
     base: BaseWidget,
@@ -62,6 +76,10 @@ pub struct AnimatedImage {
     frame_delay: u64,
     /// Number of completed loops so far.
     loops_completed: i32,
+    /// Playback speed multiplier: `2.0` plays twice as fast, `0.5` half speed.
+    speed: f32,
+    /// How each frame is mapped into the control's rectangle.
+    fit: AnimatedImageFit,
     /// Emitted when the animation finishes (all loops completed).
     pub animation_finished: GenericSignal,
     /// Emitted when the current frame index changes. Passes the new frame index.
@@ -80,6 +98,8 @@ impl AnimatedImage {
             frame_timer: 0,
             frame_delay: 100,
             loops_completed: 0,
+            speed: 1.0,
+            fit: AnimatedImageFit::Original,
             animation_finished: GenericSignal::new(),
             frame_changed: Signal1::new(),
         }
@@ -159,6 +179,41 @@ impl AnimatedImage {
         self.loop_count
     }
 
+    /// Returns the playback speed multiplier.
+    pub fn speed(&self) -> f32 {
+        self.speed
+    }
+
+    /// Sets the playback speed multiplier.
+    ///
+    /// The value is clamped to `0.05..=20.0`: a zero speed would divide the frame delay by zero,
+    /// and an absurd maximum would make the animation a slide show with no frames left to show.
+    pub fn set_speed(&mut self, speed: f32) {
+        if !speed.is_finite() {
+            return;
+        }
+        let speed = speed.clamp(0.05, 20.0);
+        if self.speed == speed {
+            return;
+        }
+        self.speed = speed;
+        self.base.request_redraw();
+    }
+
+    /// Returns how frames are mapped into the control.
+    pub fn fit(&self) -> AnimatedImageFit {
+        self.fit
+    }
+
+    /// Sets how frames are mapped into the control.
+    pub fn set_fit(&mut self, fit: AnimatedImageFit) {
+        if self.fit == fit {
+            return;
+        }
+        self.fit = fit;
+        self.base.request_redraw();
+    }
+
     /// Returns the current frame index.
     pub fn current_frame(&self) -> usize {
         self.current_frame
@@ -217,6 +272,9 @@ impl AnimatedImage {
         // *smaller* than the delay, which would freeze the animation rather than advance it — the
         // sibling `lottie_widget` already saturates.
         self.frame_timer = self.frame_timer.saturating_add(delta_ms);
+        // The speed multiplier is applied to the frame's own delay, so a 2x animation waits
+        // half as long on every frame and a 0.5x one waits twice as long.
+        let delay = (delay as f32 / self.speed).max(1.0) as u64;
         if self.frame_timer >= delay {
             self.advance_frame();
             true
@@ -421,21 +479,46 @@ impl Draw for AnimatedImage {
                 Color::BLACK,
             );
 
-            // Draw the frame centered in the widget geometry.
+            // Draw the frame, mapped into the control by the fit mode.
             let fw = frame.width as i32;
             let fh = frame.height as i32;
-            let dx = rect.x + (rect.width as i32 - fw) / 2;
-            let dy = rect.y + (rect.height as i32 - fh) / 2;
-            // Content, not chrome: the frame's own pixels are the caller's data — the whole
-            // subject of an animated image — so they are painted exactly as decoded and must
-            // never be recoloured from a theme.
-            //
-            // Clipped to the control: a frame larger than the surface (a 640x480 GIF in a
-            // 240x120 cell) was centred and then painted at full size, so it covered whatever
-            // the layout put beside the control. Nothing clips a widget at this layer, so the
-            // clip is what keeps a decoded frame inside the picture that carries it.
             context.push_clip(rect.x, rect.y, rect.width, rect.height);
-            context.draw_image(dx.max(0), dy.max(0), frame.width, frame.height, &frame.data);
+            match self.fit {
+                AnimatedImageFit::Original => {
+                    let dx = rect.x + (rect.width as i32 - fw) / 2;
+                    let dy = rect.y + (rect.height as i32 - fh) / 2;
+                    context.draw_image(
+                        dx.max(0),
+                        dy.max(0),
+                        frame.width,
+                        frame.height,
+                        &frame.data,
+                    );
+                }
+                fit => {
+                    let dest = fit_destination(rect, frame.width, frame.height, fit);
+                    if dest.width == frame.width && dest.height == frame.height {
+                        context.draw_image(
+                            dest.x.max(0),
+                            dest.y.max(0),
+                            frame.width,
+                            frame.height,
+                            &frame.data,
+                        );
+                    } else {
+                        // The renderer's image primitive copies at native size; a fit mode
+                        // resamples once into a buffer at the destination size.
+                        let scaled = nearest_scale(
+                            &frame.data,
+                            frame.width,
+                            frame.height,
+                            dest.width,
+                            dest.height,
+                        );
+                        context.draw_image(dest.x, dest.y, dest.width, dest.height, &scaled);
+                    }
+                }
+            }
             context.pop_clip();
 
             // Draw play/pause indicator overlay if animation is stopped or paused.
@@ -497,6 +580,70 @@ impl Draw for AnimatedImage {
             );
         }
     }
+}
+
+/// The destination rectangle a frame occupies under `fit`.
+fn fit_destination(rect: Rect, width: u32, height: u32, fit: AnimatedImageFit) -> Rect {
+    if width == 0 || height == 0 {
+        return Rect::new(rect.x, rect.y, 0, 0);
+    }
+    match fit {
+        AnimatedImageFit::Original => {
+            let x = rect.x + (rect.width as i32 - width as i32) / 2;
+            let y = rect.y + (rect.height as i32 - height as i32) / 2;
+            Rect::new(x, y, width, height)
+        }
+        AnimatedImageFit::Fill => rect,
+        AnimatedImageFit::Contain => {
+            let scale = (rect.width as f32 / width as f32).min(rect.height as f32 / height as f32);
+            let w = (width as f32 * scale).max(1.0) as u32;
+            let h = (height as f32 * scale).max(1.0) as u32;
+            Rect::new(
+                rect.x + (rect.width as i32 - w as i32) / 2,
+                rect.y + (rect.height as i32 - h as i32) / 2,
+                w,
+                h,
+            )
+        }
+        AnimatedImageFit::Cover => {
+            let scale = (rect.width as f32 / width as f32).max(rect.height as f32 / height as f32);
+            let w = (width as f32 * scale).max(1.0) as u32;
+            let h = (height as f32 * scale).max(1.0) as u32;
+            // Cover crops the overflow, so the destination is centred on the rectangle and
+            // `draw`'s clip is what removes the parts outside it.
+            Rect::new(
+                rect.x + (rect.width as i32 - w as i32) / 2,
+                rect.y + (rect.height as i32 - h as i32) / 2,
+                w,
+                h,
+            )
+        }
+    }
+}
+
+/// Nearest-neighbour resample of an RGBA frame, used by the fit modes.
+fn nearest_scale(
+    data: &[u8],
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let mut out = vec![0u8; (width as usize) * (height as usize) * 4];
+    if source_width == 0 || source_height == 0 || width == 0 || height == 0 {
+        return out;
+    }
+    for y in 0..height {
+        let source_y = (y as u64 * source_height as u64 / height as u64) as u32;
+        for x in 0..width {
+            let source_x = (x as u64 * source_width as u64 / width as u64) as u32;
+            let source = ((source_y as usize * source_width as usize + source_x as usize) * 4)
+                .min(data.len().saturating_sub(4));
+            let destination = (y as usize * width as usize + x as usize) * 4;
+            out[destination..destination + 4].copy_from_slice(&data[source..source + 4]);
+        }
+    }
+    out
 }
 
 impl EventHandler for AnimatedImage {
@@ -777,5 +924,28 @@ mod tests {
         // Debug builds panic on the wrapping `+=`; reaching the assert is the check.
         let advanced = img.tick(u64::MAX);
         assert!(advanced, "a huge delta must advance the frame, not freeze it");
+    }
+
+    #[test]
+    fn speed_scales_the_frame_delay() {
+        let mut img = AnimatedImage::new(Rect::new(0, 0, 10, 10));
+        img.load_frames(two_test_frames()).unwrap();
+        img.set_speed(2.0);
+        assert_eq!(img.speed(), 2.0);
+        img.play();
+        // The frame's own delay is 100 ms; at 2x, 50 ms is enough.
+        assert!(img.tick(50));
+        assert_eq!(img.current_frame(), 1);
+    }
+
+    #[test]
+    fn a_fit_mode_maps_the_frame_into_a_contained_box() {
+        let rect = Rect::new(0, 0, 200, 100);
+        let dest = fit_destination(rect, 100, 100, AnimatedImageFit::Contain);
+        assert_eq!(dest.height, 100);
+        assert_eq!(dest.width, 100);
+        assert_eq!(dest.x, 50, "contain letterboxes the frame");
+        let cover = fit_destination(rect, 100, 100, AnimatedImageFit::Cover);
+        assert!(cover.width >= rect.width, "cover fills the width and crops the rest");
     }
 }

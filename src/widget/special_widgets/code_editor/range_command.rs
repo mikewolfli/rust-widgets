@@ -118,6 +118,91 @@ impl UndoCommand for TextRangeCommand {
     }
 }
 
+/// The text one typing run inserted, shared with its undo command.
+///
+/// A run starts at the first keystroke and grows while the caret stays at the
+/// run's end and the inserted text stays on one line. Sharing the buffer is what
+/// lets later keystrokes extend the command that is already on the history
+/// stack: the command reads the accumulated text at undo time rather than a
+/// copy taken when it was pushed.
+#[derive(Debug, Default)]
+pub(crate) struct TypingAccum {
+    /// Byte offset the run starts at.
+    pub(crate) start: usize,
+    /// Everything typed in the run, in order.
+    pub(crate) inserted: String,
+}
+
+/// One undoable typing run.
+///
+/// Recorded instead of a per-keystroke range command. Without it, undo on a
+/// sentence-long edit required one press per character, which is not what a
+/// reader means by "undo the last thing I typed".
+#[derive(Debug)]
+pub(crate) struct TypingCommand {
+    id: CommandId,
+    target: Rc<RefCell<String>>,
+    accum: Rc<RefCell<TypingAccum>>,
+}
+
+impl TypingCommand {
+    /// Starts a run that inserted `inserted` at byte offset `start`.
+    pub(crate) fn new(target: Rc<RefCell<String>>, start: usize, inserted: String) -> Self {
+        Self {
+            id: CommandId(NEXT_RANGE_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
+            target,
+            accum: Rc::new(RefCell::new(TypingAccum { start, inserted })),
+        }
+    }
+
+    /// Returns the shared run, so the caller can extend it.
+    pub(crate) fn accum(&self) -> Rc<RefCell<TypingAccum>> {
+        Rc::clone(&self.accum)
+    }
+
+    fn splice(&self, start: usize, remove: usize, insert: &str) -> bool {
+        let mut text = self.target.borrow_mut();
+        let end = start.saturating_add(remove);
+        if end > text.len() || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+            return false;
+        }
+        text.replace_range(start..end, insert);
+        true
+    }
+}
+
+impl UndoCommand for TypingCommand {
+    fn id(&self) -> CommandId {
+        self.id
+    }
+
+    fn description(&self) -> CommandDescription {
+        CommandDescription {
+            text: "Typing".to_string(),
+            timestamp_ms: 0,
+            command_type: "code_editor_typing",
+        }
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        let accum = self.accum.borrow();
+        if self.splice(accum.start, 0, &accum.inserted) {
+            Ok(())
+        } else {
+            Err("typing command is out of step with the document".to_string())
+        }
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        let accum = self.accum.borrow();
+        if self.splice(accum.start, accum.inserted.len(), "") {
+            Ok(())
+        } else {
+            Err("typing command is out of step with the document".to_string())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

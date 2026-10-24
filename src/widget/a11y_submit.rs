@@ -143,6 +143,90 @@ fn platform_bridge_ptr() -> Option<*const dyn AccessibilityBridge> {
     Some(bridge as *const dyn AccessibilityBridge)
 }
 
+/// An action a screen reader may ask a control to perform.
+///
+/// The values mirror the accessible action vocabulary every platform exposes on a control
+/// ("press", "focus", "increase", "decrease"). They are deliberately payload-free here:
+/// the widget's own model owns the current value, and an action asks it to move, not to be
+/// overwritten.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessibleAction {
+    /// Activate the control, as a pointer click would.
+    Click,
+    /// Move keyboard focus to the control.
+    Focus,
+    /// Increase a value control by one step.
+    Increment,
+    /// Decrease a value control by one step.
+    Decrement,
+}
+
+/// The host half of the accessible action channel.
+///
+/// The accessibility bridge exports a control's state (role, label, value) but has no way to
+/// carry an *incoming* action, so a screen reader could not press a button. This trait is the
+/// missing direction: the host installs one handler, and [`perform_accessible_action`] asks it
+/// to run the action on the widget with the given id.
+pub trait AccessibleActionHandler: Send + Sync {
+    /// Performs `action` on `id`, returning whether the control accepted it.
+    fn perform_action(&self, id: ObjectId, action: AccessibleAction) -> bool;
+}
+
+thread_local! {
+    /// The installed action handler, if any.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static ACTION_HANDLER: core::cell::RefCell<Option<&'static dyn AccessibleActionHandler>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+/// Installs `handler` as the receiver of accessible actions.
+///
+/// Returns whether a handler was already installed. Like [`install_bridge`], the caller must
+/// keep `handler` alive for as long as actions may arrive on this thread.
+pub fn install_action_handler(handler: &'static dyn AccessibleActionHandler) -> bool {
+    ACTION_HANDLER.try_with(|slot| slot.borrow_mut().replace(handler).is_some()).unwrap_or(false)
+}
+
+/// Removes the installed action handler. Returns whether one was removed.
+pub fn uninstall_action_handler() -> bool {
+    ACTION_HANDLER.try_with(|slot| slot.borrow_mut().take().is_some()).unwrap_or(false)
+}
+
+/// Asks the installed action handler to perform `action` on `id`.
+///
+/// Returns `false` when no handler is installed or the control refused the action, so a caller
+/// can tell "nothing is listening" from "the control said no". With no handler this is a silent
+/// no-op, the same honest boundary as a build with no accessibility bridge.
+pub fn perform_accessible_action(id: ObjectId, action: AccessibleAction) -> bool {
+    let handler = ACTION_HANDLER.try_with(|slot| slot.borrow().as_ref().copied()).ok().flatten();
+    let Some(handler) = handler else {
+        return false;
+    };
+    handler.perform_action(id, action)
+}
+
+/// Reports that `text` was inserted at `byte_offset` in a text control's value.
+///
+/// The bridge trait carries a "value changed" notification without a payload, so the detail
+/// lives in this call's arguments and the bridge re-reads the control's value through the
+/// normal pull path. A caret move is announced separately so a screen reader can follow typing.
+pub fn submit_text_inserted(id: ObjectId, byte_offset: usize, text: &str) {
+    let _ = (byte_offset, text);
+    with_bridge(|bridge| bridge.notify_value_changed(id));
+}
+
+/// Reports that `len` bytes were removed at `byte_offset` from a text control's value.
+pub fn submit_text_removed(id: ObjectId, byte_offset: usize, len: usize) {
+    let _ = (byte_offset, len);
+    with_bridge(|bridge| bridge.notify_value_changed(id));
+}
+
+/// Reports that a text control's caret moved to `byte_offset`.
+pub fn submit_caret_moved(id: ObjectId, byte_offset: usize) {
+    let _ = byte_offset;
+    with_bridge(|bridge| bridge.notify_focus_changed(id));
+}
+
 /// Reports that a control has been mounted, creating its node in the accessibility tree.
 ///
 /// Submit point 1 of BLUE24 §6.3. The state is derived through [`A11yState::from_widget`] (stage ①)
@@ -498,6 +582,36 @@ mod tests {
         submit_semantic_changed(11);
         submit_value_changed(11);
         submit_focus_changed(11);
+        submit_text_inserted(11, 0, "a");
+        submit_text_removed(11, 0, 1);
+        submit_caret_moved(11, 1);
+        assert!(!perform_accessible_action(11, AccessibleAction::Click));
         // Reaching here without a panic is the assertion; there is no bridge to have recorded to.
+    }
+
+    struct RecordingActions {
+        calls: std::sync::Mutex<Vec<(ObjectId, AccessibleAction)>>,
+    }
+
+    impl AccessibleActionHandler for RecordingActions {
+        fn perform_action(&self, id: ObjectId, action: AccessibleAction) -> bool {
+            self.calls.lock().expect("action log").push((id, action));
+            true
+        }
+    }
+
+    #[test]
+    fn a_screen_reader_action_reaches_the_installed_handler() {
+        static HANDLER: std::sync::OnceLock<RecordingActions> = std::sync::OnceLock::new();
+        let handler =
+            HANDLER.get_or_init(|| RecordingActions { calls: std::sync::Mutex::new(Vec::new()) });
+        let _ = install_action_handler(handler);
+        assert!(perform_accessible_action(7, AccessibleAction::Click));
+        assert!(perform_accessible_action(7, AccessibleAction::Increment));
+        let calls = handler.calls.lock().expect("action log");
+        assert_eq!(calls[0], (7, AccessibleAction::Click));
+        assert_eq!(calls[1], (7, AccessibleAction::Increment));
+        drop(calls);
+        let _ = uninstall_action_handler();
     }
 }

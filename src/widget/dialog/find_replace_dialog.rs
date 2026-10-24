@@ -122,6 +122,14 @@ pub struct FindReplaceDialog {
     // Internal state tracking
     /// Which text field has focus: 0 = find, 1 = replace
     focus_field: u8,
+    /// Caret position, in characters, for each field.
+    caret: [usize; 2],
+    /// Selection anchor, in characters, for each field. Equal to the caret when nothing is
+    /// selected; the range between the two is the selected text.
+    anchor: [usize; 2],
+    /// Whether the host has delivered committed text. Once it has, raw key codes are no longer
+    /// treated as characters, so a non-Latin layout is not double-inserted.
+    text_input_seen: bool,
 }
 
 impl FindReplaceDialog {
@@ -143,6 +151,9 @@ impl FindReplaceDialog {
             replace_all_signal: Signal1::new(),
             close_signal: Signal1::new(),
             focus_field: 0,
+            caret: [0, 0],
+            anchor: [0, 0],
+            text_input_seen: false,
         }
     }
 
@@ -159,6 +170,9 @@ impl FindReplaceDialog {
             return;
         }
         self.find_text = text.to_string();
+        let length = self.find_text.chars().count();
+        self.caret[0] = self.caret[0].min(length);
+        self.anchor[0] = self.anchor[0].min(length);
         self.base.request_redraw();
     }
 
@@ -173,6 +187,9 @@ impl FindReplaceDialog {
             return;
         }
         self.replace_text = text.to_string();
+        let length = self.replace_text.chars().count();
+        self.caret[1] = self.caret[1].min(length);
+        self.anchor[1] = self.anchor[1].min(length);
         self.base.request_redraw();
     }
 
@@ -332,34 +349,133 @@ impl FindReplaceDialog {
         }
     }
 
-    /// Appends a character to the focused text field.
-    fn append_to_focused(&mut self, ch: char) {
-        match self.focus_field {
-            0 => {
-                self.find_text.push(ch);
-                self.base.request_redraw();
-            }
-            1 => {
-                self.replace_text.push(ch);
-                self.base.request_redraw();
-            }
-            _ => {}
+    /// The focused field's index.
+    fn field_index(&self) -> usize {
+        usize::from(self.focus_field.min(1))
+    }
+
+    /// The text of field `index`.
+    fn field_text(&self, index: usize) -> &str {
+        if index == 0 {
+            &self.find_text
+        } else {
+            &self.replace_text
         }
     }
 
-    /// Deletes the last character from the focused text field.
-    fn backspace_focused(&mut self) {
-        match self.focus_field {
-            0 => {
-                self.find_text.pop();
-                self.base.request_redraw();
-            }
-            1 => {
-                self.replace_text.pop();
-                self.base.request_redraw();
-            }
-            _ => {}
+    /// Replaces the text of field `index`.
+    fn set_field_text(&mut self, index: usize, text: String) {
+        if index == 0 {
+            self.find_text = text;
+        } else {
+            self.replace_text = text;
         }
+        let length = self.field_text(index).chars().count();
+        self.caret[index] = self.caret[index].min(length);
+        self.anchor[index] = self.anchor[index].min(length);
+        self.base.request_redraw();
+    }
+
+    /// The selected character range of field `index`, if any.
+    fn selected_range(&self, index: usize) -> Option<(usize, usize)> {
+        let start = self.caret[index].min(self.anchor[index]);
+        let end = self.caret[index].max(self.anchor[index]);
+        (start != end).then_some((start, end))
+    }
+
+    /// The byte offset of character `index` in `text`.
+    fn byte_index(text: &str, index: usize) -> usize {
+        text.char_indices().nth(index).map(|(offset, _)| offset).unwrap_or(text.len())
+    }
+
+    /// Replaces the focused field's selection (or inserts at the caret) with `inserted`.
+    fn insert_text(&mut self, inserted: &str) {
+        let index = self.field_index();
+        let current = self.field_text(index).to_string();
+        let (start, end) =
+            self.selected_range(index).unwrap_or((self.caret[index], self.caret[index]));
+        let start_byte = Self::byte_index(&current, start);
+        let end_byte = Self::byte_index(&current, end);
+        let mut next = String::with_capacity(current.len() + inserted.len());
+        next.push_str(&current[..start_byte]);
+        next.push_str(inserted);
+        next.push_str(&current[end_byte..]);
+        let caret = start + inserted.chars().count();
+        self.caret[index] = caret;
+        self.anchor[index] = caret;
+        self.set_field_text(index, next);
+    }
+
+    /// Deletes the focused field's selection, or one character before the caret.
+    fn backspace_focused(&mut self) {
+        let index = self.field_index();
+        let current = self.field_text(index).to_string();
+        if let Some((start, end)) = self.selected_range(index) {
+            let start_byte = Self::byte_index(&current, start);
+            let end_byte = Self::byte_index(&current, end);
+            let mut next = String::with_capacity(current.len());
+            next.push_str(&current[..start_byte]);
+            next.push_str(&current[end_byte..]);
+            self.caret[index] = start;
+            self.anchor[index] = start;
+            self.set_field_text(index, next);
+        } else if self.caret[index] > 0 {
+            let end_byte = Self::byte_index(&current, self.caret[index]);
+            let start_byte = Self::byte_index(&current, self.caret[index] - 1);
+            let mut next = String::with_capacity(current.len());
+            next.push_str(&current[..start_byte]);
+            next.push_str(&current[end_byte..]);
+            self.caret[index] -= 1;
+            self.anchor[index] = self.caret[index];
+            self.set_field_text(index, next);
+        }
+    }
+
+    /// Deletes the focused field's selection, or one character after the caret.
+    fn delete_focused(&mut self) {
+        let index = self.field_index();
+        let current = self.field_text(index).to_string();
+        if let Some((start, end)) = self.selected_range(index) {
+            let start_byte = Self::byte_index(&current, start);
+            let end_byte = Self::byte_index(&current, end);
+            let mut next = String::with_capacity(current.len());
+            next.push_str(&current[..start_byte]);
+            next.push_str(&current[end_byte..]);
+            self.caret[index] = start;
+            self.anchor[index] = start;
+            self.set_field_text(index, next);
+        } else if self.caret[index] < current.chars().count() {
+            let start_byte = Self::byte_index(&current, self.caret[index]);
+            let end_byte = Self::byte_index(&current, self.caret[index] + 1);
+            let mut next = String::with_capacity(current.len());
+            next.push_str(&current[..start_byte]);
+            next.push_str(&current[end_byte..]);
+            self.set_field_text(index, next);
+        }
+    }
+
+    /// Moves the focused field's caret, extending the selection when `extend` is set.
+    fn move_caret(&mut self, to: usize, extend: bool) {
+        let index = self.field_index();
+        let length = self.field_text(index).chars().count();
+        let to = to.min(length);
+        if !extend {
+            self.anchor[index] = to;
+        } else if self.caret[index] == self.anchor[index] {
+            // Start the selection at the old caret, so the first shift+arrow selects the
+            // character the caret moves across.
+            self.anchor[index] = self.caret[index];
+        }
+        self.caret[index] = to;
+        self.base.request_redraw();
+    }
+
+    /// The caret index under a click at `x` inside a field whose text starts at `left`.
+    fn caret_at_x(&self, x: i32, left: i32, advance: u32) -> usize {
+        let index = self.field_index();
+        let length = self.field_text(index).chars().count();
+        let offset = (x - left).max(0) as u32;
+        ((offset / advance.max(1)) as usize).min(length)
     }
 
     /// Computes layout rectangles for the two rows.
@@ -516,6 +632,9 @@ impl WidgetProperties for FindReplaceDialog {
             "find_text" => Ok(CapabilityValue::String(self.find_text().to_string())),
             "replace_text" => Ok(CapabilityValue::String(self.replace_text().to_string())),
             "match_case" => Ok(CapabilityValue::Bool(self.is_match_case())),
+            "whole_word" => Ok(CapabilityValue::Bool(self.is_whole_word())),
+            "use_regex" => Ok(CapabilityValue::Bool(self.is_use_regex())),
+            "highlight_all" => Ok(CapabilityValue::Bool(self.is_highlight_all())),
             "wrap_around" => Ok(CapabilityValue::Bool(self.is_wrap_around())),
             _ => base_property_get(self, name),
         }
@@ -535,6 +654,18 @@ impl WidgetProperties for FindReplaceDialog {
                 self.set_match_case(expect_bool(value)?);
                 Ok(())
             }
+            "whole_word" => {
+                self.set_whole_word(expect_bool(value)?);
+                Ok(())
+            }
+            "use_regex" => {
+                self.set_use_regex(expect_bool(value)?);
+                Ok(())
+            }
+            "highlight_all" => {
+                self.set_highlight_all(expect_bool(value)?);
+                Ok(())
+            }
             "wrap_around" => {
                 self.set_wrap_around(expect_bool(value)?);
                 Ok(())
@@ -548,6 +679,9 @@ impl WidgetProperties for FindReplaceDialog {
             "find_text",
             "replace_text",
             "match_case",
+            "whole_word",
+            "use_regex",
+            "highlight_all",
             "wrap_around",
             BASE_PROPERTY_NAMES
         ]
@@ -857,6 +991,11 @@ impl EventHandler for FindReplaceDialog {
                         );
                         if find_input_region.contains_point(*pos) {
                             self.focus_field = 0;
+                            let advance =
+                                effective_font(self.base.style()).size().ceil().max(1.0) as u32;
+                            let caret = self.caret_at_x(pos.x, find_input_region.x + 4, advance);
+                            self.caret[0] = caret;
+                            self.anchor[0] = caret;
                             self.base.request_redraw();
                             return;
                         }
@@ -876,6 +1015,11 @@ impl EventHandler for FindReplaceDialog {
                         );
                         if r_input_region.contains_point(*pos) {
                             self.focus_field = 1;
+                            let advance =
+                                effective_font(self.base.style()).size().ceil().max(1.0) as u32;
+                            let caret = self.caret_at_x(pos.x, r_input_region.x + 4, advance);
+                            self.caret[1] = caret;
+                            self.anchor[1] = caret;
                             self.base.request_redraw();
                             return;
                         }
@@ -974,7 +1118,9 @@ impl EventHandler for FindReplaceDialog {
                     }
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            Event::KeyPress { key, modifiers } => {
+                let shift = *modifiers & 1 != 0;
+                let primary = *modifiers & (2 | 8) != 0;
                 match *key {
                     27 => {
                         // Escape
@@ -990,19 +1136,56 @@ impl EventHandler for FindReplaceDialog {
                         // Backspace
                         self.backspace_focused();
                     }
+                    46 => {
+                        // Forward delete
+                        self.delete_focused();
+                    }
                     9 => {
                         // Tab — switch focus between find and replace
                         self.focus_field = 1 - self.focus_field;
+                        let index = self.field_index();
+                        self.caret[index] = self.field_text(index).chars().count();
+                        self.anchor[index] = self.caret[index];
+                        self.base.request_redraw();
+                    }
+                    37 | 39 | 36 | 35 => {
+                        // Left / Right / Home / End
+                        let index = self.field_index();
+                        let length = self.field_text(index).chars().count();
+                        let target = match *key {
+                            37 => self.caret[index].saturating_sub(1),
+                            39 => (self.caret[index] + 1).min(length),
+                            36 => 0,
+                            _ => length,
+                        };
+                        self.move_caret(target, shift);
+                    }
+                    65 | 97 if primary => {
+                        // Primary+A — select all in the focused field
+                        let index = self.field_index();
+                        self.anchor[index] = 0;
+                        self.caret[index] = self.field_text(index).chars().count();
                         self.base.request_redraw();
                     }
                     _ => {
-                        // Printable character range (rough check)
-                        if *key >= 32 && *key <= 126 {
+                        // Printable ASCII is the fallback for a host that only reports key
+                        // codes. Once committed text has arrived, the backend is speaking the
+                        // text protocol and the raw key would either duplicate the character
+                        // or insert a code a non-Latin layout never meant as a character.
+                        if !self.text_input_seen && *key >= 32 && *key <= 126 {
                             if let Some(ch) = char::from_u32(*key) {
-                                self.append_to_focused(ch);
+                                self.insert_text(&ch.to_string());
                             }
                         }
                     }
+                }
+            }
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.text_input_seen = true;
+                let filtered: String =
+                    text.chars().filter(|character| !character.is_control()).collect();
+                if !filtered.is_empty() {
+                    self.insert_text(&filtered);
                 }
             }
             _ => {
@@ -1020,6 +1203,7 @@ impl EventHandler for FindReplaceDialog {
 #[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
+    use crate::event::key_codes;
     use crate::widget::svg::render_to_svg;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -1334,6 +1518,77 @@ mod tests {
     /// * each entry field emitted `<text …></text>` when its value was empty — again an element
     ///   the rasteriser never produces.
     /// * the two arrow buttons were drawn at x 240 and x 270, past the 240 px frame.
+    #[test]
+    fn the_search_flags_round_trip_through_the_property_route() {
+        use crate::widget::capability::WidgetProperties;
+
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 400, 80));
+        for (name, setter) in [("whole_word", 0usize), ("use_regex", 1), ("highlight_all", 2)] {
+            dialog
+                .set(name, CapabilityValue::Bool(true))
+                .unwrap_or_else(|error| panic!("{name} must be writable: {error:?}"));
+            assert_eq!(dialog.get(name), Ok(CapabilityValue::Bool(true)));
+            let _ = setter;
+        }
+        assert!(dialog.is_whole_word() && dialog.is_use_regex() && dialog.is_highlight_all());
+    }
+
+    #[test]
+    fn committed_text_reaches_the_focused_field() {
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 400, 80));
+        dialog.show();
+        dialog.handle_event(&Event::TextInput { text: "搜索".to_string() });
+        assert_eq!(dialog.find_text(), "搜索");
+        // The raw key fallback no longer applies once the backend speaks committed text.
+        dialog.handle_event(&Event::KeyPress { key: 'x' as u32, modifiers: 0 });
+        assert_eq!(dialog.find_text(), "搜索");
+        dialog.handle_event(&Event::ImeCommit { text: "值".to_string() });
+        assert_eq!(dialog.find_text(), "搜索值");
+    }
+
+    #[test]
+    fn shift_arrows_select_and_typing_replaces_the_selection() {
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 400, 80));
+        dialog.set_find_text("abcdef");
+        dialog.show();
+        let index = dialog.field_index();
+        dialog.caret[index] = 6;
+        dialog.anchor[index] = 6;
+        // Shift+Left twice selects "ef".
+        dialog.handle_event(&Event::KeyPress { key: key_codes::LEFT, modifiers: 1 });
+        dialog.handle_event(&Event::KeyPress { key: key_codes::LEFT, modifiers: 1 });
+        assert_eq!(dialog.selected_range(index), Some((4, 6)));
+        dialog.handle_event(&Event::KeyPress { key: 'X' as u32, modifiers: 0 });
+        assert_eq!(dialog.find_text(), "abcdX");
+        assert_eq!(dialog.caret[index], 5);
+    }
+
+    #[test]
+    fn home_end_and_delete_edit_at_the_caret() {
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 400, 80));
+        dialog.set_find_text("abc");
+        dialog.show();
+        let index = dialog.field_index();
+        dialog.handle_event(&Event::KeyPress { key: key_codes::HOME, modifiers: 0 });
+        assert_eq!(dialog.caret[index], 0);
+        dialog.handle_event(&Event::KeyPress { key: key_codes::DELETE, modifiers: 0 });
+        assert_eq!(dialog.find_text(), "bc");
+        dialog.handle_event(&Event::KeyPress { key: key_codes::END, modifiers: 0 });
+        assert_eq!(dialog.caret[index], 2);
+        dialog.handle_event(&Event::KeyPress { key: key_codes::BACKSPACE, modifiers: 0 });
+        assert_eq!(dialog.find_text(), "b");
+    }
+
+    #[test]
+    fn primary_a_selects_the_whole_field() {
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 400, 80));
+        dialog.set_find_text("needle");
+        dialog.show();
+        dialog.handle_event(&Event::KeyPress { key: 65, modifiers: 2 });
+        let index = dialog.field_index();
+        assert_eq!(dialog.selected_range(index), Some((0, 6)));
+    }
+
     #[test]
     fn the_find_bar_emits_no_zero_extent_or_out_of_frame_ink_at_the_census_geometry() {
         let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 240, 120));

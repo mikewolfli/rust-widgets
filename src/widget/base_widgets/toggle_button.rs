@@ -2,16 +2,26 @@
 // SPDX-License-Identifier: MIT
 
 //! Toggle button widget.
-use crate::core::{HorizontalAlignment, Rect, Size};
+#[cfg(full_widgets)]
+use crate::compat::Vec;
+use crate::compat::{String, ToString};
+use crate::core::{HorizontalAlignment, ObjectId, Point, Rect, Size};
+#[cfg(full_widgets)]
+use crate::render::RenderCommand;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
+use crate::widget::base_widgets::button_group::{self, GroupKey};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+#[cfg(full_widgets)]
+use crate::widget::menu_toolbar::menu_button::{
+    draw_menu_panel, menu_item_rect, menu_panel_rect, MenuArrowType, MenuButtonPopup, MenuItem,
+};
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Toggle button state enumeration.
 ///
@@ -57,6 +67,34 @@ pub struct ToggleButton {
     checked: bool,
     auto_exclusive: bool,
     group_id: Option<String>,
+    /// Whether the tool button hides its chrome until it is pointed at, held or checked.
+    auto_raise: bool,
+    /// A typed icon painted before the caption.
+    icon_source: Option<IconSource>,
+    /// Which direction the menu disclosure arrow points.
+    #[cfg(full_widgets)]
+    arrow_type: MenuArrowType,
+    /// The attached menu's rows.
+    #[cfg(full_widgets)]
+    menu_items: Vec<MenuItem>,
+    /// Whether the attached menu is showing.
+    #[cfg(full_widgets)]
+    menu_open: bool,
+    /// How the face and the disclosure arrow divide a press.
+    #[cfg(full_widgets)]
+    popup_mode: MenuButtonPopup,
+    /// The highlighted row while the menu is open.
+    #[cfg(full_widgets)]
+    active_menu_index: Option<usize>,
+    /// How long a [`MenuButtonPopup::DelayedPopup`] press must be held before the menu opens.
+    #[cfg(full_widgets)]
+    popup_delay_ms: u32,
+    /// Elapsed milliseconds of the current held press, when one is timing.
+    #[cfg(full_widgets)]
+    press_elapsed: Option<u32>,
+    /// Emitted when a row of the attached menu is activated.
+    #[cfg(full_widgets)]
+    pub item_triggered: Signal1<u64>,
     /// The last value `pressed_signal`/`released_signal` were emitted for.
     ///
     /// The *paint* flag is [`BaseWidget::is_pressed`] (the crate's single source); this
@@ -102,6 +140,24 @@ impl ToggleButton {
             checked: false,
             auto_exclusive: false,
             group_id: None,
+            auto_raise: false,
+            icon_source: None,
+            #[cfg(full_widgets)]
+            arrow_type: MenuArrowType::None,
+            #[cfg(full_widgets)]
+            menu_items: Vec::new(),
+            #[cfg(full_widgets)]
+            menu_open: false,
+            #[cfg(full_widgets)]
+            popup_mode: MenuButtonPopup::InstantPopup,
+            #[cfg(full_widgets)]
+            active_menu_index: None,
+            #[cfg(full_widgets)]
+            popup_delay_ms: 300,
+            #[cfg(full_widgets)]
+            press_elapsed: None,
+            #[cfg(full_widgets)]
+            item_triggered: Signal1::new(),
             signaled_pressed: false,
             toggled: Signal1::new(),
             checked_changed: Signal1::new(),
@@ -125,8 +181,57 @@ impl ToggleButton {
         }
     }
     /// Returns the latched checked flag.
+    ///
+    /// An auto-exclusive button displaced by a selected peer reports `false`: the group holds the
+    /// selection and this control reads it back rather than keeping a second copy.
     pub fn is_checked(&self) -> bool {
-        self.checked
+        match self.exclusive_key() {
+            Some(key) => {
+                button_group::is_selected(&key, self.id())
+                    || (button_group::selected(&key).is_none() && self.checked)
+            }
+            None => self.checked,
+        }
+    }
+
+    /// The group this button belongs to, when auto-exclusive is on.
+    fn exclusive_key(&self) -> Option<GroupKey> {
+        if !self.auto_exclusive {
+            return None;
+        }
+        if let Some(id) = self.group_id.as_ref() {
+            return Some(GroupKey::Name(id.clone()));
+        }
+        self.parent().map(GroupKey::Parent)
+    }
+
+    /// Records this button's current facts with its group.
+    fn sync_group_registration(&self) {
+        if let Some(key) = self.exclusive_key() {
+            button_group::register(key, self.id(), self.geometry(), self.base.is_enabled());
+        }
+    }
+
+    /// Makes this button the group's selected member.
+    fn claim_group_selection(&mut self) {
+        let Some(key) = self.exclusive_key() else {
+            return;
+        };
+        button_group::register(key.clone(), self.id(), self.geometry(), self.base.is_enabled());
+        if let Some(previous) = button_group::select(&key, self.id()) {
+            if previous != self.id() {
+                button_group::notify_checked(&[previous], false);
+            }
+        }
+    }
+
+    /// Releases the group's selection when this button holds it.
+    fn release_group_selection(&mut self) {
+        if let Some(key) = self.exclusive_key() {
+            if button_group::is_selected(&key, self.id()) {
+                button_group::clear_selection(&key);
+            }
+        }
     }
     /// Sets the checked flag.
     ///
@@ -141,22 +246,37 @@ impl ToggleButton {
     /// re-resolve `"toggle_button:<state>"` first, or the new latch paints the old
     /// colour. See [`crate::style::reapply_active_theme_state`] for the measurement.
     pub fn set_checked(&mut self, checked: bool) {
-        if self.checked == checked {
+        let previous = self.is_checked();
+        if self.checked == checked && previous == checked {
+            if checked {
+                self.claim_group_selection();
+            }
             return;
         }
-        self.checked = checked;
+        if checked {
+            self.checked = true;
+            self.claim_group_selection();
+        } else {
+            self.checked = false;
+            self.release_group_selection();
+        }
+        self.sync_group_registration();
         // Before the signals: a handler that reads the style back must see the state it
         // is being told about, not the previous one.
         crate::style::reapply_active_theme_state(self);
         self.base.request_redraw();
-        self.checked_changed.emit(checked);
-        self.toggled.emit(checked);
-        self.state_changed.emit(self.state());
+        // Only an effective change is announced: a displaced member clearing its own latch
+        // already reported `false` through `is_checked`.
+        if previous != checked {
+            self.checked_changed.emit(checked);
+            self.toggled.emit(checked);
+            self.state_changed.emit(self.state());
+        }
     }
     /// Flips the checked flag through [`ToggleButton::set_checked`], so the
     /// usual signals fire.
     pub fn toggle(&mut self) {
-        self.set_checked(!self.checked);
+        self.set_checked(!self.is_checked());
     }
     /// Returns the auto-exclusive intent flag. Defaults to `false`.
     pub fn is_auto_exclusive(&self) -> bool {
@@ -164,16 +284,22 @@ impl ToggleButton {
     }
     /// Sets the auto-exclusive intent flag.
     ///
-    /// This records intent only: the button does **not** enforce exclusivity
-    /// itself. A group manager is expected to read this flag plus
-    /// [`ToggleButton::group_id`] and uncheck the group's other members when
-    /// one is checked. Setting it requests a redraw even though the flag is not
-    /// drawn.
+    /// With it on, the button actually excludes its peers: checking it unchecks the other
+    /// auto-exclusive buttons in the same `group_id` (or under the same parent when no id is set).
+    /// Off by default, so an ungrouped tool button keeps the independent latch it always had.
     pub fn set_auto_exclusive(&mut self, exclusive: bool) {
         if self.auto_exclusive == exclusive {
             return;
         }
+        let previous_key = self.exclusive_key();
         self.auto_exclusive = exclusive;
+        if let Some(key) = previous_key {
+            button_group::unregister(&key, self.id());
+        }
+        self.sync_group_registration();
+        if exclusive && self.checked {
+            self.claim_group_selection();
+        }
         self.base.request_redraw();
     }
     /// Returns the group this button belongs to, or `None` when ungrouped.
@@ -189,7 +315,204 @@ impl ToggleButton {
         if self.group_id == group_id {
             return;
         }
+        let previous_key = self.exclusive_key();
         self.group_id = group_id;
+        if let Some(key) = previous_key {
+            button_group::unregister(&key, self.id());
+        }
+        self.sync_group_registration();
+        if self.checked {
+            self.claim_group_selection();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether the button hides its chrome until the pointer or the latch lights it.
+    pub fn is_auto_raise(&self) -> bool {
+        self.auto_raise
+    }
+
+    /// Hides the tool button's face and frame at rest.
+    ///
+    /// The reference toolkit's `autoRaise`: a toolbar can leave its tool buttons flat until they
+    /// are hovered or checked. Off by default, so the existing button keeps its bordered look.
+    pub fn set_auto_raise(&mut self, auto_raise: bool) {
+        if self.auto_raise == auto_raise {
+            return;
+        }
+        self.auto_raise = auto_raise;
+        self.base.request_redraw();
+    }
+
+    /// The button's typed icon, if one is set.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
+    }
+
+    /// Sets (or clears) the button's leading icon.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        if self.icon_source == source {
+            return;
+        }
+        self.icon_source = source;
+        self.base.request_redraw();
+    }
+
+    /// Which way the menu disclosure arrow points.
+    #[cfg(full_widgets)]
+    pub fn arrow_type(&self) -> MenuArrowType {
+        self.arrow_type
+    }
+
+    /// Sets the disclosure arrow's direction. [`MenuArrowType::None`] hides it.
+    #[cfg(full_widgets)]
+    pub fn set_arrow_type(&mut self, arrow: MenuArrowType) {
+        if self.arrow_type == arrow {
+            return;
+        }
+        self.arrow_type = arrow;
+        self.base.request_redraw();
+    }
+
+    /// The attached menu's rows.
+    #[cfg(full_widgets)]
+    pub fn menu_items(&self) -> &[MenuItem] {
+        &self.menu_items
+    }
+
+    /// Attaches a drop-down menu. An empty list removes it.
+    #[cfg(full_widgets)]
+    pub fn set_menu(&mut self, items: Vec<MenuItem>) {
+        self.menu_items = items;
+        if self.menu_items.is_empty() {
+            self.close_menu();
+        }
+        self.base.request_redraw();
+    }
+
+    /// How a press is divided between the face and the disclosure arrow.
+    #[cfg(full_widgets)]
+    pub fn popup_mode(&self) -> MenuButtonPopup {
+        self.popup_mode
+    }
+
+    /// Sets the press split. See [`MenuButtonPopup`].
+    #[cfg(full_widgets)]
+    pub fn set_popup_mode(&mut self, mode: MenuButtonPopup) {
+        if self.popup_mode == mode {
+            return;
+        }
+        self.popup_mode = mode;
+        self.base.request_redraw();
+    }
+
+    /// Whether the attached menu is open.
+    #[cfg(full_widgets)]
+    pub fn is_menu_open(&self) -> bool {
+        self.menu_open
+    }
+
+    /// The menu's panel rectangle.
+    #[cfg(full_widgets)]
+    pub fn menu_rect(&self) -> Rect {
+        menu_panel_rect(self.geometry(), self.menu_items.len())
+    }
+
+    /// Opens the attached menu.
+    #[cfg(full_widgets)]
+    pub fn open_menu(&mut self) {
+        if self.menu_items.is_empty() || self.menu_open {
+            return;
+        }
+        self.menu_open = true;
+        self.active_menu_index = self.menu_items.iter().position(|item| item.enabled);
+        self.base.request_redraw();
+    }
+
+    /// Closes the attached menu.
+    #[cfg(full_widgets)]
+    pub fn close_menu(&mut self) {
+        if !self.menu_open {
+            return;
+        }
+        self.menu_open = false;
+        self.active_menu_index = None;
+        self.base.request_redraw();
+    }
+
+    /// Toggles the attached menu.
+    #[cfg(full_widgets)]
+    pub fn toggle_menu(&mut self) {
+        if self.menu_open {
+            self.close_menu();
+        } else {
+            self.open_menu();
+        }
+    }
+
+    /// The segment of the button that opens the menu directly.
+    #[cfg(full_widgets)]
+    pub fn arrow_rect(&self) -> Rect {
+        let geom = self.geometry();
+        if self.arrow_type == MenuArrowType::None {
+            return geom;
+        }
+        let width = geom.width.min(20);
+        Rect::new(geom.x + geom.width as i32 - width as i32, geom.y, width, geom.height)
+    }
+
+    /// The enabled menu row at `pos`.
+    #[cfg(full_widgets)]
+    fn hit_test_menu_item(&self, pos: Point) -> Option<usize> {
+        if !self.menu_open {
+            return None;
+        }
+        let panel = self.menu_rect();
+        if !panel.contains_point(pos) {
+            return None;
+        }
+        self.menu_items.iter().enumerate().find_map(|(index, item)| {
+            let row = menu_item_rect(panel, index);
+            (item.enabled && row.contains_point(pos)).then_some(index)
+        })
+    }
+
+    /// Emits `item_triggered` for the row and closes the menu.
+    #[cfg(full_widgets)]
+    fn activate_menu_row(&mut self, index: usize) {
+        let Some(item) = self.menu_items.get(index) else {
+            return;
+        };
+        if !item.enabled {
+            return;
+        }
+        let id = item.id;
+        self.item_triggered.emit(id);
+        self.close_menu();
+    }
+
+    /// Moves the keyboard highlight through the enabled rows.
+    #[cfg(full_widgets)]
+    fn move_menu_highlight(&mut self, forward: bool) {
+        let enabled: Vec<usize> = self
+            .menu_items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.enabled)
+            .map(|(i, _)| i)
+            .collect();
+        if enabled.is_empty() {
+            return;
+        }
+        let position = self
+            .active_menu_index
+            .and_then(|active| enabled.iter().position(|index| *index == active));
+        let next = match position {
+            Some(position) if forward => (position + 1) % enabled.len(),
+            Some(position) => (position + enabled.len() - 1) % enabled.len(),
+            None => 0,
+        };
+        self.active_menu_index = Some(enabled[next]);
         self.base.request_redraw();
     }
     /// Returns whether the button is currently held down.
@@ -223,7 +546,7 @@ impl ToggleButton {
     pub fn state(&self) -> ToggleButtonState {
         if !self.base.enabled {
             ToggleButtonState::Disabled
-        } else if self.checked {
+        } else if self.is_checked() {
             ToggleButtonState::Checked
         } else if self.base.is_pressed() {
             ToggleButtonState::Pressed
@@ -232,6 +555,43 @@ impl ToggleButton {
         } else {
             ToggleButtonState::Normal
         }
+    }
+
+    /// The horizontal room the leading icon takes, including its gap.
+    fn icon_advance(&self) -> u32 {
+        if self.icon_source.is_some() {
+            dimensions::TOOL_BUTTON_ICON_SIZE + dimensions::TOOL_BUTTON_ICON_SPACING
+        } else {
+            0
+        }
+    }
+
+    /// The horizontal room the disclosure arrow takes.
+    fn arrow_advance(&self) -> u32 {
+        #[cfg(full_widgets)]
+        {
+            if self.arrow_type == MenuArrowType::None {
+                0
+            } else {
+                12
+            }
+        }
+        #[cfg(not(full_widgets))]
+        {
+            0
+        }
+    }
+
+    /// How long a delayed popup press must be held.
+    #[cfg(full_widgets)]
+    pub fn popup_delay_ms(&self) -> u32 {
+        self.popup_delay_ms
+    }
+
+    /// Sets the delayed-popup hold time.
+    #[cfg(full_widgets)]
+    pub fn set_popup_delay_ms(&mut self, delay_ms: u32) {
+        self.popup_delay_ms = delay_ms;
     }
 
     /// The progress the current interaction state calls for.
@@ -260,7 +620,20 @@ impl ToggleButton {
     /// and a test can shorten it to reach the end state deterministically.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
         self.interaction_progress.set_target(self.interaction_target_progress());
-        self.interaction_progress.tick(delta_ms)
+        #[cfg_attr(not(full_widgets), allow(unused_mut))]
+        let mut animating = self.interaction_progress.tick(delta_ms);
+        // A delayed popup is a held press, not an animation, but it still owes the bus a frame:
+        // without that the timer would only fire when some other control happened to tick.
+        #[cfg(full_widgets)]
+        if let Some(elapsed) = self.press_elapsed.as_mut() {
+            *elapsed = elapsed.saturating_add(delta_ms);
+            if *elapsed >= self.popup_delay_ms {
+                self.press_elapsed = None;
+                self.open_menu();
+            }
+            animating = true;
+        }
+        animating
     }
 }
 impl Widget for ToggleButton {
@@ -272,6 +645,61 @@ impl Widget for ToggleButton {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// Keeps the exclusive group's geometry snapshot current.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.sync_group_registration();
+    }
+
+    /// Keeps the exclusive group in step with the parent it may be keyed by.
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        let previous = self.exclusive_key();
+        self.base.set_parent(parent);
+        if let Some(key) = previous {
+            button_group::unregister(&key, self.id());
+        }
+        self.sync_group_registration();
+    }
+
+    /// Keeps the group's enabled snapshot current, so a peer excludes it correctly.
+    fn set_enabled(&mut self, enabled: bool) {
+        if self.base.is_enabled() == enabled {
+            return;
+        }
+        self.base.set_enabled(enabled);
+        self.set_state_theme_hook();
+        self.sync_group_registration();
+        self.base.request_redraw();
+    }
+
+    /// The button and its open menu accept the pointer.
+    fn contains_point(&self, point: Point) -> bool {
+        #[cfg(full_widgets)]
+        if self.menu_open && self.menu_rect().contains_point(point) {
+            return true;
+        }
+        self.base.contains_point_with_touch_expansion(point)
+    }
+
+    #[cfg(full_widgets)]
+    fn has_open_popup(&self) -> bool {
+        self.menu_open
+    }
+
+    /// A right-click on a button with a menu opens it at the pointer.
+    #[cfg(full_widgets)]
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        if self.menu_items.is_empty() {
+            return false;
+        }
+        // The attached menu anchors below the button; the pointer position is the request's
+        // anchor rather than a panel origin, so the menu is opened at its usual place. A caller
+        // that wants a true context menu has the `Menu` control for it.
+        let _ = pos;
+        self.open_menu();
+        true
     }
 
     fn size_hint(&self) -> Size {
@@ -290,8 +718,10 @@ impl Widget for ToggleButton {
         // `ToggleButton` with the same caption reported different widths, and the gap widened with
         // every non-ASCII character (a CJK caption measured three times its drawn width).
         let label_width = estimate_text_width(self.text(), effective_font(self.style()), 1.0);
+        let icon_advance = self.icon_advance();
+        let arrow_advance = self.arrow_advance();
         ControlMetrics::implicit_size(
-            Size::new(label_width, dimensions::FONT_SIZE_BASE + 4),
+            Size::new(label_width + icon_advance + arrow_advance, dimensions::FONT_SIZE_BASE + 4),
             EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
             dimensions::BUTTON_MIN,
         )
@@ -316,7 +746,7 @@ impl Widget for ToggleButton {
         }
         // The latch outranks the momentary states, matching `CheckBox`: a checked toggle that is
         // hovered is still checked, and the checked fill is the fact a user is looking for.
-        if self.checked {
+        if self.is_checked() {
             return WidgetState::Checked;
         }
         if self.base.is_pressed() {
@@ -342,6 +772,10 @@ impl Widget for ToggleButton {
         // the control animating at once, before any `tick` has run to recompute the target.
         // Reading the stale field would answer `false` for a button that was just hovered, so the
         // bus would never start its frames. `Button::is_animating` documents the same trap.
+        #[cfg(full_widgets)]
+        if self.press_elapsed.is_some() {
+            return true;
+        }
         self.interaction_progress.value() != self.interaction_target_progress()
     }
 
@@ -405,6 +839,45 @@ impl WidgetProperties for ToggleButton {
                 };
                 Ok(CapabilityValue::String(state.to_string()))
             }
+            "auto_exclusive" => Ok(CapabilityValue::Bool(self.is_auto_exclusive())),
+            "auto_raise" => Ok(CapabilityValue::Bool(self.is_auto_raise())),
+            "group_id" => match self.group_id() {
+                Some(id) => Ok(CapabilityValue::String(id.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
+            "icon_source" => match self.icon_source() {
+                None => Ok(CapabilityValue::Null),
+                Some(IconSource::Builtin(name)) => Ok(CapabilityValue::IconSpec(
+                    crate::widget::icon_source::IconSpec::Builtin(name),
+                )),
+                Some(IconSource::StaticGeometry(_)) => {
+                    Err(CapabilityAccessError::IconSourceNotPersistable)
+                }
+            },
+            #[cfg(full_widgets)]
+            "arrow_type" => Ok(CapabilityValue::String(
+                match self.arrow_type {
+                    MenuArrowType::None => "none",
+                    MenuArrowType::Down => "down",
+                    MenuArrowType::Up => "up",
+                    MenuArrowType::Left => "left",
+                    MenuArrowType::Right => "right",
+                }
+                .to_string(),
+            )),
+            #[cfg(full_widgets)]
+            "popup_mode" => Ok(CapabilityValue::String(
+                match self.popup_mode {
+                    MenuButtonPopup::InstantPopup => "instant",
+                    MenuButtonPopup::MenuButtonPopup => "menu_button",
+                    MenuButtonPopup::DelayedPopup => "delayed",
+                }
+                .to_string(),
+            )),
+            #[cfg(full_widgets)]
+            "menu_open" => Ok(CapabilityValue::Bool(self.is_menu_open())),
+            #[cfg(full_widgets)]
+            "menu_item_count" => Ok(CapabilityValue::UInt(self.menu_items.len() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -420,12 +893,110 @@ impl WidgetProperties for ToggleButton {
                 Ok(())
             }
             "state" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "auto_exclusive" => {
+                self.set_auto_exclusive(expect_bool(value)?);
+                Ok(())
+            }
+            "auto_raise" => {
+                self.set_auto_raise(expect_bool(value)?);
+                Ok(())
+            }
+            "group_id" => {
+                match value {
+                    CapabilityValue::Null => self.set_group_id(None),
+                    other => self.set_group_id(Some(expect_string(other)?)),
+                }
+                Ok(())
+            }
+            "icon_source" => {
+                match value {
+                    CapabilityValue::Null => self.set_icon_source(None),
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                        name,
+                    )) => self.set_icon_source(Some(IconSource::Builtin(name))),
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                        ..
+                    }) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
+            #[cfg(full_widgets)]
+            "arrow_type" => {
+                let token = expect_string(value)?;
+                let arrow = match token.as_str() {
+                    "none" => MenuArrowType::None,
+                    "down" => MenuArrowType::Down,
+                    "up" => MenuArrowType::Up,
+                    "left" => MenuArrowType::Left,
+                    "right" => MenuArrowType::Right,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_arrow_type(arrow);
+                Ok(())
+            }
+            #[cfg(full_widgets)]
+            "popup_mode" => {
+                let token = expect_string(value)?;
+                let mode = match token.as_str() {
+                    "instant" => MenuButtonPopup::InstantPopup,
+                    "menu_button" => MenuButtonPopup::MenuButtonPopup,
+                    "delayed" => MenuButtonPopup::DelayedPopup,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_popup_mode(mode);
+                Ok(())
+            }
+            #[cfg(full_widgets)]
+            "menu_open" => {
+                if expect_bool(value)? {
+                    self.open_menu();
+                } else {
+                    self.close_menu();
+                }
+                Ok(())
+            }
+            #[cfg(full_widgets)]
+            "menu_item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
+    fn set_resolved_icon_source(
+        &mut self,
+        source: Option<IconSource>,
+    ) -> Result<(), CapabilityAccessError> {
+        self.set_icon_source(source);
+        Ok(())
+    }
+
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "checked", "state", BASE_PROPERTY_NAMES]
+        #[cfg(full_widgets)]
+        return property_names_of![
+            "text",
+            "checked",
+            "state",
+            "auto_exclusive",
+            "auto_raise",
+            "group_id",
+            "icon_source",
+            "arrow_type",
+            "popup_mode",
+            "menu_open",
+            "menu_item_count",
+            BASE_PROPERTY_NAMES
+        ];
+        #[cfg(not(full_widgets))]
+        return property_names_of![
+            "text",
+            "checked",
+            "state",
+            "auto_exclusive",
+            "auto_raise",
+            "group_id",
+            "icon_source",
+            BASE_PROPERTY_NAMES
+        ];
     }
 
     /// Runs one of the commands `toggle_button` publishes.
@@ -492,12 +1063,12 @@ impl Draw for ToggleButton {
             // here (`rgb(200,220,255)` checked, `rgb(240,240,240)` normal). The checked one was
             // the light preset's tint, so a checked toggle read wrong on every dark appearance;
             // the roles move with the appearance by construction.
-            let role = if self.checked {
+            let role = if self.is_checked() {
                 crate::style::LayerColor::SurfaceContainerHigh
             } else {
                 crate::style::LayerColor::SurfaceContainer
             };
-            crate::style::layer_color(role).unwrap_or(if self.checked {
+            crate::style::layer_color(role).unwrap_or(if self.is_checked() {
                 Color::rgb(200, 220, 255)
             } else {
                 Color::rgb(240, 240, 240)
@@ -518,14 +1089,22 @@ impl Draw for ToggleButton {
                 resting.blend(&interactive, progress)
             }
         };
-        context.face_with_gradient(
-            rect,
-            bg_color,
-            self.style().background_gradient.as_ref(),
-            self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
-            Color::BLACK,
-        );
+        // An auto-raising tool button shows no chrome at rest. The state it needs is already
+        // derived: `Checked` is persistent and the two momentary states cover hover and press.
+        let chrome = !self.auto_raise
+            || self.is_checked()
+            || self.base.is_hovered()
+            || self.base.is_pressed();
+        if chrome {
+            context.face_with_gradient(
+                rect,
+                bg_color,
+                self.style().background_gradient.as_ref(),
+                self.style().surface.unwrap_or_default(),
+                self.style().border_radius.unwrap_or(0),
+                Color::BLACK,
+            );
+        }
 
         // ── Border ──
         //
@@ -536,7 +1115,7 @@ impl Draw for ToggleButton {
         // disabled, so "switched off" and "inert" are two different lines rather than the same
         // grey.
         let border_color = style.border_color.unwrap_or_else(|| {
-            if self.checked {
+            if self.is_checked() {
                 crate::style::semantic_color(crate::style::SemanticColor::Info)
                     .unwrap_or(Color::rgb(80, 120, 200))
             } else if state == ToggleButtonState::Disabled {
@@ -547,31 +1126,80 @@ impl Draw for ToggleButton {
         });
         let bw = style.border_width.unwrap_or(0);
         let border_width = if bw > 0 { bw } else { 1 };
-        context.draw_rect_stroke(rect, border_color, border_width);
+        if chrome {
+            context.draw_rect_stroke(rect, border_color, border_width);
+        }
 
-        // ── Text ──
-        if !self.text.is_empty() {
-            let text_color = style.text_color.unwrap_or_else(|| {
-                if state == ToggleButtonState::Disabled {
-                    // The disabled ink is the theme's own disabled colour rather than the
-                    // near-invisible `rgb(150, 150, 150)` literal, which measured below the
-                    // 4.5:1 floor once the disabled fill went to the theme's surface.
-                    disabled.unwrap_or(Color::rgb(150, 150, 150))
-                } else {
-                    // The label sits on the control's own fill, so it takes that fill's contrast
-                    // colour instead of a literal black — the same rule `CheckBox`'s mark, the
-                    // `group_box` tick and this crate's other indicators follow.
-                    bg_color.contrast_color()
-                }
+        // ── Icon, arrow and text ──
+        let font = effective_font(style);
+        let text_color = style.text_color.unwrap_or_else(|| {
+            if state == ToggleButtonState::Disabled {
+                // The disabled ink is the theme's own disabled colour rather than the
+                // near-invisible `rgb(150, 150, 150)` literal, which measured below the
+                // 4.5:1 floor once the disabled fill went to the theme's surface.
+                disabled.unwrap_or(Color::rgb(150, 150, 150))
+            } else {
+                // The label sits on the control's own fill, so it takes that fill's contrast
+                // colour instead of a literal black — the same rule `CheckBox`'s mark, the
+                // `group_box` tick and this crate's other indicators follow.
+                bg_color.contrast_color()
+            }
+        });
+        let line = context.text_line(rect, font);
+        let mut leading = dimensions::BUTTON_PADDING_H as i32;
+        if let Some(source) = self.icon_source {
+            // The icon shares the text's line box, so a bigger font moves both by the same
+            // amount rather than leaving the icon floating on the button's midpoint.
+            let side = dimensions::TOOL_BUTTON_ICON_SIZE.min(rect.height).min(line.height.max(1));
+            let icon_rect = Rect::new(rect.x + leading, line.y, side, side);
+            if let Err(error) =
+                crate::widget::paint_icon(context, source.into(), icon_rect, text_color)
+            {
+                log::warn!("tool button icon could not be painted: {error:?}");
+            }
+            leading += side as i32 + dimensions::TOOL_BUTTON_ICON_SPACING as i32;
+        }
+        #[cfg_attr(not(full_widgets), allow(unused_mut))]
+        let mut trailing = dimensions::BUTTON_PADDING_H as i32;
+        #[cfg(full_widgets)]
+        if self.arrow_type != MenuArrowType::None {
+            trailing += 12;
+            let arrow_x = rect.x + rect.width as i32 - trailing;
+            let arrow_y = rect.y + rect.height as i32 / 2 - 2;
+            let points = match self.arrow_type {
+                MenuArrowType::Up => vec![
+                    crate::core::Point::new(arrow_x, arrow_y + 6),
+                    crate::core::Point::new(arrow_x + 8, arrow_y + 6),
+                    crate::core::Point::new(arrow_x + 4, arrow_y),
+                ],
+                MenuArrowType::Left => vec![
+                    crate::core::Point::new(arrow_x + 6, arrow_y),
+                    crate::core::Point::new(arrow_x + 6, arrow_y + 6),
+                    crate::core::Point::new(arrow_x, arrow_y + 3),
+                ],
+                MenuArrowType::Right => vec![
+                    crate::core::Point::new(arrow_x, arrow_y),
+                    crate::core::Point::new(arrow_x, arrow_y + 6),
+                    crate::core::Point::new(arrow_x + 6, arrow_y + 3),
+                ],
+                _ => vec![
+                    crate::core::Point::new(arrow_x, arrow_y),
+                    crate::core::Point::new(arrow_x + 8, arrow_y),
+                    crate::core::Point::new(arrow_x + 4, arrow_y + 6),
+                ],
+            };
+            context.execute_command(RenderCommand::DrawPath {
+                points,
+                closed: true,
+                color: text_color,
+                filled: true,
+                width: 1,
             });
-            // The effective font, taken through the shared accessor so the hint and the ink
-            // measure with one font (D09-STYLE-02).
-            let font = effective_font(style);
-            // The label is centred in the button's own rectangle through the shared primitive:
-            // a glyph origin is the box's top-left, so the old `rect.y + rect.height / 2` put
-            // that edge on the middle line and drew the text half a line low.
-            let line = context.text_line(rect, font);
-            let text_band = crate::core::Rect::new(rect.x, line.y, rect.width, line.height);
+        }
+        if !self.text.is_empty() {
+            let band_x = rect.x + leading;
+            let band_width = (rect.width as i32 - leading - trailing).max(0) as u32;
+            let text_band = Rect::new(band_x, line.y, band_width, line.height);
             context.draw_text_fitted_cow(
                 text_band,
                 &self.text,
@@ -580,8 +1208,34 @@ impl Draw for ToggleButton {
                 HorizontalAlignment::Center,
             );
         }
+
+        // ── Attached menu ──
+        #[cfg(full_widgets)]
+        if self.menu_open {
+            let panel = self.menu_rect();
+            let accent = crate::style::theme_manager()
+                .current_theme()
+                .map(|theme| theme.colors.accent)
+                .unwrap_or_else(|| bg_color.contrast_color());
+            draw_menu_panel(context, panel, &self.menu_items, &[], style, accent);
+            if let Some(index) = self.active_menu_index {
+                if self.menu_items.get(index).is_some_and(|item| item.enabled) {
+                    let row = menu_item_rect(panel, index);
+                    context.draw_rounded_rect_stroke(row, 2, accent, 1);
+                }
+            }
+        }
     }
 }
+/// A dropped tool button leaves its exclusive group.
+impl Drop for ToggleButton {
+    fn drop(&mut self) {
+        if let Some(key) = self.exclusive_key() {
+            button_group::unregister(&key, self.id());
+        }
+    }
+}
+
 impl crate::event::EventHandler for ToggleButton {
     /// Toggles on a completed activation, mirroring `Button`.
     ///
@@ -594,16 +1248,104 @@ impl crate::event::EventHandler for ToggleButton {
     /// on `self.pressed`; this control now does the same and arms only for a press that lands on it.
     fn handle_event(&mut self, event: &crate::event::Event) {
         self.base.handle_event(event);
+        self.sync_group_registration();
         if !self.base.is_enabled() {
             return;
         }
+
+        // An open menu owns the next interaction.
+        #[cfg(full_widgets)]
+        if self.menu_open {
+            let mut consumed = false;
+            match event {
+                crate::event::Event::KeyPress { key, .. }
+                    if *key == crate::event::key_codes::ESCAPE =>
+                {
+                    self.close_menu();
+                    consumed = true;
+                }
+                crate::event::Event::KeyPress { key, .. }
+                    if *key == crate::event::key_codes::DOWN =>
+                {
+                    self.move_menu_highlight(true);
+                    consumed = true;
+                }
+                crate::event::Event::KeyPress { key, .. }
+                    if *key == crate::event::key_codes::UP =>
+                {
+                    self.move_menu_highlight(false);
+                    consumed = true;
+                }
+                crate::event::Event::KeyPress { key, .. }
+                    if *key == crate::event::key_codes::ENTER
+                        || *key == crate::event::key_codes::SPACE =>
+                {
+                    if let Some(index) = self.active_menu_index {
+                        self.activate_menu_row(index);
+                    }
+                    consumed = true;
+                }
+                crate::event::Event::MousePress { pos, button, .. } if *button == 1 => {
+                    if let Some(index) = self.hit_test_menu_item(*pos) {
+                        self.activate_menu_row(index);
+                    } else if !self.menu_rect().contains_point(*pos) {
+                        self.close_menu();
+                    }
+                    consumed = true;
+                }
+                crate::event::Event::MouseMove { pos } => {
+                    if let Some(index) = self.hit_test_menu_item(*pos) {
+                        if self.active_menu_index != Some(index) {
+                            self.active_menu_index = Some(index);
+                            self.base.request_redraw();
+                        }
+                    }
+                }
+                _ => { /* Other events reach the ordinary arms below */ }
+            }
+            if consumed {
+                return;
+            }
+        }
+
         match event {
             crate::event::Event::MousePress { pos, button, .. } if *button == 1 => {
+                #[cfg(full_widgets)]
+                if !self.menu_items.is_empty() {
+                    let on_arrow = self.arrow_rect().contains_point(*pos)
+                        || self.arrow_type == MenuArrowType::None;
+                    match self.popup_mode {
+                        MenuButtonPopup::InstantPopup => {
+                            self.toggle_menu();
+                            return;
+                        }
+                        MenuButtonPopup::MenuButtonPopup if on_arrow => {
+                            self.toggle_menu();
+                            return;
+                        }
+                        MenuButtonPopup::DelayedPopup if on_arrow => {
+                            self.open_menu();
+                            return;
+                        }
+                        MenuButtonPopup::DelayedPopup => {
+                            // Start the hold timer; `tick` opens the menu when it fires.
+                            self.press_elapsed = Some(0);
+                            self.base.request_redraw();
+                            return;
+                        }
+                        MenuButtonPopup::MenuButtonPopup => { /* the face still toggles */ }
+                    }
+                }
                 // Arm only for a press on the control; a press outside must not leave the latch
                 // set for a later release.
                 self.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
             }
             crate::event::Event::MouseRelease { pos, button } if *button == 1 => {
+                #[cfg(full_widgets)]
+                {
+                    // A release before the delay fired cancels the pending popup.
+                    self.press_elapsed = None;
+                }
                 // Commit only a press that this control armed, and only while the pointer is
                 // still over it — the same two conditions `Button` applies. The guard reads
                 // `signaled_pressed`, not the base flag: the base clears `pressed` on the
@@ -619,10 +1361,23 @@ impl crate::event::EventHandler for ToggleButton {
             }
             crate::event::Event::MouseLeave { .. } => {
                 // Abandon a held press; without arms this control had no leave handling at all.
+                #[cfg(full_widgets)]
+                {
+                    self.press_elapsed = None;
+                }
                 self.set_pressed(false);
             }
             crate::event::Event::FocusLost => {
                 self.set_pressed(false);
+            }
+            // Space and Enter activate a tool button, matching the push button's contract.
+            crate::event::Event::KeyPress { key, .. }
+                if *key == crate::event::key_codes::SPACE
+                    || *key == crate::event::key_codes::ENTER
+                    || *key == crate::event::key_codes::LINE_FEED =>
+            {
+                self.toggle();
+                self.base.clicked.emit();
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -1000,6 +1755,129 @@ mod tests {
         let g = parts.next().and_then(|v| v.trim().parse().ok()).expect("g");
         let b = parts.next().and_then(|v| v.trim().parse().ok()).expect("b");
         (r, g, b)
+    }
+
+    // ── Keyboard activation and exclusivity (R019–R021) ───────────────
+
+    #[test]
+    fn space_and_enter_toggle_the_button() {
+        use crate::event::key_codes;
+        let mut button = ToggleButton::new("Bold".to_string(), Rect::new(0, 0, 80, 30));
+        button.handle_event(&Event::KeyPress { key: key_codes::SPACE, modifiers: 0 });
+        assert!(button.is_checked(), "Space activates a focused tool button");
+        button.handle_event(&Event::KeyPress { key: key_codes::ENTER, modifiers: 0 });
+        assert!(!button.is_checked(), "Enter activates it too");
+    }
+
+    #[test]
+    fn an_unrelated_key_does_not_toggle() {
+        let mut button = ToggleButton::new("Bold".to_string(), Rect::new(0, 0, 80, 30));
+        button.handle_event(&Event::KeyPress { key: 65, modifiers: 0 });
+        assert!(!button.is_checked());
+    }
+
+    #[test]
+    fn auto_exclusive_buttons_in_one_group_exclude_each_other() {
+        let mut first = ToggleButton::new("Left".to_string(), Rect::new(0, 0, 60, 30));
+        let mut second = ToggleButton::new("Right".to_string(), Rect::new(70, 0, 60, 30));
+        first.set_group_id(Some("align".into()));
+        second.set_group_id(Some("align".into()));
+        first.set_auto_exclusive(true);
+        second.set_auto_exclusive(true);
+
+        first.set_checked(true);
+        assert!(first.is_checked());
+        second.set_checked(true);
+        assert!(second.is_checked());
+        assert!(!first.is_checked(), "the group holds one latch");
+    }
+
+    #[test]
+    fn auto_exclusive_off_leaves_the_latches_independent() {
+        let mut first = ToggleButton::new("Left".to_string(), Rect::new(0, 0, 60, 30));
+        let mut second = ToggleButton::new("Right".to_string(), Rect::new(70, 0, 60, 30));
+        first.set_group_id(Some("align".into()));
+        second.set_group_id(Some("align".into()));
+        first.set_checked(true);
+        second.set_checked(true);
+        assert!(first.is_checked() && second.is_checked());
+    }
+
+    #[test]
+    fn auto_raise_is_off_by_default_and_writable() {
+        use crate::widget::capability::WidgetProperties;
+        let mut button = ToggleButton::new("Bold".to_string(), Rect::new(0, 0, 80, 30));
+        assert!(!button.is_auto_raise());
+        button.set("auto_raise", CapabilityValue::Bool(true)).expect("writable");
+        assert!(button.is_auto_raise());
+        assert_eq!(button.get("auto_raise"), Ok(CapabilityValue::Bool(true)));
+    }
+
+    #[test]
+    fn an_icon_source_is_readable_and_forwarded_to_the_base_hook() {
+        use crate::widget::capability::WidgetProperties;
+        use crate::widget::IconName;
+        let mut button = ToggleButton::new("Bold".to_string(), Rect::new(0, 0, 80, 30));
+        assert_eq!(button.get("icon_source"), Ok(CapabilityValue::Null));
+        button.set_icon_source(Some(IconSource::Builtin(IconName::Info)));
+        let expected = crate::widget::icon_source::IconSpec::Builtin(IconName::Info);
+        assert_eq!(button.get("icon_source"), Ok(CapabilityValue::IconSpec(expected)));
+        assert!(button.size_hint().width > 0);
+    }
+
+    #[cfg(full_widgets)]
+    #[test]
+    fn an_attached_menu_opens_on_click_and_reports_its_row() {
+        use crate::widget::menu_toolbar::menu_button::{menu_item_rect, MenuItem};
+        use std::sync::{Arc, Mutex};
+
+        let mut button = ToggleButton::new("Bold".to_string(), Rect::new(0, 0, 80, 30));
+        button.set_menu(vec![MenuItem::new(9, "Toggle")]);
+        let triggered = Arc::new(Mutex::new(0u64));
+        let sink = triggered.clone();
+        button.item_triggered.connect(move |id| {
+            *sink.lock().unwrap() = *id;
+        });
+
+        button.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
+        assert!(button.is_menu_open(), "the instant-popup mode opens on press");
+        assert!(!button.is_checked(), "opening the menu is not the face's toggle");
+
+        let row = menu_item_rect(button.menu_rect(), 0);
+        button.handle_event(&Event::MousePress {
+            pos: Point::new(row.x + 3, row.y + 3),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(*triggered.lock().unwrap(), 9);
+        assert!(!button.is_menu_open());
+    }
+
+    #[cfg(full_widgets)]
+    #[test]
+    fn a_menu_button_popup_splits_the_face_from_the_arrow() {
+        use crate::widget::menu_toolbar::menu_button::{MenuArrowType, MenuButtonPopup, MenuItem};
+        let mut button = ToggleButton::new("Bold".to_string(), Rect::new(0, 0, 80, 30));
+        button.set_menu(vec![MenuItem::new(1, "One")]);
+        button.set_arrow_type(MenuArrowType::Down);
+        button.set_popup_mode(MenuButtonPopup::MenuButtonPopup);
+
+        button.handle_event(&Event::MousePress {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(!button.is_menu_open(), "a face press does not open the menu");
+        button.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        assert!(button.is_checked(), "the face toggles on release");
+        assert!(!button.is_menu_open());
+
+        button.handle_event(&Event::MousePress {
+            pos: Point::new(70, 10),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(button.is_menu_open(), "the arrow segment opens the menu");
     }
 }
 

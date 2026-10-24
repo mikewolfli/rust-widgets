@@ -6,7 +6,7 @@
 use crate::core::Point;
 use crate::event::Event;
 
-use super::GestureRecognizer;
+use super::{GestureKind, GestureRecognizer};
 
 use super::pinch::PinchTouch;
 
@@ -54,6 +54,10 @@ impl RotateGesture {
 }
 
 impl GestureRecognizer for RotateGesture {
+    fn kind(&self) -> GestureKind {
+        GestureKind::Rotate
+    }
+
     fn process(&mut self, event: &Event, _now_ms: u64) -> Option<Event> {
         match event {
             Event::TouchBegin { pos, touch_id } => {

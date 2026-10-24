@@ -120,7 +120,22 @@ impl MenuConfigManager {
             // already proved there is none — and the false entry would then make
             // `has_user_overrides()` true and silently block every later refresh.
             self.config = MenuConfig::new();
+            // A fresh detection has just read the current power source, so the battery
+            // reduction is applied in the same pass rather than waiting for a caller that
+            // has no reason to know a refresh happened.
+            self.adapt_for_battery_power();
         }
+    }
+
+    /// Applies the battery reduction when the power source changed.
+    ///
+    /// This is the automatic trigger point: a host that receives a platform power-source
+    /// notification calls this once, and the policy adapts. It is idempotent — the
+    /// reduction functions write the same values — so a duplicate notification is
+    /// harmless.
+    pub fn on_power_source_changed(&mut self, on_battery: bool) {
+        self.config.set_on_battery(on_battery);
+        self.adapt_for_battery_power();
     }
 
     /// Turns the adaptive configuration on or off.

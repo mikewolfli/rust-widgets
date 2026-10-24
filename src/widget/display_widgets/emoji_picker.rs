@@ -124,6 +124,9 @@ const SEARCH_HEIGHT: u32 = 30;
 const TAB_HEIGHT: u32 = 26;
 const CELL_SIZE: u32 = 34;
 
+/// Height of the caption strip drawn over the foot of the picker while a glyph is hovered.
+const FOOTER_HEIGHT: u32 = 20;
+
 /// How many "recently used" ids the picker remembers.
 ///
 /// Twenty is a full row of the default grid, which is how many a user can see at
@@ -147,8 +150,17 @@ pub struct EmojiPicker {
     recent: Vec<String>,
     /// The grid index the keyboard cursor is on, if any.
     cursor: Option<usize>,
+    /// The grid index the pointer is over, if any.
+    hovered: Option<usize>,
     /// Emitted when a glyph is chosen, with its id.
     pub glyph_chosen: Signal1<String>,
+    /// Emitted when the hovered glyph changes.
+    ///
+    /// The payload is the glyph's `keywords` joined with `", "` when it has any,
+    /// and its `id` when it has none — the same vocabulary search matches, so a
+    /// tooltip and a query agree about what a glyph is called. An empty string
+    /// means the pointer is no longer over a glyph.
+    pub hovered_glyph_changed: Signal1<String>,
 }
 
 impl EmojiPicker {
@@ -179,7 +191,9 @@ impl EmojiPicker {
             search: String::new(),
             recent: Vec::new(),
             cursor: None,
+            hovered: None,
             glyph_chosen: Signal1::new(),
+            hovered_glyph_changed: Signal1::new(),
         }
     }
 
@@ -195,6 +209,7 @@ impl EmojiPicker {
         let known: Vec<&str> = self.glyphs.iter().map(|glyph| glyph.id.as_str()).collect();
         self.recent.retain(|id| known.contains(&id.as_str()));
         self.cursor = None;
+        self.hovered = None;
         self.base.request_redraw();
     }
 
@@ -207,6 +222,7 @@ impl EmojiPicker {
     pub fn set_categories(&mut self, categories: Vec<Category>) {
         self.categories = categories;
         self.active_tab = 0;
+        self.hovered = None;
         self.base.request_redraw();
     }
 
@@ -279,6 +295,7 @@ impl EmojiPicker {
         self.active_tab = index;
         self.search.clear();
         self.cursor = None;
+        self.hovered = None;
         self.base.request_redraw();
     }
 
@@ -294,6 +311,7 @@ impl EmojiPicker {
         }
         self.search = search.to_string();
         self.cursor = None;
+        self.hovered = None;
         self.base.request_redraw();
     }
 
@@ -306,6 +324,7 @@ impl EmojiPicker {
     pub fn clear_recent(&mut self) {
         self.recent.clear();
         self.active_tab = 0;
+        self.hovered = None;
         self.base.request_redraw();
     }
 
@@ -380,6 +399,28 @@ impl EmojiPicker {
     fn columns(&self) -> usize {
         let width = self.geometry().width;
         ((width / CELL_SIZE).max(1)) as usize
+    }
+
+    /// The number of whole grid rows the control's height can show.
+    ///
+    /// At least one, so a short picker still has a page to move by and a PageDown
+    /// cannot become a no-op merely because the control was laid out small.
+    fn visible_rows(&self) -> usize {
+        let rect = self.geometry();
+        let grid_height = rect.height.saturating_sub(SEARCH_HEIGHT + TAB_HEIGHT);
+        (grid_height / CELL_SIZE).max(1) as usize
+    }
+
+    /// The caption a hovered glyph contributes to the footer and the hover signal.
+    ///
+    /// Keywords first because they are the vocabulary a user searches by; the id is
+    /// the fallback so every glyph has a name even when the caller supplied none.
+    fn glyph_caption(glyph: &EmojiGlyph) -> String {
+        if glyph.keywords.is_empty() {
+            glyph.id.clone()
+        } else {
+            glyph.keywords.join(", ")
+        }
     }
 
     /// The rectangle of the grid cell at `index`, given the visible count.
@@ -664,6 +705,7 @@ impl Draw for EmojiPicker {
         // page. The grid only reads them.
         let visible = self.visible_glyphs();
         self.draw_grid(context, &visible, ink);
+        self.draw_footer(context, strip, ink);
     }
 }
 
@@ -836,6 +878,54 @@ impl EmojiPicker {
         }
     }
 
+    /// Draws the hovered glyph's caption over the picker's foot.
+    ///
+    /// The strip is painted only while a glyph is hovered, so the resting picker is
+    /// byte-identical to one without hover support. It is an overlay rather than a
+    /// reserved band because reserving one would move every grid row up on controls
+    /// that never hover.
+    fn draw_footer(&self, context: &mut RenderContext, background: Color, ink: Color) {
+        let Some(index) = self.hovered else {
+            return;
+        };
+        let Some(glyph) = self.glyph_at_index(index) else {
+            return;
+        };
+        let caption = Self::glyph_caption(glyph);
+        let rect = self.geometry();
+        let footer = Rect::new(
+            rect.x,
+            rect.y + rect.height as i32 - FOOTER_HEIGHT as i32,
+            rect.width,
+            FOOTER_HEIGHT,
+        );
+        // A picker too short to have a grid at all has no footer to overlay either.
+        if footer.y < rect.y + (SEARCH_HEIGHT + TAB_HEIGHT) as i32 {
+            return;
+        }
+        context.fill_rect(footer, background);
+        context.draw_line_stroke(
+            Point::new(footer.x, footer.y),
+            Point::new(footer.x + footer.width as i32, footer.y),
+            ink.blend(&background, 0.7),
+            1,
+        );
+        let font = Self::sans_font_11();
+        let line = context.text_line(footer, font);
+        context.draw_text_fitted_cow(
+            Rect::new(
+                footer.x + 10,
+                line.y,
+                footer.width.saturating_sub(20).max(1),
+                line.height.max(1),
+            ),
+            &caption,
+            font,
+            ink,
+            HorizontalAlignment::Left,
+        );
+    }
+
     /// Draws the glyph grid.
     fn draw_grid(&self, context: &mut RenderContext, visible: &[&EmojiGlyph], ink: Color) {
         // One font for the whole grid: the cell glyphs used to build a fresh `Font` per cell,
@@ -924,6 +1014,27 @@ impl EventHandler for EmojiPicker {
                 search.push_str(text);
                 self.set_search(&search);
             }
+            // A pointer over a cell names that glyph; a pointer off the grid clears the
+            // caption. The signal fires only on a change, so a sweep across one cell does
+            // not repeat the same tooltip every motion event.
+            Event::MouseMove { pos } => {
+                let next = self.cell_at(*pos);
+                if next != self.hovered {
+                    self.hovered = next;
+                    let caption = next
+                        .and_then(|index| self.glyph_at_index(index))
+                        .map(Self::glyph_caption)
+                        .unwrap_or_default();
+                    self.hovered_glyph_changed.emit(caption);
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered.take().is_some() {
+                    self.hovered_glyph_changed.emit(String::new());
+                    self.base.request_redraw();
+                }
+            }
             // One grid row per wheel notch. `delta.y` is measured in notches and
             // `WheelScroll` scales it to lines at the desktop default of three per notch, so the
             // line count is divided back out here to keep the grid step per notch.
@@ -952,6 +1063,20 @@ impl EventHandler for EmojiPicker {
                     let columns = self.columns() as i32;
                     self.move_cursor(columns);
                 } // Down
+                // PageDown/PageUp move by the rows the picker can actually show, so
+                // one keystroke is one screenful rather than a blind fixed count.
+                34 => {
+                    let rows = self.visible_rows() as i32;
+                    if self.scroll_cursor_rows(rows) {
+                        self.base.request_redraw();
+                    }
+                }
+                33 => {
+                    let rows = self.visible_rows() as i32;
+                    if self.scroll_cursor_rows(-rows) {
+                        self.base.request_redraw();
+                    }
+                }
                 13 => {
                     // Enter chooses the cursor's glyph, which is how the grid is
                     // driven entirely from the keyboard.
@@ -1319,6 +1444,86 @@ mod tests {
             p.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
         }
         assert_eq!(p.cursor(), Some(0), "the cursor clamps at the first cell");
+    }
+
+    /// PageDown/PageUp move by the whole rows the picker can show and clamp at the ends.
+    #[test]
+    fn emoji_picker_page_keys_move_by_a_visible_page() {
+        let mut p = EmojiPicker::new(Rect::new(0, 0, CELL_SIZE * 3, 240));
+        let table: Vec<EmojiGlyph> =
+            (0..60).map(|n| EmojiGlyph::new(format!("g{n}"), "*", "faces")).collect();
+        p.set_glyphs(table);
+        p.set_categories(vec!["faces".to_string()]);
+        assert_eq!(p.columns(), 3);
+        assert_eq!(p.visible_rows(), 5, "240 px of picker leaves five whole grid rows");
+        p.cursor = Some(0);
+
+        p.handle_event(&Event::KeyDown((34, 0)));
+        assert_eq!(p.cursor(), Some(15), "PageDown moves one visible page");
+        p.handle_event(&Event::KeyDown((34, 0)));
+        assert_eq!(p.cursor(), Some(30));
+        p.handle_event(&Event::KeyDown((33, 0)));
+        assert_eq!(p.cursor(), Some(15), "PageUp moves the same distance back");
+
+        // A page step near the end clamps at the last cell rather than wrapping or
+        // running past the grid.
+        p.cursor = Some(55);
+        p.handle_event(&Event::KeyDown((34, 0)));
+        assert_eq!(p.cursor(), Some(59));
+        p.handle_event(&Event::KeyDown((33, 0)));
+        assert_eq!(p.cursor(), Some(44));
+    }
+
+    /// Hovering names the glyph by its keywords, falling back to its id.
+    #[test]
+    fn emoji_picker_hover_emits_keywords_or_id() {
+        let mut p = picker();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        p.hovered_glyph_changed.connect(move |caption| {
+            sink.lock().unwrap().push((*caption).clone());
+        });
+
+        let first = p.cell_rect(0).expect("cell 0");
+        p.handle_event(&Event::mouse_move(first.x + 5, first.y + 5));
+        let second = p.cell_rect(1).expect("cell 1");
+        p.handle_event(&Event::mouse_move(second.x + 5, second.y + 5));
+        p.handle_event(&Event::mouse_leave(0, 0));
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["happy, smile".to_string(), "unhappy".to_string(), String::new()],
+            "keywords first, then a single keyword, then the empty leave value"
+        );
+
+        // A glyph with no keywords is named by its id.
+        let mut plain = EmojiPicker::new(Rect::new(0, 0, 280, 240));
+        plain.set_glyphs(vec![EmojiGlyph::new("plain", "o", "faces")]);
+        plain.set_categories(vec!["faces".to_string()]);
+        let plain_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let plain_sink = std::sync::Arc::clone(&plain_seen);
+        plain.hovered_glyph_changed.connect(move |caption| {
+            plain_sink.lock().unwrap().push((*caption).clone());
+        });
+        let cell = plain.cell_rect(0).expect("cell 0");
+        plain.handle_event(&Event::mouse_move(cell.x + 5, cell.y + 5));
+        assert_eq!(*plain_seen.lock().unwrap(), vec!["plain".to_string()]);
+    }
+
+    /// The hovered glyph's caption is painted over the picker's foot and removed on leave.
+    #[test]
+    fn emoji_picker_hover_paints_a_caption_strip() {
+        let mut p = picker();
+        let resting = render(&mut p, Size::new(280, 240));
+
+        let cell = p.cell_rect(0).expect("cell 0");
+        p.handle_event(&Event::mouse_move(cell.x + 5, cell.y + 5));
+        let hovered = render(&mut p, Size::new(280, 240));
+        assert_ne!(resting, hovered, "a hovered glyph adds the caption strip");
+
+        p.handle_event(&Event::mouse_leave(0, 0));
+        let left = render(&mut p, Size::new(280, 240));
+        assert_eq!(resting, left, "leaving restores the resting drawing exactly");
     }
 
     #[test]

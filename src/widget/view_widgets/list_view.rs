@@ -121,6 +121,15 @@ pub trait ListModel: Send + Sync {
             None => false,
         }
     }
+    /// Whether the row has an icon token the view can draw.
+    ///
+    /// The tag-name string is resolved by the view through the shared named-icon registry, so a
+    /// model does not have to depend on the render layer. The default answers `None`, which
+    /// keeps a text-only model unchanged.
+    fn icon(&self, row: usize) -> Option<String> {
+        let _ = row;
+        None
+    }
     /// Optional signal emitted when model data projection changes.
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         None
@@ -418,6 +427,19 @@ pub struct ListView {
     pub selection_changed: Signal1<usize>,
     /// Emitted when focused row changes.
     pub focused_row_changed: Signal1<Option<usize>>,
+    /// First visible row line; wheel and keyboard scrolling move it.
+    scroll_row: usize,
+    /// Emitted when a row is double-clicked.
+    pub row_activated: Signal1<usize>,
+    /// Emitted when the context menu is requested at a point.
+    pub context_menu_requested: Signal1<crate::core::Point>,
+    /// The row a drag started on, if a left press is still held.
+    drag_row: Option<usize>,
+    /// Emitted when a drag reorders rows: `(from, to)`.
+    ///
+    /// The view does not own the data, so the move is a request; a model that keeps its own
+    /// order applies it (or ignores it).
+    pub row_reordered: Signal1<(usize, usize)>,
 }
 impl ListView {
     /// Creates an empty list view.
@@ -433,6 +455,11 @@ impl ListView {
             alignment: crate::core::Alignment::Left,
             selection_changed: Signal1::new(),
             focused_row_changed: Signal1::new(),
+            scroll_row: 0,
+            row_activated: Signal1::new(),
+            context_menu_requested: Signal1::new(),
+            drag_row: None,
+            row_reordered: Signal1::new(),
         }
     }
     /// Binds an external list model.
@@ -715,7 +742,11 @@ impl ListView {
         // within one. That is also what keeps this function's contract unchanged for `List`: with one
         // column, line `index` and item `index` are the same thing.
         let line = index as u32 / layout.columns;
-        let y = layout.content.y + (layout.row_height * line) as i32;
+        if (line as usize) < self.scroll_row {
+            return None;
+        }
+        let visible_line = line - self.scroll_row as u32;
+        let y = layout.content.y + (layout.row_height * visible_line) as i32;
         // A row that would extend past the content box is not visible: the clip is the content
         // box's bottom edge, and a partially visible row is not painted at all rather than being
         // painted truncated — a half-height row reads as a rendering error.
@@ -723,6 +754,30 @@ impl ListView {
             return None;
         }
         Some(Rect::new(layout.content.x, y, layout.content.width, layout.row_height))
+    }
+
+    /// The first visible row line.
+    pub fn scroll_row(&self) -> usize {
+        self.scroll_row
+    }
+
+    /// Sets the first visible row line, clamped to the projection.
+    pub fn set_scroll_row(&mut self, row: usize) {
+        let layout = self.list_layout();
+        let lines = self.row_count().div_ceil(layout.columns.max(1) as usize);
+        let max = lines.saturating_sub(1);
+        let next = row.min(max);
+        if next == self.scroll_row {
+            return;
+        }
+        self.scroll_row = next;
+        self.base.request_redraw();
+    }
+
+    /// Scrolls by whole row lines.
+    pub fn scroll_by_lines(&mut self, delta: isize) {
+        let current = self.scroll_row as isize + delta;
+        self.set_scroll_row(current.max(0) as usize);
     }
 
     /// The band item `index` occupies: its column's slice of its row.
@@ -751,7 +806,8 @@ impl ListView {
         if !layout.content.contains_point(point) {
             return None;
         }
-        let line = (point.y - layout.content.y) as u32 / layout.row_height.max(1);
+        let line =
+            (point.y - layout.content.y) as u32 / layout.row_height.max(1) + self.scroll_row as u32;
         // In a grid the column is read from x, and a click in the empty space past the last tile of a
         // line belongs to no item -- clamping it to the last column would select an item the user did
         // not click, which is worse than selecting nothing.
@@ -1021,7 +1077,8 @@ impl Draw for ListView {
             // at the two ends. `index / columns` reports the line, `index % columns` the column within
             // it, and truncating division is what makes the two agree for the last partial line.
             let mut cell_text = String::new();
-            for i in 0..row_count {
+            let start = self.scroll_row.saturating_mul(layout.columns.max(1) as usize);
+            for i in start..row_count {
                 let Some(cell) = self.item_rect(i) else { break };
                 // Hover is painted *under* focus: a row that is both hovered and focused keeps the
                 // focused weight, so the persistent fact is not visually displaced by the pointer
@@ -1032,6 +1089,24 @@ impl Draw for ListView {
                     context.fill_rect(cell, hovered_bg);
                 }
                 cell_text.clear();
+                // A grid-mode tile draws its icon in the picture area: the caption strip is
+                // carved off the foot, and the glyph is centred in what remains.
+                if layout.label_below {
+                    if let Some(model) = self.model.as_ref() {
+                        if let Some(name) = model.icon(i) {
+                            let caption = layout.caption_height();
+                            let picture = Rect::new(
+                                cell.x + 4,
+                                cell.y + 4,
+                                cell.width.saturating_sub(8),
+                                cell.height.saturating_sub(caption + 8),
+                            );
+                            if picture.width > 0 && picture.height > 0 {
+                                crate::widget::draw_icon_named(context, picture, ink, &name);
+                            }
+                        }
+                    }
+                }
                 let has_text = match self.model.as_ref() {
                     Some(model) => model.fill_data(i, &mut cell_text),
                     None => false,
@@ -1092,10 +1167,20 @@ impl crate::event::EventHandler for ListView {
         }
         match event {
             crate::event::Event::MousePress { pos, button, modifiers } if *button == 1 => {
+                self.drag_row = self.row_at_point(*pos);
                 self.select_row_at_point_with(
                     *pos,
                     crate::shortcut::Modifiers::from_event_bits(*modifiers),
                 );
+            }
+            crate::event::Event::MouseRelease { pos, button: 1 } => {
+                if let Some(from) = self.drag_row.take() {
+                    if let Some(to) = self.row_at_point(*pos) {
+                        if from != to {
+                            self.row_reordered.emit((from, to));
+                        }
+                    }
+                }
             }
             // Row hover, derived from the same `row_at_point` the click uses, so the row that is
             // highlighted is the row a click would affect. A pointer that leaves the rows entirely
@@ -1113,6 +1198,55 @@ impl crate::event::EventHandler for ListView {
                     self.base.request_redraw();
                 }
             }
+            crate::event::Event::MouseDoubleClick { pos, button: 1 } => {
+                if let Some(index) = self.row_at_point(*pos) {
+                    self.select_row(index);
+                    self.row_activated.emit(index);
+                }
+            }
+            crate::event::Event::ContextMenu { pos } => {
+                self.context_menu_requested.emit(*pos);
+            }
+            crate::event::Event::Wheel { delta, modifiers } => {
+                let scroll = crate::event::WheelScroll::from_event(*delta, *modifiers, 1);
+                self.scroll_by_lines(-(scroll.lines_y as isize));
+            }
+            crate::event::Event::KeyPress { key, modifiers }
+                if self.base.focus_reason().is_some() =>
+            {
+                let layout = self.list_layout();
+                let columns = layout.columns.max(1) as usize;
+                let rows_per_page =
+                    (layout.content.height / layout.row_height.max(1)).max(1) as usize;
+                let last = self.row_count().saturating_sub(1);
+                let current = self.focused_row.unwrap_or(0);
+                let next = match *key {
+                    crate::event::key_codes::UP => current.saturating_sub(columns),
+                    crate::event::key_codes::DOWN => current.saturating_add(columns).min(last),
+                    crate::event::key_codes::LEFT => current.saturating_sub(1),
+                    crate::event::key_codes::RIGHT => current.saturating_add(1).min(last),
+                    crate::event::key_codes::HOME => 0,
+                    crate::event::key_codes::END => last,
+                    crate::event::key_codes::PAGE_UP => {
+                        current.saturating_sub(rows_per_page * columns)
+                    }
+                    crate::event::key_codes::PAGE_DOWN => {
+                        current.saturating_add(rows_per_page * columns).min(last)
+                    }
+                    _ => current,
+                };
+                if next != current || self.focused_row.is_none() {
+                    let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                    self.select_row_with_modifiers(next, mods);
+                    self.set_focused_row(next);
+                    let line = next / columns;
+                    if line < self.scroll_row {
+                        self.set_scroll_row(line);
+                    } else if line >= self.scroll_row + rows_per_page {
+                        self.set_scroll_row(line + 1 - rows_per_page);
+                    }
+                }
+            }
             #[cfg(feature = "touch")]
             crate::event::Event::Tap { pos } => {
                 self.select_row_at_point(*pos);
@@ -1125,7 +1259,6 @@ impl crate::event::EventHandler for ListView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(all(device_profile, feature = "desktop"))]
     use crate::event::EventHandler as _;
     use std::sync::Arc;
 
@@ -1516,5 +1649,92 @@ mod tests {
         assert_eq!(v.selection.anchor(), Some(3));
         v.select_row_with_modifiers(3, Modifiers::CTRL);
         assert_eq!(v.selected_rows(), vec![2], "Ctrl toggles row 3 off");
+    }
+
+    /// Scrolling, keyboard navigation, icons and double-click are wired.
+    #[test]
+    fn scrolling_keyboard_and_icons_are_wired() {
+        struct Rows;
+        impl ListModel for Rows {
+            fn row_count(&self) -> usize {
+                40
+            }
+            fn data(&self, row: usize) -> Option<String> {
+                Some(std::format!("row {row}"))
+            }
+            fn icon(&self, row: usize) -> Option<String> {
+                Some(std::format!("folder-{row}"))
+            }
+        }
+        let mut view = ListView::new(Rect::new(0, 0, 200, 100));
+        view.set_model(Arc::new(Rows));
+        view.handle_event(&crate::event::Event::Wheel {
+            delta: crate::core::Point::new(0, -1),
+            modifiers: 0,
+        });
+        assert_eq!(view.scroll_row(), 1, "one notch scrolls one line");
+        assert_eq!(view.row_count(), 40);
+
+        view.handle_event(&crate::event::Event::FocusGained {
+            reason: crate::event::FocusReason::Tab,
+        });
+        view.handle_event(&crate::event::Event::KeyPress {
+            key: crate::event::key_codes::END,
+            modifiers: 0,
+        });
+        assert_eq!(view.focused_row(), Some(39), "End focuses the last row");
+        assert!(view.scroll_row() > 0);
+
+        let activated = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&activated);
+        view.row_activated.connect(move |row| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*row);
+            }
+        });
+        let rect = view.item_rect(39).or_else(|| view.item_rect(0));
+        if let Some(rect) = rect {
+            view.handle_event(&crate::event::Event::MouseDoubleClick {
+                pos: crate::core::Point::new(rect.x + 2, rect.y + 2),
+                button: 1,
+            });
+            assert!(activated.lock().map(|slot| slot.is_some()).unwrap_or(false));
+        }
+        let _ = crate::widget::svg::render_to_svg(&mut view);
+    }
+
+    /// A press-drag-release between two rows asks for a reorder.
+    #[test]
+    fn a_drag_between_rows_emits_a_reorder_request() {
+        struct Rows;
+        impl ListModel for Rows {
+            fn row_count(&self) -> usize {
+                6
+            }
+            fn data(&self, row: usize) -> Option<String> {
+                Some(std::format!("row {row}"))
+            }
+        }
+        let mut view = ListView::new(Rect::new(0, 0, 200, 160));
+        view.set_model(Arc::new(Rows));
+        let moved = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&moved);
+        view.row_reordered.connect(move |pair| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*pair);
+            }
+        });
+        let first = view.item_rect(0).expect("row 0 is visible");
+        let second = view.item_rect(1).expect("row 1 is visible");
+        view.handle_event(&crate::event::Event::MousePress {
+            pos: crate::core::Point::new(first.x + 2, first.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        view.handle_event(&crate::event::Event::MouseRelease {
+            pos: crate::core::Point::new(second.x + 2, second.y + 2),
+            button: 1,
+        });
+        assert_eq!(moved.lock().map(|slot| *slot).unwrap_or(None), Some((0, 1)));
     }
 }

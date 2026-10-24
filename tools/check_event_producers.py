@@ -55,6 +55,7 @@ GESTURE_PRODUCERS: dict[str, str] = {
     "Drag": "src/gesture/press.rs",
     "Swipe": "src/gesture/swipe.rs",
     "TwoFingerSwipe": "src/gesture/swipe.rs",
+    "MultiFingerSwipe": "src/gesture/swipe.rs",
     "Fling": "src/gesture/swipe.rs",
     "Pinch": "src/gesture/pinch.rs",
     "Rotate": "src/gesture/rotate.rs",

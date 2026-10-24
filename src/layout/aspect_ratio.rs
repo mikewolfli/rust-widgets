@@ -10,6 +10,17 @@ use super::Layout;
 use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 
+/// How a child is fitted to the available box while preserving its aspect ratio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AspectMode {
+    /// Fit the whole child inside the parent (letterboxing).
+    Contain,
+    /// Fill the parent and crop the overflowing axis (cover).
+    Cover,
+    /// Take the parent's width and derive the height, even when it overflows.
+    Stretch,
+}
+
 /// A layout that constrains a single child to a specific aspect ratio.
 ///
 /// The aspect ratio is defined as `width / height`. The child is sized to
@@ -22,6 +33,9 @@ pub struct AspectRatioLayout {
     aspect_ratio: f32,
     /// If true, the child is bounded by the parent rect on both axes.
     respect_parent: bool,
+    /// Explicit fit mode. `None` keeps the historical `respect_parent` meaning, so an
+    /// existing caller's pixels do not move; `Some` opts into cover/stretch/contain.
+    mode: Option<AspectMode>,
 }
 
 impl AspectRatioLayout {
@@ -38,7 +52,7 @@ impl AspectRatioLayout {
             aspect_ratio.is_finite() && aspect_ratio > 0.0,
             "AspectRatioLayout: aspect_ratio must be finite and positive"
         );
-        Self { child: None, aspect_ratio, respect_parent }
+        Self { child: None, aspect_ratio, respect_parent, mode: None }
     }
 
     /// Set the aspect ratio (width / height).
@@ -60,13 +74,31 @@ impl AspectRatioLayout {
     }
 
     /// Set whether the child is bounded by parent dimensions.
+    ///
+    /// This also clears any explicit [`AspectMode`], restoring the constructor's meaning.
     pub fn set_respect_parent(&mut self, respect: bool) {
         self.respect_parent = respect;
+        self.mode = None;
     }
 
     /// Returns whether the child is bounded by parent dimensions.
     pub fn respect_parent(&self) -> bool {
         self.respect_parent
+    }
+
+    /// Sets an explicit fit mode; see [`AspectMode`].
+    ///
+    /// `Contain` keeps the child inside the parent, `Cover` fills it while cropping, and
+    /// `Stretch` derives the height from the parent's width. The previous
+    /// `respect_parent` flag remains the fallback until this is called.
+    pub fn set_mode(&mut self, mode: AspectMode) {
+        self.mode = Some(mode);
+        self.respect_parent = matches!(mode, AspectMode::Contain);
+    }
+
+    /// The explicit fit mode, or `None` when `respect_parent` selects the behaviour.
+    pub fn mode(&self) -> Option<AspectMode> {
+        self.mode
     }
 
     /// Compute the child rect that fits within the given rect while maintaining the aspect ratio.
@@ -95,29 +127,41 @@ impl AspectRatioLayout {
             }
         }
 
-        let (child_w, child_h) = if self.respect_parent {
-            // Fit within parent bounds.
+        let (child_w, child_h) = if self.mode == Some(AspectMode::Cover) {
+            // Cover keeps the ratio and fills both axes; the overflowing axis is
+            // deliberately allowed past the parent and is cropped by the painter.
+            if parent_w / ratio >= parent_h {
+                (to_px(parent_w), to_px(parent_w / ratio))
+            } else {
+                (to_px(parent_h * ratio), to_px(parent_h))
+            }
+        } else if !self.effective_contain() {
+            // Allow child to exceed parent if necessary to maintain ratio.
+            let w = parent_w;
+            (to_px(w), to_px(w / ratio))
+        } else {
             let by_width = (parent_w, parent_w / ratio);
             let by_height = (parent_h * ratio, parent_h);
-
-            // Pick the one that fits entirely inside the parent.
             if by_width.1 <= parent_h {
                 (to_px(by_width.0), to_px(by_width.1))
             } else {
                 (to_px(by_height.0), to_px(by_height.1))
             }
-        } else {
-            // Allow child to exceed parent if necessary to maintain ratio.
-            // Use parent width as the base, derive height.
-            let w = parent_w;
-            let h = w / ratio;
-            (to_px(w), to_px(h))
         };
 
-        let x_offset = (parent.width.saturating_sub(child_w) / 2) as i32;
-        let y_offset = (parent.height.saturating_sub(child_h) / 2) as i32;
+        // Round the centring offsets symmetrically. Integer division truncated the two
+        // two-pixel differences in opposite directions (1 px at the start, 1 px at the
+        // end), so an odd leftover visibly favoured one edge; `round` splits it evenly
+        // and makes the pair add up to the leftover.
+        let x_offset = (((parent.width as i32) - (child_w as i32)) as f32 / 2.0).round() as i32;
+        let y_offset = (((parent.height as i32) - (child_h as i32)) as f32 / 2.0).round() as i32;
 
         Rect::new(parent.x + x_offset, parent.y + y_offset, child_w, child_h)
+    }
+
+    /// Whether the historical containment behaviour applies.
+    fn effective_contain(&self) -> bool {
+        self.mode.map(|mode| mode == AspectMode::Contain).unwrap_or(self.respect_parent)
     }
 }
 
@@ -270,6 +314,29 @@ mod tests {
         assert_eq!((rect.width, rect.height), (0, 0));
     }
 
+    /// Cover fills both axes while preserving the ratio, and the centring offset is
+    /// rounded symmetrically for an odd leftover.
+    #[test]
+    fn cover_mode_fills_and_centring_rounds_symmetrically() {
+        let mut layout = AspectRatioLayout::new_with_child(7, 1.0, true);
+        layout.set_mode(AspectMode::Cover);
+        let mut out = None;
+        layout.update(Rect::new(0, 0, 100, 50), &mut |_, rect| out = Some(rect));
+        let rect = out.expect("the child is placed");
+        assert_eq!((rect.width, rect.height), (100, 100), "cover fills both axes");
+        assert_eq!(rect.y, -25, "the cropped axis is centred around the parent");
+
+        // A 5 px horizontal leftover splits 2 px before and 3 px after (round half up),
+        // rather than truncating both to 2.
+        let mut square = AspectRatioLayout::new_with_child(8, 1.0, true);
+        square.set_mode(AspectMode::Contain);
+        let mut out = None;
+        square.update(Rect::new(0, 0, 205, 50), &mut |_, rect| out = Some(rect));
+        let rect = out.expect("the child is placed");
+        assert_eq!(rect.width, 50);
+        assert_eq!(rect.x, 78, "an odd leftover must be split evenly, not truncated twice");
+    }
+
     /// D08-L-02: a non-finite ratio is rejected at every entry point, so it can never
     /// produce a zero-height child in a non-empty parent.
     #[test]
@@ -299,6 +366,6 @@ impl AspectRatioLayout {
             aspect_ratio.is_finite() && aspect_ratio > 0.0,
             "AspectRatioLayout: aspect_ratio must be finite and positive"
         );
-        Self { child: Some(child_id), aspect_ratio, respect_parent }
+        Self { child: Some(child_id), aspect_ratio, respect_parent, mode: None }
     }
 }

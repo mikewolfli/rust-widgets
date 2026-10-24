@@ -14,6 +14,27 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// One of the eight resize handles an editable shape draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeHandle {
+    /// Top-left corner.
+    TopLeft,
+    /// Top edge midpoint.
+    Top,
+    /// Top-right corner.
+    TopRight,
+    /// Right edge midpoint.
+    Right,
+    /// Bottom-right corner.
+    BottomRight,
+    /// Bottom edge midpoint.
+    Bottom,
+    /// Bottom-left corner.
+    BottomLeft,
+    /// Left edge midpoint.
+    Left,
+}
+
 /// A non-rectangular, clickable shape.
 ///
 /// Unlike an ordinary rectangular widget — which takes every pointer event
@@ -48,6 +69,16 @@ pub struct FreeformShapeWidget {
     /// The outline-level analogue of [`Self::hovered_item`]: a shape is only pressed
     /// when the press hit its path, which a plain widget-level `pressed` cannot express.
     pressed_item: bool,
+    /// Whether the eight resize handles are drawn and draggable.
+    editable: bool,
+    /// Grid step in pixels for handle movement; zero disables snapping.
+    snap_step: u32,
+    /// The handle being dragged, with the pointer and geometry at the press.
+    drag_handle: Option<(ShapeHandle, Point, Rect)>,
+    /// The shape's stacking hint for a container that honours it.
+    z_index: i32,
+    /// Emitted with the new geometry after a handle drag.
+    pub geometry_changed: Signal1<Rect>,
     /// Emitted when the shape is clicked, i.e. pressed and released while the
     /// pointer is still inside the outline.
     pub clicked: GenericSignal,
@@ -78,6 +109,11 @@ impl FreeformShapeWidget {
             stroke_width: 2,
             hovered_item: false,
             pressed_item: false,
+            editable: false,
+            snap_step: 0,
+            drag_handle: None,
+            z_index: 0,
+            geometry_changed: Signal1::new(),
             clicked: GenericSignal::new(),
             hovered_changed: Signal1::new(),
             pressed_changed: Signal1::new(),
@@ -143,6 +179,156 @@ impl FreeformShapeWidget {
         self.base.request_redraw();
     }
 
+    /// Shows the eight resize handles, making the shape editable with the pointer.
+    pub fn set_editable(&mut self, editable: bool) {
+        if self.editable == editable {
+            return;
+        }
+        self.editable = editable;
+        self.drag_handle = None;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the resize handles are shown.
+    pub fn is_editable(&self) -> bool {
+        self.editable
+    }
+
+    /// Sets the grid step handles snap to; zero disables snapping.
+    pub fn set_snap_step(&mut self, step: u32) {
+        if self.snap_step == step {
+            return;
+        }
+        self.snap_step = step;
+        self.base.request_redraw();
+    }
+
+    /// Returns the handle snap step in pixels.
+    pub fn snap_step(&self) -> u32 {
+        self.snap_step
+    }
+
+    /// The shape's stacking hint. The widget cannot reorder its siblings; a container that
+    /// supports z-order reads this rather than guessing from the child list.
+    pub fn z_index(&self) -> i32 {
+        self.z_index
+    }
+
+    /// Sets the stacking hint.
+    pub fn set_z_index(&mut self, z_index: i32) {
+        if self.z_index == z_index {
+            return;
+        }
+        self.z_index = z_index;
+    }
+
+    /// Replaces one vertex of a polygon path.
+    ///
+    /// Returns `false` when the path is not a polygon or the index is out of range. Anchor
+    /// editing is what makes a freeform outline something a user can adjust rather than a
+    /// fixed decoration.
+    pub fn set_polygon_vertex(&mut self, index: usize, point: Point) -> bool {
+        let point = self.snapped(point);
+        match &mut self.path {
+            ShapePath::Polygon(vertices) => {
+                if index >= vertices.len() {
+                    return false;
+                }
+                vertices[index] = point;
+                self.base.request_redraw();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Rounds `point` to the snap grid when one is set.
+    fn snapped(&self, point: Point) -> Point {
+        if self.snap_step == 0 {
+            return point;
+        }
+        let step = self.snap_step as i32;
+        Point::new(
+            (point.x as f32 / step as f32).round() as i32 * step,
+            (point.y as f32 / step as f32).round() as i32 * step,
+        )
+    }
+
+    /// The eight resize handles' rectangles, in window coordinates.
+    pub fn handle_rects(&self) -> Vec<(ShapeHandle, Rect)> {
+        let rect = self.base.geometry();
+        const SIDE: u32 = 8;
+        let half = SIDE as i32 / 2;
+        let positions = [
+            (ShapeHandle::TopLeft, rect.x, rect.y),
+            (ShapeHandle::Top, rect.x + rect.width as i32 / 2, rect.y),
+            (ShapeHandle::TopRight, rect.x + rect.width as i32, rect.y),
+            (ShapeHandle::Right, rect.x + rect.width as i32, rect.y + rect.height as i32 / 2),
+            (ShapeHandle::BottomRight, rect.x + rect.width as i32, rect.y + rect.height as i32),
+            (ShapeHandle::Bottom, rect.x + rect.width as i32 / 2, rect.y + rect.height as i32),
+            (ShapeHandle::BottomLeft, rect.x, rect.y + rect.height as i32),
+            (ShapeHandle::Left, rect.x, rect.y + rect.height as i32 / 2),
+        ];
+        positions
+            .into_iter()
+            .map(|(handle, x, y)| (handle, Rect::new(x - half, y - half, SIDE, SIDE)))
+            .collect()
+    }
+
+    /// The handle under `pos`, if the shape is editable.
+    pub fn handle_at(&self, pos: Point) -> Option<ShapeHandle> {
+        if !self.editable {
+            return None;
+        }
+        self.handle_rects()
+            .into_iter()
+            .find(|(_, rect)| rect.contains_point(pos))
+            .map(|(handle, _)| handle)
+    }
+
+    /// Applies a handle drag to the geometry at `pos`.
+    fn drag_to(&mut self, pos: Point) {
+        let Some((handle, origin, start)) = self.drag_handle else {
+            return;
+        };
+        let pos = self.snapped(pos);
+        let dx = pos.x - origin.x;
+        let dy = pos.y - origin.y;
+        let mut left = start.x;
+        let mut top = start.y;
+        let mut right = start.x + start.width as i32;
+        let mut bottom = start.y + start.height as i32;
+        match handle {
+            ShapeHandle::TopLeft => {
+                left += dx;
+                top += dy;
+            }
+            ShapeHandle::Top => top += dy,
+            ShapeHandle::TopRight => {
+                right += dx;
+                top += dy;
+            }
+            ShapeHandle::Right => right += dx,
+            ShapeHandle::BottomRight => {
+                right += dx;
+                bottom += dy;
+            }
+            ShapeHandle::Bottom => bottom += dy,
+            ShapeHandle::BottomLeft => {
+                left += dx;
+                bottom += dy;
+            }
+            ShapeHandle::Left => left += dx,
+        }
+        // A handle drag cannot invert the rectangle: the edges stay ordered, so a caller
+        // always receives a valid `Rect`.
+        let width = (right - left).max(1) as u32;
+        let height = (bottom - top).max(1) as u32;
+        self.base.set_geometry(Rect::new(left.min(right - 1), top.min(bottom - 1), width, height));
+        self.geometry_changed.emit(self.base.geometry());
+        self.base.request_redraw();
+    }
+
     /// Whether `point`, in screen coordinates, falls inside the drawn outline.
     ///
     /// This is the test the widget uses to decide whether a press reaches it, and
@@ -175,6 +361,11 @@ impl FreeformShapeWidget {
                 self.contains_bubble(local, w, h, *tail_direction)
             }
             ShapePath::Custom(s) => self.contains_custom(local, s),
+            ShapePath::UnitCustom(s) => {
+                let pixels: Vec<PathSegment> =
+                    s.iter().map(|segment| segment.to_path_segment(w as f32, h as f32)).collect();
+                self.contains_custom(local, &pixels)
+            }
         }
     }
 
@@ -439,6 +630,13 @@ impl FreeformShapeWidget {
                 self.draw_bubble(context, rect, *tail_direction)
             }
             ShapePath::Custom(s) => self.draw_custom(context, rect, s),
+            ShapePath::UnitCustom(s) => {
+                let pixels: Vec<PathSegment> = s
+                    .iter()
+                    .map(|segment| segment.to_path_segment(rect.width as f32, rect.height as f32))
+                    .collect();
+                self.draw_custom(context, rect, &pixels);
+            }
         }
     }
 
@@ -767,6 +965,7 @@ impl WidgetProperties for FreeformShapeWidget {
                     ShapePath::RoundedRect { .. } => "rounded_rect",
                     ShapePath::Bubble { .. } => "bubble",
                     ShapePath::Custom(_) => "custom",
+                    ShapePath::UnitCustom(_) => "unit_custom",
                 };
                 Ok(CapabilityValue::String(s.to_string()))
             }
@@ -896,6 +1095,14 @@ impl Draw for FreeformShapeWidget {
             crate::core::Color::BLACK,
         );
         self.draw_filled_shape(context, fill, stroke);
+        // Resize handles are chrome, drawn over the shape so they stay reachable even on an
+        // opaque fill.
+        if self.editable {
+            for (_, handle) in self.handle_rects() {
+                context.fill_rect(handle, text_color.contrast_color());
+                context.draw_rect(handle, text_color);
+            }
+        }
         if !self.base.is_enabled() {
             // A disabled shape is a chrome state, so the veil is derived from the
             // resolved pair rather than a fixed grey.
@@ -932,6 +1139,10 @@ impl crate::event::EventHandler for FreeformShapeWidget {
         }
         match event {
             crate::event::Event::MouseMove { pos } => {
+                if self.drag_handle.is_some() {
+                    self.drag_to(*pos);
+                    return;
+                }
                 let was_hovered = self.hovered_item;
                 self.hovered_item = self.contains(*pos);
                 if was_hovered != self.hovered_item {
@@ -944,7 +1155,18 @@ impl crate::event::EventHandler for FreeformShapeWidget {
                 self.hovered_changed.emit(true);
                 self.base.request_redraw();
             }
+            crate::event::Event::MousePress { pos, button: 1, .. } if self.editable => {
+                if let Some(handle) = self.handle_at(*pos) {
+                    self.drag_handle = Some((handle, *pos, self.base.geometry()));
+                    self.base.request_redraw();
+                }
+            }
+            crate::event::Event::MouseRelease { button: 1, .. } if self.drag_handle.is_some() => {
+                self.drag_handle = None;
+                self.base.request_redraw();
+            }
             crate::event::Event::MouseLeave { .. } => {
+                self.drag_handle = None;
                 self.hovered_item = false;
                 self.pressed_item = false;
                 self.hovered_changed.emit(false);

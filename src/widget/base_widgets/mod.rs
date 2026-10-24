@@ -3,6 +3,7 @@
 
 //! Basic widget types: buttons, labels, checkboxes, etc.
 pub mod button;
+pub(crate) mod button_group;
 pub mod checkbox;
 pub mod frame;
 pub mod label;

@@ -773,7 +773,7 @@ Node::breakpoint(child)   // 只在当前断点渲染该子树
 
 ## 7. P1 —— 原生控件参与重绘与状态（自绘/原生混合的第三阶段）
 
-> BLUE23 让自绘控件有了正确的状态与动画。**原生控件（`gtk-native` / Win32 / AppKit）
+> BLUE23 让自绘控件有了正确的状态与动画。**原生控件（`gtk-native` / Win32 / the platform UI framework）
 > 仍然在库的视野之外**：库不知道它们的空闲状态，原生控件不知道库的状态。
 
 ### 7.1 缺陷的具体形态
@@ -830,7 +830,7 @@ pub fn notify_native_redraw(id: ObjectId, rect: Option<Rect>);
 GTK:     enter-notify-event / leave-notify-event / button-press-event / focus-in-event
          ⇒ runtime::report_state(id, StateFact::Hovered(true) | Pressed(true) | …)
 Win32:   WM_MOUSEMOVE / WM_LBUTTONDOWN / WM_SETFOCUS ⇒ 同上
-AppKit:  mouseEntered: / mouseDown: / becomeFirstResponder ⇒ 同上
+the platform UI framework:  mouseEntered: / mouseDown: / becomeFirstResponder ⇒ 同上
 ```
 
 于是 `widget_state()` 对**原生**控件也是真的，主题的 `"<kind>:hover"` 对两个世界同时生效。

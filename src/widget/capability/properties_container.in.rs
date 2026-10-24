@@ -38,6 +38,11 @@ macro_rules! impl_properties_container {
             PropertySchema::enumerated("frame_shadow", true, true, &["plain", "raised", "sunken"]),
             PropertySchema::new("line_width", PropertyValueKind::Float, true, true),
             PropertySchema::new("mid_line_width", PropertyValueKind::Float, true, true),
+            // An explicit frame width overrides `line_width` for every painted rule; an unset one
+            // falls back to it.
+            PropertySchema::new("frame_width", PropertyValueKind::Float, true, true),
+            PropertySchema::new("contents_margins", PropertyValueKind::String, true, true),
+            PropertySchema::new("theme_bevel", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

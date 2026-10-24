@@ -112,6 +112,21 @@ pub struct FlexItem {
     pub min_size: Size,
     /// Maximum size constraint (0 = no limit).
     pub max_size: Size,
+    /// Flex-basis: the main-axis size before grow/shrink are applied.
+    ///
+    /// `None` keeps the historical behaviour (the child's size hint). `Some` is CSS
+    /// `flex-basis` and lets a caller state the starting size independently of the hint.
+    pub basis: Option<u32>,
+    /// Visual order. Items are sorted by this value when [`FlexLayout::set_item_order`]
+    /// is called; equal values keep declaration order.
+    pub order: i32,
+    /// Distance from the item's top edge to its text baseline, for
+    /// [`AlignItems::Baseline`].
+    ///
+    /// `None` means "baseline at the item's bottom edge", which makes a row of items with
+    /// no baseline information align their bottoms. This is a real measurement supplied
+    /// by the caller (a text control knows its ascent), not a stand-in for `FlexStart`.
+    pub baseline: Option<u32>,
 }
 
 impl Default for FlexItem {
@@ -123,6 +138,9 @@ impl Default for FlexItem {
             align_self: None,
             min_size: Size::new(0, 0),
             max_size: Size::new(0, 0),
+            basis: None,
+            order: 0,
+            baseline: None,
         }
     }
 }
@@ -245,6 +263,33 @@ impl FlexLayout {
         self.child_sizes = sizes;
     }
 
+    /// Moves the item with `widget_id` to the position implied by `order`.
+    ///
+    /// Items are stable-sorted by their `order` value, so equal values keep declaration
+    /// order. Returns `false` when the id names no item. A caller that mutates
+    /// [`Self::items_mut`] directly must call this (or rely on the declaration order).
+    pub fn set_item_order(&mut self, widget_id: ObjectId, order: i32) -> bool {
+        let Some(index) = self.items.iter().position(|item| item.widget_id == Some(widget_id))
+        else {
+            return false;
+        };
+        self.items[index].order = order;
+        // Sort items and their index-aligned sizes together. `child_sizes` is positional, so
+        // reordering the items alone would hand every moved item its neighbour's size.
+        let mut indexed: Vec<(usize, FlexItem)> =
+            core::mem::take(&mut self.items).into_iter().enumerate().collect();
+        indexed.sort_by_key(|(_, item)| item.order);
+        let permutation: Vec<usize> = indexed.iter().map(|(index, _)| *index).collect();
+        self.items = indexed.into_iter().map(|(_, item)| item).collect();
+        if !self.child_sizes.is_empty() {
+            let sizes = core::mem::take(&mut self.child_sizes);
+            self.child_sizes =
+                permutation.iter().filter_map(|index| sizes.get(*index).copied()).collect();
+        }
+        *self.cache.borrow_mut() = None;
+        true
+    }
+
     /// Returns the number of items.
     pub fn item_count(&self) -> usize {
         self.items.len()
@@ -252,6 +297,20 @@ impl FlexLayout {
 
     fn is_row(&self) -> bool {
         matches!(self.direction, FlexDirection::Row | FlexDirection::RowReverse)
+    }
+
+    /// The cross extent an item currently asks for, clamped to the band.
+    fn cross_extent_of(&self, index: usize, cross_size: i32) -> u32 {
+        let size = self.child_sizes.get(index).copied().unwrap_or(Size::new(0, 0));
+        let item = &self.items[index];
+        let requested = if self.is_row() { size.height } else { size.width };
+        let minimum = if self.is_row() { item.min_size.height } else { item.min_size.width };
+        let maximum = if self.is_row() { item.max_size.height } else { item.max_size.width };
+        let mut value = requested.max(minimum);
+        if maximum > 0 {
+            value = value.min(maximum);
+        }
+        value.min(cross_size.max(0) as u32)
     }
 
     /// The gap between items on the main axis.
@@ -412,7 +471,8 @@ impl FlexLayout {
 
         for (i, item) in self.items.iter().enumerate() {
             let sz = self.child_sizes.get(i).copied().unwrap_or(Size::new(0, 0));
-            let main = if self.is_row() { sz.width as i32 } else { sz.height as i32 };
+            let hinted = if self.is_row() { sz.width as i32 } else { sz.height as i32 };
+            let main = item.basis.map(|basis| basis as i32).unwrap_or(hinted);
             intrinsic_main.push(main.max(main_min(item)).min(main_max(item)));
             total_flex_grow += item.flex_grow;
         }
@@ -714,6 +774,25 @@ impl FlexLayout {
         }
 
         let mut result = Vec::with_capacity(count);
+        // A baseline row aligns every item's baseline at the same cross coordinate. The
+        // tallest baseline decides the row's origin, so a short item with a high baseline
+        // is pushed down by exactly the difference. Only the row direction has baselines;
+        // a column treats `Baseline` as the start, which is what it did before.
+        let shared_baseline = if self.is_row() {
+            self.items
+                .iter()
+                .enumerate()
+                .filter(|(index, item)| {
+                    item.align_self.unwrap_or(self.align_items) == AlignItems::Baseline
+                        && *index < count
+                })
+                .map(|(index, item)| {
+                    item.baseline.unwrap_or_else(|| self.cross_extent_of(index, cross_size))
+                })
+                .max()
+        } else {
+            None
+        };
         for (i, item) in self.items.iter().enumerate() {
             let sz = self.child_sizes.get(i).copied().unwrap_or(Size::new(0, 0));
             let child_cross = if self.is_row() { sz.height as i32 } else { sz.width as i32 };
@@ -744,7 +823,15 @@ impl FlexLayout {
                 AlignItems::FlexStart => (0, child_cross),
                 AlignItems::FlexEnd => (cross_size - child_cross, child_cross),
                 AlignItems::Center => ((cross_size - child_cross) / 2, child_cross),
-                AlignItems::Baseline => (0, child_cross),
+                AlignItems::Baseline => {
+                    if self.is_row() {
+                        let baseline = item.baseline.unwrap_or(child_cross as u32) as i32;
+                        let shared = shared_baseline.unwrap_or(baseline as u32) as i32;
+                        ((shared - baseline).max(0), child_cross)
+                    } else {
+                        (0, child_cross)
+                    }
+                }
             };
 
             result.push((cross_start, cross_len));
@@ -1001,6 +1088,21 @@ impl FlexLayout {
                 gap,
             );
             let line_cross = line_cross_sizes[line_index];
+            let line_baseline = if is_row {
+                line.iter()
+                    .filter(|index| {
+                        self.items[**index].align_self.unwrap_or(self.align_items)
+                            == AlignItems::Baseline
+                    })
+                    .map(|index| {
+                        self.items[*index]
+                            .baseline
+                            .unwrap_or_else(|| item_cross(*index).max(0) as u32)
+                    })
+                    .max()
+            } else {
+                None
+            };
             // The block is measured from the cross start in forward order; `WrapReverse`
             // mirrors each line inside that block, so `FlexStart` still means "the edge the
             // lines start from" rather than "the top, always".
@@ -1034,9 +1136,20 @@ impl FlexLayout {
                 };
                 let (cross_offset, cross_len) = match align {
                     AlignItems::Stretch => (0, clamp_cross(line_cross)),
-                    AlignItems::FlexStart | AlignItems::Baseline => (0, child_cross),
+                    AlignItems::FlexStart => (0, child_cross),
                     AlignItems::FlexEnd => (line_cross - child_cross, child_cross),
                     AlignItems::Center => ((line_cross - child_cross) / 2, child_cross),
+                    AlignItems::Baseline => {
+                        if is_row {
+                            let baseline =
+                                self.items[index].baseline.unwrap_or(child_cross.max(0) as u32)
+                                    as i32;
+                            let shared = line_baseline.unwrap_or(baseline as u32) as i32;
+                            ((shared - baseline).max(0), child_cross)
+                        } else {
+                            (0, child_cross)
+                        }
+                    }
                 };
                 let main_pos = positions[slot];
                 let cross_pos = line_base + cross_offset;
@@ -1071,6 +1184,44 @@ impl Layout for FlexLayout {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    /// Discards the cached arrangement.
+    fn invalidate(&mut self) {
+        *self.cache.borrow_mut() = None;
+    }
+
+    /// The cross extent of the row is the largest child; the main extent is the sum of
+    /// the items' floors.
+    fn minimum_size(&self) -> Size {
+        let horizontal = matches!(self.direction, FlexDirection::Row | FlexDirection::RowReverse);
+        let gaps = self.main_gap().max(0) as u32 * (self.items.len().saturating_sub(1) as u32);
+        let mut main = 0u32;
+        let mut cross = 0u32;
+        for item in self.items.iter() {
+            if horizontal {
+                main = main.saturating_add(item.min_size.width);
+                cross = cross.max(item.min_size.height);
+            } else {
+                main = main.saturating_add(item.min_size.height);
+                cross = cross.max(item.min_size.width);
+            }
+        }
+        let main = main.saturating_add(gaps).saturating_add(self.padding.max(0) as u32 * 2);
+        let cross = cross.saturating_add(self.padding.max(0) as u32 * 2);
+        if horizontal {
+            Size::new(main, cross)
+        } else {
+            Size::new(cross, main)
+        }
+    }
+
+    /// A row consumes horizontal room; a column consumes vertical room.
+    fn expanding_directions(&self) -> (bool, bool) {
+        match self.direction {
+            FlexDirection::Row | FlexDirection::RowReverse => (true, false),
+            FlexDirection::Column | FlexDirection::ColumnReverse => (false, true),
+        }
     }
 
     fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
@@ -3471,5 +3622,63 @@ mod tests {
         layout.arrange(Rect::new(0, 0, 200, 20), &children, &mut |_, placed| rect = Some(placed));
 
         assert_eq!(rect.expect("the child was arranged").width, 200);
+    }
+
+    /// A supplied baseline is a real alignment input; a basis overrides the hint; and the
+    /// visual order can be reordered without moving the items' data.
+    #[test]
+    fn baseline_basis_and_order_are_real_inputs() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::FlexStart,
+            AlignItems::Baseline,
+            0,
+            0,
+        );
+        layout.items_mut().push(FlexItem {
+            widget_id: Some(1),
+            baseline: Some(10),
+            ..FlexItem::default()
+        });
+        layout.items_mut().push(FlexItem {
+            widget_id: Some(2),
+            baseline: Some(25),
+            ..FlexItem::default()
+        });
+        layout.set_child_sizes(vec![Size::new(50, 20), Size::new(40, 30)]);
+        let mut rects = Vec::new();
+        layout.update(Rect::new(0, 0, 100, 60), &mut |id, rect| rects.push((id, rect)));
+        assert_eq!(rects[0].1.y, 15, "a shorter baseline is pushed down by the difference");
+        assert_eq!(rects[1].1.y, 0, "the tallest baseline owns the row origin");
+
+        let mut basis = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            0,
+            0,
+        );
+        basis.items_mut().push(FlexItem {
+            widget_id: Some(3),
+            basis: Some(80),
+            ..FlexItem::default()
+        });
+        basis.set_child_sizes(vec![Size::new(10, 10)]);
+        let mut rect = None;
+        basis.update(Rect::new(0, 0, 100, 20), &mut |_, placed| rect = Some(placed));
+        assert_eq!(rect.expect("the item is placed").width, 80);
+
+        let mut ordered = FlexLayout::new();
+        ordered.add_widget(10, 0);
+        ordered.add_widget(20, 0);
+        ordered.set_child_sizes(vec![Size::new(11, 10), Size::new(22, 10)]);
+        assert!(ordered.set_item_order(10, 5));
+        assert_eq!(ordered.items()[0].widget_id, Some(20));
+        let mut rects = Vec::new();
+        ordered.update(Rect::new(0, 0, 100, 20), &mut |_, rect| rects.push(rect));
+        assert_eq!(rects[0].width, 22, "the positional size follows the item it described");
+        assert!(!ordered.set_item_order(99, 0));
     }
 }

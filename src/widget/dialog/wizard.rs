@@ -15,8 +15,8 @@
 //! to a build error: a caller looking for the wizard reaches this module, and a caller looking for
 //! the numeric spinner reaches `container_widgets/stepper.rs`. No control is missing.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
@@ -27,6 +27,58 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+/// An option that hides or adds one of the wizard's navigation affordances.
+///
+/// The three names are the visible parts of a wizard's option set: a help action, and the
+/// ability to remove the two trailing navigation actions. Everything here changes what the
+/// navigation row paints and hit-tests, so an option is never merely recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WizardOption {
+    /// Adds a Help action that emits [`WizardDialog::help_requested`].
+    HelpButton,
+    /// Removes the Cancel action.
+    NoCancelButton,
+    /// Removes the Back action.
+    NoBackButton,
+}
+
+impl WizardOption {
+    /// The spelling used by [`WizardDialog::set_option`] and its query counterpart.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HelpButton => "help_button",
+            Self::NoCancelButton => "no_cancel_button",
+            Self::NoBackButton => "no_back_button",
+        }
+    }
+}
+
+/// A named field the wizard tracks for its pages.
+///
+/// The wizard does not read or write the widget behind a field: a field is a **name to
+/// handle** mapping, exactly as a wizard's field registry is. The host resolves `widget`
+/// through the object table and reads or writes `property` (empty means the widget's
+/// primary value). That keeps page state on the page while letting Finish read a named
+/// answer without searching the tree.
+pub struct WizardField {
+    /// The field's name, unique within one wizard.
+    pub name: String,
+    /// The widget that holds the value.
+    pub widget: ObjectId,
+    /// The property to read or write; empty means the widget's primary value.
+    pub property: String,
+}
+
+/// One action in the navigation row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NavAction {
+    Cancel,
+    Back,
+    Next,
+    Help,
+    Custom(usize),
+}
 
 /// A single step in the wizard.
 #[derive(Debug, Clone)]
@@ -50,25 +102,44 @@ impl WizardStep {
 pub struct WizardDialog {
     base: BaseWidget,
     steps: Vec<WizardStep>,
+    /// The page widget registered for each step, parallel to `steps`.
+    pages: Vec<Option<ObjectId>>,
+    /// Named fields the host can resolve after the flow finishes.
+    fields: Vec<WizardField>,
+    /// Free-form buttons the caller adds; each emits `custom_button_clicked` with its index.
+    custom_buttons: Vec<String>,
+    /// The enabled [`WizardOption`]s.
+    options: Vec<WizardOption>,
     current_step: usize,
     /// Title shown in the wizard's own chrome.
     ///
     /// Kept on the control rather than in a host-side map: the title is part of
     /// what the dialog *is*, and a host that held it separately could not paint it.
     title: String,
+    /// Secondary line drawn under the step title. Empty by default.
+    subtitle: String,
+    /// Optional tint for the step-indicator band.
+    banner_color: Option<Color>,
+    /// Optional tint for the content well.
+    watermark_color: Option<Color>,
     /// Emitted when the user clicks Finish on the last step.
     pub finished: GenericSignal,
-    /// Emitted when the user clicks Cancel.
+    /// Emitted when the user clicks Cancel (or presses Escape).
     pub cancelled: GenericSignal,
     /// Emitted when the current step index changes.
     pub step_changed: Signal1<usize>,
-    /// Which navigation button a press began on (`0` Cancel, `1` Back, `2` Next), or
-    /// `None` when no nav press is in flight.
+    /// Emitted when a Help action is activated.
+    pub help_requested: GenericSignal,
+    /// Emitted with the index of an activated custom button.
+    pub custom_button_clicked: Signal1<usize>,
+    /// Which navigation action a press began on, or `None` when no nav press is in flight.
     ///
     /// A press only arms the button; the action commits on the matching release. The
     /// combined press/release arm this replaced ran `previous`/`next`/`finish` twice for
     /// one click, once per event.
-    pressed_button: Option<usize>,
+    pressed_button: Option<NavAction>,
+    /// The navigation action the keyboard is on, for the focus ring and Enter.
+    focused_button: Option<NavAction>,
 }
 
 impl WizardDialog {
@@ -82,12 +153,22 @@ impl WizardDialog {
         Self {
             base: BaseWidget::new(WidgetKind::WizardDialog, geometry, "WizardDialog"),
             steps: Vec::new(),
+            pages: Vec::new(),
+            fields: Vec::new(),
+            custom_buttons: Vec::new(),
+            options: Vec::new(),
             current_step: 0,
             title,
+            subtitle: String::new(),
+            banner_color: None,
+            watermark_color: None,
             finished: GenericSignal::new(),
             cancelled: GenericSignal::new(),
             step_changed: Signal1::new(),
+            help_requested: GenericSignal::new(),
+            custom_button_clicked: Signal1::new(),
             pressed_button: None,
+            focused_button: None,
         }
     }
 
@@ -108,7 +189,222 @@ impl WizardDialog {
     /// Adds a step to the wizard.
     pub fn add_step(&mut self, title: impl Into<String>, optional: bool) {
         self.steps.push(WizardStep::new(title, optional));
+        self.pages.push(None);
         self.base.request_redraw();
+    }
+
+    /// Adds a step and returns its index, which is the handle the page and field APIs use.
+    ///
+    /// This is [`add_step`](Self::add_step) with the index made explicit, so a caller can
+    /// attach a page with [`set_page`](Self::set_page) without first counting the steps.
+    pub fn add_page(&mut self, title: impl Into<String>, optional: bool) -> usize {
+        let index = self.steps.len();
+        self.add_step(title, optional);
+        index
+    }
+
+    /// Removes the step at `index`, along with its page binding.
+    ///
+    /// Returns the removed step, or `None` when `index` is out of range. When the removed
+    /// step was the last one and the wizard was on it, the current step moves back so the
+    /// control is never on a step that does not exist.
+    pub fn remove_page(&mut self, index: usize) -> Option<WizardStep> {
+        if index >= self.steps.len() {
+            return None;
+        }
+        let step = self.steps.remove(index);
+        let page = if index < self.pages.len() { self.pages.remove(index) } else { None };
+        if let Some(id) = page {
+            self.base.remove_child_linked(id);
+            crate::set_widget_visible(id, false);
+        }
+        if self.current_step >= self.steps.len() {
+            self.current_step = self.steps.len().saturating_sub(1);
+            self.step_changed.emit(self.current_step);
+        }
+        self.sync_page_visibility();
+        self.base.request_redraw();
+        Some(step)
+    }
+
+    /// Returns the page widget registered for `index`, if any.
+    pub fn page(&self, index: usize) -> Option<ObjectId> {
+        self.pages.get(index).copied().flatten()
+    }
+
+    /// Binds `page` to the step at `index`; `None` clears the binding.
+    ///
+    /// The binding is maintained in both directions, including on replacement: the old
+    /// page is unlinked rather than left in the child list, and only the current step's
+    /// page is left visible. An out-of-range index is ignored rather than resizing the
+    /// registry behind the caller's back.
+    pub fn set_page(&mut self, index: usize, page: Option<ObjectId>) {
+        if index >= self.steps.len() {
+            return;
+        }
+        while self.pages.len() < self.steps.len() {
+            self.pages.push(None);
+        }
+        let old = self.pages[index];
+        if old == page {
+            return;
+        }
+        if let Some(id) = old {
+            self.base.remove_child_linked(id);
+            crate::set_widget_visible(id, false);
+        }
+        self.pages[index] = page;
+        if let Some(id) = page {
+            self.base.add_child_linked(id);
+        }
+        self.sync_page_visibility();
+        self.base.request_redraw();
+    }
+
+    /// Registers a named field against `widget`, replacing any field with the same name.
+    ///
+    /// An empty name is rejected (returns `false`), because a field without a name cannot
+    /// be looked up. `property` names what the host should read; an empty string means the
+    /// widget's primary value.
+    pub fn register_field(
+        &mut self,
+        name: impl Into<String>,
+        widget: ObjectId,
+        property: impl Into<String>,
+    ) -> bool {
+        let name = name.into();
+        if name.is_empty() {
+            return false;
+        }
+        let field = WizardField { name: name.clone(), widget, property: property.into() };
+        if let Some(existing) = self.fields.iter_mut().find(|candidate| candidate.name == name) {
+            *existing = field;
+        } else {
+            self.fields.push(field);
+        }
+        true
+    }
+
+    /// Returns the field registered under `name`.
+    pub fn field(&self, name: &str) -> Option<&WizardField> {
+        self.fields.iter().find(|field| field.name == name)
+    }
+
+    /// Returns every registered field, in registration order.
+    pub fn fields(&self) -> &[WizardField] {
+        &self.fields
+    }
+
+    /// Removes the field registered under `name`, returning whether it existed.
+    pub fn remove_field(&mut self, name: &str) -> bool {
+        let before = self.fields.len();
+        self.fields.retain(|field| field.name != name);
+        self.fields.len() != before
+    }
+
+    /// Returns the subtitle painted under the step title. Empty by default.
+    pub fn subtitle(&self) -> &str {
+        &self.subtitle
+    }
+
+    /// Sets the subtitle painted under the step title and requests a redraw.
+    pub fn set_subtitle(&mut self, subtitle: impl Into<String>) {
+        let subtitle = subtitle.into();
+        if self.subtitle == subtitle {
+            return;
+        }
+        self.subtitle = subtitle;
+        self.base.request_redraw();
+    }
+
+    /// Returns the optional tint behind the step indicator.
+    pub fn banner_color(&self) -> Option<Color> {
+        self.banner_color
+    }
+
+    /// Tints the step-indicator band; `None` restores the untinted band.
+    pub fn set_banner_color(&mut self, color: Option<Color>) {
+        if self.banner_color == color {
+            return;
+        }
+        self.banner_color = color;
+        self.base.request_redraw();
+    }
+
+    /// Returns the optional tint of the content well.
+    pub fn watermark_color(&self) -> Option<Color> {
+        self.watermark_color
+    }
+
+    /// Tints the content well; `None` restores the untinted well.
+    pub fn set_watermark_color(&mut self, color: Option<Color>) {
+        if self.watermark_color == color {
+            return;
+        }
+        self.watermark_color = color;
+        self.base.request_redraw();
+    }
+
+    /// Adds a custom action to the navigation row and returns its index.
+    ///
+    /// Custom actions sit to the left of the built-in ones. Activating one emits
+    /// [`custom_button_clicked`](Self::custom_button_clicked) with its index; the wizard
+    /// itself takes no other action, because only the caller knows what the button means.
+    pub fn add_custom_button(&mut self, text: impl Into<String>) -> usize {
+        let index = self.custom_buttons.len();
+        self.custom_buttons.push(text.into());
+        self.base.request_redraw();
+        index
+    }
+
+    /// Returns the custom action labels, in index order.
+    pub fn custom_buttons(&self) -> &[String] {
+        &self.custom_buttons
+    }
+
+    /// Enables or disables a [`WizardOption`].
+    ///
+    /// The change reaches both the painted row and its hit targets, because both are
+    /// derived from [`nav_slots`](Self::nav_slots).
+    pub fn set_option(&mut self, option: WizardOption, enabled: bool) {
+        let present = self.options.contains(&option);
+        if present == enabled {
+            return;
+        }
+        if enabled {
+            self.options.push(option);
+        } else {
+            self.options.retain(|candidate| *candidate != option);
+        }
+        // A hidden action cannot hold the keyboard focus.
+        if !enabled && self.focused_button == Some(Self::action_of_option(option)) {
+            self.focused_button = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether `option` is enabled.
+    pub fn has_option(&self, option: WizardOption) -> bool {
+        self.options.contains(&option)
+    }
+
+    /// The action an option controls, for focus bookkeeping.
+    fn action_of_option(option: WizardOption) -> NavAction {
+        match option {
+            WizardOption::HelpButton => NavAction::Help,
+            WizardOption::NoCancelButton => NavAction::Cancel,
+            WizardOption::NoBackButton => NavAction::Back,
+        }
+    }
+
+    /// Shows the current step's page and hides every other registered page.
+    fn sync_page_visibility(&mut self) {
+        let visible = self.base.is_visible();
+        for (index, page) in self.pages.iter().enumerate() {
+            if let Some(id) = page {
+                crate::set_widget_visible(*id, visible && index == self.current_step);
+            }
+        }
     }
 
     /// Advances to the next step if not already on the last step.
@@ -122,6 +418,7 @@ impl WizardDialog {
             }
             self.current_step += 1;
             self.step_changed.emit(self.current_step);
+            self.sync_page_visibility();
             self.base.request_redraw();
             true
         } else {
@@ -135,6 +432,7 @@ impl WizardDialog {
         if self.current_step > 0 {
             self.current_step -= 1;
             self.step_changed.emit(self.current_step);
+            self.sync_page_visibility();
             self.base.request_redraw();
             true
         } else {
@@ -149,6 +447,7 @@ impl WizardDialog {
         if self.current_step != clamped {
             self.current_step = clamped;
             self.step_changed.emit(self.current_step);
+            self.sync_page_visibility();
             self.base.request_redraw();
             true
         } else {
@@ -198,6 +497,7 @@ impl WizardDialog {
             step.completed = false;
         }
         self.step_changed.emit(0);
+        self.sync_page_visibility();
         self.base.request_redraw();
     }
 
@@ -211,7 +511,7 @@ impl WizardDialog {
         self.base.request_redraw();
     }
 
-    /// Called when the Cancel button is clicked.
+    /// Called when the user cancels: the Cancel action, Escape, or a host-driven command.
     fn do_cancel(&mut self) {
         self.cancelled.emit();
     }
@@ -268,12 +568,128 @@ impl WizardDialog {
         ]
     }
 
-    /// Returns the index of the navigation button at `pos`, if any.
+    /// Returns the navigation action at `pos`, if any.
     ///
     /// The same rectangles are painted and hit-tested, so the press, the release and the
     /// picture all agree about which button is under the pointer.
-    fn nav_button_at(&self, pos: Point) -> Option<usize> {
-        self.nav_button_rects(self.geometry()).iter().position(|rect| rect.contains_point(pos))
+    fn nav_button_at(&self, pos: Point) -> Option<NavAction> {
+        self.nav_slots(self.geometry())
+            .into_iter()
+            .find(|(_, rect)| rect.contains_point(pos))
+            .map(|(action, _)| action)
+    }
+
+    /// The actions actually in the navigation row, with their rectangles.
+    ///
+    /// # Why the default case delegates to `nav_button_rects`
+    ///
+    /// A wizard with no options and no custom actions has exactly the three-button row the
+    /// control has always painted, and its geometry is the audited layout: `Cancel` at the
+    /// left margin, `Next` at the right, `Back` centred between them. Reproducing that from
+    /// a generic n-column formula would move the buttons. The generic formula is therefore
+    /// used only when the row actually differs — an option removed, Help added, or a custom
+    /// action installed. Both the paint and the hit test read this one function.
+    fn nav_slots(&self, rect: Rect) -> Vec<(NavAction, Rect)> {
+        let plain = self.custom_buttons.is_empty()
+            && !self.has_option(WizardOption::HelpButton)
+            && !self.has_option(WizardOption::NoCancelButton)
+            && !self.has_option(WizardOption::NoBackButton);
+        if plain {
+            let legacy = self.nav_button_rects(rect);
+            return vec![
+                (NavAction::Cancel, legacy[0]),
+                (NavAction::Back, legacy[1]),
+                (NavAction::Next, legacy[2]),
+            ];
+        }
+
+        let mut actions: Vec<NavAction> =
+            (0..self.custom_buttons.len()).map(NavAction::Custom).collect();
+        if self.has_option(WizardOption::HelpButton) {
+            actions.push(NavAction::Help);
+        }
+        if !self.has_option(WizardOption::NoCancelButton) {
+            actions.push(NavAction::Cancel);
+        }
+        if !self.has_option(WizardOption::NoBackButton) {
+            actions.push(NavAction::Back);
+        }
+        actions.push(NavAction::Next);
+
+        // The row's own vertical placement is the audited one: the same baseline the
+        // three-button layout uses, so adding an action changes the columns, not the band.
+        let legacy = self.nav_button_rects(rect);
+        let btn_y = legacy[0].y;
+        let count = actions.len() as i32;
+        let available =
+            (rect.width as i32 - Self::NAV_MARGIN * 2 - Self::NAV_GAP * (count - 1)).max(count);
+        let btn_w = (available / count).clamp(1, Self::NAV_MAX_BUTTON_WIDTH as i32);
+        actions
+            .into_iter()
+            .enumerate()
+            .map(|(index, action)| {
+                let x = rect.x + Self::NAV_MARGIN + index as i32 * (btn_w + Self::NAV_GAP);
+                (action, Rect::new(x, btn_y, btn_w as u32, Self::NAV_BUTTON_HEIGHT))
+            })
+            .collect()
+    }
+
+    /// Performs a navigation action.
+    ///
+    /// Both the mouse release and the keyboard's Enter go through here, so a click and a
+    /// key press cannot diverge in what they do.
+    fn activate(&mut self, action: NavAction) {
+        match action {
+            NavAction::Cancel => self.do_cancel(),
+            NavAction::Back => {
+                if !self.is_first() && !self.steps.is_empty() {
+                    self.previous();
+                }
+            }
+            NavAction::Next => {
+                if !self.steps.is_empty() {
+                    if self.is_last() {
+                        self.do_finish();
+                    } else {
+                        self.next();
+                    }
+                }
+            }
+            NavAction::Help => self.help_requested.emit(),
+            NavAction::Custom(index) => self.custom_button_clicked.emit(index),
+        }
+    }
+
+    /// The label a navigation action paints.
+    fn label_of_action(&self, action: NavAction) -> &str {
+        match action {
+            NavAction::Cancel => "Cancel",
+            NavAction::Back => "Back",
+            NavAction::Next if self.is_last() => "Finish",
+            NavAction::Next => "Next",
+            NavAction::Help => "Help",
+            NavAction::Custom(index) => self.custom_buttons.get(index).map_or("", String::as_str),
+        }
+    }
+
+    /// Moves the keyboard focus across the actions that are actually present.
+    fn move_focus(&mut self, forward: bool) {
+        let slots = self.nav_slots(self.geometry());
+        if slots.is_empty() {
+            return;
+        }
+        let actions: Vec<NavAction> = slots.into_iter().map(|(action, _)| action).collect();
+        let position = self
+            .focused_button
+            .and_then(|focused| actions.iter().position(|action| *action == focused));
+        let next = match position {
+            Some(index) if forward => (index + 1) % actions.len(),
+            Some(index) => (index + actions.len() - 1) % actions.len(),
+            None if forward => 0,
+            None => actions.len() - 1,
+        };
+        self.focused_button = Some(actions[next]);
+        self.base.request_redraw();
     }
 }
 
@@ -286,6 +702,18 @@ impl Widget for WizardDialog {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// Shows the wizard and its current page.
+    fn show(&mut self) {
+        self.base.show();
+        self.sync_page_visibility();
+    }
+
+    /// Hides the wizard and the pages it owns.
+    fn hide(&mut self) {
+        self.base.hide();
+        self.sync_page_visibility();
     }
 
     fn size_hint(&self) -> Size {
@@ -320,6 +748,12 @@ impl Widget for WizardDialog {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "help_requested" => Some(EventSignalRef::unit("help_requested", &self.help_requested)),
+            "custom_button_clicked" => Some(EventSignalRef::mapped(
+                "custom_button_clicked",
+                &self.custom_button_clicked,
+                |v| CapabilityValue::UInt(*v as u64),
+            )),
             _ => None,
         }
     }
@@ -334,6 +768,7 @@ impl WidgetProperties for WizardDialog {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "subtitle" => Ok(CapabilityValue::String(self.subtitle().to_string())),
             "step_count" => Ok(CapabilityValue::UInt(self.step_count() as u64)),
             "current_step" => Ok(CapabilityValue::UInt(self.current_step() as u64)),
             // `can_go_back` / `can_go_forward` are the schema's names for the same
@@ -351,6 +786,10 @@ impl WidgetProperties for WizardDialog {
                 self.set_title(expect_string(value)?);
                 Ok(())
             }
+            "subtitle" => {
+                self.set_subtitle(expect_string(value)?);
+                Ok(())
+            }
             // Moving between steps is navigation, not an assignment: it is driven
             // by `next` / `previous`, which emit `step_changed`. The `can_go_*`
             // pair is derived from the current position.
@@ -364,6 +803,7 @@ impl WidgetProperties for WizardDialog {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
             "title",
+            "subtitle",
             "step_count",
             "current_step",
             "can_go_back",
@@ -442,8 +882,10 @@ impl Draw for WizardDialog {
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.45));
         // The content well and the secondary buttons are one visible step apart from the
-        // frame in either appearance.
-        let content_fill = surface.blend(&ink, 0.04);
+        // frame in either appearance. A watermark is a caller-chosen tint for the well, so
+        // it replaces (rather than blends with) the derived step when one is set; the
+        // default is the derived colour, which is why the resting frame is unchanged.
+        let content_fill = self.watermark_color.unwrap_or_else(|| surface.blend(&ink, 0.04));
         let button_fill = surface.blend(&ink, 0.12);
         let button_ink = button_fill.contrast_color();
         // The accent drives the wizard's progress affordances; the button fill is the
@@ -501,6 +943,15 @@ impl Draw for WizardDialog {
         } else {
             step_indicator_height.min(rect.height)
         };
+
+        // A banner tint sits behind the step indicator. It is opt-in, so an untinted wizard
+        // keeps the frame it has always painted.
+        if let Some(banner) = self.banner_color {
+            context.fill_rect(
+                Rect::new(rect.x, rect.y, rect.width, step_indicator_height.min(rect.height)),
+                banner,
+            );
+        }
 
         // ── Step Indicator ──────────────────────────────────────────────
         if !self.steps.is_empty() {
@@ -672,10 +1123,19 @@ impl Draw for WizardDialog {
             let title_metrics =
                 context.measure_text(&self.steps[self.current_step].title, &title_font);
             let title_natural = title_metrics.height.max(1) as i32;
+            // The subtitle is a second, smaller line under the title. It reserves its row
+            // only when it has text, so a wizard without one lays out exactly as before.
+            let subtitle_font = role_font(style, 12.0);
+            let subtitle_metrics = context.measure_text(&self.subtitle, &subtitle_font);
+            let subtitle_h = if self.subtitle.is_empty() {
+                0
+            } else {
+                subtitle_metrics.height.max(1) as i32 + 2
+            };
             // The step title is the content a reader needs; "Step n of m" restates the numbered
             // indicator above. So the info line is what yields when the well cannot hold both,
             // rather than the title being squeezed to nothing.
-            let both_fit = well_top + 6 + title_natural + info_h + 4 <= well_bottom;
+            let both_fit = well_top + 6 + title_natural + subtitle_h + info_h + 4 <= well_bottom;
 
             let title_top = (well_top + 6).min(well_bottom);
             let title_room = if both_fit {
@@ -693,12 +1153,36 @@ impl Draw for WizardDialog {
                     HorizontalAlignment::Left,
                 );
 
-                // Optional label, on the row below the title and only when that row is inside
-                // the well.
+                // Rows below the title share one cursor, so a subtitle and the optional
+                // marker cannot be painted on top of each other.
+                let mut next_row = title_top + title_h as i32 + 2;
+                if subtitle_h > 0 {
+                    let subtitle_h_px = subtitle_h - 2;
+                    if next_row + subtitle_h_px
+                        <= well_bottom - (if both_fit { info_h + 4 } else { 0 })
+                    {
+                        context.draw_text_fitted_cow(
+                            Rect::new(
+                                rect.x + 12,
+                                next_row,
+                                rect.width.saturating_sub(24),
+                                subtitle_h_px as u32,
+                            ),
+                            &self.subtitle,
+                            &subtitle_font,
+                            ink.blend(&surface, 0.3),
+                            HorizontalAlignment::Left,
+                        );
+                        next_row += subtitle_h;
+                    }
+                }
+
+                // Optional label, on the row below the title (and subtitle) and only when
+                // that row is inside the well.
                 if self.steps[self.current_step].optional {
                     let opt_font = role_font(style, 11.0).with_italic(true);
                     let opt_metrics = context.measure_text("(Optional step)", &opt_font);
-                    let opt_top = title_top + title_h as i32 + 2;
+                    let opt_top = next_row;
                     let opt_h = opt_metrics.height.max(1) as i32;
                     if opt_top + opt_h <= well_bottom - (if both_fit { info_h + 4 } else { 0 }) {
                         context.draw_text_fitted_cow(
@@ -763,19 +1247,17 @@ impl Draw for WizardDialog {
         );
 
         // ── Navigation Buttons ──────────────────────────────────────────
-        // The three buttons come from **one** layout function, which the event handler also
-        // calls. They used to be computed twice — here from a 72 px column and in
-        // `handle_event` from a fixed 80 px one placed 20 px and 8 px elsewhere. The painted
-        // `Back` therefore sat 20 px right of where it could be clicked, and the painted
-        // `Next` 8 px right of its own hit box: two of the three buttons did not respond
-        // where they appeared. Order alone was never the problem; **two layouts for one row**
+        // The row comes from **one** layout function, which the event handler also calls.
+        // They used to be computed twice — here from a 72 px column and in `handle_event`
+        // from a fixed 80 px one placed 20 px and 8 px elsewhere. The painted `Back`
+        // therefore sat 20 px right of where it could be clicked, and the painted `Next`
+        // 8 px right of its own hit box: two of the three buttons did not respond where
+        // they appeared. Order alone was never the problem; **two layouts for one row**
         // was, so there is now one.
-        let nav = self.nav_button_rects(rect);
-        let (cancel_btn, back_btn, next_btn) = (nav[0], nav[1], nav[2]);
-        // A label is one line box tall and the renderer's origin is its **top** edge, so
-        // centring means offsetting by half the *difference*. Passing the button rect
-        // unchanged put every label on the button's top edge with 24 px of empty pad below
-        // it, which is what made the row look wrong even where the colours were right.
+        //
+        // The loop carries the options and custom actions too: a hidden action is absent
+        // from `nav_slots`, so it is neither painted nor hit-tested, and the keyboard
+        // focus ring is drawn by the same iteration.
         let nav_font = role_font(style, 12.0);
         let nav_text_height = context.measure_text("M", &nav_font).height.max(1);
         let label_of = |button: Rect| {
@@ -786,35 +1268,11 @@ impl Draw for WizardDialog {
                 nav_text_height,
             )
         };
-
-        // Cancel button (left side)
-        context.fill_rounded_rect(cancel_btn, 4, button_fill);
-        context.draw_rounded_rect_stroke(cancel_btn, 4, border, 1);
-        context.draw_text_fitted_cow(
-            label_of(cancel_btn),
-            "Cancel",
-            &nav_font,
-            button_ink,
-            HorizontalAlignment::Center,
-        );
-
-        // Back button
-        //
-        // # Why the disabled state is now derived from *one* colour
-        //
-        // A disabled button was painted by dimming the fill and the label independently:
-        // the fill was `button_fill.blend(ink, 0.5)` and the label `ink.blend(surface, 0.45)`.
-        // Neither is wrong on its own, but together they landed on the same grey — fill
-        // `139,139,139`, label `137,137,137`, a difference of two levels per channel — so the
-        // `Back` button rendered as an **unlabelled grey block**. That is not a subtle contrast
-        // problem; a button with no visible caption reads as an empty control, which is how it
-        // was reported.
-        //
-        // Two independent dimming formulas for one button cannot be kept in agreement by
-        // inspection, so the disabled button now takes the *same* pair of functions the
-        // enabled one does: the fill is derived from the button's own base colour, and the
-        // label is that fill's own `contrast_color()`. Contrast is therefore correct by
-        // construction in every appearance, not by two constants happening to round apart.
+        // A disabled `Back` takes the *same* pair of functions the enabled one does: the
+        // fill is derived from the button's own base colour, and the label is that fill's
+        // own `contrast_color()`. Two independent dimming formulas for one button cannot be
+        // kept in agreement by inspection — the old pair landed two levels apart per
+        // channel, so the button rendered as an unlabelled grey block.
         let back_enabled = !self.is_first() && !self.steps.is_empty();
         let back_color = if back_enabled { button_fill } else { button_fill.blend(&surface, 0.55) };
         let back_text_color = if back_enabled {
@@ -822,45 +1280,56 @@ impl Draw for WizardDialog {
         } else {
             back_color.contrast_color().blend(&surface, 0.35)
         };
-        context.fill_rounded_rect(back_btn, 4, back_color);
-        context.draw_rounded_rect_stroke(back_btn, 4, border, 1);
-        context.draw_text_fitted_cow(
-            label_of(back_btn),
-            "Back",
-            &nav_font,
-            back_text_color,
-            HorizontalAlignment::Center,
-        );
-
-        // Next/Finish button. It is one affordance in two states, so both states read the
-        // same action token; only the label changes. Deriving the last step's fill from
-        // `success` made `Next` and `Finish` look like two different controls.
-        //
-        // The disabled label is the same `contrast_color()` path as the enabled one, dimmed a
-        // step toward the surface. The previous `ink.blend(surface, 0.45)` was a *fixed* grey
-        // that ignored what it was being painted on, so on the accent fill it was whatever
-        // that formula produced rather than something legible.
-        let is_last_step = self.is_last();
-        let btn_text = if is_last_step { "Finish" } else { "Next" };
+        // Next/Finish is one affordance in two states, so both states read the same action
+        // token; only the label changes.
         let btn_color = self.base.disabled_ink_on(primary, surface);
         let btn_text_color = if is_enabled {
             primary.contrast_color()
         } else {
-            // The button's *label* sits on the button's own fill, not on the page, so its
-            // legible counterpart is derived from that fill. It read `btn_color.contrast_color()
-            // .blend(&surface, 0.35)` -- blending the label back toward the page it is not
-            // painted on, which on the light appearance moved it toward the page rather than
-            // away from the button.
             self.base.disabled_ink_on(btn_color.contrast_color(), btn_color)
         };
-        context.fill_rounded_rect(next_btn, 4, btn_color);
-        context.draw_text_fitted_cow(
-            label_of(next_btn),
-            btn_text,
-            &role_font(style, 12.0).with_bold(true),
-            btn_text_color,
-            HorizontalAlignment::Center,
-        );
+        let next_font = role_font(style, 12.0).with_bold(true);
+
+        let slots = self.nav_slots(rect);
+        for (action, button) in slots {
+            match action {
+                NavAction::Next => {
+                    context.fill_rounded_rect(button, 4, btn_color);
+                    context.draw_text_fitted_cow(
+                        label_of(button),
+                        self.label_of_action(action),
+                        &next_font,
+                        btn_text_color,
+                        HorizontalAlignment::Center,
+                    );
+                }
+                NavAction::Back => {
+                    context.fill_rounded_rect(button, 4, back_color);
+                    context.draw_rounded_rect_stroke(button, 4, border, 1);
+                    context.draw_text_fitted_cow(
+                        label_of(button),
+                        self.label_of_action(action),
+                        &nav_font,
+                        back_text_color,
+                        HorizontalAlignment::Center,
+                    );
+                }
+                NavAction::Cancel | NavAction::Help | NavAction::Custom(_) => {
+                    context.fill_rounded_rect(button, 4, button_fill);
+                    context.draw_rounded_rect_stroke(button, 4, border, 1);
+                    context.draw_text_fitted_cow(
+                        label_of(button),
+                        self.label_of_action(action),
+                        &nav_font,
+                        button_ink,
+                        HorizontalAlignment::Center,
+                    );
+                }
+            }
+            if self.focused_button == Some(action) {
+                context.draw_rounded_rect_stroke(button, 4, primary, 2);
+            }
+        }
     }
 }
 
@@ -878,35 +1347,48 @@ impl EventHandler for WizardDialog {
                     self.pressed_button = target;
                     self.base.request_redraw();
                 }
+                // Clicking a button also moves the keyboard focus there, so the ring follows
+                // the user's own last interaction rather than staying where Tab left it.
+                if target.is_some() && self.focused_button != target {
+                    self.focused_button = target;
+                    self.base.request_redraw();
+                }
             }
             Event::MouseRelease { pos, .. } => {
-                let Some(index) = self.pressed_button.take() else {
+                let Some(action) = self.pressed_button.take() else {
                     return;
                 };
                 self.base.request_redraw();
                 // Releasing over a different button (or off the row) cancels the click.
-                if self.nav_button_at(*pos) != Some(index) {
+                if self.nav_button_at(*pos) != Some(action) {
                     return;
                 }
-                if index == 0 {
+                self.activate(action);
+            }
+            // Keyboard navigation. Tab/Shift+Tab and the horizontal arrows move the focus
+            // across the actions that are actually present; Enter/Space activate it, and
+            // Backspace is the keyboard's Back. Escape keeps its existing cancel path.
+            Event::KeyPress { key, modifiers } => {
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                if *key == key_codes::ESCAPE {
                     self.do_cancel();
-                } else if index == 1 {
+                } else if *key == key_codes::TAB {
+                    let forward = !mods.contains(crate::shortcut::Modifiers::SHIFT);
+                    self.move_focus(forward);
+                } else if *key == key_codes::RIGHT {
+                    self.move_focus(true);
+                } else if *key == key_codes::LEFT {
+                    self.move_focus(false);
+                } else if *key == key_codes::ENTER || *key == key_codes::SPACE {
+                    let action = self.focused_button.unwrap_or(NavAction::Next);
+                    self.activate(action);
+                } else if *key == key_codes::BACKSPACE {
                     if !self.is_first() && !self.steps.is_empty() {
                         self.previous();
                     }
-                } else if index == 2 && !self.steps.is_empty() {
-                    if self.is_last() {
-                        self.do_finish();
-                    } else {
-                        self.next();
-                    }
+                } else {
+                    self.base.handle_event(event);
                 }
-            }
-            // Escape closes the flow the same way Cancel does. A wizard is modal: a
-            // stray key that reaches it must not leave the user with no way out. Other
-            // keys still fall through to the base handler below.
-            Event::KeyPress { key, .. } if *key == 27 => {
-                self.do_cancel();
             }
             _ => {
                 self.base.handle_event(event);
@@ -1171,5 +1653,181 @@ mod tests {
         let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
         let svg = crate::widget::svg::render_to_svg(&mut wiz);
         assert!(svg.starts_with("<svg"));
+    }
+
+    /// A step can carry a page widget, and the registry keeps the child link in step with it.
+    #[test]
+    fn a_step_carries_a_page_widget() {
+        use crate::object::Object;
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        let first = wiz.add_page("One", false);
+        let second = wiz.add_page("Two", false);
+        assert_eq!((first, second), (0, 1));
+        assert_eq!(wiz.page(0), None);
+
+        let page = Object::new("PageOne").id();
+        wiz.set_page(0, Some(page));
+        assert_eq!(wiz.page(0), Some(page));
+        assert!(wiz.children().contains(&page), "a bound page is linked as a child");
+
+        // Replacing the page unlinks the old one rather than leaving it attached.
+        let replacement = Object::new("PageOneB").id();
+        wiz.set_page(0, Some(replacement));
+        assert_eq!(wiz.page(0), Some(replacement));
+        assert!(!wiz.children().contains(&page));
+        assert!(wiz.children().contains(&replacement));
+
+        // Removing a step removes its page binding too.
+        let removed = wiz.remove_page(0).expect("the step exists");
+        assert_eq!(removed.title, "One");
+        assert_eq!(wiz.page(0), None, "the second step shifted into index 0 with no page");
+        assert!(!wiz.children().contains(&replacement));
+    }
+
+    /// Named fields are a registry the host can resolve after the flow finishes.
+    #[test]
+    fn fields_are_registered_by_name() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        assert!(wiz.register_field("name", 11, "text"));
+        assert!(wiz.register_field("port", 12, "value"));
+        assert!(!wiz.register_field("", 13, "text"), "an unnamed field cannot be looked up");
+
+        assert_eq!(wiz.fields().len(), 2);
+        let field = wiz.field("name").expect("registered");
+        assert_eq!(field.widget, 11);
+        assert_eq!(field.property, "text");
+
+        // Registering the same name replaces rather than duplicating.
+        assert!(wiz.register_field("name", 21, "label_text"));
+        assert_eq!(wiz.fields().len(), 2);
+        assert_eq!(wiz.field("name").expect("replaced").widget, 21);
+
+        assert!(wiz.remove_field("port"));
+        assert!(!wiz.remove_field("port"));
+        assert!(wiz.field("port").is_none());
+    }
+
+    /// Options change the row that is painted and hit-tested, not just a flag.
+    #[test]
+    fn options_change_the_navigation_row() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        wiz.add_step("Only", false);
+        assert_eq!(wiz.nav_slots(wiz.geometry()).len(), 3);
+
+        wiz.set_option(WizardOption::NoCancelButton, true);
+        assert!(wiz.has_option(WizardOption::NoCancelButton));
+        assert_eq!(wiz.nav_slots(wiz.geometry()).len(), 2);
+
+        wiz.set_option(WizardOption::HelpButton, true);
+        let slots = wiz.nav_slots(wiz.geometry());
+        assert_eq!(slots.len(), 3, "Help replaces the removed Cancel in the row's count");
+        assert!(slots.iter().any(|(action, _)| *action == NavAction::Help));
+
+        let help_rect = slots
+            .iter()
+            .find(|(action, _)| *action == NavAction::Help)
+            .map(|(_, rect)| *rect)
+            .expect("a Help slot");
+        let fired = Arc::new(AtomicUsize::new(0));
+        wiz.help_requested.connect({
+            let sink = Arc::clone(&fired);
+            move || {
+                sink.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let pos = Point::new(help_rect.x + 4, help_rect.y + 4);
+        wiz.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        wiz.handle_event(&Event::MouseRelease { pos, button: 1 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "Help must emit help_requested");
+    }
+
+    /// Custom actions emit their index; the wizard takes no other action for them.
+    #[test]
+    fn custom_buttons_emit_their_index() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        wiz.add_step("One", false);
+        let index = wiz.add_custom_button("Export");
+        assert_eq!(index, 0);
+        assert_eq!(wiz.custom_buttons().len(), 1);
+        assert_eq!(wiz.custom_buttons()[0], "Export");
+
+        let custom_rect = wiz
+            .nav_slots(wiz.geometry())
+            .into_iter()
+            .find(|(action, _)| *action == NavAction::Custom(0))
+            .map(|(_, rect)| rect)
+            .expect("a custom slot");
+
+        let clicked = Arc::new(AtomicUsize::new(0));
+        wiz.custom_button_clicked.connect({
+            let sink = Arc::clone(&clicked);
+            move |value: Arc<usize>| {
+                sink.store(*value, Ordering::SeqCst);
+            }
+        });
+        let pos = Point::new(custom_rect.x + 4, custom_rect.y + 4);
+        wiz.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        wiz.handle_event(&Event::MouseRelease { pos, button: 1 });
+        assert_eq!(clicked.load(Ordering::SeqCst), 0, "the clicked custom index is reported");
+        assert_eq!(wiz.step_count(), 1, "a custom action does not navigate");
+    }
+
+    /// Tab/arrows move the focus, Enter activates it, and Backspace is the keyboard's Back.
+    #[test]
+    fn keyboard_navigation_moves_focus_and_activates() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        wiz.add_step("One", false);
+        wiz.add_step("Two", false);
+        let changes = Arc::new(AtomicUsize::new(0));
+        wiz.step_changed.connect({
+            let sink = Arc::clone(&changes);
+            move |_| {
+                sink.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        // No focus yet: Enter is the default action, i.e. Next.
+        wiz.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert_eq!(wiz.current_step(), 1, "Enter with no focus runs the default action");
+        assert_eq!(changes.load(Ordering::SeqCst), 1);
+
+        // Backspace is Back, without needing focus.
+        wiz.handle_event(&Event::key_press(key_codes::BACKSPACE, 0));
+        assert_eq!(wiz.current_step(), 0, "Backspace goes back");
+
+        // Tab focuses the first action; two more forwards land on Back.
+        wiz.handle_event(&Event::key_press(key_codes::TAB, 0));
+        assert_eq!(wiz.focused_button, Some(NavAction::Cancel));
+        wiz.handle_event(&Event::key_press(key_codes::TAB, 0));
+        wiz.handle_event(&Event::key_press(key_codes::TAB, 0));
+        assert_eq!(wiz.focused_button, Some(NavAction::Next));
+
+        // Shift+Tab walks the other way.
+        let shift = u32::from(crate::shortcut::Modifiers::SHIFT.bits());
+        wiz.handle_event(&Event::key_press(key_codes::TAB, shift));
+        assert_eq!(wiz.focused_button, Some(NavAction::Back));
+
+        // Arrow keys move focus too; Enter then activates the focused action.
+        wiz.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        assert_eq!(wiz.focused_button, Some(NavAction::Next));
+        wiz.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert_eq!(wiz.current_step(), 1, "Enter activates the focused Next");
+        assert!(wiz.focused_button.is_some(), "the focus ring survives the activation");
+    }
+
+    /// The subtitle is painted under the step title.
+    #[test]
+    fn the_subtitle_reaches_the_pixels() {
+        let mut plain = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        plain.add_step("Configure", false);
+        let plain_svg = crate::widget::svg::render_to_svg(&mut plain);
+
+        plain.set_subtitle("Choose how the wizard behaves");
+        assert_eq!(plain.subtitle(), "Choose how the wizard behaves");
+        let decorated = crate::widget::svg::render_to_svg(&mut plain);
+        assert_ne!(plain_svg, decorated, "the subtitle must reach the pixels");
+
+        plain.set_subtitle("");
+        assert_eq!(plain_svg, crate::widget::svg::render_to_svg(&mut plain));
     }
 }

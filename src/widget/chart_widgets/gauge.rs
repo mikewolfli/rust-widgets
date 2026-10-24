@@ -19,6 +19,7 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{draw_arc_segments, point_on_circle, RenderContext};
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_f32, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -36,6 +37,28 @@ const SWEEP: f32 = core::f32::consts::PI * 1.5;
 /// The number of major ticks on the track.
 const TICK_COUNT: u32 = 5;
 
+/// A colour band on a gauge's track, in the gauge's own value units.
+///
+/// Zones are drawn before the value arc, so the filled value covers its own part of the
+/// band. A zone whose `start` is greater than its `end` is refused rather than reordered,
+/// because the caller's ordering is the band's meaning.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GaugeZone {
+    /// The lower bound, in gauge value units.
+    pub start: f32,
+    /// The upper bound, in gauge value units.
+    pub end: f32,
+    /// The band's colour.
+    pub color: Color,
+}
+
+impl GaugeZone {
+    /// Creates a band from `start` to `end`.
+    pub fn new(start: f32, end: f32, color: Color) -> Self {
+        Self { start, end, color }
+    }
+}
+
 /// Gauge — one value on a radial dial.
 ///
 /// `value` is clamped into `[minimum, maximum]` on every write, including a write that arrives
@@ -50,6 +73,12 @@ pub struct Gauge {
     label: String,
     unit: String,
     thickness: u32,
+    /// Threshold colour bands drawn on the track, in value units.
+    zones: Vec<GaugeZone>,
+    /// Whether the displayed value eases to a new reading.
+    animate: bool,
+    /// The displayed fraction, advanced by [`Widget::tick`] while `animate` is set.
+    display: PropertyDriver,
 }
 
 impl Gauge {
@@ -63,6 +92,9 @@ impl Gauge {
             label: String::new(),
             unit: String::new(),
             thickness: 10,
+            zones: Vec::new(),
+            animate: false,
+            display: PropertyDriver::at(0.0, MotionSlot::Normal),
         }
     }
 
@@ -78,6 +110,9 @@ impl Gauge {
             return;
         }
         self.value = clamped;
+        if self.animate {
+            self.display.set_target(self.raw_fraction());
+        }
         self.base.request_redraw();
     }
 
@@ -96,6 +131,7 @@ impl Gauge {
         }
         self.minimum = minimum;
         self.value = clamp_value(self.value, self.minimum, self.maximum);
+        self.reset_display();
         self.base.request_redraw();
         Ok(())
     }
@@ -115,8 +151,69 @@ impl Gauge {
         }
         self.maximum = maximum;
         self.value = clamp_value(self.value, self.minimum, self.maximum);
+        self.reset_display();
         self.base.request_redraw();
         Ok(())
+    }
+
+    /// Replaces the threshold colour bands on the track.
+    ///
+    /// An empty list restores the plain track. Bands are clipped to the current range when
+    /// they are drawn, so changing the range does not require re-setting them.
+    pub fn set_zones(&mut self, zones: Vec<GaugeZone>) {
+        let zones: Vec<GaugeZone> = zones
+            .into_iter()
+            .filter(|zone| zone.start.is_finite() && zone.end.is_finite() && zone.start <= zone.end)
+            .collect();
+        if self.zones == zones {
+            return;
+        }
+        self.zones = zones;
+        self.base.request_redraw();
+    }
+
+    /// Returns the threshold colour bands.
+    pub fn zones(&self) -> &[GaugeZone] {
+        &self.zones
+    }
+
+    /// Enables easing from the displayed reading to a newly set value.
+    pub fn set_animate(&mut self, animate: bool) {
+        if self.animate == animate {
+            return;
+        }
+        self.animate = animate;
+        self.display.jump_to(self.raw_fraction());
+        self.base.request_redraw();
+    }
+
+    /// Returns whether value changes ease.
+    pub fn is_animated(&self) -> bool {
+        self.animate
+    }
+
+    /// The fraction the displayed value has reached.
+    pub fn displayed_fraction(&self) -> f32 {
+        if self.animate {
+            self.display.value()
+        } else {
+            self.raw_fraction()
+        }
+    }
+
+    /// Places the animation at the current reading without travelling.
+    fn reset_display(&mut self) {
+        let fraction = self.raw_fraction();
+        self.display.jump_to(fraction);
+    }
+
+    /// The reading's fraction across the range, without any animation.
+    fn raw_fraction(&self) -> f32 {
+        let span = self.maximum - self.minimum;
+        if span <= 0.0 {
+            return 0.0;
+        }
+        ((self.value - self.minimum) / span).clamp(0.0, 1.0)
     }
 
     /// The caption under the dial.
@@ -164,12 +261,11 @@ impl Gauge {
     }
 
     /// How far round the dial the value takes it, in `0.0..=1.0`.
+    ///
+    /// This is the displayed fraction: while the gauge is animating it is the eased value, and
+    /// at rest it is the reading's own position.
     pub fn fraction(&self) -> f32 {
-        let span = self.maximum - self.minimum;
-        if span <= 0.0 {
-            return 0.0;
-        }
-        ((self.value - self.minimum) / span).clamp(0.0, 1.0)
+        self.displayed_fraction()
     }
 
     /// The geometry the dial's arcs are drawn at.
@@ -219,6 +315,19 @@ impl Widget for Gauge {
         Size::new(160, 160)
     }
 
+    /// Advances the eased reading by `delta_ms`.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.animate {
+            return false;
+        }
+        self.display.tick(delta_ms)
+    }
+
+    /// Whether the eased reading still owes frames.
+    fn is_animating(&self) -> bool {
+        self.animate && self.display.is_moving()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -232,6 +341,8 @@ impl WidgetProperties for Gauge {
             "label" => Ok(CapabilityValue::String(self.label.clone())),
             "unit" => Ok(CapabilityValue::String(self.unit.clone())),
             "thickness" => Ok(CapabilityValue::UInt(u64::from(self.thickness))),
+            "zone_count" => Ok(CapabilityValue::UInt(self.zones.len() as u64)),
+            "animated" => Ok(CapabilityValue::Bool(self.animate)),
             _ => base_property_get(self, name),
         }
     }
@@ -256,6 +367,15 @@ impl WidgetProperties for Gauge {
                 self.set_thickness(expect_u32(value)?);
                 Ok(())
             }
+            "zone_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "animated" => {
+                let enabled = match value {
+                    CapabilityValue::Bool(flag) => flag,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_animate(enabled);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -268,6 +388,8 @@ impl WidgetProperties for Gauge {
             "label",
             "unit",
             "thickness",
+            "zone_count",
+            "animated",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -280,6 +402,7 @@ impl Draw for Gauge {
             return;
         }
         let style = self.base.style();
+        let is_enabled = self.base.is_enabled();
         let themed = crate::style::resolved_theme_style_shared("gauge");
         let (window_background, window_foreground, accent) = {
             let manager = crate::style::theme_manager();
@@ -315,7 +438,35 @@ impl Draw for Gauge {
             self.thickness,
         );
 
+        // Threshold bands are painted over the plain track and under the value arc, so the
+        // reading still reads as one continuous measure. They are opt-in: an empty zone list
+        // leaves the default dial untouched.
+        let span = self.maximum - self.minimum;
+        if span > 0.0 {
+            for zone in &self.zones {
+                let start = ((zone.start - self.minimum) / span).clamp(0.0, 1.0);
+                let end = ((zone.end - self.minimum) / span).clamp(0.0, 1.0);
+                if end <= start {
+                    continue;
+                }
+                draw_arc_segments(
+                    ctx,
+                    center,
+                    radius,
+                    SWEEP_START + SWEEP * start,
+                    SWEEP_START + SWEEP * end,
+                    if is_enabled { zone.color } else { zone.color.with_alpha(110) },
+                    self.thickness,
+                );
+            }
+        }
+
         let fraction = self.fraction();
+        let zone_color = self
+            .zones
+            .iter()
+            .find(|zone| self.value >= zone.start && self.value <= zone.end)
+            .map(|zone| zone.color);
         if fraction > 0.0 {
             draw_arc_segments(
                 ctx,
@@ -323,7 +474,7 @@ impl Draw for Gauge {
                 radius,
                 SWEEP_START,
                 SWEEP_START + SWEEP * fraction,
-                accent,
+                zone_color.unwrap_or(accent),
                 self.thickness,
             );
         }
@@ -491,5 +642,36 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut gauge);
         assert!(svg.contains("<line"), "the track and its ticks must be drawn: {svg}");
         assert_eq!(crate::widget::svg::text_ink_boxes(&svg).len(), 1, "the readout is drawn");
+    }
+
+    #[test]
+    fn zones_are_filtered_and_the_value_arc_uses_their_colour() {
+        let mut gauge = Gauge::new(Rect::new(0, 0, 160, 160));
+        gauge.set_zones(vec![
+            GaugeZone::new(0.0, 50.0, Color::SUCCESS),
+            GaugeZone::new(50.0, 80.0, Color::WARNING),
+            GaugeZone::new(90.0, 60.0, Color::ERROR),
+        ]);
+        assert_eq!(gauge.zones().len(), 2, "a reversed band is refused");
+        gauge.set_value(75.0);
+        let svg = crate::widget::svg::render_to_svg(&mut gauge);
+        assert!(svg.starts_with("<svg"));
+        assert_eq!(gauge.get("zone_count"), Ok(CapabilityValue::UInt(2)));
+    }
+
+    #[test]
+    fn animated_values_ease_toward_the_reading() {
+        let mut gauge = Gauge::new(Rect::new(0, 0, 160, 160));
+        gauge.set_animate(true);
+        assert!(gauge.is_animated());
+        gauge.set_value(80.0);
+        assert!(gauge.fraction() < 0.8, "the displayed fraction starts behind the reading");
+        assert!(gauge.is_animating());
+        let mut frames = 0;
+        while gauge.tick(16) && frames < 200 {
+            frames += 1;
+        }
+        assert!((gauge.fraction() - 0.8).abs() < 1e-3, "the eased value reaches the reading");
+        assert!(!gauge.is_animating());
     }
 }

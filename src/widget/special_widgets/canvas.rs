@@ -12,17 +12,77 @@ use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::GenericSignal;
+use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// A uniform scale and translation applied to every drawing command a [`Canvas`] stores.
+///
+/// The transform is applied when a command is added, not when it is painted, so the stored
+/// geometry is already in surface coordinates: hit tests, exports and the commands themselves
+/// all read the same space. Changing the transform therefore affects commands added afterwards;
+/// a caller that wants to move existing content clears and re-adds it, which is what a drawing
+/// surface's undo model expects.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CanvasTransform {
+    /// Uniform scale, clamped to a positive value.
+    pub scale: f32,
+    /// Translation in surface pixels.
+    pub offset: Point,
+}
+
+impl Default for CanvasTransform {
+    fn default() -> Self {
+        Self { scale: 1.0, offset: Point::new(0, 0) }
+    }
+}
+
+impl CanvasTransform {
+    /// A transform with `scale` and no translation.
+    pub fn scaled(scale: f32) -> Self {
+        Self { scale: if scale.is_finite() { scale.max(0.01) } else { 1.0 }, ..Self::default() }
+    }
+
+    /// Maps one point through the transform.
+    pub fn point(&self, point: Point) -> Point {
+        Point::new(
+            self.offset.x + (point.x as f32 * self.scale).round() as i32,
+            self.offset.y + (point.y as f32 * self.scale).round() as i32,
+        )
+    }
+
+    /// Maps one rectangle through the transform.
+    pub fn rect(&self, rect: Rect) -> Rect {
+        let origin = self.point(Point::new(rect.x, rect.y));
+        Rect::new(
+            origin.x,
+            origin.y,
+            (rect.width as f32 * self.scale).round().max(1.0) as u32,
+            (rect.height as f32 * self.scale).round().max(1.0) as u32,
+        )
+    }
+}
+
 /// Canvas widget for custom drawing operations.
 pub struct Canvas {
     base: BaseWidget,
     /// Stored drawing commands replayed during `draw()`.
     commands: Vec<RenderCommand>,
+    /// The transform applied to commands as they are added.
+    transform: CanvasTransform,
+    /// Saved transforms, restored by [`Canvas::pop_transform`].
+    transform_stack: Vec<CanvasTransform>,
+    /// Commands removed by undo, available to redo.
+    redo_stack: Vec<RenderCommand>,
+    /// The most commands the canvas retains; the oldest is dropped past this.
+    command_limit: usize,
+    /// Whether the wheel zooms the transform.
+    zoom_enabled: bool,
+    /// Emitted when a context menu is requested, carrying the pointer position.
+    pub context_menu_requested: Signal1<Point>,
     /// Track mouse position for interaction signals.
     last_mouse_pos: Point,
     /// Emitted when mouse is pressed on the canvas.
@@ -41,6 +101,12 @@ impl Canvas {
         Self {
             base: BaseWidget::new(WidgetKind::Canvas, geometry, "Canvas"),
             commands: Vec::new(),
+            transform: CanvasTransform::default(),
+            transform_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            command_limit: 100_000,
+            zoom_enabled: true,
+            context_menu_requested: Signal1::new(),
             last_mouse_pos: Point::new(0, 0),
             mouse_pressed: GenericSignal::new(),
             mouse_released: GenericSignal::new(),
@@ -60,71 +126,234 @@ impl Canvas {
         self.commands.len()
     }
 
+    /// Returns the transform applied to newly added commands.
+    pub fn transform(&self) -> CanvasTransform {
+        self.transform
+    }
+
+    /// Replaces the transform applied to newly added commands.
+    pub fn set_transform(&mut self, transform: CanvasTransform) {
+        if self.transform == transform {
+            return;
+        }
+        self.transform = transform;
+        self.base.request_redraw();
+    }
+
+    /// Saves the current transform, restoring it with [`Self::pop_transform`].
+    pub fn push_transform(&mut self) {
+        self.transform_stack.push(self.transform);
+    }
+
+    /// Restores the transform saved by the matching [`Self::push_transform`].
+    pub fn pop_transform(&mut self) {
+        if let Some(transform) = self.transform_stack.pop() {
+            self.transform = transform;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Enables or disables wheel zoom.
+    pub fn set_zoom_enabled(&mut self, enabled: bool) {
+        if self.zoom_enabled == enabled {
+            return;
+        }
+        self.zoom_enabled = enabled;
+    }
+
+    /// Returns whether wheel zoom is enabled.
+    pub fn is_zoom_enabled(&self) -> bool {
+        self.zoom_enabled
+    }
+
+    /// Sets how many commands the canvas retains (clamped to at least one).
+    pub fn set_command_limit(&mut self, limit: usize) {
+        self.command_limit = limit.max(1);
+        while self.commands.len() > self.command_limit {
+            self.commands.remove(0);
+        }
+    }
+
+    /// Returns the command limit.
+    pub fn command_limit(&self) -> usize {
+        self.command_limit
+    }
+
+    /// Removes the most recently added command, returning whether one was undone.
+    pub fn undo(&mut self) -> bool {
+        let Some(command) = self.commands.pop() else {
+            return false;
+        };
+        self.redo_stack.push(command);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Re-applies the command most recently removed by [`Self::undo`].
+    pub fn redo(&mut self) -> bool {
+        let Some(command) = self.redo_stack.pop() else {
+            return false;
+        };
+        self.commands.push(command);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Returns whether there is an undone command to redo.
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    /// Applies the current transform to `command` and stores it.
+    fn push_command(&mut self, command: RenderCommand) {
+        let transform = self.transform;
+        let command = match command {
+            RenderCommand::FillRect { rect, color } => {
+                RenderCommand::FillRect { rect: transform.rect(rect), color }
+            }
+            RenderCommand::DrawRect { rect, color } => {
+                RenderCommand::DrawRect { rect: transform.rect(rect), color }
+            }
+            RenderCommand::FillRoundedRect { rect, radius, color } => {
+                RenderCommand::FillRoundedRect {
+                    rect: transform.rect(rect),
+                    radius: (radius as f32 * transform.scale).round().max(1.0) as u32,
+                    color,
+                }
+            }
+            RenderCommand::DrawLine { from, to, color } => RenderCommand::DrawLine {
+                from: transform.point(from),
+                to: transform.point(to),
+                color,
+            },
+            RenderCommand::DrawLineAA { from, to, color } => RenderCommand::DrawLineAA {
+                from: transform.point(from),
+                to: transform.point(to),
+                color,
+            },
+            RenderCommand::DrawLineStroke { from, to, color, width } => {
+                RenderCommand::DrawLineStroke {
+                    from: transform.point(from),
+                    to: transform.point(to),
+                    color,
+                    width: (width as f32 * transform.scale).round().max(1.0) as u32,
+                }
+            }
+            RenderCommand::FillCircle { center, radius, color } => RenderCommand::FillCircle {
+                center: transform.point(center),
+                radius: (radius as f32 * transform.scale).round().max(1.0) as u32,
+                color,
+            },
+            RenderCommand::FillCircleAA { center, radius, color } => RenderCommand::FillCircleAA {
+                center: transform.point(center),
+                radius: (radius as f32 * transform.scale).round().max(1.0) as u32,
+                color,
+            },
+            RenderCommand::DrawCircle { center, radius, color } => RenderCommand::DrawCircle {
+                center: transform.point(center),
+                radius: (radius as f32 * transform.scale).round().max(1.0) as u32,
+                color,
+            },
+            RenderCommand::DrawCircleStroke { center, radius, color, width } => {
+                RenderCommand::DrawCircleStroke {
+                    center: transform.point(center),
+                    radius: (radius as f32 * transform.scale).round().max(1.0) as u32,
+                    color,
+                    width: (width as f32 * transform.scale).round().max(1.0) as u32,
+                }
+            }
+            RenderCommand::DrawPath { points, closed, color, filled, width } => {
+                RenderCommand::DrawPath {
+                    points: points.into_iter().map(|point| transform.point(point)).collect(),
+                    closed,
+                    color,
+                    filled,
+                    width: (width as f32 * transform.scale).round().max(1.0) as u32,
+                }
+            }
+            other => other,
+        };
+        self.redo_stack.clear();
+        self.commands.push(command);
+        while self.commands.len() > self.command_limit {
+            self.commands.remove(0);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Exports the canvas to an SVG document.
+    ///
+    /// Uses the crate's shared SVG backend, so the export and the on-screen paint read the same
+    /// command list rather than a second renderer that could drift.
+    pub fn export_svg(&mut self) -> String {
+        crate::widget::svg::render_to_svg(self)
+    }
+
     // ── Drawing API ──────────────────────────────────────────────────────
 
     /// Fill the entire canvas area with a solid color.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
-        self.commands.push(RenderCommand::FillRect { rect, color });
+        self.push_command(RenderCommand::FillRect { rect, color });
         self.base.request_redraw();
     }
 
     /// Draw a rectangle outline.
     pub fn draw_rect(&mut self, rect: Rect, color: Color) {
-        self.commands.push(RenderCommand::DrawRect { rect, color });
+        self.push_command(RenderCommand::DrawRect { rect, color });
         self.base.request_redraw();
     }
 
     /// Draw a line segment from `from` to `to`.
     pub fn draw_line(&mut self, from: Point, to: Point, color: Color) {
-        self.commands.push(RenderCommand::DrawLine { from, to, color });
+        self.push_command(RenderCommand::DrawLine { from, to, color });
         self.base.request_redraw();
     }
 
     /// Draw a line segment with anti-aliasing.
     pub fn draw_line_aa(&mut self, from: Point, to: Point, color: Color) {
-        self.commands.push(RenderCommand::DrawLineAA { from, to, color });
+        self.push_command(RenderCommand::DrawLineAA { from, to, color });
         self.base.request_redraw();
     }
 
     /// Draw a line segment with explicit stroke width.
     pub fn draw_line_stroke(&mut self, from: Point, to: Point, color: Color, width: u32) {
-        self.commands.push(RenderCommand::DrawLineStroke { from, to, color, width });
+        self.push_command(RenderCommand::DrawLineStroke { from, to, color, width });
         self.base.request_redraw();
     }
 
     /// Fill a circle at `center` with `radius`.
     pub fn fill_circle(&mut self, center: Point, radius: u32, color: Color) {
-        self.commands.push(RenderCommand::FillCircle { center, radius, color });
+        self.push_command(RenderCommand::FillCircle { center, radius, color });
         self.base.request_redraw();
     }
 
     /// Fill a circle with anti-aliasing.
     pub fn fill_circle_aa(&mut self, center: Point, radius: u32, color: Color) {
-        self.commands.push(RenderCommand::FillCircleAA { center, radius, color });
+        self.push_command(RenderCommand::FillCircleAA { center, radius, color });
         self.base.request_redraw();
     }
 
     /// Draw a circle outline.
     pub fn draw_circle(&mut self, center: Point, radius: u32, color: Color) {
-        self.commands.push(RenderCommand::DrawCircle { center, radius, color });
+        self.push_command(RenderCommand::DrawCircle { center, radius, color });
         self.base.request_redraw();
     }
 
     /// Draw a circle outline with explicit stroke width.
     pub fn draw_circle_stroke(&mut self, center: Point, radius: u32, color: Color, width: u32) {
-        self.commands.push(RenderCommand::DrawCircleStroke { center, radius, color, width });
+        self.push_command(RenderCommand::DrawCircleStroke { center, radius, color, width });
         self.base.request_redraw();
     }
 
     /// Fill a rounded rectangle.
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color) {
-        self.commands.push(RenderCommand::FillRoundedRect { rect, radius, color });
+        self.push_command(RenderCommand::FillRoundedRect { rect, radius, color });
         self.base.request_redraw();
     }
 
     /// Draw text at the specified position.
     pub fn draw_text(&mut self, origin: Point, text: &str, font: &crate::core::Font, color: Color) {
-        self.commands.push(RenderCommand::DrawText {
+        self.push_command(RenderCommand::DrawText {
             origin,
             text: text.to_string(),
             font: font.clone(),
@@ -144,7 +373,7 @@ impl Canvas {
         color: Color,
         filled: bool,
     ) {
-        self.commands.push(RenderCommand::DrawArc {
+        self.push_command(RenderCommand::DrawArc {
             center,
             radius,
             start_angle,
@@ -164,7 +393,7 @@ impl Canvas {
         filled: bool,
         width: u32,
     ) {
-        self.commands.push(RenderCommand::DrawPath { points, closed, color, filled, width });
+        self.push_command(RenderCommand::DrawPath { points, closed, color, filled, width });
         self.base.request_redraw();
     }
 
@@ -306,7 +535,15 @@ impl Draw for Canvas {
         );
         // Replay all stored commands. Borrowed: the list is the canvas's own content, so
         // cloning each command per frame only duplicated its text and point vectors.
+        // A command whose bounds lie outside the control is culled: a drawing surface that has
+        // been panned keeps every off-screen mark, and replaying them costs the rasteriser a
+        // full pass each for pixels nobody can see.
         for cmd in &self.commands {
+            if let Some(bounds) = command_bounds(cmd) {
+                if !rects_intersect(rect, bounds) {
+                    continue;
+                }
+            }
             context.execute_command_ref(cmd);
         }
         // Draw border to make canvas area visible
@@ -347,9 +584,89 @@ impl EventHandler for Canvas {
                 self.last_mouse_pos = *pos;
                 self.double_clicked.emit();
             }
+            Event::Wheel { delta, .. } if self.zoom_enabled && delta.y != 0 => {
+                // Zoom about the pointer, so the ink under the cursor stays under it.
+                let anchor = self.last_mouse_pos;
+                let factor = if delta.y > 0 { 0.9 } else { 1.1 };
+                let scale = (self.transform.scale * factor).clamp(0.1, 16.0);
+                let ratio = scale / self.transform.scale;
+                self.transform.offset = Point::new(
+                    anchor.x - ((anchor.x - self.transform.offset.x) as f32 * ratio).round() as i32,
+                    anchor.y - ((anchor.y - self.transform.offset.y) as f32 * ratio).round() as i32,
+                );
+                self.transform.scale = scale;
+                self.base.request_redraw();
+            }
+            Event::ContextMenu { pos } => {
+                self.context_menu_requested.emit(*pos);
+            }
+            Event::KeyPress { key, modifiers } => {
+                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) {
+                    match crate::shortcut::Key::from_key_code(*key) {
+                        Some(crate::shortcut::Key::Z) => {
+                            self.undo();
+                        }
+                        Some(crate::shortcut::Key::Y) => {
+                            self.redo();
+                        }
+                        _ => {}
+                    }
+                }
+            }
             _ => { /* Other events are not relevant */ }
         }
     }
+}
+
+/// The axis-aligned bounds of a command, when it has any.
+fn command_bounds(command: &RenderCommand) -> Option<Rect> {
+    match command {
+        RenderCommand::FillRect { rect, .. } | RenderCommand::DrawRect { rect, .. } => Some(*rect),
+        RenderCommand::FillRoundedRect { rect, .. } => Some(*rect),
+        RenderCommand::FillCircle { center, radius, .. }
+        | RenderCommand::FillCircleAA { center, radius, .. }
+        | RenderCommand::DrawCircle { center, radius, .. }
+        | RenderCommand::DrawCircleStroke { center, radius, .. } => Some(Rect::new(
+            center.x - *radius as i32,
+            center.y - *radius as i32,
+            radius.saturating_mul(2).max(1),
+            radius.saturating_mul(2).max(1),
+        )),
+        RenderCommand::DrawLine { from, to, .. }
+        | RenderCommand::DrawLineAA { from, to, .. }
+        | RenderCommand::DrawLineStroke { from, to, .. } => Some(Rect::new(
+            from.x.min(to.x),
+            from.y.min(to.y),
+            (from.x - to.x).unsigned_abs().max(1),
+            (from.y - to.y).unsigned_abs().max(1),
+        )),
+        RenderCommand::DrawPath { points, .. } => {
+            let first = points.first()?;
+            let (mut left, mut top, mut right, mut bottom) = (first.x, first.y, first.x, first.y);
+            for point in points {
+                left = left.min(point.x);
+                top = top.min(point.y);
+                right = right.max(point.x);
+                bottom = bottom.max(point.y);
+            }
+            Some(Rect::new(
+                left,
+                top,
+                (right - left).unsigned_abs().max(1),
+                (bottom - top).unsigned_abs().max(1),
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Whether two rectangles overlap.
+fn rects_intersect(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.width as i32
+        && b.x < a.x + a.width as i32
+        && a.y < b.y + b.height as i32
+        && b.y < a.y + a.height as i32
 }
 
 #[cfg(test)]

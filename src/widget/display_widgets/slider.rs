@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 //! Slider widget.
-use crate::compat::ToString;
-use crate::core::{Color, Orientation, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use core::fmt::Write as _;
+
+use crate::compat::{String, ToString};
+use crate::core::{Color, HorizontalAlignment, Orientation, Point, Rect, Size};
+use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{
     expect_bool, expect_i64, expect_orientation, orientation_to_str,
 };
@@ -33,6 +36,17 @@ pub struct Slider {
     tracking: bool,
     slider_position: i32,
     mouse_pressed: bool,
+    /// Whether the part of the groove already passed is highlighted.
+    track_highlight: bool,
+    /// Whether each tick is labelled with its numeric value.
+    tick_labels: bool,
+    /// Whether the hover/drag halo interpolates instead of stepping between two levels.
+    animated_halo: bool,
+    /// The halo's current strength, `0.0` at rest and a blend weight while hovered or dragged.
+    ///
+    /// Only read when [`Slider::set_animated_halo`] is on: with it off the draw pass keeps
+    /// the discrete two-level behaviour, which is what makes the default picture unchanged.
+    halo: PropertyDriver,
     /// The writing direction the value axis runs in.
     ///
     /// Defaults to left-to-right, so a slider that never asks for a direction behaves exactly as it
@@ -151,6 +165,10 @@ impl Slider {
             tracking: true,
             slider_position: 0,
             mouse_pressed: false,
+            track_highlight: false,
+            tick_labels: false,
+            animated_halo: false,
+            halo: PropertyDriver::at(0.0, MotionSlot::Fast),
             direction: crate::core::TextDirection::default(),
             value_changed: Signal1::new(),
             slider_moved: Signal1::new(),
@@ -289,6 +307,122 @@ impl Slider {
     /// Sets tracking state.
     pub fn set_tracking(&mut self, tracking: bool) {
         self.tracking = tracking;
+    }
+
+    /// Whether the passed part of the groove is highlighted.
+    pub fn track_highlight(&self) -> bool {
+        self.track_highlight
+    }
+
+    /// Enables the accent-coloured filled track from the start of the groove to the handle.
+    ///
+    /// The fill runs in **value order**, so a right-to-left slider fills from its right edge
+    /// and a vertical slider from its bottom edge: the part painted is the part the value has
+    /// already passed, in both writing directions.
+    ///
+    /// Defaults to `false`, which is the historical picture with no fill at all.
+    pub fn set_track_highlight(&mut self, on: bool) {
+        if self.track_highlight == on {
+            return;
+        }
+        self.track_highlight = on;
+        self.base.request_redraw();
+    }
+
+    /// Whether each tick is labelled with its numeric value.
+    pub fn tick_labels(&self) -> bool {
+        self.tick_labels
+    }
+
+    /// Enables the numeric label drawn with each tick mark.
+    ///
+    /// Labels are only drawn where tick marks are (`tick_position` is not
+    /// [`TickPosition::NoTicks`] and `tick_interval` is positive), and the tick count is already
+    /// capped, so this cannot become an unbounded text spray.
+    ///
+    /// Defaults to `false`, so an existing slider keeps its unlabelled ticks.
+    pub fn set_tick_labels(&mut self, on: bool) {
+        if self.tick_labels == on {
+            return;
+        }
+        self.tick_labels = on;
+        self.base.request_redraw();
+    }
+
+    /// Whether the hover/drag halo interpolates between levels.
+    pub fn animated_halo(&self) -> bool {
+        self.animated_halo
+    }
+
+    /// Enables interpolation of the hover/drag halo.
+    ///
+    /// With it on, the halo fades in and out over the theme's fast motion token as the pointer
+    /// arrives, presses and leaves, driven by [`Slider::tick`]. With it off the halo keeps its
+    /// historical two-level appearance, which is what keeps existing snapshots identical —
+    /// which is also why this is not the default.
+    ///
+    /// Switching it on places the halo at the strength the current state calls for, so the
+    /// setter itself does not make the control flash.
+    pub fn set_animated_halo(&mut self, on: bool) {
+        if self.animated_halo == on {
+            return;
+        }
+        self.animated_halo = on;
+        if on {
+            let target = self.halo_target();
+            self.halo.jump_to(target);
+        }
+        self.base.request_redraw();
+    }
+
+    /// The halo strength currently painted, as a blend weight toward the window fill.
+    ///
+    /// `0.0` at rest, and one of the two halo weights while hovered or dragged. With
+    /// [`Slider::set_animated_halo`] on this is the *interpolated* value, which is the number
+    /// an animation has to be sampled to see.
+    pub fn halo_strength(&self) -> f32 {
+        if !self.base.is_enabled() {
+            0.0
+        } else if self.animated_halo {
+            self.halo.value()
+        } else if self.base.is_pressed() {
+            DRAG_HALO_WEIGHT
+        } else if self.base.is_hovered() {
+            HOVER_HALO_WEIGHT
+        } else {
+            0.0
+        }
+    }
+
+    /// The halo strength the current interaction state calls for.
+    fn halo_target(&self) -> f32 {
+        if !self.base.is_enabled() {
+            0.0
+        } else if self.base.is_pressed() {
+            DRAG_HALO_WEIGHT
+        } else if self.base.is_hovered() {
+            HOVER_HALO_WEIGHT
+        } else {
+            0.0
+        }
+    }
+
+    /// Advances the animated halo by `delta_ms`.
+    ///
+    /// Returns `true` while the halo is still moving and `false` once it has settled. With
+    /// [`Slider::set_animated_halo`] off this is a still picture and owes nothing.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.animated_halo {
+            return false;
+        }
+        let target = self.halo_target();
+        self.halo.set_target(target);
+        self.halo.tick(delta_ms)
+    }
+
+    /// Whether the animated halo owes frames.
+    pub fn is_animating(&self) -> bool {
+        self.animated_halo && (self.halo.value() - self.halo_target()).abs() > f32::EPSILON
     }
     /// Returns slider position.
     pub fn slider_position(&self) -> i32 {
@@ -581,6 +715,16 @@ impl Widget for Slider {
             Orientation::Vertical => Size::new(thickness, extent),
         }
     }
+
+    /// One frame of the animated hover/drag halo.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        Slider::tick(self, delta_ms)
+    }
+
+    /// The slider owes frames while its halo is still moving.
+    fn is_animating(&self) -> bool {
+        Slider::is_animating(self)
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -756,6 +900,16 @@ impl EventHandler for Slider {
                 };
                 let value = self.pixel_pos_to_value(pixel);
                 self.set_slider_position(value);
+            }
+            // A wheel notch is one single step. A positive delta scrolls "forward" — toward
+            // the maximum — matching the direction a vertical wheel moves a page.
+            Event::Wheel { delta, modifiers, .. } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y != 0 {
+                    let step = (scroll.lines_y as i64) * (self.single_step as i64);
+                    let next = (self.value as i64 + step).clamp(i32::MIN as i64, i32::MAX as i64);
+                    self.set_value(next as i32);
+                }
             }
             #[cfg(feature = "touch")]
             Event::TouchMove { pos, .. } if self.mouse_pressed => {
@@ -940,6 +1094,13 @@ impl Draw for Slider {
         // the value indicator it is drawing attention to.
         let halo_weight = if !is_enabled {
             None
+        } else if self.animated_halo {
+            let weight = self.halo.value();
+            if weight > f32::EPSILON {
+                Some(weight)
+            } else {
+                None
+            }
         } else if self.base.is_pressed() {
             Some(DRAG_HALO_WEIGHT)
         } else if self.base.is_hovered() {
@@ -969,6 +1130,11 @@ impl Draw for Slider {
         // `range == 0.0` arm of `value_to_pixel_pos` already answers the left/top end, so the
         // disc is drawn there and this branch is not taken with a zero-extent element.
         let handle_radius = (SLIDER_SIZE / 2.0) as u32;
+        // The filled part of the groove, in the same accent the handle uses, damped alongside
+        // the other chrome when the control is disabled. Only read when the caller asked for
+        // the highlight, so the default picture still paints the groove alone.
+        let track_fill = if is_enabled { accent } else { accent.blend(&window_fill, 0.50) };
+        let horizontal_ltr = self.direction == crate::core::TextDirection::LeftToRight;
         match self.orientation {
             Orientation::Horizontal => {
                 // Draw groove
@@ -981,6 +1147,23 @@ impl Draw for Slider {
                     ),
                     groove_color,
                 );
+                if self.track_highlight {
+                    // Value order: left-to-right fills from the left edge, right-to-left from
+                    // the right edge, so the filled part is the part already passed.
+                    let (begin, end) = if horizontal_ltr {
+                        (track.x as f32, slider_pos)
+                    } else {
+                        (slider_pos, track.x as f32 + track.width as f32)
+                    };
+                    let left = begin.min(end).max(track.x as f32);
+                    let right = begin.max(end).min(track.x as f32 + track.width as f32);
+                    if right > left {
+                        context.fill_rect(
+                            Rect::from_f32(left, track.y as f32, right - left, track.height as f32),
+                            track_fill,
+                        );
+                    }
+                }
                 // Draw slider handle: a disc centred on the mapped position, on the control's
                 // own middle line, so it reads as sitting *on* the groove at every height.
                 let handle_centre =
@@ -1022,6 +1205,21 @@ impl Draw for Slider {
                                 tick_color,
                             );
                         }
+                        if self.tick_labels {
+                            let font = crate::widget::metrics::effective_font(style);
+                            let mut label = String::new();
+                            let _ = write!(label, "{}", value);
+                            let metrics = context.measure_text(&label, font);
+                            let label_x = tick_x as i32 - metrics.width as i32 / 2;
+                            let label_y = track.y + track.height as i32 + 2;
+                            context.draw_text(
+                                Point::new(label_x, label_y),
+                                label.as_str(),
+                                font,
+                                tick_color,
+                                HorizontalAlignment::Left,
+                            );
+                        }
                     }
                 }
             }
@@ -1036,6 +1234,28 @@ impl Draw for Slider {
                     ),
                     groove_color,
                 );
+                if self.track_highlight {
+                    // A vertical slider's minimum is at the bottom, so the passed part runs
+                    // from the handle down to the end of the thumb's travel. The fill is a
+                    // band on the value axis, centred in the control, because that is the line
+                    // the handle moves along.
+                    let thickness = dimensions::SLIDER_TRACK_HEIGHT.min(rect.width);
+                    let band_x = rect.x + (rect.width.saturating_sub(thickness) / 2) as i32;
+                    let bottom =
+                        (rect.y + rect.height as i32 - (SLIDER_SIZE / 2.0) as i32).max(track.y);
+                    let top = (slider_pos as i32).max(track.y).min(bottom);
+                    if bottom > top {
+                        context.fill_rect(
+                            Rect::from_f32(
+                                band_x as f32,
+                                top as f32,
+                                thickness as f32,
+                                (bottom - top) as f32,
+                            ),
+                            track_fill,
+                        );
+                    }
+                }
                 // Draw slider handle: mirrored on the block axis, again centred in the
                 // control's own box rather than filling it.
                 let handle_centre =
@@ -1075,6 +1295,21 @@ impl Draw for Slider {
                                 ),
                                 Point::from_f32(track.x as f32 + track.width as f32, tick_y),
                                 tick_color,
+                            );
+                        }
+                        if self.tick_labels {
+                            let font = crate::widget::metrics::effective_font(style);
+                            let mut label = String::new();
+                            let _ = write!(label, "{}", value);
+                            let metrics = context.measure_text(&label, font);
+                            let label_x = track.x + tick_width as i32 + 2;
+                            let label_y = tick_y as i32 - metrics.height as i32 / 2;
+                            context.draw_text(
+                                Point::new(label_x, label_y),
+                                label.as_str(),
+                                font,
+                                tick_color,
+                                HorizontalAlignment::Left,
                             );
                         }
                     }
@@ -2184,5 +2419,110 @@ mod tests {
             at_minimum
         );
         assert_eq!(at_maximum.y, at_minimum.y, "a horizontal slider's handle keeps one row");
+    }
+
+    /// The passed part of the groove is filled only when the caller asks for it.
+    ///
+    /// The highlight is opt-in so the historical groove — one flat bar — stays byte-identical.
+    #[test]
+    fn the_passed_groove_is_filled_only_when_asked() {
+        let render = |slider: &mut Slider| -> String {
+            crate::widget::svg::render_widget_to_svg(slider, Rect::new(0, 0, 200, 30))
+        };
+        let mut slider = make_slider();
+        slider.set_value(50);
+        assert!(!slider.track_highlight(), "no fill by default");
+        let plain = render(&mut slider);
+
+        slider.set_track_highlight(true);
+        assert!(slider.track_highlight());
+        let highlighted = render(&mut slider);
+        assert_ne!(plain, highlighted, "the fill must reach the picture");
+
+        // The fill is a second `<rect>` beyond the groove: the resting slider paints the
+        // groove, the handle and the handle's outline, and nothing else rectangular.
+        let rects = |svg: &str| svg.matches("<rect").count();
+        assert!(
+            rects(&highlighted) > rects(&plain),
+            "the highlight is an extra filled rectangle: {plain} vs {highlighted}"
+        );
+    }
+
+    /// The animated halo interpolates between levels instead of stepping.
+    #[test]
+    fn the_animated_halo_interpolates_then_settles() {
+        let mut slider = make_slider();
+        assert!(!slider.animated_halo(), "the discrete halo is the default");
+        assert_eq!(slider.halo_strength(), 0.0);
+
+        slider.set_animated_halo(true);
+        assert!(slider.animated_halo());
+        let inside = Point::new(100, 15);
+
+        slider.handle_event(&Event::MouseEnter { pos: inside });
+        assert!(slider.is_animating(), "arriving starts a halo transition");
+        assert!(slider.tick(1), "the transition owes more frames");
+        let partway = slider.halo_strength();
+        assert!(
+            partway > 0.0 && partway < HOVER_HALO_WEIGHT,
+            "the halo passes through interior strengths: {partway}"
+        );
+        while slider.tick(1000) {}
+        assert_eq!(slider.halo_strength(), HOVER_HALO_WEIGHT);
+        assert!(!slider.is_animating(), "a settled halo owes no frames");
+
+        // A press is the firmer gesture, and it eases up to that level rather than jumping.
+        slider.handle_event(&Event::MousePress { pos: inside, button: 1, modifiers: 0 });
+        assert!(slider.tick(1));
+        let rising = slider.halo_strength();
+        assert!(rising > HOVER_HALO_WEIGHT && rising < DRAG_HALO_WEIGHT);
+        while slider.tick(1000) {}
+        assert_eq!(slider.halo_strength(), DRAG_HALO_WEIGHT);
+    }
+
+    /// A wheel notch adjusts the value by one step and clamps at both ends.
+    #[test]
+    fn the_wheel_steps_the_value_by_one_step() {
+        let mut slider = make_slider();
+        slider.set_range(0, 10);
+        slider.set_value(5);
+
+        slider.handle_event(&Event::wheel(0, 1, 0));
+        assert_eq!(slider.value(), 6);
+        slider.handle_event(&Event::wheel(0, -1, 0));
+        assert_eq!(slider.value(), 5);
+
+        slider.set_single_step(3);
+        slider.handle_event(&Event::wheel(0, 1, 0));
+        assert_eq!(slider.value(), 8, "the wheel uses the configured step");
+
+        slider.set_value(10);
+        slider.handle_event(&Event::wheel(0, 1, 0));
+        assert_eq!(slider.value(), 10, "the maximum clamps the wheel");
+        slider.set_value(0);
+        slider.handle_event(&Event::wheel(0, -1, 0));
+        assert_eq!(slider.value(), 0, "the minimum clamps the wheel");
+    }
+
+    /// Tick labels put each major tick's value on the canvas, and only when asked.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn tick_labels_draw_the_numeric_value() {
+        let mut slider = make_slider();
+        slider.set_tick_position(TickPosition::TicksBelow);
+        slider.set_tick_interval(25);
+        assert!(!slider.tick_labels(), "labels are opt-in");
+
+        let unlabelled =
+            crate::widget::svg::render_widget_to_svg(&mut slider, Rect::new(0, 0, 200, 30));
+        assert_eq!(crate::widget::svg::text_subpath_count(&unlabelled), 0);
+
+        slider.set_tick_labels(true);
+        let labelled =
+            crate::widget::svg::render_widget_to_svg(&mut slider, Rect::new(0, 0, 200, 30));
+        assert!(
+            crate::widget::svg::text_subpath_count(&labelled) > 0,
+            "each major tick must carry its value: {labelled}"
+        );
     }
 }

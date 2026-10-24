@@ -175,6 +175,66 @@ fn bench_render_frame_tree(c: &mut Criterion) {
     }
 }
 
+/// Measures the **incremental** frame path: one damaged rectangle on an otherwise still window.
+///
+/// This is the frame an animating control on a `RepaintMode::Dirty` surface actually costs. It is
+/// the path `enable_damage_tracking_if_useful` chooses adaptively, and until now it had no baseline
+/// of its own — the full-frame benchmarks could only show that damage *tracking* exists, not that
+/// repainting one control's box is cheaper than repainting the window.
+///
+/// One small rectangle is damaged per iteration. A clean frame is deliberately not measured: with
+/// no damage `render_frame_cached` returns the cached allocation, which is correct but would
+/// benchmark an `Rc` clone rather than a frame.
+#[cfg(not(feature = "mini"))]
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_render_frame_dirty(c: &mut Criterion) {
+    use rust_widgets::widget::base_widgets::button::Button;
+    use rust_widgets::widget::container_widgets::groupbox::GroupBox;
+    use rust_widgets::widget::runtime::{self, RepaintMode};
+    use rust_widgets::widget::Widget;
+
+    let surface = Size::new(1280, 800);
+    let clear = Color::WHITE;
+
+    let mut root = GroupBox::new(Rect::new(0, 0, surface.width, surface.height));
+    let mut children = Vec::new();
+    for index in 0..100_usize {
+        let column = (index % 10) as i32;
+        let row = (index / 10) as i32;
+        let geometry = Rect::new(column * 120, row * 40, 110, 30);
+        let Some(id) = runtime::register(Box::new(Button::new(format!("b{index}"), geometry)))
+        else {
+            panic!("the runtime must accept a child widget");
+        };
+        root.add_child(id);
+        children.push(id);
+    }
+    let Some(root_id) = runtime::register(Box::new(root)) else {
+        panic!("the runtime must accept the root widget");
+    };
+
+    // Warm the cached frame and seed the damage tracker, then measure one control's box.
+    let damage = Rect::new(120, 40, 110, 30);
+    assert!(runtime::set_repaint_mode(root_id, RepaintMode::Dirty));
+    runtime::request_repaint_rect(root_id, damage);
+    let warm = runtime::render_frame_cached_shared(root_id, surface, clear);
+    debug_assert!(warm.is_some(), "the tree must paint a frame");
+
+    c.bench_function("render_frame_cached 1280x800 one damaged control", |b| {
+        b.iter(|| {
+            runtime::request_repaint_rect(root_id, damage);
+            let frame = runtime::render_frame_cached_shared(root_id, surface, clear);
+            debug_assert!(frame.is_some(), "a damaged frame must still produce pixels");
+            black_box(frame);
+        })
+    });
+
+    for id in children {
+        runtime::unregister(id);
+    }
+    runtime::unregister(root_id);
+}
+
 // The two runtime benchmarks are compiled only where `widget::runtime` exists: the
 // alloc-frugal profile (`mini`) compiles the widget runtime out, and a benchmark cannot
 // measure a path that is not there. Grouping them separately keeps the pixel-level
@@ -188,6 +248,7 @@ criterion_group!(
     runtime_benches,
     bench_render_frame,
     bench_render_frame_tree,
+    bench_render_frame_dirty,
     bench_dispatch_pointer_event
 );
 

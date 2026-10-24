@@ -74,6 +74,8 @@ pub struct Sparkline {
     last_point_color: Option<Color>,
     min: Option<f64>,
     max: Option<f64>,
+    /// Whether the final sample's value is printed beside the trace.
+    show_end_value: bool,
 }
 
 impl Sparkline {
@@ -91,6 +93,7 @@ impl Sparkline {
             last_point_color: None,
             min: None,
             max: None,
+            show_end_value: false,
         }
     }
 
@@ -212,6 +215,28 @@ impl Sparkline {
         self.max
     }
 
+    /// Shows or hides the last sample's value beside the trace.
+    ///
+    /// The annotation is opt-in: a sparkline is often embedded in a table cell, where a
+    /// number beside every row is noise rather than information.
+    pub fn set_show_end_value(&mut self, show: bool) {
+        if self.show_end_value == show {
+            return;
+        }
+        self.show_end_value = show;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the last sample's value is annotated.
+    pub fn show_end_value(&self) -> bool {
+        self.show_end_value
+    }
+
+    /// The formatted last-sample annotation, if there is a sample.
+    pub fn end_value_text(&self) -> Option<String> {
+        self.data.last().map(|value| format_end_value(*value))
+    }
+
     /// Resolves the Y range: uses manual if set, otherwise auto-computes.
     fn resolve_y_range(&self) -> (f64, f64) {
         match (self.min, self.max) {
@@ -261,6 +286,7 @@ impl WidgetProperties for Sparkline {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "stroke_width" => Ok(CapabilityValue::Float(self.stroke_width() as f64)),
+            "show_end_value" => Ok(CapabilityValue::Bool(self.show_end_value)),
             // The series is a *property*, not only the `set_data` command, so a document can spell
             // the samples and a designer can read them back. It is a `NumberList`: order is the
             // value and samples are not identifiable rows.
@@ -277,6 +303,14 @@ impl WidgetProperties for Sparkline {
                 self.set_stroke_width(expect_f32(value)?);
                 Ok(())
             }
+            "show_end_value" => {
+                let show = match value {
+                    CapabilityValue::Bool(flag) => flag,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_show_end_value(show);
+                Ok(())
+            }
             "data" => {
                 self.set_data(expect_number_list(value)?);
                 Ok(())
@@ -286,7 +320,7 @@ impl WidgetProperties for Sparkline {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["data", "stroke_width", BASE_PROPERTY_NAMES]
+        property_names_of!["data", "stroke_width", "show_end_value", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -354,6 +388,54 @@ impl Draw for Sparkline {
             let last = map_at(n - 1, self.data[n - 1]);
             context.fill_circle(last, dot_radius, dot_color);
         }
+
+        // ── End-value annotation ──
+        //
+        // Drawn last so it sits above the trace, and anchored to the right edge of the
+        // control. The line box is the measured font height, so the text never reaches past
+        // the bottom of a short sparkline.
+        if self.show_end_value && is_enabled {
+            if let Some(text) = self.end_value_text() {
+                let font = crate::widget::metrics::role_font(self.base.style(), 9.0);
+                let metrics = context.measure_text(&text, &font);
+                let width = metrics.width as i32;
+                let height = metrics.height.max(1) as i32;
+                let x = (rect.x + rect.width as i32 - width - 2).max(rect.x);
+                let y = (rect.y + rect.height as i32 - height - 1).max(rect.y);
+                let ink = if is_enabled { self.line_color() } else { Color::DISABLED_FOREGROUND };
+                context.draw_text(
+                    Point::new(x, y),
+                    &text,
+                    &font,
+                    ink,
+                    crate::core::HorizontalAlignment::Left,
+                );
+            }
+        }
+    }
+}
+
+/// Formats a sparkline's end value for its annotation.
+///
+/// Two decimals at most, with trailing zeros dropped: a sparkline is a compact reading, and
+/// `1.2000000476837158` (the raw `f64`) is not one. Large magnitudes keep one decimal so the
+/// text still fits a narrow control.
+fn format_end_value(value: f64) -> String {
+    if !value.is_finite() {
+        return String::from("—");
+    }
+    if value.abs() >= 10_000.0 {
+        return format!("{:.1}", value);
+    }
+    let rounded = (value * 100.0).round() / 100.0;
+    if (rounded - rounded.round()).abs() < f64::EPSILON {
+        format!("{}", rounded.round() as i64)
+    } else {
+        let mut text = format!("{rounded:.2}");
+        while text.ends_with('0') {
+            text.pop();
+        }
+        text
     }
 }
 
@@ -528,5 +610,18 @@ mod tests {
         assert_eq!(sl.data().len(), before, "add_value must refuse non-finite input");
         sl.add_value(4.0);
         assert_eq!(sl.data().len(), before + 1);
+    }
+
+    #[test]
+    fn the_end_value_annotation_is_opt_in() {
+        let mut sl = Sparkline::new(Rect::new(0, 0, 80, 24));
+        sl.set_data(vec![1.0, 2.5]);
+        assert!(!sl.show_end_value());
+        sl.set_show_end_value(true);
+        assert_eq!(sl.end_value_text().as_deref(), Some("2.5"));
+        let svg = render_to_svg(&mut sl);
+        assert!(!crate::widget::svg::text_ink_boxes(&svg).is_empty(), "the value is painted");
+        assert_eq!(format_end_value(3.0), "3");
+        assert_eq!(format_end_value(12_500.0), "12500.0");
     }
 }

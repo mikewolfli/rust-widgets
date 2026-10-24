@@ -24,9 +24,9 @@
 //! └──────────────────────────────────────────────────┘
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -55,12 +55,14 @@ const GROUP_TITLE_HEIGHT: i32 = 16;
 pub struct RibbonGroup {
     title: String,
     items: Vec<RibbonItem>,
+    /// Whether the group paints its items as a gallery grid.
+    gallery: bool,
 }
 
 impl RibbonGroup {
     /// Creates a new ribbon group with the given title.
     pub fn new(title: impl Into<String>) -> Self {
-        Self { title: title.into(), items: Vec::new() }
+        Self { title: title.into(), items: Vec::new(), gallery: false }
     }
 
     /// Returns the group title.
@@ -81,6 +83,17 @@ impl RibbonGroup {
     /// Returns mutable access to all items in this group.
     pub fn items_mut(&mut self) -> &mut Vec<RibbonItem> {
         &mut self.items
+    }
+
+    /// Whether the group paints a gallery grid.
+    pub fn is_gallery(&self) -> bool {
+        self.gallery
+    }
+
+    /// Makes the group a gallery: its items are painted as a three-column grid of
+    /// tiles instead of the command layout. Off by default.
+    pub fn set_gallery(&mut self, gallery: bool) {
+        self.gallery = gallery;
     }
 }
 
@@ -227,11 +240,32 @@ pub struct RibbonBar {
     /// panel shown"; the pointer leaving the bar, a second click on the open tab, or
     /// choosing an item from the panel takes it back down.
     temporarily_expanded: bool,
+    /// A label painted as the application button left of the tabs.
+    application_button: Option<String>,
+    /// Short labels of the quick-access commands, painted at the trailing end of the
+    /// tab row.
+    quick_access: Vec<String>,
+    /// Indices of tabs that are context tabs (tinted with the accent).
+    context_tabs: Vec<usize>,
+    /// The item the keyboard is focused on.
+    focused_item: Option<(usize, usize, usize)>,
+    /// Whether KeyTips are showing.
+    key_tips_visible: bool,
+    /// Explicit KeyTip strings, keyed by item address.
+    key_tips: Vec<(usize, usize, usize, String)>,
+    /// The content panel's reveal, so minimizing animates like every other popup.
+    panel_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal,
 
     /// Emitted when the current tab changes; payload is the new tab index.
     pub current_tab_changed: Signal1<usize>,
     /// Emitted when an item is triggered; payload is (tab, group, item).
     pub item_triggered: Signal1<(usize, usize, usize)>,
+    /// Emitted when the application button is pressed.
+    pub application_clicked: GenericSignal,
+    /// Emitted with the quick-access index when one of its labels is pressed.
+    pub quick_access_clicked: Signal1<usize>,
+    /// Emitted with `(tab, group)` when a group's overflow marker is pressed.
+    pub group_overflow_clicked: Signal1<(usize, usize)>,
 }
 
 /// The chrome colours one ribbon draw pass uses.
@@ -343,8 +377,18 @@ impl RibbonBar {
             hovered_item: None,
             minimize_hovered: false,
             temporarily_expanded: false,
+            application_button: None,
+            quick_access: Vec::new(),
+            context_tabs: Vec::new(),
+            focused_item: None,
+            key_tips_visible: false,
+            key_tips: Vec::new(),
+            panel_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal::new(true),
             current_tab_changed: Signal1::new(),
             item_triggered: Signal1::new(),
+            application_clicked: GenericSignal::new(),
+            quick_access_clicked: Signal1::new(),
+            group_overflow_clicked: Signal1::new(),
         }
     }
 
@@ -568,6 +612,7 @@ impl RibbonBar {
         if !expanded {
             self.temporarily_expanded = false;
         }
+        self.sync_panel_reveal();
         self.base.request_redraw();
     }
 
@@ -592,6 +637,7 @@ impl RibbonBar {
             self.expanded = false;
             self.temporarily_expanded = false;
         }
+        self.sync_panel_reveal();
         self.base.request_redraw();
     }
 
@@ -607,7 +653,233 @@ impl RibbonBar {
         self.current_tab_index = 0;
         self.hovered_tab = None;
         self.hovered_item = None;
+        self.focused_item = None;
         self.temporarily_expanded = false;
+    }
+
+    /// The application button's label, if one is installed.
+    pub fn application_button(&self) -> Option<&str> {
+        self.application_button.as_deref()
+    }
+
+    /// Installs or removes the application button left of the tabs.
+    ///
+    /// Off by default, so the tab row keeps its original geometry.
+    pub fn set_application_button(&mut self, label: Option<String>) {
+        if self.application_button == label {
+            return;
+        }
+        self.application_button = label;
+        self.base.request_redraw();
+    }
+
+    /// The application button's box, or `None` when none is installed.
+    pub fn application_button_rect(&self) -> Option<Rect> {
+        self.application_button.as_ref()?;
+        let row = self.tab_row_rect();
+        Some(Rect::new(row.x, row.y, Self::APPLICATION_BUTTON_WIDTH, row.height))
+    }
+
+    /// Width the application button reserves on the tab row.
+    const APPLICATION_BUTTON_WIDTH: u32 = 48;
+
+    /// The quick-access labels, in order.
+    pub fn quick_access(&self) -> &[String] {
+        &self.quick_access
+    }
+
+    /// Replaces the quick-access command labels.
+    ///
+    /// The labels are painted at the trailing end of the tab row, left of the minimize
+    /// button. An empty list paints nothing, which is the default.
+    pub fn set_quick_access(&mut self, labels: Vec<String>) {
+        if self.quick_access == labels {
+            return;
+        }
+        self.quick_access = labels;
+        self.base.request_redraw();
+    }
+
+    /// The box of quick-access label `index`, or `None` when out of range.
+    pub fn quick_access_rect(&self, index: usize) -> Option<Rect> {
+        if index >= self.quick_access.len() {
+            return None;
+        }
+        let row = self.tab_row_rect();
+        let reserved = MINIMIZE_BUTTON_SIZE + MINIMIZE_MARGIN * 2;
+        let mut right = row.x + row.width as i32 - reserved;
+        // Lay the labels out from the end so the row's trailing end is stable.
+        for i in (0..self.quick_access.len()).rev() {
+            let width = Self::quick_access_width(&self.quick_access[i]);
+            let rect = Rect::new(right - width, row.y + 2, width.max(1) as u32, row.height - 4);
+            if i == index {
+                return Some(rect);
+            }
+            right = rect.x - 4;
+        }
+        None
+    }
+
+    /// A quick-access label's width from its character count at the tab font.
+    fn quick_access_width(label: &str) -> i32 {
+        (label.chars().count() as i32 * 7 + 8).max(12)
+    }
+
+    /// The tabs marked as context tabs.
+    pub fn context_tabs(&self) -> &[usize] {
+        &self.context_tabs
+    }
+
+    /// Marks tabs as context tabs, which paints them with the accent tint.
+    pub fn set_context_tabs(&mut self, indices: Vec<usize>) {
+        let mut indices: Vec<usize> =
+            indices.into_iter().filter(|index| *index < self.tabs.len()).collect();
+        indices.sort_unstable();
+        indices.dedup();
+        if self.context_tabs == indices {
+            return;
+        }
+        self.context_tabs = indices;
+        self.base.request_redraw();
+    }
+
+    /// Adds a tab and marks it as a context tab, returning its index.
+    pub fn add_context_tab(&mut self, title: impl Into<String>) -> usize {
+        let index = self.add_tab(title);
+        self.context_tabs.push(index);
+        self.context_tabs.sort_unstable();
+        index
+    }
+
+    /// Whether tab `index` is a context tab.
+    pub fn is_context_tab(&self, index: usize) -> bool {
+        self.context_tabs.binary_search(&index).is_ok()
+    }
+
+    /// The item the keyboard is focused on.
+    pub fn focused_item(&self) -> Option<(usize, usize, usize)> {
+        self.focused_item
+    }
+
+    /// Sets the keyboard-focused item, or clears it with `None`.
+    pub fn set_focused_item(&mut self, item: Option<(usize, usize, usize)>) {
+        if self.focused_item == item {
+            return;
+        }
+        self.focused_item = item;
+        self.base.request_redraw();
+    }
+
+    /// Registers the KeyTip string for an item.
+    ///
+    /// A KeyTip is the short letter sequence Office shows over commands when Alt is
+    /// pressed. Matching is by the tip's first character, which is enough for a unique
+    /// letter per tab.
+    pub fn set_key_tip(&mut self, tab: usize, group: usize, item: usize, tip: impl Into<String>) {
+        let tip = tip.into();
+        if let Some(slot) =
+            self.key_tips.iter_mut().find(|(t, g, i, _)| *t == tab && *g == group && *i == item)
+        {
+            slot.3 = tip;
+        } else {
+            self.key_tips.push((tab, group, item, tip));
+        }
+        self.base.request_redraw();
+    }
+
+    /// The KeyTip registered for an item, if any.
+    pub fn key_tip(&self, tab: usize, group: usize, item: usize) -> Option<&str> {
+        self.key_tips
+            .iter()
+            .find(|(t, g, i, _)| *t == tab && *g == group && *i == item)
+            .map(|(_, _, _, tip)| tip.as_str())
+    }
+
+    /// Whether the KeyTip badges are showing.
+    pub fn key_tips_visible(&self) -> bool {
+        self.key_tips_visible
+    }
+
+    /// Shows or hides the KeyTip badges.
+    pub fn set_key_tips_visible(&mut self, visible: bool) {
+        if self.key_tips_visible == visible {
+            return;
+        }
+        self.key_tips_visible = visible;
+        self.base.request_redraw();
+    }
+
+    /// Every item address in the current tab, in draw order.
+    fn current_tab_items(&self) -> Vec<(usize, usize, usize)> {
+        let mut out = Vec::new();
+        if let Some(groups) = self.groups.get(self.current_tab_index) {
+            for (gi, group) in groups.iter().enumerate() {
+                for ii in 0..group.items().len() {
+                    out.push((self.current_tab_index, gi, ii));
+                }
+            }
+        }
+        out
+    }
+
+    /// Moves the keyboard focus by `delta` items inside the current tab, wrapping.
+    fn move_focus(&mut self, delta: i32) {
+        let items = self.current_tab_items();
+        if items.is_empty() || delta == 0 {
+            return;
+        }
+        let position =
+            self.focused_item.and_then(|focus| items.iter().position(|entry| *entry == focus));
+        let start = match position {
+            Some(index) => index as i32,
+            None if delta > 0 => -1,
+            None => items.len() as i32,
+        };
+        let index = (start + delta).rem_euclid(items.len() as i32) as usize;
+        self.focused_item = Some(items[index]);
+        self.base.request_redraw();
+    }
+
+    /// Triggers the item at `address`, respecting enabled/checkable state.
+    fn trigger_item(&mut self, tab: usize, gi: usize, ii: usize) -> bool {
+        let Some(item) = self.item_mut(tab, gi, ii) else {
+            return false;
+        };
+        if !item.is_enabled() {
+            return false;
+        }
+        if item.is_checkable() {
+            item.set_checked(!item.is_checked());
+        }
+        self.item_triggered.emit((tab, gi, ii));
+        true
+    }
+
+    /// The overflow marker's box for group `gi`, when the group could not show all of
+    /// its items.
+    pub fn group_overflow_rect(&self, gi: usize) -> Option<Rect> {
+        let groups = self.groups.get(self.current_tab_index)?;
+        let group = groups.get(gi)?;
+        let placed = self
+            .group_rects()
+            .into_iter()
+            .find(|(index, _)| *index == gi)
+            .map(|(_, rect)| self.compute_item_rects(gi, &rect).len())?;
+        if placed >= group.items().len() {
+            return None;
+        }
+        let (_, rect) = self.group_rects().into_iter().find(|(index, _)| *index == gi)?;
+        Some(Rect::new(
+            rect.x + rect.width as i32 - 22,
+            rect.y + rect.height as i32 - GROUP_TITLE_HEIGHT - 18,
+            18,
+            16,
+        ))
+    }
+
+    /// Applies the panel reveal to the current expanded state.
+    fn sync_panel_reveal(&mut self) {
+        self.panel_reveal.set_open(self.expanded);
     }
 
     // ── Layout helpers ────────────────────────────────────────────────────
@@ -625,8 +897,14 @@ impl RibbonBar {
         }
         let row = self.tab_row_rect();
         let total_tabs = self.tabs.len() as i32;
-        // Reserve space for minimize button
-        let reserve = MINIMIZE_BUTTON_SIZE + MINIMIZE_MARGIN * 2;
+        // Reserve space for minimize button and the application button.
+        let reserve = MINIMIZE_BUTTON_SIZE
+            + MINIMIZE_MARGIN * 2
+            + if self.application_button.is_some() {
+                Self::APPLICATION_BUTTON_WIDTH as i32
+            } else {
+                0
+            };
         let avail = (row.width as i32).saturating_sub(reserve);
         if total_tabs == 0 {
             return None;
@@ -638,7 +916,12 @@ impl RibbonBar {
         let gaps = (total_tabs - 1) * TAB_SPACING;
         let fit_width = ((avail - gaps).max(total_tabs)) / total_tabs;
         let tab_w = fit_width.max(1) as u32;
-        let x_offset = row.x + index as i32 * (tab_w as i32 + TAB_SPACING);
+        let lead = if self.application_button.is_some() {
+            Self::APPLICATION_BUTTON_WIDTH as i32
+        } else {
+            0
+        };
+        let x_offset = row.x + lead + index as i32 * (tab_w as i32 + TAB_SPACING);
         Some(Rect::new(x_offset, row.y, tab_w, row.height))
     }
 
@@ -779,6 +1062,31 @@ impl RibbonBar {
         }
 
         let mut result = Vec::new();
+        // A gallery group lays its items out as a tile grid, not as commands.
+        if group.is_gallery() {
+            let columns = 3usize;
+            let tile_w = (cw / columns as i32).max(1);
+            let tile_h = (content_h / 3).max(1);
+            let bottom = group_rect.y + group_rect.height as i32 - GROUP_TITLE_HEIGHT;
+            for (index, _) in items.iter().enumerate() {
+                let col = index % columns;
+                let row = index / columns;
+                let y = group_rect.y + ITEM_SPACING + row as i32 * tile_h;
+                if y + tile_h > bottom {
+                    break;
+                }
+                result.push((
+                    index,
+                    Rect::new(
+                        cx + col as i32 * tile_w,
+                        y,
+                        tile_w.saturating_sub(2) as u32,
+                        tile_h.saturating_sub(2) as u32,
+                    ),
+                ));
+            }
+            return result;
+        }
         // Separate large and small items
         let large_items: Vec<usize> =
             items.iter().enumerate().filter(|(_, it)| it.is_large()).map(|(i, _)| i).collect();
@@ -881,6 +1189,10 @@ impl RibbonBar {
             palette.surface
         } else if is_hovered {
             palette.hover
+        } else if self.is_context_tab(index) {
+            // A context tab is a tab whose presence depends on the selection; the accent
+            // tint is the standard way to state that without a second tab strip.
+            palette.tab.blend(&palette.accent, 0.18)
         } else {
             palette.tab
         };
@@ -926,12 +1238,23 @@ impl RibbonBar {
         // `expanded` is the one flag the picture is drawn from: `set_minimized(true)` forces
         // it down, and a temporarily expanded panel (a tab click over a minimized ribbon)
         // holds it up while `minimized` stays set.
-        if !self.expanded {
+        if !self.expanded && self.panel_reveal.is_closed() {
             return;
         }
         let panel = self.panel_rect();
         if panel.width == 0 || panel.height == 0 {
             return;
+        }
+        let revealing = !self.panel_reveal.is_closed();
+        if revealing {
+            let revealed = self.panel_reveal.revealed(
+                panel,
+                crate::widget::menu_toolbar::popup_reveal::RevealDirection::Down,
+                crate::widget::menu_toolbar::popup_reveal::PopupReveal::travel_cap_for(
+                    crate::core::Size::new(panel.width, panel.height),
+                ),
+            );
+            context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
         }
 
         // ── Panel background (gradient-like: a rule, then the body) ──
@@ -975,6 +1298,24 @@ impl RibbonBar {
                     }
 
                     let fg = if !item.is_enabled() { palette.muted } else { palette.ink };
+
+                    if self.focused_item == Some((self.current_tab_index, *gi, *ii)) {
+                        context.draw_rect(*ir, palette.accent);
+                    }
+                    if self.key_tips_visible {
+                        if let Some(tip) = self.key_tip(self.current_tab_index, *gi, *ii) {
+                            let badge = Rect::new(ir.x + 2, ir.y + 2, 18, 14);
+                            context.fill_rect(badge, palette.accent);
+                            let font = effective_font(self.style());
+                            context.draw_text_fitted_cow(
+                                badge,
+                                tip,
+                                font,
+                                palette.accent.contrast_color(),
+                                HorizontalAlignment::Center,
+                            );
+                        }
+                    }
 
                     if item.is_large() {
                         // Large: icon above, label below. Both are centred on the item and the
@@ -1088,6 +1429,22 @@ impl RibbonBar {
                 );
             }
 
+            // ── Overflow marker ──
+            //
+            // A group that could not place every item says so with a marker; a host
+            // connects `group_overflow_clicked` to show the rest in a menu.
+            if let Some(rect) = self.group_overflow_rect(*gi) {
+                context.fill_rect(rect, palette.item_hover);
+                let font = effective_font(self.style());
+                context.draw_text_fitted_cow(
+                    rect,
+                    "…",
+                    font,
+                    palette.ink,
+                    HorizontalAlignment::Center,
+                );
+            }
+
             // ── Group title at bottom ──
             let title_y = gr.y + gr.height as i32 - GROUP_TITLE_HEIGHT;
             let title_rect = Rect::new(gr.x, title_y, gr.width, GROUP_TITLE_HEIGHT as u32);
@@ -1104,6 +1461,9 @@ impl RibbonBar {
                 palette.muted,
                 HorizontalAlignment::Left,
             );
+        }
+        if revealing {
+            context.pop_clip();
         }
     }
 }
@@ -1124,6 +1484,16 @@ impl Widget for RibbonBar {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(800, 120)
+    }
+
+    /// Advances the panel reveal; `true` while it owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.panel_reveal.tick(delta_ms)
+    }
+
+    /// Whether the panel is mid-transition.
+    fn is_animating(&self) -> bool {
+        self.panel_reveal.is_animating()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -1255,11 +1625,33 @@ impl EventHandler for RibbonBar {
             }
 
             Event::MousePress { pos, button: 1, .. } => {
+                if self.application_button_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.application_clicked.emit();
+                    return;
+                }
+                for index in 0..self.quick_access.len() {
+                    if self.quick_access_rect(index).is_some_and(|rect| rect.contains_point(*pos)) {
+                        self.quick_access_clicked.emit(index);
+                        return;
+                    }
+                }
+                for gi in 0..self
+                    .groups
+                    .get(self.current_tab_index)
+                    .map(|groups| groups.len())
+                    .unwrap_or(0)
+                {
+                    if self.group_overflow_rect(gi).is_some_and(|rect| rect.contains_point(*pos)) {
+                        self.group_overflow_clicked.emit((self.current_tab_index, gi));
+                        return;
+                    }
+                }
                 // Check minimize button first
                 if self.minimize_button_rect().contains(*pos) {
                     self.minimized = !self.minimized;
                     self.expanded = !self.minimized;
                     self.temporarily_expanded = false;
+                    self.sync_panel_reveal();
                     self.base.request_redraw();
                     return;
                 }
@@ -1274,17 +1666,20 @@ impl EventHandler for RibbonBar {
                         if self.minimized && !self.expanded {
                             self.temporarily_expanded = true;
                             self.expanded = true;
+                            self.sync_panel_reveal();
                             self.base.request_redraw();
                         }
                     } else if self.minimized && self.expanded {
                         // The open tab was clicked again: the panel goes back down.
                         self.temporarily_expanded = false;
                         self.expanded = false;
+                        self.sync_panel_reveal();
                         self.base.request_redraw();
                     } else if self.minimized {
                         // Clicking the active tab while minimized opens its panel.
                         self.temporarily_expanded = true;
                         self.expanded = true;
+                        self.sync_panel_reveal();
                         self.base.request_redraw();
                     }
                     return;
@@ -1292,23 +1687,93 @@ impl EventHandler for RibbonBar {
 
                 // Check item click
                 if let Some((tab, gi, ii)) = self.hit_item(*pos) {
-                    if let Some(item) = self.item_mut(tab, gi, ii) {
-                        if item.is_enabled() {
-                            if item.is_checkable() {
-                                item.set_checked(!item.is_checked());
-                            }
-                            self.item_triggered.emit((tab, gi, ii));
-                            // An item chosen from a temporarily opened panel collapses it,
-                            // the way the ribbon goes away once the command is picked.
-                            if self.temporarily_expanded {
-                                self.temporarily_expanded = false;
-                                self.expanded = false;
-                            }
-                            self.base.request_redraw();
+                    if self.trigger_item(tab, gi, ii) {
+                        self.focused_item = Some((tab, gi, ii));
+                        // An item chosen from a temporarily opened panel collapses it,
+                        // the way the ribbon goes away once the command is picked.
+                        if self.temporarily_expanded {
+                            self.temporarily_expanded = false;
+                            self.expanded = false;
+                            self.sync_panel_reveal();
                         }
+                        self.base.request_redraw();
                     }
                 }
             }
+
+            Event::KeyPress { key, modifiers: _ } => match *key {
+                // Alt toggles the KeyTip badges, and F10 focuses the first command.
+                18 => self.set_key_tips_visible(!self.key_tips_visible),
+                key_codes::F10 => {
+                    self.set_key_tips_visible(true);
+                    self.focused_item = self.current_tab_items().first().copied();
+                    self.base.request_redraw();
+                }
+                key_codes::ESCAPE => {
+                    if self.key_tips_visible {
+                        self.set_key_tips_visible(false);
+                    } else if self.temporarily_expanded {
+                        self.temporarily_expanded = false;
+                        self.expanded = false;
+                        self.sync_panel_reveal();
+                        self.base.request_redraw();
+                    } else {
+                        self.focused_item = None;
+                        self.base.request_redraw();
+                    }
+                }
+                // Left/Right walk the tabs; a minimized ribbon opens the new tab
+                // temporarily, the same way a click does.
+                key_codes::LEFT | key_codes::RIGHT => {
+                    if !self.tabs.is_empty() {
+                        let delta = if *key == key_codes::RIGHT { 1 } else { -1 };
+                        let next = (self.current_tab_index as i32 + delta)
+                            .rem_euclid(self.tabs.len() as i32)
+                            as usize;
+                        self.set_current_tab(next);
+                        self.focused_item = None;
+                        if self.minimized {
+                            self.temporarily_expanded = true;
+                            self.expanded = true;
+                            self.sync_panel_reveal();
+                        }
+                    }
+                }
+                key_codes::UP => self.move_focus(-1),
+                key_codes::DOWN => self.move_focus(1),
+                key_codes::HOME => {
+                    self.focused_item = self.current_tab_items().first().copied();
+                    self.base.request_redraw();
+                }
+                key_codes::END => {
+                    self.focused_item = self.current_tab_items().last().copied();
+                    self.base.request_redraw();
+                }
+                key_codes::ENTER | key_codes::SPACE => {
+                    if let Some((tab, gi, ii)) = self.focused_item {
+                        self.trigger_item(tab, gi, ii);
+                    }
+                }
+                // A letter while the tips are showing activates the first item whose
+                // KeyTip starts with it.
+                _ if self.key_tips_visible => {
+                    if let Some(letter) = char::from_u32(*key) {
+                        let wanted = letter.to_ascii_uppercase();
+                        let hit = self.key_tips.iter().find_map(|(tab, gi, ii, tip)| {
+                            tip.chars()
+                                .next()
+                                .is_some_and(|first| first.to_ascii_uppercase() == wanted)
+                                .then_some((*tab, *gi, *ii))
+                        });
+                        if let Some((tab, gi, ii)) = hit {
+                            self.set_current_tab(tab);
+                            self.trigger_item(tab, gi, ii);
+                            self.set_key_tips_visible(false);
+                        }
+                    }
+                }
+                _ => {}
+            },
 
             Event::MouseLeave { .. } => {
                 // Every hover slot is painted, so leaving has to clear all three — and a
@@ -1324,6 +1789,7 @@ impl EventHandler for RibbonBar {
                 if self.temporarily_expanded {
                     self.temporarily_expanded = false;
                     self.expanded = false;
+                    self.sync_panel_reveal();
                 }
                 if changed {
                     self.base.request_redraw();
@@ -1352,6 +1818,39 @@ impl Draw for RibbonBar {
         for i in 0..self.tabs.len() {
             if let Some(tr) = self.tab_rect(i) {
                 self.draw_tab(context, i, tr, &palette);
+            }
+        }
+
+        // ── Application button ──
+        if let Some(label) = self.application_button.clone() {
+            if let Some(rect) = self.application_button_rect() {
+                context.fill_rect(rect, palette.surface);
+                context.draw_rect(rect, palette.border);
+                let font = effective_font(self.style());
+                let line = context.text_line(rect, font);
+                context.draw_text_fitted_cow(
+                    Rect::new(rect.x + 2, line.y, rect.width.saturating_sub(4), line.height),
+                    label.as_str(),
+                    font,
+                    palette.accent,
+                    HorizontalAlignment::Center,
+                );
+            }
+        }
+
+        // ── Quick-access labels ──
+        for index in 0..self.quick_access.len() {
+            if let Some(rect) = self.quick_access_rect(index) {
+                let font = effective_font(self.style());
+                let line = context.text_line(rect, font);
+                context.draw_text_fitted_cow(
+                    rect,
+                    self.quick_access[index].as_str(),
+                    font,
+                    palette.ink,
+                    HorizontalAlignment::Center,
+                );
+                let _ = line;
             }
         }
 
@@ -1616,5 +2115,121 @@ mod tests {
                 panel
             );
         }
+    }
+
+    /// Tabs and commands are reachable from the keyboard, and KeyTips activate.
+    #[test]
+    fn the_keyboard_walks_tabs_and_commands_and_key_tips_fire() {
+        use crate::event::{key_codes, Event, EventHandler};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 600, 160));
+        let home = ribbon.add_tab("Home");
+        let insert = ribbon.add_tab("Insert");
+        let group = ribbon.add_group(home, "Clipboard");
+        ribbon.add_item(home, group, "Copy");
+        ribbon.add_item(home, group, "Paste");
+        ribbon.set_current_tab(home);
+
+        let fired = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&fired);
+        ribbon.item_triggered.connect(move |_| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        ribbon.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        assert_eq!(ribbon.current_tab(), insert);
+        ribbon.handle_event(&Event::key_press(key_codes::LEFT, 0));
+        assert_eq!(ribbon.current_tab(), home);
+
+        ribbon.handle_event(&Event::key_press(key_codes::DOWN, 0));
+        assert!(ribbon.focused_item().is_some());
+        ribbon.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+
+        ribbon.set_key_tip(home, group, 1, "P");
+        ribbon.set_key_tips_visible(true);
+        ribbon.handle_event(&Event::key_press(80, 0));
+        assert_eq!(fired.load(Ordering::SeqCst), 2, "the KeyTip must fire its item");
+        assert!(!ribbon.key_tips_visible(), "and then hide the badges");
+    }
+
+    /// The application button, quick-access labels and context tabs are opt-in chrome.
+    #[test]
+    fn application_quick_access_and_context_tabs_are_opt_in() {
+        use crate::event::{Event, EventHandler};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 600, 160));
+        let home = ribbon.add_tab("Home");
+        ribbon.set_current_tab(home);
+        assert!(ribbon.application_button_rect().is_none());
+
+        let app_hits = Arc::new(AtomicUsize::new(0));
+        let qat_hits = Arc::new(AtomicUsize::new(0));
+        let a = Arc::clone(&app_hits);
+        let q = Arc::clone(&qat_hits);
+        ribbon.application_clicked.connect(move || {
+            a.fetch_add(1, Ordering::SeqCst);
+        });
+        ribbon.quick_access_clicked.connect(move |_| {
+            q.fetch_add(1, Ordering::SeqCst);
+        });
+
+        ribbon.set_application_button(Some("File".to_string()));
+        ribbon.set_quick_access(vec!["Save".to_string(), "Undo".to_string()]);
+        let app = ribbon.application_button_rect().expect("the button exists");
+        ribbon.handle_event(&Event::mouse_press(app.x + 4, app.y + 4, 1));
+        assert_eq!(app_hits.load(Ordering::SeqCst), 1);
+        let qat = ribbon.quick_access_rect(1).expect("the second label exists");
+        ribbon.handle_event(&Event::mouse_press(qat.x + 2, qat.y + 2, 1));
+        assert_eq!(qat_hits.load(Ordering::SeqCst), 1);
+
+        let context = ribbon.add_context_tab("Picture Tools");
+        assert!(ribbon.is_context_tab(context));
+        assert!(ribbon.tab_rect(context).is_some());
+    }
+
+    /// A gallery group lays its items out as a tile grid.
+    #[test]
+    fn a_gallery_group_uses_a_tile_grid() {
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 600, 200));
+        let tab = ribbon.add_tab("Home");
+        let group = ribbon.add_group(tab, "Styles");
+        for label in ["A", "B", "C", "D"] {
+            ribbon.add_item(tab, group, label);
+        }
+        ribbon.set_current_tab(tab);
+        let before = ribbon.compute_item_rects(0, &ribbon.group_rects()[0].1);
+        assert_eq!(before.len(), 4);
+
+        ribbon.groups[tab][group].set_gallery(true);
+        let gallery = ribbon.compute_item_rects(0, &ribbon.group_rects()[0].1);
+        assert_eq!(gallery.len(), 4);
+        assert_eq!(gallery[0].1.x, gallery[1].1.x - gallery[0].1.width as i32 - 2);
+        assert!(gallery[3].1.y > gallery[0].1.y, "the fourth tile wraps to a second row");
+    }
+
+    /// Minimizing reveals or hides the panel through the shared driver.
+    #[test]
+    fn minimizing_the_panel_animates() {
+        use crate::widget::Widget;
+
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 600, 160));
+        let tab = ribbon.add_tab("Home");
+        let group = ribbon.add_group(tab, "G");
+        ribbon.add_item(tab, group, "X");
+        ribbon.set_current_tab(tab);
+        assert!(ribbon.is_expanded());
+
+        ribbon.set_minimized(true);
+        assert!(!ribbon.is_expanded());
+        assert!(ribbon.is_animating(), "the collapse is a transition");
+        for _ in 0..120 {
+            ribbon.tick(16);
+        }
+        assert!(!ribbon.is_animating());
     }
 }

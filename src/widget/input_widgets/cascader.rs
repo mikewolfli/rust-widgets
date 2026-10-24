@@ -37,10 +37,10 @@
 
 use crate::compat::RefCell;
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -132,6 +132,9 @@ pub struct CascaderOption {
     pub children: Vec<CascaderOption>,
     /// Whether this option is a pending/ready/failed branch.
     pub load_state: CascaderLoadState,
+    /// Whether the row can be chosen. A disabled row is drawn dimmed and skipped by the
+    /// keyboard, but its children remain reachable through a synchronous tree.
+    pub enabled: bool,
 }
 
 impl CascaderOption {
@@ -142,6 +145,7 @@ impl CascaderOption {
             label: label.into(),
             children: Vec::new(),
             load_state: CascaderLoadState::Ready,
+            enabled: true,
         }
     }
 
@@ -151,7 +155,13 @@ impl CascaderOption {
         label: impl Into<String>,
         children: Vec<CascaderOption>,
     ) -> Self {
-        Self { id: id.into(), label: label.into(), children, load_state: CascaderLoadState::Ready }
+        Self {
+            id: id.into(),
+            label: label.into(),
+            children,
+            load_state: CascaderLoadState::Ready,
+            enabled: true,
+        }
     }
 
     /// Creates a branch whose children will arrive from an asynchronous loader.
@@ -165,6 +175,7 @@ impl CascaderOption {
             label: label.into(),
             children: Vec::new(),
             load_state: CascaderLoadState::Loading,
+            enabled: true,
         }
     }
 
@@ -191,6 +202,17 @@ impl CascaderOption {
     /// Whether the level below this option is still being fetched.
     pub fn is_loading(&self) -> bool {
         self.load_state == CascaderLoadState::Loading
+    }
+
+    /// Whether the row can be chosen.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Marks the row as disabled, returning `self` for chaining.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
     }
 }
 
@@ -227,6 +249,12 @@ pub struct Cascader {
     /// label on the path before joining it. That was one allocation per label per frame
     /// (WDGT-06), for a value that only changes when the user picks something.
     display_cache: RefCell<Option<String>>,
+    /// Maximum rows painted per open level. `None` shows them all.
+    max_visible: Option<usize>,
+    /// First painted row per open level.
+    scroll_offsets: Vec<usize>,
+    /// Reveal progress of the overlay, `0.0..=1.0`, advanced by [`Cascader::tick`].
+    reveal_progress: f32,
 }
 
 impl Cascader {
@@ -245,6 +273,9 @@ impl Cascader {
             filter: String::new(),
             selection_changed: Signal1::new(),
             display_cache: RefCell::new(None),
+            max_visible: None,
+            scroll_offsets: Vec::new(),
+            reveal_progress: 1.0,
         }
     }
 
@@ -313,6 +344,8 @@ impl Cascader {
         self.expanded_path = self.selected_path.clone();
         self.expanded = true;
         self.filter.clear();
+        self.scroll_offsets.clear();
+        self.reveal_progress = 0.0;
         self.base.request_redraw();
     }
 
@@ -328,6 +361,66 @@ impl Cascader {
         self.expanded_path.clear();
         self.filter.clear();
         self.base.request_redraw();
+    }
+
+    /// Advances the overlay's fade. Returns whether another frame is due.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if self.reveal_progress >= 1.0 {
+            return false;
+        }
+        self.reveal_progress = (self.reveal_progress + delta_ms as f32 / 120.0).min(1.0);
+        self.base.request_redraw();
+        self.reveal_progress < 1.0
+    }
+
+    /// The maximum number of rows painted per open level.
+    pub fn max_visible(&self) -> Option<usize> {
+        self.max_visible
+    }
+
+    /// Caps the rows painted per open level.
+    ///
+    /// `None` restores full expansion. A cap of zero is treated as one row.
+    pub fn set_max_visible(&mut self, max_visible: Option<usize>) {
+        let max_visible = max_visible.map(|value| value.max(1));
+        if self.max_visible == max_visible {
+            return;
+        }
+        self.max_visible = max_visible;
+        self.base.request_redraw();
+    }
+
+    /// The first row painted at `level`.
+    pub fn scroll_offset(&self, level: usize) -> usize {
+        self.scroll_offsets.get(level).copied().unwrap_or(0)
+    }
+
+    /// Sets the first row painted at `level`, clamped to the level's rows.
+    pub fn set_scroll_offset(&mut self, level: usize, offset: usize) {
+        let rows = self.filtered_indices(level).len();
+        let page = self.page_size(rows);
+        let max_offset = rows.saturating_sub(page.min(rows));
+        let offset = offset.min(max_offset);
+        if self.scroll_offsets.len() <= level {
+            self.scroll_offsets.resize(level + 1, 0);
+        }
+        if self.scroll_offsets[level] == offset {
+            return;
+        }
+        self.scroll_offsets[level] = offset;
+        self.base.request_redraw();
+    }
+
+    /// Number of rows painted at once for a level with `rows` rows.
+    pub fn page_size(&self, rows: usize) -> usize {
+        self.max_visible.unwrap_or(rows).max(1)
+    }
+
+    /// The visible rows of `level`, with the level's scroll offset applied.
+    fn windowed_indices(&self, level: usize, rows: &[usize]) -> Vec<usize> {
+        let offset = self.scroll_offset(level).min(rows.len());
+        let page = self.page_size(rows.len());
+        rows.iter().skip(offset).take(page).copied().collect()
     }
 
     /// Whether tying filters the visible rows.
@@ -525,6 +618,10 @@ impl Cascader {
         if !self.is_leaf_path(&path) {
             return false;
         }
+        // A disabled leaf is not selectable by any route, including a programmatic one.
+        if self.resolve(&path).is_some_and(|option| !option.enabled) {
+            return false;
+        }
         if self.selected_path == path {
             return true;
         }
@@ -596,7 +693,8 @@ impl Cascader {
     /// `cascader_choosing_from_an_earlier_level_discards_the_deeper_path` caught.
     /// `draw_overlay` and `row_at` both call this, so they cannot disagree again.
     fn level_rect(&self, level: usize) -> Rect {
-        self.level_rect_for(level, self.filtered_indices(level).len())
+        let all = self.filtered_indices(level);
+        self.level_rect_for(level, self.page_size(all.len()).min(all.len()).max(1))
     }
 
     /// [`Self::level_rect`] for a caller that already has the level's row count.
@@ -629,7 +727,8 @@ impl Cascader {
         }
         let row = (offset as u32 / ROW_HEIGHT) as usize;
         let visible = self.filtered_indices(level);
-        visible.get(row).copied()
+        let windowed = self.windowed_indices(level, &visible);
+        windowed.get(row).copied()
     }
 
     /// The level under `pos`, when the pointer is over an open level.
@@ -651,6 +750,9 @@ impl Cascader {
         let Some(option) = self.siblings_at(level).and_then(|s| s.get(option_index)) else {
             return;
         };
+        if !option.enabled {
+            return;
+        }
         let is_leaf = option.is_leaf();
         // Truncate to this level, then push, so choosing from an earlier level
         // discards the deeper path rather than appending to it.
@@ -683,6 +785,11 @@ impl Widget for Cascader {
 
     fn size_hint(&self) -> Size {
         Size::new(dimensions::CASCADER_DEFAULT_WIDTH, dimensions::CASCADER_DEFAULT_HEIGHT)
+    }
+
+    /// The overlay fade owes frames until it is complete.
+    fn is_animating(&self) -> bool {
+        self.expanded && self.reveal_progress < 1.0
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -735,6 +842,10 @@ impl WidgetProperties for Cascader {
             "separator" => Ok(CapabilityValue::String(self.separator().to_string())),
             "filterable" => Ok(CapabilityValue::Bool(self.is_filterable())),
             "filter" => Ok(CapabilityValue::String(self.filter().to_string())),
+            "max_visible" => match self.max_visible() {
+                Some(max) => Ok(CapabilityValue::UInt(max as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
             _ => base_property_get(self, name),
         }
     }
@@ -762,6 +873,13 @@ impl WidgetProperties for Cascader {
             // `set_selected_path` so an invalid path is refused rather than encoded.
             "value" | "depth" => Err(CapabilityAccessError::ReadOnlyProperty),
             "filter" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "max_visible" => {
+                match value {
+                    CapabilityValue::Null => self.set_max_visible(None),
+                    other => self.set_max_visible(Some(expect_usize(other)?)),
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -775,6 +893,7 @@ impl WidgetProperties for Cascader {
             "separator",
             "filterable",
             "filter",
+            "max_visible",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -878,7 +997,8 @@ impl Cascader {
         for level in 0..self.visible_level_count() {
             // Filter once: the rows are handed to `draw_level` as they are, and the column's
             // height comes from their count rather than from a second `filtered_indices` call.
-            let visible = self.filtered_indices(level);
+            let all = self.filtered_indices(level);
+            let visible = self.windowed_indices(level, &all);
             let column = self.level_rect_for(level, visible.len());
             self.draw_level(context, level, column, &visible);
         }
@@ -928,9 +1048,12 @@ impl Cascader {
         // One role font for every row in this column: it used to be rebuilt per row, and on a
         // loading row twice.
         let row_font = crate::widget::metrics::role_font(self.style(), 12.0);
+        // The overlay fades in rather than appearing on one frame. Only the fills and strokes
+        // take the alpha; the text stays fully opaque so it is never unreadably faint.
+        let reveal_alpha = (self.reveal_progress.clamp(0.0, 1.0) * 255.0).round() as u8;
 
-        context.fill_rounded_rect(column, 4, column_surface);
-        context.draw_rounded_rect_stroke(column, 4, separator, 1);
+        context.fill_rounded_rect(column, 4, column_surface.with_alpha(reveal_alpha));
+        context.draw_rounded_rect_stroke(column, 4, separator.with_alpha(reveal_alpha), 1);
 
         let Some(siblings) = self.siblings_at(level) else {
             return;
@@ -954,17 +1077,26 @@ impl Cascader {
                 // sees which branch the next column belongs to. The fill is the accent, so the
                 // row reads as a **selection** rather than as a paler grey; its ink is the
                 // accent's contrast colour, which is legible on that fill by construction.
-                context.fill_rect(row_rect, highlight_surface);
+                context.fill_rect(row_rect, highlight_surface.with_alpha(reveal_alpha));
             }
             let row_line = context.text_line(row_rect, &row_font);
             // Fitted to the space left of the branch chevron / pending ellipsis zone (the
             // rightmost 20px of the row): an unbounded label ran underneath it.
             let label_width = ((row_rect.width as i32) - 8 - 20).max(0) as u32;
+            let label_ink = if !option.enabled {
+                // A disabled row is dimmed on every highlight, so "cannot be chosen" is
+                // visible rather than only enforced.
+                row_ink.with_alpha(110)
+            } else if highlighted {
+                on_highlight
+            } else {
+                row_ink
+            };
             context.draw_text_fitted_cow(
                 Rect::new(row_rect.x + 8, row_line.y, label_width, row_line.height.max(1)),
                 &option.label,
                 &row_font,
-                if highlighted { on_highlight } else { row_ink },
+                label_ink,
                 HorizontalAlignment::Left,
             );
             if option.is_loading() {
@@ -1046,8 +1178,67 @@ impl EventHandler for Cascader {
                 27 => self.collapse(), // Escape
                 40 => self.move_browsed(1),
                 38 => self.move_browsed(-1),
+                39 => {
+                    // Right walks into the next unbrowsed level: the highlighted branch of
+                    // this level, or the first enabled row when the next level has not been
+                    // entered yet. Re-choosing the deepest walked node would be idempotent and
+                    // left the keyboard unable to descend at all.
+                    let level = self.expanded_path.len();
+                    if let Some(&current) = self.expanded_path.get(level) {
+                        self.choose(level, current);
+                    } else {
+                        let visible = self.filtered_indices(level);
+                        let target = visible.iter().copied().find(|&index| {
+                            self.siblings_at(level)
+                                .and_then(|siblings| siblings.get(index))
+                                .is_some_and(|option| option.enabled)
+                        });
+                        if let Some(index) = target {
+                            self.choose(level, index);
+                        }
+                    }
+                }
+                37 => {
+                    // Left retreats one level, keeping the shallower path browsed.
+                    if !self.expanded_path.is_empty() {
+                        self.expanded_path.pop();
+                        self.base.request_redraw();
+                    } else {
+                        self.collapse();
+                    }
+                }
+                13 => {
+                    // Enter commits the browsed path when it ends on a leaf.
+                    let path = self.expanded_path.clone();
+                    if !path.is_empty() && self.is_leaf_path(&path) && self.set_selected_path(path)
+                    {
+                        self.collapse();
+                    }
+                }
+                36 => self.move_browsed(
+                    -(self.visible_options_at(self.expanded_path.len().saturating_sub(1)).len()
+                        as i32),
+                ),
+                35 => self.move_browsed(
+                    self.visible_options_at(self.expanded_path.len().saturating_sub(1)).len()
+                        as i32,
+                ),
                 _ => {}
             },
+            Event::Wheel { delta, modifiers } => {
+                if !self.expanded {
+                    return;
+                }
+                // The wheel scrolls the deepest open column, which is the one the user is
+                // looking at.
+                let level = self.visible_level_count().saturating_sub(1);
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y != 0 {
+                    let offset =
+                        (self.scroll_offset(level) as i32 + scroll.lines_y).max(0) as usize;
+                    self.set_scroll_offset(level, offset);
+                }
+            }
             // Typed characters filter the browsed level when filtering is on. Control
             // characters are excluded in the pattern so the guard and the body agree
             // about what is acceptable. An IME commit is the same text arriving after the
@@ -1091,18 +1282,57 @@ impl Cascader {
             .get(level)
             .and_then(|index| visible.iter().position(|visible| visible == index));
         let next = match current {
-            Some(position) => (position as i32 + delta).clamp(0, visible.len() as i32 - 1) as usize,
+            Some(position) => {
+                let mut cursor = position as i32;
+                loop {
+                    cursor += delta.signum();
+                    if cursor < 0 || cursor >= visible.len() as i32 {
+                        return;
+                    }
+                    let candidate = visible[cursor as usize];
+                    if self
+                        .siblings_at(level)
+                        .and_then(|siblings| siblings.get(candidate))
+                        .is_some_and(|option| option.enabled)
+                    {
+                        break cursor as usize;
+                    }
+                }
+            }
             None => {
-                if delta > 0 {
-                    0
+                let mut found = None;
+                let order: Vec<usize> = if delta > 0 {
+                    (0..visible.len()).collect()
                 } else {
-                    visible.len() - 1
+                    (0..visible.len()).rev().collect()
+                };
+                for position in order {
+                    let candidate = visible[position];
+                    if self
+                        .siblings_at(level)
+                        .and_then(|siblings| siblings.get(candidate))
+                        .is_some_and(|option| option.enabled)
+                    {
+                        found = Some(position);
+                        break;
+                    }
+                }
+                match found {
+                    Some(position) => position,
+                    None => return,
                 }
             }
         };
         if let Some(&option_index) = visible.get(next) {
             self.expanded_path.truncate(level);
             self.expanded_path.push(option_index);
+            // Keep the keyboard row inside the visible window when the level is capped.
+            let page = self.page_size(visible.len());
+            if next < self.scroll_offset(level) {
+                self.set_scroll_offset(level, next);
+            } else if next >= self.scroll_offset(level) + page {
+                self.set_scroll_offset(level, next + 1 - page);
+            }
             self.base.request_redraw();
         }
     }
@@ -1650,6 +1880,15 @@ mod tests {
         c.set("filterable", CapabilityValue::Bool(true)).unwrap();
         assert!(c.is_filterable());
 
+        // The per-level row cap is nullable, and a cap of zero floors to one row.
+        assert_eq!(c.get("max_visible").unwrap(), CapabilityValue::Null);
+        c.set("max_visible", CapabilityValue::UInt(0)).unwrap();
+        assert_eq!(c.max_visible(), Some(1));
+        c.set("max_visible", CapabilityValue::UInt(3)).unwrap();
+        assert_eq!(c.get("max_visible").unwrap(), CapabilityValue::UInt(3));
+        c.set("max_visible", CapabilityValue::Null).unwrap();
+        assert_eq!(c.max_visible(), None);
+
         // Wrong types are refused rather than coerced.
         assert!(c.set("expanded", CapabilityValue::UInt(1)).is_err());
         assert!(c.set("separator", CapabilityValue::Bool(true)).is_err());
@@ -1811,5 +2050,60 @@ mod tests {
         assert!(c.is_expanded(), "it is a branch, so the overlay stays open");
         assert!(c.visible_options_at(1).is_empty());
         assert_eq!(c.selected_path(), &[] as &[usize], "nothing was committed");
+    }
+
+    /// A disabled row is skipped by the keyboard and refused by a programmatic write.
+    #[test]
+    fn disabled_rows_are_not_choosable() {
+        let mut c = Cascader::new(Rect::new(0, 0, 200, 32));
+        c.set_options(vec![
+            CascaderOption::new("a", "A").with_enabled(false),
+            CascaderOption::new("b", "B"),
+        ]);
+        c.expand();
+        c.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        c.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(c.selected_labels(), vec!["B"]);
+        assert!(!c.set_selected_path(vec![0]), "a disabled leaf is refused");
+    }
+
+    /// Right/Left walk levels, Enter commits, Home/End jump within a level.
+    #[test]
+    fn keyboard_walks_levels_and_commits() {
+        let mut c = cascader();
+        c.expand();
+        c.handle_event(&Event::KeyPress { key: 40, modifiers: 0 }); // first branch
+        c.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        c.handle_event(&Event::KeyPress { key: 39, modifiers: 0 }); // into the district
+        assert!(c.is_expanded());
+        c.handle_event(&Event::KeyPress { key: 13, modifiers: 0 }); // Enter on a branch
+        assert!(c.is_expanded(), "a branch is not committable");
+        c.handle_event(&Event::KeyPress { key: 39, modifiers: 0 }); // into the leaf
+        assert!(!c.is_expanded());
+        assert_eq!(c.selected_path().len(), 4);
+
+        c.expand();
+        c.handle_event(&Event::KeyPress { key: 35, modifiers: 0 }); // End
+        c.handle_event(&Event::KeyPress { key: 37, modifiers: 0 }); // Left retreats
+        assert!(c.is_expanded());
+    }
+
+    /// A capped level scrolls with the wheel and paints a window.
+    #[test]
+    fn a_capped_level_scrolls_with_the_wheel() {
+        let options: Vec<CascaderOption> = (0..8)
+            .map(|index| CascaderOption::new(format!("o{index}"), format!("Option {index}")))
+            .collect();
+        let mut c = Cascader::new(Rect::new(0, 0, 200, 32));
+        c.set_options(options);
+        c.set_max_visible(Some(3));
+        c.expand();
+        assert_eq!(c.page_size(8), 3);
+        c.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(c.scroll_offset(0), 1);
+        assert!(c.tick(0), "the reveal is still in progress");
+        c.tick(16);
+        c.tick(200);
+        assert_eq!(c.scroll_offset(0), 1);
     }
 }

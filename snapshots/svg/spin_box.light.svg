@@ -6,9 +6,9 @@
   <rect x="0" y="36" width="240" height="48" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="200" y="60" width="40" height="24" fill="rgba(180,180,180,1.00)" />
   <rect x="200" y="60" width="40" height="24" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <line x1="216" y1="70" x2="220" y2="75" stroke="rgba(0,0,0,1.00)" stroke-width="1" />
-  <line x1="220" y1="75" x2="224" y2="70" stroke="rgba(0,0,0,1.00)" stroke-width="1" />
-  <line x1="224" y1="70" x2="216" y2="70" stroke="rgba(0,0,0,1.00)" stroke-width="1" />
+  <line x1="216" y1="70" x2="220" y2="75" stroke="rgba(0,0,0,0.35)" stroke-width="1" />
+  <line x1="220" y1="75" x2="224" y2="70" stroke="rgba(0,0,0,0.35)" stroke-width="1" />
+  <line x1="224" y1="70" x2="216" y2="70" stroke="rgba(0,0,0,0.35)" stroke-width="1" />
   <rect x="200" y="36" width="40" height="24" fill="rgba(180,180,180,1.00)" />
   <rect x="200" y="36" width="40" height="24" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <line x1="216" y1="51" x2="220" y2="46" stroke="rgba(0,0,0,1.00)" stroke-width="1" />

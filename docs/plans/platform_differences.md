@@ -38,7 +38,7 @@ rust_widgets::capabilities().native_menu
 适合"每个平台都能做，只是底层机制不同"的能力。
 
 ```rust
-win.new_button("OK", 10, 10, 80, 30);      // macOS NSButton / Windows BUTTON / GTK Button
+win.new_button("OK", 10, 10, 80, 30);      // macOS the reference button / Windows BUTTON / GTK Button
 win.new_menu_bar(0, 0, 800, 26);
 win.mount_custom_widget(widget, rect);        // 各后端各自实现
 ```
@@ -104,7 +104,7 @@ win.new_menu_item_with_shortcut(&menu, "Undo", Some(undo));
 
 | 平台 | 机制 |
 |---|---|
-| macOS | `NSMenuItem` 的 `keyEquivalent` + `keyEquivalentModifierMask` |
+| macOS | `the reference menu item` 的 `keyEquivalent` + `keyEquivalentModifierMask` |
 | Windows | `CreateAcceleratorTableW` 建 `HACCEL`，消息循环里 `TranslateAcceleratorW` |
 | GTK | `GtkAccelGroup` + `gtk_widget_add_accelerator`，挂在拥有菜单的 `GtkWindow` 上 |
 
@@ -117,7 +117,7 @@ win.new_menu_item_with_shortcut(&menu, "Undo", Some(undo));
 * 跨平台渲染规则：`src/shortcut/tests.rs` 同时断言 macOS 与桌面两种记号
   （`format_shortcut_for_platform`），**在任何主机上都能跑**，不需要 Windows 机器。
 * macOS 运行时：`cargo run --example menu_shortcut_runtime` — 建真窗口、读回
-  AppKit 实际存的 `keyEquivalent`、再触发菜单动作并确认队列里收到对应 item id。
+  the platform UI framework 实际存的 `keyEquivalent`、再触发菜单动作并确认队列里收到对应 item id。
 * Windows 解析规则：`tools/win32_accel_probe`（在宿主机上跑，因为 `winapi` 的
   `um` 模块不在非 Windows target 上暴露）。
 * GTK 安装路径：已随 BLUE15 自绘重构删除。GTK 菜单/工具栏/状态栏的控件构造与

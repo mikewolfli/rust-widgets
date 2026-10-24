@@ -4,7 +4,64 @@
 //! Focus management for widgets.
 use crate::compat::{BTreeSet, Box, HashMap, Vec};
 use crate::core::ObjectId;
+use crate::event::FocusReason;
 use crate::signal::GenericSignal;
+
+/// Which input may move focus to a control.
+///
+/// # Why a per-control policy is needed
+///
+/// "Focusable" is not one question. A text field takes focus from a click *and* from Tab; a
+/// toolbar's row container might take it only from a click; a decorative label should take it
+/// from neither. With one boolean, the only options are "Tab stops on the label" (wrong) or
+/// "the label is skipped by every route including a click on the row" (also wrong). The policy
+/// splits the answer into the two routes that exist.
+///
+/// A control that is not registered at all is not focusable, so [`FocusPolicy::NoFocus`] is
+/// mainly useful for a registered control that should stop accepting input temporarily without
+/// losing its place in the tab order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FocusPolicy {
+    /// Never accepts focus from either route.
+    NoFocus,
+    /// Accepts focus from a pointer press only.
+    ClickFocus,
+    /// Accepts focus from keyboard traversal only.
+    TabFocus,
+    /// Accepts focus from both routes. The default, so controls registered without an explicit
+    /// policy keep the behaviour they had before policies existed.
+    #[default]
+    StrongFocus,
+}
+
+impl FocusPolicy {
+    /// Whether a pointer press may focus a control with this policy.
+    pub const fn accepts_click(self) -> bool {
+        matches!(self, Self::ClickFocus | Self::StrongFocus)
+    }
+
+    /// Whether keyboard traversal may focus a control with this policy.
+    pub const fn accepts_tab(self) -> bool {
+        matches!(self, Self::TabFocus | Self::StrongFocus)
+    }
+
+    /// Whether `reason` is a route this policy accepts.
+    ///
+    /// The mapping is stated once here rather than at each call site: [`FocusReason::Pointer`]
+    /// is the click route; every other reason in the enum originates from keyboard navigation
+    /// or application code that is deliberately acting *as* keyboard navigation
+    /// ([`FocusReason::Programmatic`] does, because a dialog moving focus must be able to reach
+    /// a field the user cannot click yet).
+    pub const fn accepts(self, reason: FocusReason) -> bool {
+        match reason {
+            FocusReason::Pointer => self.accepts_click(),
+            FocusReason::Tab
+            | FocusReason::BackTab
+            | FocusReason::Shortcut
+            | FocusReason::Programmatic => self.accepts_tab(),
+        }
+    }
+}
 /// Manages keyboard focus across widgets.
 pub struct FocusManager {
     /// Currently focused widget, if any.
@@ -33,6 +90,9 @@ pub struct FocusManager {
     /// Registration used `Vec::contains`, which made registering n widgets O(n²) comparisons;
     /// this is O(log n) and keeps the canonical order untouched.
     registered: BTreeSet<ObjectId>,
+    /// Per-control focus policies. A control absent from the map keeps
+    /// [`FocusPolicy::StrongFocus`], which is what every control did before the policy existed.
+    policies: HashMap<ObjectId, FocusPolicy>,
 }
 impl FocusManager {
     /// Creates a new focus manager.
@@ -46,6 +106,7 @@ impl FocusManager {
             traversal_strategy: FocusTraversalStrategy::TabOrder,
             widget_positions: HashMap::new(),
             registered: BTreeSet::new(),
+            policies: HashMap::new(),
         }
     }
     /// Returns the currently focused widget, if any.
@@ -121,6 +182,7 @@ impl FocusManager {
         }
         self.registration_order.retain(|&x| x != id);
         self.focusable_widgets.retain(|&x| x != id);
+        self.policies.remove(&id);
         // A removal cannot move the remaining widgets relative to each other, so the effective
         // order is already correct under `TabOrder`. Spatial strategies keep their sort because
         // the positions of the remaining widgets are unchanged.
@@ -220,6 +282,69 @@ impl FocusManager {
             }
         }
         None
+    }
+
+    // --- Accessibility callback wiring ---
+
+    /// Sets the input routes `id` accepts, replacing any previous policy.
+    ///
+    /// A policy does not add or remove the control from the tab list: registration decides
+    /// *whether* the control is in the order, and the policy decides *which routes* may land on
+    /// it. That split is what lets [`FocusPolicy::NoFocus`] keep a control's place while
+    /// disabling it temporarily, and what makes reverting to [`FocusPolicy::StrongFocus`] a
+    /// single call rather than a re-registration.
+    pub fn set_focus_policy(&mut self, id: ObjectId, policy: FocusPolicy) {
+        if policy == FocusPolicy::default() {
+            // The default is the absence of an entry, so storing it would be a second
+            // representation of the same fact and a map that grows for no reason.
+            self.policies.remove(&id);
+        } else {
+            self.policies.insert(id, policy);
+        }
+    }
+
+    /// The policy for `id`, defaulting to [`FocusPolicy::StrongFocus`] when none was set.
+    pub fn focus_policy(&self, id: ObjectId) -> FocusPolicy {
+        self.policies.get(&id).copied().unwrap_or_default()
+    }
+
+    /// Whether `id` accepts focus arriving from `reason`.
+    pub fn accepts_focus(&self, id: ObjectId, reason: FocusReason) -> bool {
+        self.focus_policy(id).accepts(reason)
+    }
+
+    /// Moves focus forward or backward to the next widget that accepts `reason`, wrapping.
+    ///
+    /// The policy-aware counterpart of [`Self::focus_next_matching`]: a pointer click that
+    /// asks for the next focusable cannot land on a [`FocusPolicy::TabFocus`] control, and Tab
+    /// cannot land on a [`FocusPolicy::ClickFocus`] one. Returns the newly focused widget, or
+    /// `None` when no candidate in the whole ring accepts the reason (focus then does not move,
+    /// which is the same rule `focus_next_matching` documents).
+    pub fn focus_next_for(&mut self, forward: bool, reason: FocusReason) -> Option<ObjectId> {
+        let len = self.focusable_widgets.len();
+        if len == 0 {
+            return None;
+        }
+        let start =
+            self.focused_widget.and_then(|id| self.focusable_widgets.iter().position(|&x| x == id));
+        let mut chosen = None;
+        for step in 1..=len {
+            let index = match (start, forward) {
+                (Some(index), true) => (index + step) % len,
+                (Some(index), false) => (index + len - (step % len)) % len,
+                (None, true) => step - 1,
+                (None, false) => len - step,
+            };
+            let candidate = self.focusable_widgets[index];
+            if self.accepts_focus(candidate, reason) {
+                chosen = Some(candidate);
+                break;
+            }
+        }
+        if let Some(candidate) = chosen {
+            self.set_focus(candidate);
+        }
+        chosen
     }
 
     // --- Accessibility callback wiring ---
@@ -503,5 +628,51 @@ mod tests {
 
         fm.set_traversal_strategy(FocusTraversalStrategy::TabOrder);
         assert_eq!(fm.focusable_widgets(), &[1, 2], "the replaced canonical order is restored");
+    }
+
+    /// An unconfigured control accepts both routes, which is what every control did before
+    /// policies existed.
+    #[test]
+    fn the_default_policy_accepts_both_routes() {
+        let fm = FocusManager::new();
+        assert_eq!(fm.focus_policy(1), FocusPolicy::StrongFocus);
+        assert!(fm.accepts_focus(1, FocusReason::Pointer));
+        assert!(fm.accepts_focus(1, FocusReason::Tab));
+        assert!(fm.accepts_focus(1, FocusReason::Programmatic));
+    }
+
+    /// A tab-only control is skipped by the pointer route and reached by keyboard navigation.
+    #[test]
+    fn a_tab_only_policy_is_skipped_by_the_pointer_route() {
+        let mut fm = FocusManager::new();
+        fm.set_focus_order(vec![1, 2]);
+        fm.set_focus_policy(1, FocusPolicy::TabFocus);
+
+        // Not focused yet: the pointer route starts at index 0, rejects 1, then takes 2.
+        assert_eq!(fm.focus_next_for(true, FocusReason::Pointer), Some(2));
+        fm.clear_focus();
+        assert_eq!(fm.focus_next_for(true, FocusReason::Tab), Some(1));
+    }
+
+    /// A no-focus control is skipped by both routes; if nothing accepts, focus does not move.
+    #[test]
+    fn a_no_focus_policy_is_skipped_by_both_routes() {
+        let mut fm = FocusManager::new();
+        fm.set_focus_order(vec![1]);
+        fm.set_focus_policy(1, FocusPolicy::NoFocus);
+        assert_eq!(fm.focus_next_for(true, FocusReason::Tab), None);
+        assert_eq!(fm.focus_next_for(true, FocusReason::Pointer), None);
+        assert_eq!(fm.focused_widget(), None);
+    }
+
+    /// Unregistering drops the policy with the control, so a reused id starts clean.
+    #[test]
+    fn unregistering_a_control_drops_its_policy() {
+        let mut fm = FocusManager::new();
+        fm.register_focusable(7);
+        fm.set_focus_policy(7, FocusPolicy::ClickFocus);
+        assert_eq!(fm.focus_policy(7), FocusPolicy::ClickFocus);
+        fm.unregister_focusable(7);
+        assert_eq!(fm.focus_policy(7), FocusPolicy::StrongFocus);
     }
 }

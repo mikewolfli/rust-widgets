@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! BarcodeScanner widget — simulated barcode/QR scanner viewfinder.
+//! BarcodeScanner widget — a scanner viewfinder with an optional host decoder.
 //!
-//! Self-drawn simulation: renders a viewfinder with corner brackets, a sweeping
-//! scan line and a result overlay. It does not connect to a camera and does not
-//! decode barcode images. Scan results are injected externally via
-//! [`BarcodeScanner::detect_barcode`]; without such an injection the widget
-//! never reports a detection.
+//! The control itself draws the viewfinder, the sweeping scan line and the result overlay.
+//! It does not open a camera: a host that owns a capture device feeds frames to
+//! [`BarcodeScanner::decode_frame`], and the widget asks its configured [`BarcodeDecoder`]
+//! for a symbol. Without a decoder — or without a host calling that method — the widget is a
+//! display and control surface, and [`BarcodeScanner::detect_barcode`] is the way an
+//! externally decoded result enters it.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
@@ -78,7 +79,38 @@ pub struct BarcodeResult {
     pub timestamp: u64,
 }
 
-/// Barcode/QR code scanner widget (simulated).
+/// One captured frame handed to a [`BarcodeDecoder`].
+///
+/// The pixels are 8-bit grayscale in row-major order, which is the format every barcode
+/// decoder can consume and the cheapest one a host can produce from a colour frame. The
+/// widget does not allocate or copy the frame; the borrow lives only for the decode call.
+#[derive(Clone, Copy, Debug)]
+pub struct BarcodeFrame<'a> {
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// `width * height` grayscale samples, row-major.
+    pub gray: &'a [u8],
+}
+
+/// A host-supplied barcode decoder.
+///
+/// Implement this to connect the widget to a real decoding backend (a scanner SDK, a
+/// camera pipeline, a test double). The widget stays free of any codec dependency: it
+/// owns the interaction and the result display, and the decoder owns the pixels-to-symbol
+/// step. `decode` returns `None` when the frame contains no readable symbol, which is the
+/// normal case for a live viewfinder and must not be treated as an error.
+pub trait BarcodeDecoder: Send {
+    /// Decodes one grayscale frame, or returns `None` when no symbol was found.
+    fn decode(&mut self, frame: BarcodeFrame<'_>) -> Option<(String, BarcodeFormat)>;
+}
+
+/// Barcode/QR code scanner widget.
+///
+/// The control draws a viewfinder, corner brackets and a sweeping scan line. It is not a
+/// camera: call [`BarcodeScanner::decode_frame`] with a captured frame when a host has an
+/// image source, or [`BarcodeScanner::detect_barcode`] with an already-decoded result.
 ///
 /// Draws a viewfinder with corner brackets and an animated scan line while
 /// scanning. No image decoding or device capture is performed: `last_result`
@@ -97,6 +129,8 @@ pub struct BarcodeScanner {
     show_viewfinder: bool,
     /// Emitted when a barcode is detected.
     pub barcode_detected: Signal1<BarcodeResult>,
+    /// The host's decoder, or `None` while the control is display-only.
+    decoder: Option<Box<dyn BarcodeDecoder>>,
 }
 
 impl BarcodeScanner {
@@ -109,7 +143,45 @@ impl BarcodeScanner {
             scan_interval: 100,
             show_viewfinder: true,
             barcode_detected: Signal1::new(),
+            decoder: None,
         }
+    }
+
+    /// Installs the host's decoder.
+    ///
+    /// Replacing an installed decoder drops the previous one. Passing `None` returns the
+    /// control to display-only mode, where [`Self::decode_frame`] reports `None` without
+    /// touching the emitted result.
+    pub fn set_decoder(&mut self, decoder: Option<Box<dyn BarcodeDecoder>>) {
+        self.decoder = decoder;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether a decoder is installed.
+    pub fn has_decoder(&self) -> bool {
+        self.decoder.is_some()
+    }
+
+    /// Hands a captured frame to the installed decoder and publishes a found symbol.
+    ///
+    /// Returns `true` when a symbol was decoded and stored, which also emits
+    /// `barcode_detected`. A frame with no symbol returns `false` and leaves the previous
+    /// result in place, so a viewfinder that misses for a few frames does not blank the
+    /// readout. A malformed frame (length not `width * height`) is refused for the same
+    /// reason rather than being decoded from whatever bytes happened to be nearby.
+    pub fn decode_frame(&mut self, frame: BarcodeFrame<'_>) -> bool {
+        let expected = frame.width as usize * frame.height as usize;
+        if expected == 0 || frame.gray.len() < expected {
+            return false;
+        }
+        let Some(decoder) = self.decoder.as_mut() else {
+            return false;
+        };
+        let Some((data, format)) = decoder.decode(frame) else {
+            return false;
+        };
+        self.detect_barcode(data, format);
+        true
     }
 
     /// Starts the simulated scanning animation (local state and redraw only).

@@ -14,6 +14,7 @@ use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -39,6 +40,20 @@ const EMPTY_VIEWFINDER: Color = Color::rgba(50, 50, 60, 255);
 /// value, not two that can drift.
 const ACTIVE_VIEWFINDER: Color = Color::rgba(30, 30, 40, 255);
 
+/// A decoded camera frame supplied by the host.
+///
+/// The data is tightly packed RGBA, row-major, with no padding between rows. The widget never
+/// captures or decodes anything itself; it paints what the host hands it.
+#[derive(Debug, Clone)]
+pub struct CameraFrame {
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// RGBA bytes, `width * height * 4` long.
+    pub data: Vec<u8>,
+}
+
 /// Camera preview widget — draws a simulated camera viewfinder area with controls.
 ///
 /// Renders a self-drawn camera viewfinder and optional control overlay buttons.
@@ -58,6 +73,12 @@ pub struct CameraPreview {
     show_controls: bool,
     /// Current zoom level (1.0 = normal).
     zoom_level: f32,
+    /// The most recent frame supplied by the host, if any.
+    frame: Option<CameraFrame>,
+    /// Emitted when the host reports a capture failure.
+    pub error_occurred: Signal1<String>,
+    /// Emitted when the host reports that camera permission was denied.
+    pub permission_denied: GenericSignal,
 }
 
 impl CameraPreview {
@@ -71,6 +92,9 @@ impl CameraPreview {
             mirror_mode: false,
             show_controls: true,
             zoom_level: 1.0,
+            frame: None,
+            error_occurred: Signal1::new(),
+            permission_denied: GenericSignal::new(),
         }
     }
 
@@ -161,6 +185,52 @@ impl CameraPreview {
         }
         self.zoom_level = level;
         self.base.request_redraw();
+    }
+
+    /// Supplies a decoded RGBA frame for the viewfinder.
+    ///
+    /// The frame's own dimensions become the preview's resolution, which is what makes
+    /// [`Self::set_resolution`] a *format negotiation* rather than a label: the picture and the
+    /// readout name the same size because both come from the frame that is on screen. Returns
+    /// `Err` when the dimensions are empty or the byte count is not `width * height * 4`.
+    pub fn set_frame(&mut self, width: u32, height: u32, data: &[u8]) -> Result<(), String> {
+        if width == 0 || height == 0 {
+            return Err("a camera frame needs non-zero dimensions".to_string());
+        }
+        let expected = (width as usize) * (height as usize) * 4;
+        if data.len() != expected {
+            return Err(format!(
+                "a {width}x{height} RGBA frame needs {expected} bytes, got {}",
+                data.len()
+            ));
+        }
+        self.frame = Some(CameraFrame { width, height, data: data.to_vec() });
+        self.resolution = (width, height);
+        self.base.request_redraw();
+        Ok(())
+    }
+
+    /// Removes the host frame, returning the viewfinder to its simulated drawing.
+    pub fn clear_frame(&mut self) {
+        if self.frame.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Returns the most recent host frame, if any.
+    pub fn frame(&self) -> Option<&CameraFrame> {
+        self.frame.as_ref()
+    }
+
+    /// Reports a capture failure to the host's listeners.
+    pub fn report_error(&mut self, message: impl Into<String>) {
+        self.error_occurred.emit(message.into());
+    }
+
+    /// Reports that camera permission was denied, which is its own state rather than a
+    /// generic error: a host normally shows different remediation for the two.
+    pub fn report_permission_denied(&mut self) {
+        self.permission_denied.emit();
     }
 
     /// Returns the current zoom level.
@@ -300,6 +370,16 @@ impl Draw for CameraPreview {
         if self.is_active {
             // Draw active camera view — dark viewfinder area
             context.fill_rect(rect, viewfinder);
+
+            // The host's frame is painted at its own pixel size, centred and clipped to the
+            // preview. Content, not chrome: it is the caller's picture and is never recoloured.
+            if let Some(frame) = self.frame.as_ref() {
+                let dx = rect.x + (w - frame.width as i32) / 2;
+                let dy = rect.y + (h - frame.height as i32) / 2;
+                context.push_clip(rect.x, rect.y, rect.width, rect.height);
+                context.draw_image(dx.max(0), dy.max(0), frame.width, frame.height, &frame.data);
+                context.pop_clip();
+            }
 
             // Draw resolution info text
             let res_text = format!("{}x{}", self.resolution.0, self.resolution.1);
@@ -534,5 +614,36 @@ mod tests {
             1,
             "the same id is not a change"
         );
+    }
+
+    #[test]
+    fn a_host_frame_negotiates_the_resolution_and_paints() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        preview.start_preview();
+        let data = vec![200u8; 4 * 4 * 4];
+        preview.set_frame(4, 4, &data).expect("a matching byte count is accepted");
+        assert_eq!(preview.resolution(), (4, 4));
+        assert_eq!(preview.frame().map(|frame| frame.width), Some(4));
+        let svg = crate::widget::svg::render_to_svg(&mut preview);
+        assert!(svg.starts_with("<svg"));
+    }
+
+    #[test]
+    fn a_malformed_frame_is_refused_rather_than_painted() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        assert!(preview.set_frame(2, 2, &[0u8; 8]).is_err());
+        assert!(preview.frame().is_none());
+    }
+
+    #[test]
+    fn permission_is_reported_as_its_own_state() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        let denied = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let d = denied.clone();
+        preview.permission_denied.connect(move || {
+            d.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        preview.report_permission_denied();
+        assert!(denied.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

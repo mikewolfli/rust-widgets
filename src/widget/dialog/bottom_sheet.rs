@@ -2,15 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 //! BottomSheet widget — a modal panel that slides up from the bottom edge of the
-//! screen, similar to Android/Material Design bottom sheets.
+//! screen, in the Material Design sense.
 //!
-//! The BottomSheet displays a semi-transparent overlay behind a rounded-rect panel
-//! at the bottom of its geometry. It supports open/close state, a drag handle at
-//! the top of the sheet, and emits a `dismissed` signal when the user taps outside
-//! or directly on the sheet area.
+//! The sheet displays a semi-transparent overlay behind a rounded-rect panel at the bottom
+//! of its geometry. It supports open/close state, a content child, a drag handle that can be
+//! dragged down to dismiss, and emits a `dismissed` signal when the user taps the overlay,
+//! presses Escape, or drags the panel far enough.
+//!
+//! # Presentation
+//!
+//! The default [`SheetAttachment::Overlay`] is the Material form: a floating panel over a
+//! dimmed page. [`SheetAttachment::Attached`] is the in-window variant — the panel is flush
+//! with the window's bottom edge and there is no scrim. A native window-attached sheet that
+//! slides out of a title bar is a platform window, not this control; a host that needs that
+//! owns the window and uses this control for its body.
 
-use crate::core::{Color, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::core::{Color, ObjectId, Rect, Size};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::style::{MotionSlot, PropertyDriver};
@@ -21,16 +29,46 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// How the sheet is presented inside its host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SheetAttachment {
+    /// A floating panel over a dimmed page. The default, and the historical appearance.
+    #[default]
+    Overlay,
+    /// A panel flush with the window's bottom edge, with no scrim.
+    Attached,
+}
+
+/// A drag in progress on the sheet's handle.
+#[derive(Debug, Clone, Copy)]
+struct SheetDrag {
+    /// The pointer's y at the press.
+    origin_y: i32,
+    /// Whether the pointer has moved far enough to count as a drag rather than a tap.
+    moved: bool,
+}
+
+/// How far the pointer must travel before a press counts as a drag rather than a tap.
+const DRAG_THRESHOLD: i32 = 2;
+
 /// BottomSheet widget — a modal panel that slides up from the bottom edge.
 ///
 /// The sheet occupies the bottom `content_height` pixels of its geometry rect.
-/// When `open` is true, a semi-transparent gray overlay fills the area above the
-/// sheet and a rounded panel is drawn at the bottom with a small drag handle.
-/// Any click dismisses the sheet and fires the `dismissed` signal.
+/// When open, a semi-transparent overlay fills the area above the sheet and a
+/// rounded panel is drawn at the bottom with a small drag handle.
+/// A press on the overlay dismisses the sheet; a press on the panel does not.
 pub struct BottomSheet {
     base: BaseWidget,
     open: bool,
     content_height: u32,
+    /// The single content widget the sheet hosts, if any.
+    content_widget: Option<ObjectId>,
+    /// How the panel is presented.
+    attachment: SheetAttachment,
+    /// The handle drag in progress.
+    drag: Option<SheetDrag>,
+    /// How far the panel has been pulled down during a drag.
+    drag_offset: f32,
     /// How far the sheet has risen, `0.0` fully stowed below the page and `1.0` fully shown.
     ///
     /// # Why this is separate from `open`
@@ -54,6 +92,10 @@ impl BottomSheet {
             base: BaseWidget::new(WidgetKind::BottomSheet, geometry, "BottomSheet"),
             open: false,
             content_height: geometry.height / 2,
+            content_widget: None,
+            attachment: SheetAttachment::Overlay,
+            drag: None,
+            drag_offset: 0.0,
             // At rest at the stowed end: a freshly built sheet is closed, so it must not animate
             // *down* on its first frame.
             rise: PropertyDriver::at(0.0, MotionSlot::Normal),
@@ -70,6 +112,9 @@ impl BottomSheet {
             // `tick_animations` reports the movement itself and that is what keeps the loop
             // painting.
             self.rise.set_target(1.0);
+            self.drag = None;
+            self.drag_offset = 0.0;
+            self.place_content();
         }
     }
 
@@ -78,6 +123,9 @@ impl BottomSheet {
         if self.open {
             self.open = false;
             self.rise.set_target(0.0);
+            self.drag = None;
+            self.drag_offset = 0.0;
+            self.set_content_visible(false);
             self.base.request_redraw();
         }
     }
@@ -122,6 +170,148 @@ impl BottomSheet {
     pub fn content_height(&self) -> u32 {
         self.content_height
     }
+
+    /// The content widget the sheet hosts, if any.
+    pub fn content_widget(&self) -> Option<ObjectId> {
+        self.content_widget
+    }
+
+    /// Sets the content widget this sheet hosts.
+    ///
+    /// The link is recorded in both directions, and a replaced child is unlinked and hidden —
+    /// the same pairing [`crate::widget::dialog::Dialog::set_content_widget`] performs, because
+    /// a stale child id is a rectangle the tree still visits and draws.
+    pub fn set_content_widget(&mut self, widget: Option<ObjectId>) {
+        if self.content_widget == widget {
+            return;
+        }
+        if let Some(old) = self.content_widget {
+            if Some(old) != widget {
+                self.base.remove_child_linked(old);
+                crate::set_widget_visible(old, false);
+            }
+        }
+        self.content_widget = widget;
+        if let Some(id) = widget {
+            self.base.add_child_linked(id);
+        }
+        self.place_content();
+        self.base.request_redraw();
+    }
+
+    /// The rectangle handed to the content child on the resting panel.
+    ///
+    /// The handle's band is reserved at the top of the panel, and the content gets the rest,
+    /// inset by the panel's own padding. A closed sheet has no content rectangle.
+    pub fn content_rect(&self) -> Option<Rect> {
+        if !self.open {
+            return None;
+        }
+        let panel = self.resting_panel_rect();
+        let top = panel.y + 8 + 5 + 8;
+        let height = panel.y + panel.height as i32 - top - 8;
+        (height > 0)
+            .then(|| Rect::new(panel.x + 8, top, panel.width.saturating_sub(16), height as u32))
+    }
+
+    /// Places the content child inside the current panel.
+    fn place_content(&self) {
+        let Some(content) = self.content_widget else { return };
+        match self.content_rect() {
+            Some(rect) => {
+                crate::set_widget_geometry(content, rect.x, rect.y, rect.width, rect.height);
+                crate::set_widget_visible(content, self.open);
+            }
+            None => crate::set_widget_visible(content, false),
+        }
+    }
+
+    /// Shows or hides the content child without changing the link.
+    fn set_content_visible(&self, visible: bool) {
+        if let Some(content) = self.content_widget {
+            crate::set_widget_visible(content, visible);
+        }
+    }
+
+    /// How the panel is presented.
+    pub fn attachment(&self) -> SheetAttachment {
+        self.attachment
+    }
+
+    /// Selects the presentation and repaints when it changes.
+    pub fn set_attachment(&mut self, attachment: SheetAttachment) {
+        if self.attachment == attachment {
+            return;
+        }
+        self.attachment = attachment;
+        self.base.request_redraw();
+    }
+
+    /// The panel's rectangle at rest (fully risen), derived from the geometry.
+    fn resting_panel_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let sheet_height = self.content_height.min(rect.height);
+        Rect::new(
+            rect.x,
+            rect.y + rect.height as i32 - sheet_height as i32,
+            rect.width,
+            sheet_height,
+        )
+    }
+
+    /// The handle's rectangle at rest.
+    fn handle_rect(&self) -> Rect {
+        let panel = self.resting_panel_rect();
+        let width = 32.min(panel.width);
+        let height = 5.min(panel.height);
+        Rect::new(panel.x + (panel.width as i32 - width as i32) / 2, panel.y + 8, width, height)
+    }
+
+    /// Whether a drag of the handle is in progress.
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// How far the panel has been pulled down during the current drag.
+    pub fn drag_offset(&self) -> f32 {
+        self.drag_offset
+    }
+
+    /// Tracks a pointer position during a handle drag.
+    ///
+    /// The offset is recomputed from the press origin, so moving the pointer back up restores
+    /// the panel exactly instead of accumulating rounding error.
+    pub fn drag_to(&mut self, y: i32) {
+        let Some(drag) = self.drag else { return };
+        let delta = y - drag.origin_y;
+        if delta.abs() >= DRAG_THRESHOLD && !drag.moved {
+            self.drag = Some(SheetDrag { moved: true, ..drag });
+        }
+        if self.drag.is_some_and(|drag| drag.moved) {
+            self.drag_offset = delta.max(0) as f32;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Ends a handle drag, dismissing the sheet when it was pulled far enough.
+    ///
+    /// A drag past one third of the panel's height dismisses; anything shorter restores the
+    /// resting position.
+    pub fn end_drag(&mut self) {
+        let Some(drag) = self.drag else { return };
+        self.drag = None;
+        let threshold = self.content_height as f32 / 3.0;
+        if drag.moved && self.drag_offset > threshold {
+            self.drag_offset = 0.0;
+            self.open = false;
+            self.rise.set_target(0.0);
+            self.set_content_visible(false);
+            self.dismissed.emit();
+        } else {
+            self.drag_offset = 0.0;
+        }
+        self.base.request_redraw();
+    }
 }
 
 impl Widget for BottomSheet {
@@ -141,6 +331,12 @@ impl Widget for BottomSheet {
             crate::widget::metrics::dimensions::BOTTOM_SHEET_DEFAULT_WIDTH,
             crate::widget::metrics::dimensions::BOTTOM_SHEET_DEFAULT_HEIGHT,
         )
+    }
+
+    /// Moves the sheet and re-places its content child.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.place_content();
     }
 
     // The rise is the control's own animation; the trait spelling is what the frame bus reaches
@@ -319,7 +515,7 @@ impl Draw for BottomSheet {
         // which is why `Colors::scrim` exists as a role at all.
         let scrim_color = crate::style::layer_color(crate::style::LayerColor::Scrim)
             .unwrap_or_else(|| window_fill.blend(&Color::BLACK, SCRIM_DARKEN));
-        if overlay_height > 0 && rise > 0.0 {
+        if overlay_height > 0 && rise > 0.0 && self.attachment == SheetAttachment::Overlay {
             // A rising sheet's scrim is a fraction of its own alpha, not a second colour: fading by
             // scaling the token's alpha is the one form that works for a theme that authored its
             // scrim as a translucent white as well as one that authored it as a black veil.
@@ -342,7 +538,8 @@ impl Draw for BottomSheet {
         // a growing height would read as the content being revealed rather than the panel arriving.
         let resting_y = rect.y + rect.height as i32 - sheet_height as i32;
         let stowed_y = rect.y + rect.height as i32;
-        let sheet_y = resting_y + ((stowed_y - resting_y) as f32 * (1.0 - rise)) as i32;
+        let drawn_y = resting_y + ((stowed_y - resting_y) as f32 * (1.0 - rise)) as i32;
+        let sheet_y = drawn_y + self.drag_offset as i32;
         let sheet_rect = Rect::new(rect.x, sheet_y, rect.width, sheet_height);
 
         // 2. Draw the sheet panel with rounded top corners
@@ -359,6 +556,26 @@ impl Draw for BottomSheet {
         let handle_y = sheet_y + 8;
         let handle_rect = Rect::new(handle_x, handle_y, handle_width, handle_height);
         context.fill_rounded_rect(handle_rect, handle_height / 2, handle_color);
+
+        // The content child follows the panel while it rises and is dragged. The tree painter
+        // draws it after this function returns, so this is the rectangle that very frame is
+        // drawn into, and it is hidden with the sheet rather than floating over a closed panel.
+        if let Some(content) = self.content_widget {
+            let content_top = sheet_y + 8 + handle_height as i32 + 8;
+            let content_height = sheet_y + sheet_height as i32 - content_top - 8;
+            if content_height > 0 {
+                crate::set_widget_geometry(
+                    content,
+                    sheet_rect.x + 8,
+                    content_top,
+                    sheet_rect.width.saturating_sub(16),
+                    content_height as u32,
+                );
+                crate::set_widget_visible(content, true);
+            } else {
+                crate::set_widget_visible(content, false);
+            }
+        }
     }
 }
 
@@ -369,12 +586,32 @@ impl EventHandler for BottomSheet {
         }
 
         match event {
-            Event::MousePress { pos: _, button, .. } => {
-                if *button == 1 && self.open {
+            Event::MousePress { pos, button, .. } => {
+                if *button != 1 || !self.open {
+                    return;
+                }
+                // The handle starts a drag; the panel body is inert; the overlay dismisses.
+                if self.handle_rect().contains_point(*pos) {
+                    self.drag = Some(SheetDrag { origin_y: pos.y, moved: false });
+                    self.drag_offset = 0.0;
+                    return;
+                }
+                if !self.resting_panel_rect().contains_point(*pos) {
                     self.open = false;
+                    self.rise.set_target(0.0);
+                    self.set_content_visible(false);
                     self.dismissed.emit();
                     self.base.request_redraw();
                 }
+            }
+            Event::MouseMove { pos } => self.drag_to(pos.y),
+            Event::MouseRelease { button: 1, .. } => self.end_drag(),
+            Event::KeyPress { key, .. } if *key == key_codes::ESCAPE && self.open => {
+                self.open = false;
+                self.rise.set_target(0.0);
+                self.set_content_visible(false);
+                self.dismissed.emit();
+                self.base.request_redraw();
             }
             _ => {
                 self.base.handle_event(event);
@@ -441,7 +678,7 @@ mod tests {
         });
 
         sheet.handle_event(&Event::MousePress {
-            pos: Point::new(200, 300),
+            pos: Point::new(200, 100),
             button: 1,
             modifiers: 0,
         });
@@ -568,11 +805,12 @@ mod tests {
     }
 
     #[test]
-    fn bottom_sheet_dismiss_via_sheet_click() {
+    fn bottom_sheet_panel_press_does_not_dismiss() {
         let mut sheet = make_sheet();
         sheet.open();
 
-        // Click in the sheet area (bottom half)
+        // A press on the panel body is not an overlay dismissal: the panel is where the user
+        // interacts with the sheet's own content.
         let dismissed = Arc::new(AtomicBool::new(false));
         let d = dismissed.clone();
         sheet.dismissed.connect(move || {
@@ -584,8 +822,89 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
+        assert!(sheet.is_open(), "a press on the panel must not dismiss the sheet");
+        assert!(!dismissed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn escape_dismisses_an_open_sheet() {
+        let mut sheet = make_sheet();
+        sheet.open();
+        sheet.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
         assert!(!sheet.is_open());
-        assert!(dismissed.load(Ordering::SeqCst));
+        while sheet.tick(1000) {}
+        assert_eq!(sheet.rise_progress(), 0.0, "the slide is played out by the frame loop");
+    }
+
+    #[test]
+    fn dragging_the_handle_far_enough_dismisses() {
+        let mut sheet = make_sheet();
+        sheet.open();
+        let handle = sheet.handle_rect();
+        let grab = Point::new(handle.x + 2, handle.y + 2);
+        sheet.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
+        assert!(sheet.is_dragging());
+        sheet.handle_event(&Event::MouseMove { pos: Point::new(grab.x, grab.y + 120) });
+        assert_eq!(sheet.drag_offset(), 120.0);
+        sheet.handle_event(&Event::MouseRelease {
+            pos: Point::new(grab.x, grab.y + 120),
+            button: 1,
+        });
+        assert!(!sheet.is_open(), "a drag past a third of the panel dismisses");
+        assert!(!sheet.is_dragging());
+    }
+
+    #[test]
+    fn a_short_handle_drag_restores_the_panel() {
+        let mut sheet = make_sheet();
+        sheet.open();
+        let handle = sheet.handle_rect();
+        let grab = Point::new(handle.x + 2, handle.y + 2);
+        sheet.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
+        sheet.handle_event(&Event::MouseMove { pos: Point::new(grab.x, grab.y + 10) });
+        sheet
+            .handle_event(&Event::MouseRelease { pos: Point::new(grab.x, grab.y + 10), button: 1 });
+        assert!(sheet.is_open());
+        assert_eq!(sheet.drag_offset(), 0.0);
+    }
+
+    #[test]
+    fn the_sheet_places_its_content_inside_the_panel() {
+        use crate::widget::runtime;
+
+        let mut sheet = make_sheet();
+        let content = runtime::register(Box::new(crate::widget::Label::new(
+            "body".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("mount content");
+        sheet.set_content_widget(Some(content));
+        assert!(!crate::is_widget_visible(content), "a closed sheet hides its content");
+
+        sheet.open();
+        let rect = sheet.content_rect().expect("an open sheet hands over a box");
+        assert_eq!(runtime::geometry_of(content), Some(rect));
+        assert!(crate::is_widget_visible(content));
+
+        sheet.dismiss();
+        assert!(!crate::is_widget_visible(content));
+        runtime::unregister(content);
+    }
+
+    #[test]
+    fn an_attached_sheet_paints_no_scrim() {
+        let mut overlay = make_sheet();
+        overlay.open();
+        while overlay.tick(1000) {}
+        let overlay_svg = render_to_svg(&mut overlay);
+
+        let mut attached = make_sheet();
+        attached.set_attachment(SheetAttachment::Attached);
+        attached.open();
+        while attached.tick(1000) {}
+        let attached_svg = render_to_svg(&mut attached);
+        assert_ne!(overlay_svg, attached_svg, "the presentation must be visible");
+        assert_eq!(attached.attachment(), SheetAttachment::Attached);
     }
 
     /// Opening a sheet slides the panel up instead of placing it there.

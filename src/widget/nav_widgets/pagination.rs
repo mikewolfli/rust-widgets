@@ -14,6 +14,7 @@
 //! The distinction matters because the two have opposite ownership: a page view
 //! owns pages, a pagination bar owns only a number.
 
+use crate::compat::{format, String};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -181,6 +182,20 @@ impl Pagination {
     /// Number of items on the current page, which is short on the last page.
     pub fn item_count_on_page(&self) -> usize {
         self.total.saturating_sub(self.first_item_index()).min(self.page_size)
+    }
+
+    /// A one-line summary of the visible range, e.g. `11\u{2013}20 of 95`.
+    ///
+    /// Provided as data rather than painted unconditionally: a pager that already sits under a
+    /// table does not need a second statement of the same range, so a host that wants the
+    /// summary draws it itself. An empty set reports `0 of 0` rather than a negative range.
+    pub fn summary_text(&self) -> String {
+        if self.total == 0 {
+            return "0 of 0".to_string();
+        }
+        let first = self.first_item_index() + 1;
+        let last = (self.first_item_index() + self.item_count_on_page()).min(self.total);
+        format!("{first}\u{2013}{last} of {}", self.total)
     }
 
     /// Numbered siblings shown on each side of the current page.
@@ -474,18 +489,24 @@ impl EventHandler for Pagination {
                     self.activate(cell);
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                // Left / Up and Right / Down step one page.
-                37 | 38 => {
-                    self.previous_page();
+            Event::KeyPress { key, modifiers: _ } => {
+                // Logical keys rather than raw key codes: the numeric codes are QWERTY
+                // positions, so on AZERTY and other layouts the arrows and Home/End landed on
+                // unrelated keys (or nowhere). `Key::from_key_code` is the crate's one mapping
+                // from a platform code to the logical key.
+                use crate::shortcut::Key;
+                match Key::from_key_code(*key) {
+                    Some(Key::Left) | Some(Key::Up) => {
+                        self.previous_page();
+                    }
+                    Some(Key::Right) | Some(Key::Down) => {
+                        self.next_page();
+                    }
+                    Some(Key::Home) | Some(Key::PageUp) => self.set_page(0),
+                    Some(Key::End) | Some(Key::PageDown) => self.set_page(self.last_page()),
+                    _ => {}
                 }
-                39 | 40 => {
-                    self.next_page();
-                }
-                36 => self.set_page(0),
-                35 => self.set_page(self.last_page()),
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
@@ -883,5 +904,25 @@ mod tests {
             widget_property_set(&mut bar, "page_count", CapabilityValue::UInt(1)),
             Err(CapabilityAccessError::ReadOnlyProperty)
         );
+    }
+
+    #[test]
+    fn the_summary_names_the_visible_item_range() {
+        let mut bar = bar();
+        bar.set_total(95);
+        assert_eq!(bar.summary_text(), "1\u{2013}10 of 95");
+        bar.set_page(9);
+        assert_eq!(bar.summary_text(), "91\u{2013}95 of 95");
+    }
+
+    #[test]
+    fn page_up_and_page_down_are_logical_keys_not_positions() {
+        let mut bar = bar();
+        bar.set_total(95);
+        bar.set_page(4);
+        bar.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
+        assert_eq!(bar.page(), 9, "Page Down goes to the last page");
+        bar.handle_event(&Event::KeyPress { key: 33, modifiers: 0 });
+        assert_eq!(bar.page(), 0, "Page Up goes to the first page");
     }
 }

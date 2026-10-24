@@ -276,12 +276,23 @@ jobs:
           done
 
       # The `3d` feature is not in `default`, so every step above compiles the 2D path with it
-      # off. These two steps are the "on" half of the matrix. The spelling is explicit
-      # (`--features "desktop,3d"`) rather than `--all-features`, because the latter turns on
-      # `desktop` and `mini` together and `mini` is `no_std`; that command can never build and
-      # is deliberately absent from this workflow (see the note above the desktop test step).
+      # off. The pair below makes both halves of the gate explicit and adjacent, so a change that
+      # only builds in one of them fails here rather than in a downstream consumer. `3d` composes
+      # with any device profile; `desktop` is used because it is the profile the other gates build.
+      #
+      # Decision C5: `--all-features` is **not a supported command** for this crate. The device
+      # profiles are mutually exclusive, and `all-features` turns on `mini` (no_std) together with
+      # `desktop`, so it cannot compile by construction (see the note above the desktop test step).
+      # `all-desktop-features` in `Cargo.toml` is the curated spelling of "everything a desktop
+      # host can use"; the last step below is what replaces the impossible `--all-features` run.
+      - name: Cargo check (3d off)
+        run: cargo check --no-default-features --features desktop --all-targets
+
       - name: Cargo check (3d on)
         run: cargo check --no-default-features --features "desktop,3d" --all-targets
+
+      - name: Cargo check (all desktop features)
+        run: cargo check --no-default-features --features all-desktop-features --all-targets
 
       - name: Cargo clippy (3d on, deny warnings)
         run: >-

@@ -80,7 +80,7 @@
   `display_generation`；`clipboard` 能力显式为 `false`，剪贴板方法只写 `BackendState`。
 - **macOS DPI**：`src/platform/macos/platform_impl.rs::capabilities` 与
   `src/platform/macos_objc2/platform_impl.rs::capabilities` 都写 `dpi_scaling: false`，且两者都没有
-  `dpi_scale_factor` 覆盖。AppKit 的 `NSScreen.backingScaleFactor` / `NSWindow.backingScaleFactor`
+  `dpi_scale_factor` 覆盖。the platform UI framework 的 `NSScreen.backingScaleFactor` / `the reference window.backingScaleFactor`
   可用，只是没接。
 - **GTK/BSD 主题**：`src/platform/linux/platform_impl.rs` 没有 `system_theme` 覆盖；BSD 复用同一代码。
 - **HarmonyOS**：`capabilities`/trait 实现里只有 `displays`（`platform_impl.rs`）与 UDMF 剪贴板；
@@ -149,7 +149,7 @@
 | `queue_resize_trigger` | macOS objc2 | 需要（B28.19） |
 | `set_window_state` / `is_window_in_state` | GTK 默认 `false`；cocoa/objc2/Android/Harmony/iOS/Wayland/Redox/WASM 仅记录 | 需要（B28.19）：要么真正应用，要么显式 `Unsupported` |
 | `set_window_min_size` / `window_min_size` | GTK 默认 `false`；cocoa/objc2/Android/Harmony/iOS/Wayland/Redox/WASM 仅记录 | 需要（B28.19） |
-| `set_window_icon` / `window_icon` | 仅 Windows 真正应用；其余仅记录或默认 | 需要（B28.19）：GTK 可应用；AppKit/mobile 的图标是 bundle/manifest 级，应显式说明 |
+| `set_window_icon` / `window_icon` | 仅 Windows 真正应用；其余仅记录或默认 | 需要（B28.19）：GTK 可应用；the platform UI framework/mobile 的图标是 bundle/manifest 级，应显式说明 |
 | `menu_item_shortcut` | 仅 cocoa | **不是生产缺口**：公开菜单 API 走 `ControlBackend`；若恢复 native-menu 模式再补 |
 | `invalidate_surface_rect` | 多数后端 | **不是**：文档明确默认 `false` 表示“不能收窄”，调用方回退到整控件重绘 |
 | `take_pending_repaint` | Windows/cocoa/GTK/Redox | **不是**：这些后端直接失效真实窗口；只有表面表后端需要队列 |
@@ -306,13 +306,13 @@ Redox/BSD（人工）各自输出同一份 `RESULT: PASS`；不支持的事实�
 ### B28.03 macOS 两个后端的 DPI
 
 **问题**：`capabilities().dpi_scaling` 在 cocoa 与 objc2 上都是 `false`，`dpi_scale_factor()`
-继承 `1.0`。Retina 上布局与文字会按 1x 处理。winit 的 AppKit 后端直接给出 `scale_factor`。
+继承 `1.0`。Retina 上布局与文字会按 1x 处理。winit 的 the platform UI framework 后端直接给出 `scale_factor`。
 
 **交付**：
 
-- cocoa：`NSScreen.backingScaleFactor`（枚举时逐屏）与 `NSWindow.backingScaleFactor`；
+- cocoa：`NSScreen.backingScaleFactor`（枚举时逐屏）与 `the reference window.backingScaleFactor`；
   `dpi_scale_factor()` 返回主屏/窗口所在屏的值；`displays().scale` 同步。
-- objc2：同一来源，经 `objc2-app-kit`；主线程限制与其它 AppKit 方法一致。
+- objc2：同一来源，经 `objc2-app-kit`；主线程限制与其它 the platform UI framework 方法一致。
 - 把两者的 `dpi_scaling` 改为 `true`，并让 `docs_paths_tests.rs` 与三语 cookbook 矩阵同步。
 
 **验收**：GitHub `macos-latest`（Retina）上 `dpi_scale_factor() == 2.0`；非 Retina 主机为
@@ -425,7 +425,7 @@ objc2/Wayland/iOS/Harmony/WASM 没有。两种形态让宿主无法用一套代�
 - 决策 B：不改公开契约，Android 的 picker 通过 `inject_path_choice` 注入，宿主自行承接
   Activity result。文档必须写明它不是 `choose_path`。
 - 实现：Android 把现有 `ACTION_OPEN_DOCUMENT` 接到选定契约；iOS
-  `UIDocumentPickerViewController`；Harmony ArkTS `DocumentViewPicker`；objc2 `NSOpenPanel`
+  `UIDocumentPickerViewController`；Harmony ArkTS `DocumentViewPicker`；objc2 `the reference open panel`
   （主线程、阻塞）；Wayland 用 portal `org.freedesktop.portal.FileChooser`（异步）；
   WASM 用 `showOpenFilePicker`（异步）。
 - `open_external`：Wayland/objc2 补 `xdg-open`/`open`；Android 用 `ACTION_VIEW`；iOS 用
@@ -451,7 +451,7 @@ objc2/Wayland/iOS/Harmony/WASM 没有。两种形态让宿主无法用一套代�
 | `queue_resize_trigger` | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 
 证据：`app/handle.rs::set_icon`/`set_min_size`/`set_maximized` 的文档（约 3581–3690 行）写明
-“AppKit `setContentMinSize:` / GTK `set_geometry_hints`/`maximize()` / GTK `set_icon_from_file`”，
+“the platform UI framework `setContentMinSize:` / GTK `set_geometry_hints`/`maximize()` / GTK `set_icon_from_file`”，
 但 `src/platform/linux/platform_impl.rs` 里没有这三个覆盖；
 `src/platform/macos/platform_impl.rs::set_window_state`（约 867 行）只调用
 `self.state.set_window_state`。窗口标题：`WindowHandle::set_title`（`app/handle.rs:1356`）→
@@ -572,7 +572,7 @@ Wayland AT-SPI（经 zbus，GTK 之外的路径）。每项都必须有“读屏
 | 平台 | 目标证据 | 当前 |
 |---|---|---|
 | Windows GUI | 真实会话 + 统一探针 | ❌ 只有交叉检查 |
-| macOS | CI `macos-latest` 的 AppKit/objc2 探针 + Retina | 🟡 CI 已有测试，无平台事实探针 |
+| macOS | CI `macos-latest` 的 the platform UI framework/objc2 探针 + Retina | 🟡 CI 已有测试，无平台事实探针 |
 | Linux X11 | 真实会话 | ✅ |
 | Wayland | weston CI | ✅（后端绑定）；平台事实待 B28.04 |
 | BSD | FreeBSD/NetBSD 真实会话 | ❌ 只有类型检查 |
@@ -593,7 +593,7 @@ Wayland AT-SPI（经 zbus，GTK 之外的路径）。每项都必须有“读屏
   opacity、focus_on_map、attention）与 `Platform::apply_window_attributes(window, attrs)`，
   而不是每次加一个 trait 方法（principle #54 的单定义策略）。
 - 各后端：Windows `SetWindowLongW`/`SetLayeredWindowAttributes`/`FlashWindowEx`；
-  macOS `NSWindow` style mask/level/alpha/`requestUserAttention`；GTK/`gdk` 对应属性；
+  macOS `the reference window` style mask/level/alpha/`requestUserAttention`；GTK/`gdk` 对应属性；
   Wayland `xdg_toplevel`（部分属性无协议，诚实 `Unsupported`）；移动端大多 `N/A`。
 
 **验收**：属性值可通过 `window_attributes()` 读回；不支持的属性返回 `Unsupported` 并附原因；
@@ -773,7 +773,7 @@ Windows `GetSystemPowerStatus`/`PowerSettingRegisterNotification`、macOS
 **现状**：至少两处文档承诺了代码没有的行为：
 
 - `app/handle.rs` 的 `set_icon`/`set_min_size`/`set_maximized` 文档写“推送到 OS”并列举
-  AppKit/GTK 的具体 API，但 macOS 只记录、GTK 未实现。
+  the platform UI framework/GTK 的具体 API，但 macOS 只记录、GTK 未实现。
 - `Platform` 的 `text_scale` 文档曾把未实现的平台列为已实现（已在本轮修正），说明同类句子
   需要一次系统清扫。
 
@@ -939,7 +939,7 @@ FUTURE 记录，没有自动门禁。
 - 新增可选特性 `raw-window-handle`，依赖 `raw-window-handle = "0.6"`。
 - `Platform::raw_window_handle(window_id) -> Option<RawWindowHandle>` 与
   `raw_display_handle() -> Option<RawDisplayHandle>`（0.6 的枚举是 `Copy`，无需生命周期）。
-- 后端：Win32 `HWND`/`HINSTANCE`；AppKit `NSView`；X11 `Window`/`Display`；Wayland
+- 后端：Win32 `HWND`/`HINSTANCE`；the platform UI framework `NSView`；X11 `Window`/`Display`；Wayland
   `wl_surface`/`wl_display`；Android `ANativeWindow`；iOS UIKit `UIView`（若 rwh 提供 UiKit 变体）；
   WASM `WebWindowHandle`（canvas）；Redox/无窗口后端返回 `None`。
 - 只读：不转移所有权、不改变 `mount_surface` 契约；文档写清“取得句柄不等于可以绕过库绘制”。
@@ -961,7 +961,7 @@ FUTURE 记录，没有自动门禁。
   `decorations`、`window_icon`、`preferred_theme`、`content_protected`、`window_level`、
   `active`、`cursor`、`fullscreen`、`window_type`、`positioner`、`parent`。
 - `app` 层提供 `WindowOptions` 构建器；已有调用保持不变。
-- 后端：Windows style/ex-style；AppKit style mask/alpha/collection behavior；GTK 属性；
+- 后端：Windows style/ex-style；the platform UI framework style mask/alpha/collection behavior；GTK 属性；
   Wayland `xdg_toplevel`（部分属性无协议，明确 `Unsupported`）；移动端只应用相关项
   （全屏/方向/状态栏）。
 

@@ -630,6 +630,23 @@ fn outline_in_parsed_face(
     contours: &mut [(usize, usize)],
 ) -> Option<usize> {
     let glyph = face.glyph_index(ch)?;
+    outline_in_parsed_face_id(glyph, cell, face, points, contours)
+}
+
+/// Emits a **glyph identity's** flattened outline using an already-parsed `face`.
+///
+/// This is the glyph-level counterpart of [`outline_in_parsed_face`]. It exists because a shaped
+/// run names glyph ids, not characters: a ligature (`ffi`) or an Arabic contextual form is a
+/// glyph the face's `cmap` cannot reach from any single scalar, so a renderer that wants to paint
+/// the shape the shaper chose must ask for it by id.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+fn outline_in_parsed_face_id(
+    glyph: ttf_parser::GlyphId,
+    cell: Cell,
+    face: &ttf_parser::Face<'_>,
+    points: &mut [OutlinePoint],
+    contours: &mut [(usize, usize)],
+) -> Option<usize> {
     let units_per_em = face.units_per_em() as f32;
     if units_per_em <= 0.0 {
         return None;
@@ -669,6 +686,29 @@ fn outline_in_parsed_face(
         return None;
     }
     Some(contour_count)
+}
+
+/// [`outline`] for a **glyph id** rather than a character, selecting the face by family.
+///
+/// A shaped glyph run is a sequence of ids; this is what turns one of those ids into geometry the
+/// software or SVG backend can fill. The face is selected with the same `face_for_family` rule
+/// [`outline`] uses, so a run shaped from the family's tables is outlined from those same tables.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+pub fn outline_glyph(
+    glyph_id: u16,
+    cell: Cell,
+    family: &str,
+    points: &mut [OutlinePoint],
+    contours: &mut [(usize, usize)],
+) -> Option<usize> {
+    if cell.is_empty() || points.len() < MAX_POINTS || contours.len() < MAX_CONTOURS {
+        return None;
+    }
+    let face_bytes = super::shaping::face_for_family(family)?;
+    super::font_assets::with_parsed_face(face_bytes, |face| {
+        outline_in_parsed_face_id(ttf_parser::GlyphId(glyph_id), cell, face, points, contours)
+    })
+    .flatten()
 }
 
 /// The vertex capacity [`outline`] needs in the slice it is handed.

@@ -11,7 +11,7 @@
 //! `ValueCommand<String>` undo command can be reused unchanged instead of
 //! introducing a second history implementation.
 
-use super::types::{EditorBuffer, FoldRegion, TextPosition};
+use super::types::{EditorBuffer, FoldRegion, LineEnding, TextPosition};
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -43,11 +43,15 @@ pub(crate) struct EditorModel {
     pub(crate) dirty: bool,
     /// Byte offset at which each line starts in the joined document.
     ///
-    /// `prefix_offsets[i]` is the offset of line `i`, built lazily in one forward
-    /// pass: entry `i` is entry `i - 1` plus line `i - 1`'s length and its
-    /// newline. This turns the offset lookup every edit performs from a walk of
-    /// the line index into an array read.
-    prefix_offsets: Vec<usize>,
+    /// A block summary tree over each line's byte length plus its newline. A
+    /// prefix is the sum of whole-block totals plus the entries inside one block,
+    /// and a single-line edit updates one entry. A line insertion or deletion shifts
+    /// one block and updates its total, so an Enter no longer invalidates the whole
+    /// table. The cache is built lazily, so a bulk write pays nothing until an
+    /// offset is asked for.
+    prefix_offsets: Option<PrefixIndex>,
+    /// The terminator the document was loaded with.
+    line_ending: LineEnding,
 }
 
 impl EditorModel {
@@ -61,14 +65,25 @@ impl EditorModel {
             text: Rc::new(RefCell::new(String::new())),
             saved: String::new(),
             dirty: false,
-            prefix_offsets: vec![0],
+            prefix_offsets: None,
+            line_ending: LineEnding::Lf,
         };
         model.all_buffers.push(EditorBuffer::new("untitled", ""));
         model
     }
 
     /// Replaces the whole document, splitting it into lines.
+    ///
+    /// A document saved with `\r\n` terminators is normalised to `\n` here, and
+    /// the original terminator is remembered so a host can save it back
+    /// unchanged. Before this, every `\r` stayed at the end of its line, where it
+    /// counted as a character: columns were off by one at every line end and a
+    /// literal carriage return was painted into the buffer.
     pub(crate) fn set_text(&mut self, text: String) {
+        if text.contains('\r') {
+            self.line_ending = LineEnding::Crlf;
+        }
+        let text = normalize_line_endings(text);
         *self.text.borrow_mut() = text.clone();
         self.lines = split_lines(&text);
         self.lines_replaced();
@@ -79,6 +94,16 @@ impl EditorModel {
         self.normalize_folds();
     }
 
+    /// Returns the terminator the document was loaded with.
+    pub(crate) fn line_ending(&self) -> LineEnding {
+        self.line_ending
+    }
+
+    /// Records the line terminator explicitly, for a host that changes it.
+    pub(crate) fn set_line_ending(&mut self, ending: LineEnding) {
+        self.line_ending = ending;
+    }
+
     /// Marks the line index as replaced, so the prefix cache is rebuilt lazily.
     ///
     /// Called wherever `lines` is written directly rather than through
@@ -86,8 +111,7 @@ impl EditorModel {
     /// bulk write (loading a file, a line command) from paying for offsets it may
     /// never need.
     pub(crate) fn lines_replaced(&mut self) {
-        self.prefix_offsets.clear();
-        self.prefix_offsets.push(0);
+        self.prefix_offsets = None;
     }
 
     /// Recomputes [`Self::dirty`] after a bulk change.
@@ -140,6 +164,7 @@ impl EditorModel {
     }
 
     /// Returns the joined document text.
+    #[allow(dead_code)] // used by the `cfg(test)` splice helper and the buffer tests
     pub(crate) fn full_text(&self) -> String {
         self.lines.join("\n")
     }
@@ -299,26 +324,56 @@ impl EditorModel {
                 if let Some(line) = self.lines.get_mut(start.line) {
                     line.replace_range(from..to, replacement);
                 }
-                // The edit changed this line's byte length, so every offset below
-                // it moved. Entries above stay valid.
-                self.invalidate_prefix_offsets_from(start.line + 1);
+                // The edit changed this line's byte length, so update the one
+                // length entry. A Fenwick update refreshes every prefix that
+                // depends on it in O(log n); truncating the tail instead made the
+                // next offset lookup walk the document again.
+                if let Some(index) = self.prefix_offsets.as_mut() {
+                    let value = self.lines.get(start.line).map(|line| line.len() + 1).unwrap_or(1);
+                    index.set(start.line, value);
+                }
+                self.dirty = true;
                 self.refresh_mirror(start_offset, removed_len, replacement);
                 return (None, start_offset, removed_len);
             }
         }
 
-        // Cross-line edit: the line boundaries move, so the index is rebuilt. This
-        // is the Enter key, a paste containing newlines, or a multi-line delete —
-        // each is a single user action, not something that happens per frame.
-        let before = self.full_text();
-        let end_offset = end_offset.min(before.len());
+        // Cross-line edit: the line boundaries move, so only the affected line
+        // range is rebuilt. The document is **not** joined, spliced and split
+        // again: that was an O(file) copy on every Enter and every multi-line
+        // paste. Here the replaced lines are rebuilt from their byte slices and
+        // spliced into the line index, which is proportional to the edit.
+        let first_text = self.line(start.line).to_string();
+        let last_text = self.line(end.line).to_string();
+        let first_byte = self.byte_offset(start.line, start.column).min(first_text.len());
+        let last_byte = self.byte_offset(end.line, end.column).min(last_text.len());
+        let mut merged =
+            String::with_capacity(first_text.len() + replacement.len() + last_text.len());
+        merged.push_str(&first_text[..first_byte]);
+        merged.push_str(replacement);
+        merged.push_str(&last_text[last_byte..]);
+        let new_lines = split_lines(&merged);
+        let new_count = new_lines.len();
+        let removed_lines = end.line + 1 - start.line;
+        self.lines.splice(start.line..=end.line, new_lines);
+        // The index stays valid: the replaced line range is removed and the new
+        // lengths are inserted into the same block summary tree. Invalidating it
+        // here is what made every Enter rebuild the offsets on the next edit.
+        if let Some(index) = self.prefix_offsets.as_mut() {
+            let inserted: Vec<usize> = self
+                .lines
+                .iter()
+                .skip(start.line)
+                .take(new_count)
+                .map(|line| line.len() + 1)
+                .collect();
+            index.splice(start.line, removed_lines, &inserted);
+        }
+        self.normalize_folds();
+        self.dirty = true;
         let removed_len = end_offset.saturating_sub(start_offset);
-        let mut result = String::with_capacity(before.len() + replacement.len());
-        result.push_str(&before[..start_offset]);
-        result.push_str(replacement);
-        result.push_str(&before[end_offset..]);
-        self.set_text(result.clone());
-        (Some(result), start_offset, removed_len)
+        self.refresh_mirror(start_offset, removed_len, replacement);
+        (None, start_offset, removed_len)
     }
 
     /// Applies the same replacement to the mirrored text.
@@ -370,37 +425,156 @@ impl EditorModel {
     /// Returns the byte offset where `line` starts, using the prefix cache.
     ///
     /// The prefix cache is built lazily in one forward pass and then answers
-    /// every offset in O(1). Without it, a keystroke near the bottom of a large
-    /// document pays a full walk of the line index twice — which is what made
-    /// typing scale with the file even after the splice itself became in-place.
+    /// every offset in O(log n).
     fn prefix_offset(&mut self, line: usize) -> usize {
-        self.ensure_prefix_offsets(line + 1);
-        self.prefix_offsets.get(line).copied().unwrap_or(0)
+        if self.prefix_offsets.is_none() {
+            let lengths = self.lines.iter().map(|line| line.len() + 1);
+            self.prefix_offsets = Some(PrefixIndex::from_lengths(lengths));
+        }
+        self.prefix_offsets.as_ref().map(|index| index.prefix(line)).unwrap_or(0)
+    }
+}
+
+/// A block summary tree over per-line byte lengths.
+///
+/// The prefix table used to be a `Vec` truncated at the edited line, and then a
+/// Fenwick tree that could update one entry but had to be rebuilt when a line was
+/// inserted or deleted. This form keeps both properties: a point edit changes one
+/// entry, and an insertion/deletion shifts one small block and adjusts that
+/// block's total. A prefix sums whole blocks plus one intra-block slice, so the
+/// cost is `O(block + blocks)` and never a full document walk unless the index is
+/// being built after a bulk load.
+#[derive(Debug)]
+struct PrefixIndex {
+    /// Length entries, in line order, split into fixed-size blocks.
+    blocks: Vec<Vec<usize>>,
+    /// Per-block sums, parallel to `blocks`.
+    totals: Vec<usize>,
+    /// Maximum entries per block.
+    block_cap: usize,
+}
+
+impl PrefixIndex {
+    fn from_lengths(lengths: impl Iterator<Item = usize>) -> Self {
+        let values: Vec<usize> = lengths.collect();
+        let block_cap = 128usize;
+        let mut blocks: Vec<Vec<usize>> = Vec::new();
+        for chunk in values.chunks(block_cap) {
+            blocks.push(chunk.to_vec());
+        }
+        if blocks.is_empty() {
+            blocks.push(Vec::new());
+        }
+        let totals = blocks.iter().map(|block| block.iter().sum()).collect();
+        Self { blocks, totals, block_cap }
     }
 
-    /// Fills [`Self::prefix_offsets`] up to and including `line`.
-    fn ensure_prefix_offsets(&mut self, line: usize) {
-        let line = line.min(self.lines.len());
-        if self.prefix_offsets.len() > line {
+    /// Returns the sum of the first `index` entries.
+    fn prefix(&self, index: usize) -> usize {
+        let mut remaining = index;
+        let mut sum = 0usize;
+        for (block_index, block) in self.blocks.iter().enumerate() {
+            if remaining >= block.len() {
+                sum += self.totals[block_index];
+                remaining -= block.len();
+            } else {
+                sum += block[..remaining].iter().sum::<usize>();
+                break;
+            }
+        }
+        sum
+    }
+
+    /// Locates the block and offset containing logical index `index`.
+    fn locate(&self, index: usize) -> (usize, usize) {
+        let mut remaining = index;
+        for (block_index, block) in self.blocks.iter().enumerate() {
+            if remaining < block.len() {
+                return (block_index, remaining);
+            }
+            remaining -= block.len();
+        }
+        let last = self.blocks.len().saturating_sub(1);
+        (last, self.blocks.get(last).map(Vec::len).unwrap_or(0))
+    }
+
+    /// Replaces one entry and refreshes its block total.
+    fn set(&mut self, index: usize, value: usize) {
+        let (block_index, offset) = self.locate(index);
+        let Some(slot) = self.blocks.get_mut(block_index).and_then(|block| block.get_mut(offset))
+        else {
+            return;
+        };
+        if *slot == value {
             return;
         }
-        let mut offset = self.prefix_offsets.last().copied().unwrap_or(0);
-        let mut index = self.prefix_offsets.len().saturating_sub(1);
-        while index < line {
-            offset += self.lines.get(index).map(|text| text.len() + 1).unwrap_or(0);
-            self.prefix_offsets.push(offset);
-            index += 1;
+        *slot = value;
+        self.totals[block_index] = self.blocks[block_index].iter().sum();
+    }
+
+    /// Inserts one entry at `index`, splitting a full block.
+    fn insert(&mut self, index: usize, value: usize) {
+        let (block_index, offset) = self.locate(index);
+        let block = &mut self.blocks[block_index];
+        let offset = offset.min(block.len());
+        block.insert(offset, value);
+        self.totals[block_index] += value;
+        if block.len() > self.block_cap {
+            let tail = block.split_off(block.len() / 2);
+            let tail_total: usize = tail.iter().sum();
+            self.blocks.insert(block_index + 1, tail);
+            self.totals[block_index] = self.blocks[block_index].iter().sum();
+            self.totals.insert(block_index + 1, tail_total);
         }
     }
 
-    /// Drops the prefix-offset cache from `line` down.
-    ///
-    /// An edit to one line changes every offset below it, so the tail has to go.
-    /// Entries above the edit stay valid, which is what keeps the per-edit cost
-    /// proportional to the document only when edits move between lines.
-    fn invalidate_prefix_offsets_from(&mut self, line: usize) {
-        self.prefix_offsets.truncate(line.max(1));
+    /// Removes the entry at `index`.
+    fn remove(&mut self, index: usize) {
+        let (block_index, offset) = self.locate(index);
+        let Some(block) = self.blocks.get_mut(block_index) else { return };
+        if offset >= block.len() {
+            return;
+        }
+        let removed = block.remove(offset);
+        self.totals[block_index] -= removed;
+        if block.is_empty() && self.blocks.len() > 1 {
+            self.blocks.remove(block_index);
+            self.totals.remove(block_index);
+        }
     }
+
+    /// Replaces `removed` entries at `index` with `values`.
+    fn splice(&mut self, index: usize, removed: usize, values: &[usize]) {
+        for _ in 0..removed {
+            self.remove(index);
+        }
+        for (offset, value) in values.iter().enumerate() {
+            self.insert(index + offset, *value);
+        }
+    }
+}
+
+/// Converts every terminator in `text` to `\n`.
+///
+/// Lone `\r` (old Macintosh convention) is normalised too, so no path can end
+/// up with a carriage return inside a line.
+pub(crate) fn normalize_line_endings(text: String) -> String {
+    if !text.contains('\r') {
+        return text;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            out.push('\n');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// Splits a document into lines, always yielding at least one line.
@@ -544,5 +718,46 @@ mod tests {
     fn join_lines_round_trips_with_split_lines() {
         let text = "a\n\nb\n";
         assert_eq!(join_lines(&split_lines(text)), text);
+    }
+
+    /// The prefix index answers offsets after a single-line edit without rebuilding.
+    #[test]
+    fn the_prefix_index_tracks_single_line_edits() {
+        let mut model = EditorModel::new();
+        model.set_text("aa\nbb\ncc".to_string());
+        // Force the index to be built, then edit the first line.
+        assert_eq!(model.total_byte_offset(TextPosition::new(2, 1)), 7);
+        model.splice_with_range(TextPosition::new(0, 1), TextPosition::new(0, 1), "XYZ");
+        // "aXYZa\nbb\ncc": line 2 now starts at 9.
+        assert_eq!(model.total_byte_offset(TextPosition::new(2, 1)), 10);
+        model.splice_with_range(TextPosition::new(0, 0), TextPosition::new(0, 1), "");
+        // "XYZa\nbb\ncc": line 2 now starts at 8.
+        assert_eq!(model.total_byte_offset(TextPosition::new(2, 2)), 10);
+        assert_eq!(model.line(2), "cc");
+    }
+
+    /// A cross-line splice rebuilds only the affected lines and keeps the mirror.
+    #[test]
+    fn a_cross_line_splice_keeps_the_mirror_in_sync() {
+        let mut model = EditorModel::new();
+        model.set_text("alpha\nbeta\ngamma".to_string());
+        let (rebuilt, start, removed) =
+            model.splice_with_range(TextPosition::new(1, 2), TextPosition::new(1, 2), "\nnew");
+        assert!(rebuilt.is_none(), "the document is spliced in place");
+        assert_eq!(start, 8);
+        assert_eq!(removed, 0);
+        assert_eq!(model.full_text(), "alpha\nbe\nnewta\ngamma");
+        assert_eq!(*model.text.borrow(), "alpha\nbe\nnewta\ngamma");
+    }
+
+    /// Line endings are normalised once and the original form is remembered.
+    #[test]
+    fn crlf_is_normalised_on_load() {
+        let mut model = EditorModel::new();
+        model.set_text("one\r\ntwo\r\n".to_string());
+        assert_eq!(model.line(0), "one");
+        assert_eq!(model.line(1), "two");
+        assert_eq!(model.line_ending(), LineEnding::Crlf);
+        assert_eq!(model.full_text(), "one\ntwo\n");
     }
 }

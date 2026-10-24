@@ -10,22 +10,21 @@
 //!
 //! ## Sub-modules
 //!
-//! - `core` — CupertinoSwitch, CupertinoAlertDialog, CupertinoSlider,
-//!   MaterialNavigationRail, MaterialSnackbar, RailItem
+//! - `core` — CupertinoSwitch, CupertinoAlertDialog, CupertinoSlider
 //! - `date_picker` — CupertinoDatePicker
+//! - `material` — MaterialNavigationRail, MaterialSnackbar, RailItem
 //! - `nav_bar` — CupertinoNavigationBar
 //! - `segmented_control` — CupertinoSegmentedControl
 
 pub mod core;
 pub mod date_picker;
+pub mod material;
 pub mod nav_bar;
 pub mod segmented_control;
 
 // Re-exports from core
-pub use core::{
-    CupertinoAlertDialog, CupertinoSlider, CupertinoSwitch, MaterialNavigationRail,
-    MaterialSnackbar, RailItem,
-};
+pub use core::{CupertinoAlertDialog, CupertinoSlider, CupertinoSwitch};
 pub use date_picker::CupertinoDatePicker;
+pub use material::{MaterialNavigationRail, MaterialSnackbar, RailItem};
 pub use nav_bar::CupertinoNavigationBar;
 pub use segmented_control::CupertinoSegmentedControl;

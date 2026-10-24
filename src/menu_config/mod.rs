@@ -25,10 +25,10 @@ mod types;
 /// The effect snapshot the menu controls consume.
 pub use crate::style::MenuEffects;
 pub use config::MenuConfig;
-pub use dialog::MenuConfigDialog;
+pub use dialog::{MenuConfigDialog, MenuConfigPanel};
 pub use manager::{
     apply_overrides, current_effects, init, install_policy, manager, set_enabled,
     use_verification_policy, MenuConfigManager,
 };
-pub use persistence::{ConfigLoadError, ConfigPersistence};
+pub use persistence::{ConfigLoadError, ConfigPersistence, CURRENT_CONFIG_VERSION};
 pub use types::{HardwareCapabilities, PerformanceLevel, UserOverrides};

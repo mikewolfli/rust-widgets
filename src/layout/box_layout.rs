@@ -5,7 +5,7 @@
 use super::{ChildInfo, Layout, LayoutConstraints, LayoutContext, Orientation, SizePolicy};
 use crate::compat::{Any, Vec};
 use crate::core::Alignment;
-use crate::core::{ObjectId, Rect};
+use crate::core::{ObjectId, Rect, Size};
 use crate::style::EdgeOffsets;
 #[derive(Debug)]
 struct BoxLayoutItem {
@@ -75,6 +75,60 @@ impl BoxLayout {
     /// Returns layout orientation.
     pub fn orientation(&self) -> Orientation {
         self.orientation
+    }
+
+    /// Changes the orientation at runtime, without reordering the items.
+    ///
+    /// The existing stretch factors and constraints are axis-relative, so the same items
+    /// are reused; only the axis they are laid out on changes.
+    pub fn set_orientation(&mut self, orientation: Orientation) {
+        if self.orientation == orientation {
+            return;
+        }
+        self.orientation = orientation;
+    }
+
+    /// Inserts a widget at `index`, shifting the items at and after it.
+    ///
+    /// Returns `false` when `index` is past the append position. The stretch factor is
+    /// treated exactly like [`Layout::add_widget`]'s (`0` becomes `1`).
+    pub fn insert_widget_at(&mut self, index: usize, widget_id: ObjectId, stretch: u32) -> bool {
+        if index > self.items.len() {
+            return false;
+        }
+        self.items.insert(
+            index,
+            BoxLayoutItem {
+                widget_id: Some(widget_id),
+                stretch: stretch.max(1),
+                constraints: LayoutConstraints::new(0, None),
+                policy: SizePolicy::Expanding,
+                align: None,
+                cross_size: None,
+            },
+        );
+        true
+    }
+
+    /// Inserts an elastic spacer at `index`, pushing later items back.
+    ///
+    /// Returns `false` when `index` is past the append position.
+    pub fn insert_stretch(&mut self, index: usize, stretch: u32) -> bool {
+        if index > self.items.len() {
+            return false;
+        }
+        self.items.insert(
+            index,
+            BoxLayoutItem {
+                widget_id: None,
+                stretch: stretch.max(1),
+                constraints: LayoutConstraints::new(0, None),
+                policy: SizePolicy::Expanding,
+                align: None,
+                cross_size: None,
+            },
+        );
+        true
     }
     /// Returns inter-item spacing.
     pub fn spacing(&self) -> u32 {
@@ -209,10 +263,21 @@ impl BoxLayout {
             self.items.iter().map(|item| item.stretch as u64).sum::<u64>().max(1);
         let mut assigned = Vec::with_capacity(self.items.len());
         for item in &self.items {
-            let mut major = if item.policy == SizePolicy::Fixed {
-                item.constraints.max.unwrap_or(item.constraints.min)
-            } else {
-                (primary as u64 * item.stretch as u64 / total_stretch) as u32
+            let mut major = match item.policy {
+                SizePolicy::Fixed => item.constraints.max.unwrap_or(item.constraints.min),
+                SizePolicy::Maximum => {
+                    let share = (primary as u64 * item.stretch as u64 / total_stretch) as u32;
+                    item.constraints.max.unwrap_or(share).min(share)
+                }
+                SizePolicy::Ignored => {
+                    (primary as u64 * item.stretch as u64 / total_stretch) as u32
+                }
+                SizePolicy::Minimum
+                | SizePolicy::Preferred
+                | SizePolicy::Expanding
+                | SizePolicy::MinimumExpanding => {
+                    (primary as u64 * item.stretch as u64 / total_stretch) as u32
+                }
             };
             major = major.max(item.constraints.min);
             if let Some(max) = item.constraints.max {
@@ -226,7 +291,9 @@ impl BoxLayout {
         // exactly that: a single `Fixed` item with `min = 20` and no `max` in a 100px parent
         // was filled to 100. A `Fixed` item may still be *scaled down* in the shortfall pass
         // below, which is why only this pass skips it.
-        let is_fixed = |index: usize| self.items[index].policy == SizePolicy::Fixed;
+        let is_fixed = |index: usize| {
+            matches!(self.items[index].policy, SizePolicy::Fixed | SizePolicy::Maximum)
+        };
 
         // `min` is a hard floor only while the parent can pay for every floor. When the
         // floors alone exceed `primary`, they are scaled down proportionally: every item
@@ -350,21 +417,29 @@ impl BoxLayout {
                 total_assigned -= to_shrink - remainder;
             }
             if total_assigned > primary_u64 {
-                // Every item is now at its own minimum and the total is still too large — which can
-                // only happen if a `max` below the summed minima pinned an item above its minimum.
-                // Reducing from the largest allocation restores invariant 1 without an unbounded
-                // loop; the `min` floor is the only thing that had to yield here already.
-                while total_assigned > primary_u64 {
-                    let Some((largest_index, _)) = assigned
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, value)| **value > 0)
-                        .max_by_key(|(_, value)| **value)
-                    else {
-                        break;
-                    };
-                    assigned[largest_index] = assigned[largest_index].saturating_sub(1);
-                    total_assigned = total_assigned.saturating_sub(1);
+                // Every item is now at its own minimum and the total is still too large.
+                // Rather than shaving one pixel at a time until the budget is met — which
+                // is O(excess) — compute each item's proportional removal in one batch and
+                // hand the rounding remainder to the leading items.
+                let excess = (total_assigned - primary_u64) as u32;
+                let sum: u32 = assigned.iter().copied().sum();
+                if excess > 0 && sum > 0 {
+                    let mut removed = 0u32;
+                    for value in &mut assigned {
+                        let take = ((excess as u64) * (*value as u64) / sum as u64) as u32;
+                        let take = take.min(*value);
+                        *value -= take;
+                        removed = removed.saturating_add(take);
+                    }
+                    let mut left = excess.saturating_sub(removed);
+                    for value in &mut assigned {
+                        if left == 0 {
+                            break;
+                        }
+                        let take = (*value).min(left);
+                        *value -= take;
+                        left -= take;
+                    }
                 }
             }
         }
@@ -374,6 +449,48 @@ impl BoxLayout {
 impl Layout for BoxLayout {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    /// The box's minimum is the sum of the items' floors plus the gaps and margins.
+    fn minimum_size(&self) -> Size {
+        let (left, top, right, bottom) = self.scaled_insets(1.0);
+        let gaps = self.spacing.saturating_mul(self.items.len().saturating_sub(1) as u32);
+        let mut main: u32 = 0;
+        let mut cross: u32 = 0;
+        for item in &self.items {
+            let item_cross = item.cross_size.unwrap_or(item.constraints.min);
+            main = main.saturating_add(item.constraints.min);
+            cross = cross.max(item_cross);
+        }
+        main = main.saturating_add(gaps);
+        match self.orientation {
+            Orientation::Horizontal => Size::new(
+                main.saturating_add(left).saturating_add(right),
+                cross.saturating_add(top).saturating_add(bottom),
+            ),
+            Orientation::Vertical => Size::new(
+                cross.saturating_add(left).saturating_add(right),
+                main.saturating_add(top).saturating_add(bottom),
+            ),
+        }
+    }
+
+    fn expanding_directions(&self) -> (bool, bool) {
+        let (main_expands, cross_expands) = self.items.iter().fold((false, false), |acc, item| {
+            (
+                acc.0
+                    || matches!(
+                        item.policy,
+                        SizePolicy::Expanding | SizePolicy::MinimumExpanding | SizePolicy::Ignored
+                    ),
+                acc.1
+                    || (item.cross_size.is_none() && matches!(item.policy, SizePolicy::Expanding)),
+            )
+        });
+        match self.orientation {
+            Orientation::Horizontal => (main_expands, cross_expands),
+            Orientation::Vertical => (cross_expands, main_expands),
+        }
     }
 
     fn update_with_context(
@@ -968,5 +1085,33 @@ mod tests {
         let mut placed = Vec::new();
         layout.arrange(Rect::new(0, 0, 100, 100), &children, &mut |_, rect| placed.push(rect));
         assert_eq!(placed[0], Rect::new(0, 0, 100, 100));
+    }
+
+    #[test]
+    fn inserting_and_reorienting_keeps_the_same_items() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(3, 1);
+        assert!(layout.insert_widget_at(1, 2, 1));
+        assert!(layout.insert_stretch(3, 0));
+        assert!(!layout.insert_widget_at(99, 4, 1));
+        assert_eq!(layout.child_ids(), vec![1, 2, 3]);
+
+        layout.set_orientation(Orientation::Vertical);
+        assert_eq!(layout.orientation(), Orientation::Vertical);
+    }
+
+    /// The four added policies are all accepted, and the maximum policy refuses extra room.
+    #[test]
+    fn the_extended_size_policies_are_honoured() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        layout.set_constraints(1, LayoutConstraints::new(10, Some(10)));
+        layout.set_size_policy(1, SizePolicy::Maximum);
+        layout.set_size_policy(2, SizePolicy::MinimumExpanding);
+        let placed = placed(&layout, Rect::new(0, 0, 100, 20));
+        assert_eq!(rect_of(&placed, 1).width, 10);
+        assert_eq!(rect_of(&placed, 2).width, 90);
     }
 }

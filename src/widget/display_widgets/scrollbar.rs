@@ -40,6 +40,34 @@ const SCROLLBAR_IDLE_DELAY_MS: u32 = 600;
 /// deliberately disappears when idle; see [`ScrollBar::idle_opacity`].
 const SCROLLBAR_IDLE_OPACITY: f32 = 0.35;
 
+/// How long an arrow cell must be held before it starts auto-repeating, in milliseconds.
+///
+/// The first step fires on the press itself; this delay is what separates "one click" from
+/// "keep going". It is long enough that a deliberate single step is not doubled.
+const SCROLLBAR_ARROW_REPEAT_DELAY_MS: u32 = 400;
+
+/// How often a held arrow cell repeats its line step, in milliseconds.
+const SCROLLBAR_ARROW_REPEAT_INTERVAL_MS: u32 = 60;
+
+/// Per-millisecond decay applied to a released thumb's velocity while it glides.
+///
+/// A fraction rather than a fixed duration, so the movement "continues briefly and settles"
+/// regardless of the frame pacing: at 16 ms a frame the carried velocity is roughly halved
+/// every five frames.
+const SCROLLBAR_INERTIA_DECAY_PER_MS: f32 = 0.006;
+
+/// The velocity, in pixels per millisecond, below which a glide is considered finished.
+const SCROLLBAR_INERTIA_STOP_PX_PER_MS: f32 = 0.02;
+
+/// A held arrow cell and how long it has been held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ArrowRepeat {
+    action: ScrollBarAction,
+    held_ms: u32,
+    /// How many repeats have already been performed since the press.
+    fired: u32,
+}
+
 /// How a scroll bar is drawn.
 ///
 /// # Why two shapes on one control
@@ -97,7 +125,27 @@ pub struct ScrollBar {
     /// Emitted when the thumb is released. Emitted even if the pointer left the
     /// widget before releasing, since the widget tracks its own press state.
     pub slider_released: GenericSignal,
+    /// Whether a pointer button is currently held on this bar.
     mouse_pressed: bool,
+    /// Whether a press on the thumb may turn into a drag.
+    ///
+    /// A press on the trough pages instead of grabbing, so a following pointer move must not
+    /// drag the thumb; this flag is what distinguishes the two gestures.
+    dragging_thumb: bool,
+    /// The pointer's pixel position at the last press/move, for sampling drag velocity.
+    drag_last_pixel: f32,
+    /// Pixels the pointer travelled since the last tick, consumed by the velocity estimate.
+    drag_pending_px: f32,
+    /// The thumb's recent velocity, in pixels per millisecond, while it is being dragged.
+    drag_velocity_px_per_ms: f32,
+    /// Whether released-thumb inertia is enabled.
+    inertia: bool,
+    /// The velocity a released thumb is still carrying, in pixels per millisecond.
+    inertia_velocity: Option<f32>,
+    /// Fractional value left over between inertia frames, so a slow glide still advances.
+    inertia_remainder: f32,
+    /// The arrow cell currently held, if any; it repeats a line step while it is.
+    repeat: Option<ArrowRepeat>,
     /// Milliseconds since the last interaction that should keep the bar fully opaque.
     ///
     /// # Why the bar needs an idle clock at all
@@ -134,6 +182,14 @@ impl ScrollBar {
             slider_pressed: GenericSignal::new(),
             slider_released: GenericSignal::new(),
             mouse_pressed: false,
+            dragging_thumb: false,
+            drag_last_pixel: 0.0,
+            drag_pending_px: 0.0,
+            drag_velocity_px_per_ms: 0.0,
+            inertia: false,
+            inertia_velocity: None,
+            inertia_remainder: 0.0,
+            repeat: None,
             idle_ms: 0,
             opacity: PropertyDriver::at(1.0, MotionSlot::Normal),
         }
@@ -224,6 +280,31 @@ impl ScrollBar {
         }
         self.page_step = step;
         self.base.request_redraw();
+    }
+
+    /// Whether a released thumb keeps gliding before it settles.
+    pub fn inertia(&self) -> bool {
+        self.inertia
+    }
+
+    /// Enables or disables released-thumb inertia.
+    ///
+    /// When enabled, a thumb that is dragged and then released carries its velocity briefly
+    /// and settles under a decaying glide; [`ScrollBar::tick`] advances it and
+    /// [`ScrollBar::is_animating`] reports the frames it owes. The default is `false`, which
+    /// is the historical behaviour: the thumb stops exactly where the pointer released it.
+    ///
+    /// Disabling inertia stops a glide in progress at its current value rather than rewinding
+    /// it, so the picture after the setter is the picture that was on screen.
+    pub fn set_inertia(&mut self, on: bool) {
+        if self.inertia == on {
+            return;
+        }
+        self.inertia = on;
+        if !on {
+            self.inertia_velocity = None;
+            self.inertia_remainder = 0.0;
+        }
     }
     /// Returns orientation.
     pub fn orientation(&self) -> Orientation {
@@ -382,6 +463,58 @@ impl ScrollBar {
             }
             Orientation::Vertical => {
                 (rect.width as f32).min((rect.height as f32) / 3.0).clamp(4.0, 16.0)
+            }
+        }
+    }
+
+    /// The line action an arrow cell at `pos` performs, or `None` when the point is not on
+    /// an arrow cell.
+    ///
+    /// The cells are the two ends of the drawn band. Which end is "toward the minimum"
+    /// follows the written direction for a horizontal trough — in a right-to-left interface
+    /// the minimum sits at the right edge, so the right cell steps down — and a vertical
+    /// trough's top cell always steps toward the minimum.
+    fn arrow_action_at(&self, pos: Point) -> Option<ScrollBarAction> {
+        if self.style == ScrollBarStyle::Overlay {
+            return None;
+        }
+        let cell = self.arrow_cell() as i32;
+        if cell <= 0 {
+            return None;
+        }
+        let band = self.track_band();
+        if !band.contains(pos) {
+            return None;
+        }
+        match self.orientation {
+            Orientation::Horizontal => {
+                let min_at_left = self.direction == crate::core::TextDirection::LeftToRight;
+                let at_left = pos.x < band.x + cell;
+                let at_right = pos.x >= band.x + band.width as i32 - cell;
+                if at_left {
+                    Some(if min_at_left {
+                        ScrollBarAction::LineUp
+                    } else {
+                        ScrollBarAction::LineDown
+                    })
+                } else if at_right {
+                    Some(if min_at_left {
+                        ScrollBarAction::LineDown
+                    } else {
+                        ScrollBarAction::LineUp
+                    })
+                } else {
+                    None
+                }
+            }
+            Orientation::Vertical => {
+                if pos.y < band.y + cell {
+                    Some(ScrollBarAction::LineUp)
+                } else if pos.y >= band.y + band.height as i32 - cell {
+                    Some(ScrollBarAction::LineDown)
+                } else {
+                    None
+                }
             }
         }
     }
@@ -591,9 +724,10 @@ impl ScrollBar {
         self.opacity.set_target(1.0);
     }
 
-    /// Advances the idle clock and the opacity fade by `delta_ms`.
+    /// Advances the idle clock, the held-arrow repeat, released-thumb inertia and the
+    /// opacity fade by `delta_ms`.
     ///
-    /// # The two-phase shape, and why the delta is *split*
+    /// # The two-phase fade, and why the delta is *split*
     ///
     /// The opacity holds at `1.0` for [`SCROLLBAR_IDLE_DELAY_MS`], and only then begins to fade
     /// toward [`SCROLLBAR_IDLE_OPACITY`]. That ordering is what makes the bar feel *responsive*
@@ -607,17 +741,19 @@ impl ScrollBar {
     /// threshold belongs to the fade. A long frame therefore still arrives at the right place, and
     /// a frame that lands exactly on the boundary leaves the bar untouched.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        // The aim is derived from the idle clock on **every** frame rather than only on the frame
-        // that crosses the threshold. Two failure modes made that necessary, and they point the
-        // same way: a frame landing *exactly* on the boundary never crossed it (so the bar held
-        // at full opacity forever), and a `touch_activity` that woke the bar was immediately
-        // over-written by a crossing check (so the wake never took). One derivation, read every
-        // frame, has neither. `set_target` is idempotent, so re-stating it costs nothing.
-        //
-        // The delta is **split** at the threshold rather than handed whole to the fade: the delay
-        // is a duration the fade has not started for, so a frame that crosses the boundary gives
-        // the fade only the part past it. Handing over the whole delta made a single `tick(600)`
-        // drop straight to the floor, and gave the hold nothing to hold.
+        // Held arrows and released-thumb inertia are advances of their own; both are additive
+        // with the fade rather than alternatives to it, because a gliding bar can also be
+        // fading.
+        let repeated = self.advance_auto_repeat(delta_ms);
+        let glided = self.advance_inertia(delta_ms);
+        // Sample the drag velocity from the pointer movement accumulated since the previous
+        // frame. A tick with no pointer movement contributes a zero sample, which pulls the
+        // estimate toward rest — exactly what a paused pointer means.
+        if self.mouse_pressed && self.dragging_thumb {
+            let sample = self.drag_pending_px / delta_ms.max(1) as f32;
+            self.drag_velocity_px_per_ms = self.drag_velocity_px_per_ms * 0.6 + sample * 0.4;
+            self.drag_pending_px = 0.0;
+        }
         let fade_delta = if self.idle_ms < SCROLLBAR_IDLE_DELAY_MS {
             let until_idle = SCROLLBAR_IDLE_DELAY_MS - self.idle_ms;
             self.idle_ms = self.idle_ms.saturating_add(delta_ms);
@@ -636,14 +772,90 @@ impl ScrollBar {
             delta_ms
         };
         if fade_delta == 0 {
-            return false;
+            return repeated || glided;
         }
-        self.opacity.tick(fade_delta)
+        let faded = self.opacity.tick(fade_delta);
+        repeated || glided || faded
     }
 
-    /// Whether the bar is between two opacities -- answers only, never advances.
+    /// Repeats the held arrow's line step once the hold has lasted long enough.
+    ///
+    /// The press itself already performed the first step, so this only fires the repeats. A
+    /// very long frame is capped at a bounded number of repeats rather than looping for as
+    /// many intervals as the delta contains, which would stall the frame that delivered it.
+    fn advance_auto_repeat(&mut self, delta_ms: u32) -> bool {
+        let (action, count) = {
+            let Some(state) = self.repeat.as_mut() else {
+                return false;
+            };
+            state.held_ms = state.held_ms.saturating_add(delta_ms);
+            if state.held_ms < SCROLLBAR_ARROW_REPEAT_DELAY_MS {
+                return false;
+            }
+            // Repeats due since the press: one when the delay elapses, then one per interval.
+            // Counting the *total* due and subtracting what already fired keeps the cadence
+            // independent of how the frames happen to land.
+            let since_delay = state.held_ms - SCROLLBAR_ARROW_REPEAT_DELAY_MS;
+            let due = 1 + since_delay / SCROLLBAR_ARROW_REPEAT_INTERVAL_MS;
+            let count = due.saturating_sub(state.fired).min(64);
+            state.fired = due;
+            (state.action, count)
+        };
+        if count == 0 {
+            return false;
+        }
+        for _ in 0..count {
+            self.trigger_action(action);
+        }
+        true
+    }
+
+    /// Carries a released thumb's velocity forward and lets it settle.
+    ///
+    /// The glide moves in whole value units and keeps the fractional remainder between
+    /// frames, so a slow release still advances rather than rounding to nothing forever.
+    /// Velocity decays geometrically and is abandoned below
+    /// [`SCROLLBAR_INERTIA_STOP_PX_PER_MS`] or at either bound.
+    fn advance_inertia(&mut self, delta_ms: u32) -> bool {
+        let Some(mut velocity) = self.inertia_velocity else {
+            return false;
+        };
+        let range = (self.maximum as i64 - self.minimum as i64) as f32;
+        let (_, travel) = self.travel_band();
+        if range <= 0.0 || travel <= 0.0 {
+            self.inertia_velocity = None;
+            self.inertia_remainder = 0.0;
+            return false;
+        }
+        // Pixels to values, with the horizontal written direction's sign applied: a rightward
+        // flick raises the value left-to-right and lowers it right-to-left.
+        let mut values_per_px = range / travel;
+        if self.orientation == Orientation::Horizontal
+            && self.direction == crate::core::TextDirection::RightToLeft
+        {
+            values_per_px = -values_per_px;
+        }
+        let step = velocity * delta_ms as f32 * values_per_px + self.inertia_remainder;
+        let whole = step.trunc();
+        self.inertia_remainder = step - whole;
+        if whole != 0.0 {
+            self.set_value(self.value.saturating_add(whole as i32));
+        }
+        velocity *= (1.0 - SCROLLBAR_INERTIA_DECAY_PER_MS * delta_ms as f32).max(0.0);
+        let at_bound = self.value <= self.minimum || self.value >= self.maximum;
+        if velocity.abs() < SCROLLBAR_INERTIA_STOP_PX_PER_MS || at_bound {
+            self.inertia_velocity = None;
+            self.inertia_remainder = 0.0;
+            return false;
+        }
+        self.inertia_velocity = Some(velocity);
+        true
+    }
+
+    /// Whether the bar is between two opacities, gliding, or repeating a held arrow -- answers
+    /// only, never advances.
     pub fn is_animating(&self) -> bool {
-        self.opacity.is_moving()
+        self.opacity.is_moving() || self.inertia_velocity.is_some() || self.repeat.is_some()
     }
 
     /// Submits one interaction frame as damage bounded by the painted box plus the
@@ -901,30 +1113,89 @@ impl EventHandler for ScrollBar {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.mouse_pressed = true;
                 self.slider_pressed.emit();
+                // An arrow cell is a line step, and holding it repeats. The press itself is
+                // the first step, so a single click is exactly one line.
+                if let Some(action) = self.arrow_action_at(*pos) {
+                    self.repeat = Some(ArrowRepeat { action, held_ms: 0, fired: 0 });
+                    self.dragging_thumb = false;
+                    self.trigger_action(action);
+                    self.request_frame_repaint(None);
+                    return;
+                }
+                self.repeat = None;
                 let pixel = match self.orientation {
                     Orientation::Horizontal => pos.x as f32,
                     Orientation::Vertical => pos.y as f32,
                 };
-                let value = self.pixel_pos_to_value(pixel);
-                self.set_value(value);
+                self.drag_last_pixel = pixel;
+                self.drag_pending_px = 0.0;
+                self.drag_velocity_px_per_ms = 0.0;
+                self.inertia_velocity = None;
+                self.inertia_remainder = 0.0;
+                self.dragging_thumb = self.thumb_rect().contains(*pos);
+                if self.dragging_thumb {
+                    // Grabbing the thumb selects the value under the pointer, which is the
+                    // historical drag behaviour and stays the exact inverse of the drawing.
+                    let value = self.pixel_pos_to_value(pixel);
+                    self.set_value(value);
+                } else {
+                    // A trough click is a **page step in the click's direction**, not a jump to
+                    // the clicked position: one visible page per click is the gesture every
+                    // scrollbar publishes, and a jump made a mis-aimed click lose the reading
+                    // position the user was holding.
+                    let clicked = self.pixel_pos_to_value(pixel);
+                    let action = if clicked < self.value {
+                        Some(ScrollBarAction::PageUp)
+                    } else if clicked > self.value {
+                        Some(ScrollBarAction::PageDown)
+                    } else {
+                        None
+                    };
+                    if let Some(action) = action {
+                        self.trigger_action(action);
+                    }
+                }
                 self.request_frame_repaint(None);
             }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.mouse_pressed = false;
+                self.repeat = None;
                 self.slider_released.emit();
+                // A released thumb may keep gliding. A release with no sampled movement falls
+                // back to the movement accumulated since the last frame so a fast flick that
+                // happened entirely between two ticks is still carried.
+                if self.inertia && self.dragging_thumb {
+                    let mut velocity = self.drag_velocity_px_per_ms;
+                    if velocity == 0.0 && self.drag_pending_px != 0.0 {
+                        velocity = self.drag_pending_px / 16.0;
+                    }
+                    if velocity.abs() >= SCROLLBAR_INERTIA_STOP_PX_PER_MS {
+                        self.inertia_velocity = Some(velocity);
+                        self.inertia_remainder = 0.0;
+                    }
+                }
+                self.dragging_thumb = false;
+                self.drag_pending_px = 0.0;
+                self.drag_velocity_px_per_ms = 0.0;
                 self.request_frame_repaint(None);
             }
-            Event::MouseMove { pos } if self.mouse_pressed => {
+            Event::MouseMove { pos } if self.mouse_pressed && self.dragging_thumb => {
                 let pixel = match self.orientation {
                     Orientation::Horizontal => pos.x as f32,
                     Orientation::Vertical => pos.y as f32,
                 };
+                // Accumulated here and sampled in `tick`, which is the only place a time base
+                // exists: a pointer move carries no timestamp.
+                self.drag_pending_px += pixel - self.drag_last_pixel;
+                self.drag_last_pixel = pixel;
                 let value = self.pixel_pos_to_value(pixel);
                 self.set_value(value);
                 self.slider_moved.emit(value);
                 self.request_frame_repaint(None);
             }
             Event::Wheel { delta, modifiers, .. } => {
+                // This arm predates the surrounding work: a wheel notch already stepped the
+                // value by one line, and it is kept as-is rather than reimplemented.
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
                 if scroll.lines_y != 0 {
                     self.set_value(self.value + scroll.lines_y * self.single_step);
@@ -1967,5 +2238,82 @@ mod tests {
             "Full mode records no damage, so the control repaints whole"
         );
         runtime::unregister(id);
+    }
+
+    /// A trough click moves by exactly one page, in the click's direction.
+    ///
+    /// The old handler mapped the click's pixel straight to a value, so a click in the empty
+    /// trough teleported the thumb onto the pointer. A scrollbar pages instead: the reading
+    /// position the user was holding is preserved and moves by one visible page.
+    #[test]
+    fn a_trough_click_pages_instead_of_jumping() {
+        let mut bar = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        bar.set_range(0, 100);
+        bar.set_value(50);
+        assert_eq!(bar.page_step(), 10);
+
+        // A point to the right of the thumb (and clear of the 16 px arrow cell).
+        bar.handle_event(&Event::MousePress { pos: Point::new(160, 8), button: 1, modifiers: 0 });
+        assert_eq!(bar.value(), 60, "a trough click beyond the thumb pages down");
+
+        // The page step, not the distance to the pointer, is what moved it.
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(160, 8), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(30, 8), button: 1, modifiers: 0 });
+        assert_eq!(bar.value(), 50, "a trough click before the thumb pages up");
+    }
+
+    /// An arrow cell is a line step per click, and holding it repeats while it is held.
+    #[test]
+    fn an_arrow_cell_steps_a_line_and_repeats_while_held() {
+        let mut bar = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        bar.set_range(0, 100);
+        bar.set_value(50);
+
+        // The left cell of a left-to-right bar steps toward the minimum.
+        bar.handle_event(&Event::MousePress { pos: Point::new(8, 8), button: 1, modifiers: 0 });
+        assert_eq!(bar.value(), 49, "the press itself is one line step");
+        assert!(bar.is_animating(), "a held arrow owes frames for its repeats");
+
+        assert!(bar.tick(SCROLLBAR_ARROW_REPEAT_DELAY_MS), "holding repeats");
+        assert_eq!(bar.value(), 48, "the first repeat fires when the delay elapses");
+        assert!(bar.tick(SCROLLBAR_ARROW_REPEAT_INTERVAL_MS * 3), "the repeat continues");
+        assert_eq!(bar.value(), 45, "three intervals are three more steps");
+
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(8, 8), button: 1 });
+        assert!(!bar.is_animating(), "a released arrow stops repeating");
+        bar.tick(SCROLLBAR_ARROW_REPEAT_INTERVAL_MS * 3);
+        assert_eq!(bar.value(), 45, "and no step lands after the release");
+    }
+
+    /// A released thumb keeps gliding when inertia is on, and settles.
+    #[test]
+    fn a_released_thumb_glides_briefly_with_inertia() {
+        let mut bar = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        bar.set_range(0, 1000);
+        bar.set_value(100);
+        assert!(!bar.inertia(), "inertia is opt-in");
+        bar.set_inertia(true);
+        assert!(bar.inertia());
+
+        let thumb = bar.thumb_rect();
+        let grab = Point::new(thumb.x + thumb.width as i32 / 2, 8);
+        bar.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
+
+        // Two moving frames build a velocity estimate (a pointer move carries no timestamp).
+        bar.handle_event(&Event::MouseMove { pos: Point::new(grab.x + 10, 8) });
+        bar.tick(16);
+        bar.handle_event(&Event::MouseMove { pos: Point::new(grab.x + 20, 8) });
+        bar.tick(16);
+
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(grab.x + 20, 8), button: 1 });
+        let released_at = bar.value();
+        assert!(bar.is_animating(), "a flicked thumb owes glide frames");
+
+        assert!(bar.tick(16), "the glide advances past the release point");
+        assert!(bar.value() > released_at, "and keeps moving in the drag's direction");
+
+        while bar.tick(16) {}
+        assert!(!bar.is_animating(), "the glide settles");
+        assert!(bar.value() <= bar.maximum());
     }
 }

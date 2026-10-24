@@ -6,7 +6,7 @@ Status: implemented (macOS native / Windows native / GTK-native; fallback elsewh
 
 `render_to_svg()` was the only way a `Box<dyn Widget>` could reach pixels. The
 native platform layer had **no concept of a custom-painted widget**: its 41
-`create_*` methods all map onto real OS controls (`NSButton`, `HWND` + `BUTTON`,
+`create_*` methods all map onto real OS controls (`the reference button`, `HWND` + `BUTTON`,
 `gtk::Button`, …). Consequently every widget that paints itself through
 `Draw::draw()` — `CodeEditor`, `ColorPicker`, `GanttWidget`, `TerminalView`,
 `Chip`, `Snackbar`, `GridWidget`, … — was invisible inside a native window.
@@ -61,7 +61,7 @@ mechanism. The caller-facing contract is uniform.
 * `drawRect:` is implemented as an `extern "C" fn(&Object, Sel, NSRect)`. It
   looks the widget up by the `ObjectId` stored on the instance, renders one
   frame with `SoftwarePaintBackend`, and blits through CoreGraphics.
-* **`isFlipped` stays `NO`.** Reporting `YES` made AppKit hand `drawRect:` a
+* **`isFlipped` stays `NO`.** Reporting `YES` made the platform UI framework hand `drawRect:` a
   rect of `(0, -28, 900, 648)` — the title-bar offset — and the whole canvas
   rendered above the visible region, so the window looked blank while the logs
   said the blit succeeded. Native orientation is correct because

@@ -13,10 +13,42 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// The default command-history bound.
+///
+/// A canvas is a retained display list, so an unbounded list is a memory leak in a control that
+/// draws every frame. Ten thousand commands is several full screens of shapes; a caller that
+/// legitimately needs more can raise the bound with [`MiniCanvas::set_max_commands`].
+const DEFAULT_MAX_COMMANDS: usize = 10_000;
+
 /// Simplified canvas for drawing basic shapes.
 pub struct MiniCanvas {
     base: BaseWidget,
     commands: Vec<RenderCommand>,
+    /// The largest number of commands retained; the oldest is dropped when a push would exceed it.
+    max_commands: usize,
+    /// Whether the retained commands have changed since the last captured frame.
+    dirty: bool,
+    /// Increases whenever the retained commands or their meaning change.
+    change_counter: u64,
+    /// Whether a frame has been replayed and its presented pixels still need capturing.
+    ///
+    /// A paint backend presents a frame on `end_frame`, so the pixels of the frame the canvas
+    /// just replayed are not readable until the *next* paint begins. The capture is therefore
+    /// deferred by one paint rather than reading a half-built back buffer.
+    capture_pending: bool,
+    /// The rectangle the pending capture belongs to, so a moved canvas does not capture the
+    /// wrong region.
+    pending_rect: Rect,
+    /// Whether the command list should be dropped as soon as a capture succeeds.
+    flush_pending: bool,
+    /// The last painted frame region, `cache_width * cache_height * 4` RGBA bytes.
+    cache: Vec<u8>,
+    cache_width: u32,
+    cache_height: u32,
+    /// The `change_counter` value the cached pixels correspond to.
+    cache_counter: u64,
+    /// Whether the command list is dropped after a frame has been replayed and captured.
+    auto_flush: bool,
     /// Emitted when a click-like interaction (press then release) is detected.
     pub clicked: GenericSignal,
     /// Emitted when the mouse button is pressed over the canvas.
@@ -31,35 +63,152 @@ impl MiniCanvas {
         Self {
             base: BaseWidget::new(WidgetKind::MiniCanvas, rect, "MiniCanvas"),
             commands: Vec::new(),
+            max_commands: DEFAULT_MAX_COMMANDS,
+            dirty: false,
+            change_counter: 0,
+            capture_pending: false,
+            pending_rect: Rect::new(0, 0, 0, 0),
+            flush_pending: false,
+            cache: Vec::new(),
+            cache_width: 0,
+            cache_height: 0,
+            // A sentinel that cannot equal a real counter, so an empty cache is never mistaken
+            // for a current one.
+            cache_counter: u64::MAX,
+            auto_flush: false,
             clicked: GenericSignal::new(),
             mouse_pressed: GenericSignal::new(),
             mouse_released: GenericSignal::new(),
         }
     }
 
+    /// Appends one command, dropping the oldest when the bounded history is full.
+    ///
+    /// # The bound is a history, not a silent loss
+    ///
+    /// The default bound is [`DEFAULT_MAX_COMMANDS`] entries. When a push would exceed
+    /// [`MiniCanvas::max_commands`], the **oldest** command leaves the list first, so the most
+    /// recently submitted shapes are the ones that survive. This is the documented contract of a
+    /// bounded history: a caller that relies on an ancient command still being present must either
+    /// raise the bound or submit it again. Commands are never dropped without that rule applying.
+    fn push_command(&mut self, command: RenderCommand) {
+        if self.commands.len() >= self.max_commands {
+            self.commands.remove(0);
+        }
+        self.commands.push(command);
+        self.change_counter = self.change_counter.wrapping_add(1);
+        self.dirty = true;
+        // The previously presented frame no longer describes this state, and a pending flush
+        // would drop the new command before it is ever painted.
+        self.capture_pending = false;
+        self.flush_pending = false;
+        self.base.request_redraw();
+    }
+
     /// Add a fill rectangle command.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
-        self.commands.push(RenderCommand::FillRect { rect, color });
+        self.push_command(RenderCommand::FillRect { rect, color });
     }
 
     /// Add a draw rectangle outline command.
     pub fn draw_rect(&mut self, rect: Rect, color: Color) {
-        self.commands.push(RenderCommand::DrawRect { rect, color });
+        self.push_command(RenderCommand::DrawRect { rect, color });
     }
 
     /// Add a draw line command.
     pub fn draw_line(&mut self, from: Point, to: Point, color: Color) {
-        self.commands.push(RenderCommand::DrawLine { from, to, color });
+        self.push_command(RenderCommand::DrawLine { from, to, color });
     }
 
     /// Add a fill circle command.
     pub fn fill_circle(&mut self, center: Point, radius: u32, color: Color) {
-        self.commands.push(RenderCommand::FillCircle { center, radius, color });
+        self.push_command(RenderCommand::FillCircle { center, radius, color });
+    }
+
+    /// The largest number of commands the canvas retains. Defaults to [`DEFAULT_MAX_COMMANDS`].
+    pub fn max_commands(&self) -> usize {
+        self.max_commands
+    }
+
+    /// Sets the command-history bound.
+    ///
+    /// A value below `1` is raised to `1`, because a canvas that retains nothing could not draw a
+    /// shape at all. Shrinking the bound below the current length drops the oldest commands
+    /// immediately, so the list is never left larger than its own declared bound. Growing the
+    /// bound changes nothing about the commands already retained.
+    pub fn set_max_commands(&mut self, max: usize) {
+        let max = max.max(1);
+        if self.max_commands == max {
+            return;
+        }
+        self.max_commands = max;
+        if self.commands.len() > max {
+            let excess = self.commands.len() - max;
+            self.commands.drain(0..excess);
+            self.change_counter = self.change_counter.wrapping_add(1);
+            self.dirty = true;
+            self.capture_pending = false;
+            self.flush_pending = false;
+            self.base.request_redraw();
+        }
     }
 
     /// Clear all commands.
+    ///
+    /// This is a change to the picture, so the cached frame is invalidated and the next paint
+    /// replays the (now empty) list.
     pub fn clear(&mut self) {
+        if self.commands.is_empty() && self.cache.is_empty() {
+            return;
+        }
         self.commands.clear();
+        self.change_counter = self.change_counter.wrapping_add(1);
+        self.dirty = true;
+        self.capture_pending = false;
+        self.flush_pending = false;
+        self.base.request_redraw();
+    }
+
+    /// Drops the command history without changing the painted picture.
+    ///
+    /// Called after a frame has replayed the list, or by a caller that has finished submitting a
+    /// scene: the pixels already captured in the canvas's frame cache stay on screen, while the
+    /// commands themselves no longer occupy memory or replay time. When no frame has been captured
+    /// yet, the flush is deferred to the next paint that can capture the presented frame — a flush
+    /// is never allowed to lose the picture.
+    pub fn flush(&mut self) {
+        if self.commands.is_empty() {
+            return;
+        }
+        let cache_current = !self.dirty
+            && !self.cache.is_empty()
+            && self.cache_counter == self.change_counter
+            && !self.capture_pending;
+        if cache_current {
+            self.commands.clear();
+            self.flush_pending = false;
+        } else {
+            self.flush_pending = true;
+        }
+    }
+
+    /// Whether the command list is dropped automatically after a painted, captured frame.
+    pub fn auto_flush(&self) -> bool {
+        self.auto_flush
+    }
+
+    /// Enables or disables automatic flushing after a captured frame.
+    ///
+    /// The default is `false`, which keeps the historical behaviour: the command list is retained
+    /// and replayed every frame. With the option on, a frame that both replays the list and captures
+    /// the resulting pixels drops the list afterwards, so the next paint blits the cache instead of
+    /// replaying. A backend that cannot supply pixels never triggers the flush, because dropping the
+    /// list there would lose the picture.
+    pub fn set_auto_flush(&mut self, on: bool) {
+        if self.auto_flush == on {
+            return;
+        }
+        self.auto_flush = on;
     }
 
     /// Clear commands and add a fill rect for the background.
@@ -67,11 +216,99 @@ impl MiniCanvas {
         self.commands.clear();
         let rect = self.base.geometry();
         self.commands.push(RenderCommand::FillRect { rect, color });
+        self.change_counter = self.change_counter.wrapping_add(1);
+        self.dirty = true;
+        self.capture_pending = false;
+        self.flush_pending = false;
+        self.base.request_redraw();
     }
 
     /// Get stored commands.
     pub fn commands(&self) -> &[RenderCommand] {
         &self.commands
+    }
+
+    /// Captures the widget's region from the last **presented** frame into the cache.
+    ///
+    /// The capture is the frame as presented, so it is only used when the region is wholly opaque:
+    /// an opaque sheet fully describes its own pixels and nothing behind it shows through. A host
+    /// that repaints isolated subtrees should use its own damage tracking rather than relying on
+    /// this cache for translucency.
+    ///
+    /// A paint backend presents on `end_frame`, so this is called at the start of the next paint,
+    /// when the previous frame is readable. Returns `false` when the backend cannot supply pixels,
+    /// when the device scale is not 1:1 (the cache stores physical bytes and a blit is not
+    /// resampled), when the region is not wholly opaque (a translucent sheet does not describe the
+    /// window behind it), or when the widget is not wholly inside the surface. In every failure
+    /// case the cache is emptied so a stale frame is never blitted in place of a real one.
+    fn capture_cache(&mut self, context: &mut RenderContext<'_>, rect: Rect) -> bool {
+        self.cache.clear();
+        if (context.dpi_scale() - 1.0).abs() > f32::EPSILON {
+            return false;
+        }
+        let surface = context.size();
+        let (offset_x, offset_y) = context.offset();
+        let left = rect.x + offset_x;
+        let top = rect.y + offset_y;
+        if left < 0 || top < 0 {
+            return false;
+        }
+        let left = left as u32;
+        let top = top as u32;
+        if left.saturating_add(rect.width) > surface.width
+            || top.saturating_add(rect.height) > surface.height
+        {
+            return false;
+        }
+        let frame = context.backend().frame_rgba();
+        let stride = surface.width as usize * 4;
+        let expected = stride * surface.height as usize;
+        if frame.len() < expected || rect.width == 0 || rect.height == 0 {
+            return false;
+        }
+        let row_bytes = rect.width as usize * 4;
+        self.cache.reserve(rect.height as usize * row_bytes);
+        for row in 0..rect.height {
+            let start = (top + row) as usize * stride + left as usize * 4;
+            let pixels = &frame[start..start + row_bytes];
+            // An opaque sheet covers every pixel it paints, so a fully opaque region is the proof
+            // that this really is a presented widget frame rather than an untouched buffer. A
+            // fresh surface therefore refuses the capture, and the command list stays authoritative.
+            if pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 255) {
+                self.cache.clear();
+                return false;
+            }
+            self.cache.extend_from_slice(pixels);
+        }
+        self.cache_width = rect.width;
+        self.cache_height = rect.height;
+        self.cache_counter = self.change_counter;
+        self.dirty = false;
+        true
+    }
+
+    /// Captures the pending frame, then retires the command list if a flush was requested.
+    ///
+    /// Nothing happens until a frame has been replayed (`capture_pending`) and the canvas still
+    /// occupies the rectangle that frame was painted into. A failure leaves the pending state in
+    /// place so the next paint retries — a recording backend that supplies no pixels simply keeps
+    /// replaying the commands, which is the historical behaviour.
+    fn try_capture_pending(&mut self, context: &mut RenderContext<'_>, rect: Rect) {
+        if !self.capture_pending {
+            return;
+        }
+        if self.pending_rect != rect {
+            // The canvas moved, so the previous frame describes a different region.
+            self.capture_pending = false;
+            return;
+        }
+        if self.capture_cache(context, rect) {
+            self.capture_pending = false;
+            if self.flush_pending {
+                self.commands.clear();
+                self.flush_pending = false;
+            }
+        }
     }
 }
 
@@ -197,6 +434,10 @@ impl Draw for MiniCanvas {
             return;
         }
 
+        // Read the previously presented frame before this paint dirties the back buffer. A capture
+        // that was pending from the last replay lands here, and may retire the command list.
+        self.try_capture_pending(context, rect);
+
         // The canvas surface resolves the explicit style first, then the theme's resolved style for
         // this control, and only then a literal. It used to fall back to a fixed white, so a
         // light/dark switch left the sheet unchanged — the rendering census reported the control as
@@ -268,9 +509,38 @@ impl Draw for MiniCanvas {
             .unwrap_or_else(|| sheet.blend(&secondary, 0.45));
         context.draw_rect(rect, border);
 
-        // Replay all stored commands without cloning the display list.
+        // Replay all stored commands without cloning the display list, unless a captured frame
+        // already describes exactly this state. The cache is only trusted when the surface is
+        // opaque (otherwise the pixels under the sheet matter), the device scale is 1:1 (a blit is
+        // not resampled), the size still matches, and no command has changed since capture.
+        let cache_current = sheet.a == 255
+            && !self.dirty
+            && !self.capture_pending
+            && !self.cache.is_empty()
+            && self.cache_counter == self.change_counter
+            && self.cache_width == rect.width
+            && self.cache_height == rect.height;
+        if cache_current {
+            context.draw_image(rect.x, rect.y, self.cache_width, self.cache_height, &self.cache);
+            return;
+        }
         for cmd in &self.commands {
             context.execute_command_ref(cmd);
+        }
+        self.dirty = false;
+        if sheet.a != 255 {
+            // A translucent sheet lets the frame behind the canvas show through, so a cached
+            // blit would freeze that backdrop. Keep the command list authoritative instead.
+            self.capture_pending = false;
+            self.cache.clear();
+            return;
+        }
+        // The pixels of this frame become readable at the next `end_frame`; remember that they
+        // are owed, and retire the list then if a flush was requested (explicitly or by policy).
+        self.capture_pending = true;
+        self.pending_rect = rect;
+        if self.auto_flush {
+            self.flush_pending = true;
         }
     }
 }
@@ -428,5 +698,110 @@ mod tests {
         canvas.handle_event(&Event::MouseRelease { pos: outside, button: 1 });
         assert_eq!(hits.load(Ordering::SeqCst), 0, "a press outside is not an interaction");
         assert_eq!(clicks.load(Ordering::SeqCst), 0);
+    }
+
+    /// Renders the canvas into the given surface and returns the presented pixels.
+    ///
+    /// The same backend is reused across a test's renders on purpose: a paint backend presents a
+    /// frame on `end_frame`, and the canvas captures that presented frame at the start of the next
+    /// paint. Reusing the surface is what makes the cache observable.
+    fn render_canvas(backend: &mut SoftwarePaintBackend, canvas: &mut MiniCanvas) -> Vec<u8> {
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(backend);
+            canvas.draw(&mut context);
+        }
+        backend.end_frame();
+        backend.frame_rgba().to_vec()
+    }
+
+    /// The command list is a bounded history: the oldest command leaves when the cap is reached.
+    #[test]
+    fn mini_canvas_command_cap_drops_the_oldest_command() {
+        let mut canvas = MiniCanvas::new(Rect::new(0, 0, 200, 200));
+        canvas.set_max_commands(2);
+        assert_eq!(canvas.max_commands(), 2, "the setter stores the bound it was given");
+
+        canvas.fill_rect(Rect::new(0, 0, 10, 10), Color::RED);
+        canvas.fill_rect(Rect::new(0, 0, 10, 10), Color::GREEN);
+        canvas.fill_rect(Rect::new(0, 0, 10, 10), Color::BLUE);
+
+        assert_eq!(canvas.commands().len(), 2, "the bound is never exceeded");
+        match &canvas.commands()[0] {
+            RenderCommand::FillRect { color, .. } => {
+                assert_eq!(*color, Color::GREEN, "the oldest command is the one dropped")
+            }
+            other => panic!("expected the second FillRect, got {other:?}"),
+        }
+        match &canvas.commands()[1] {
+            RenderCommand::FillRect { color, .. } => assert_eq!(*color, Color::BLUE),
+            other => panic!("expected the newest FillRect, got {other:?}"),
+        }
+    }
+
+    /// A flush drops the history after a frame has been captured, and the captured pixels remain.
+    #[test]
+    fn mini_canvas_flush_keeps_the_captured_frame() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(200, 200), 1.0);
+        let mut canvas = MiniCanvas::new(Rect::new(0, 0, 200, 200));
+        canvas.fill_rect(Rect::new(20, 20, 100, 60), Color::RED);
+
+        let painted = render_canvas(&mut backend, &mut canvas);
+        assert_eq!(canvas.commands().len(), 1, "the frame replayed the retained command");
+
+        canvas.flush();
+        assert_eq!(
+            canvas.commands().len(),
+            1,
+            "a flush is deferred until the presented frame can be captured"
+        );
+
+        let replayed = render_canvas(&mut backend, &mut canvas);
+        assert!(canvas.commands().is_empty(), "the capture takes the flush with it");
+        assert_eq!(
+            painted, replayed,
+            "a paint after flush must blit the captured frame, not an empty list"
+        );
+
+        let cached = render_canvas(&mut backend, &mut canvas);
+        assert_eq!(painted, cached, "the following paint replays the captured pixels");
+    }
+
+    /// With auto-flush on, a frame's history is dropped once its pixels have been captured.
+    #[test]
+    fn mini_canvas_auto_flush_drops_history_after_a_captured_frame() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(200, 200), 1.0);
+        let mut canvas = MiniCanvas::new(Rect::new(0, 0, 200, 200));
+        canvas.set_auto_flush(true);
+        assert!(canvas.auto_flush());
+        canvas.fill_circle(Point::new(100, 100), 30, Color::GREEN);
+
+        let painted = render_canvas(&mut backend, &mut canvas);
+        assert_eq!(canvas.commands().len(), 1, "the first frame still needs the command");
+
+        let replayed = render_canvas(&mut backend, &mut canvas);
+        assert!(canvas.commands().is_empty(), "the captured frame retires the history");
+        assert_eq!(
+            painted, replayed,
+            "the next paint must reproduce the cached frame byte for byte"
+        );
+
+        let cached = render_canvas(&mut backend, &mut canvas);
+        assert_eq!(painted, cached, "the following paint replays the captured pixels");
+    }
+
+    /// Adding a command after a captured frame invalidates the cache and replays the new list.
+    #[test]
+    fn mini_canvas_new_command_invalidates_the_cached_frame() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(200, 200), 1.0);
+        let mut canvas = MiniCanvas::new(Rect::new(0, 0, 200, 200));
+        canvas.fill_rect(Rect::new(0, 0, 10, 10), Color::RED);
+        let before = render_canvas(&mut backend, &mut canvas);
+
+        canvas.fill_rect(Rect::new(50, 50, 100, 100), Color::BLUE);
+        let after = render_canvas(&mut backend, &mut canvas);
+
+        assert_ne!(before, after, "a new command must change the painted pixels");
+        assert_eq!(canvas.commands().len(), 2, "both commands are retained");
     }
 }

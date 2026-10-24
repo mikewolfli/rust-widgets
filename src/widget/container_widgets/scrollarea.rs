@@ -125,6 +125,21 @@ pub struct ScrollArea {
     sticky_regions: Vec<StickyRegion>,
     /// Emitted whenever scroll position changes.
     pub scroll_position_changed: Signal1<(i32, i32)>,
+    /// Whether a swipe carries momentum into a decaying fling.
+    inertia: bool,
+    /// Remaining fling velocity in logical pixels per second.
+    fling: (f32, f32),
+    /// An in-progress scroll-bar thumb drag: the axis and the pressed point.
+    thumb_drag: Option<(ScrollAxis, i32)>,
+}
+
+/// Which scroll bar a thumb drag is travelling on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollAxis {
+    /// The horizontal bar.
+    Horizontal,
+    /// The vertical bar.
+    Vertical,
 }
 
 /// A content-space band that sticks to the top of the viewport while scrolling.
@@ -249,6 +264,67 @@ impl ScrollArea {
             scroll_position: (0, 0),
             sticky_regions: Vec::new(),
             scroll_position_changed: Signal1::new(),
+            inertia: false,
+            fling: (0.0, 0.0),
+            thumb_drag: None,
+        }
+    }
+    /// Whether a swipe carries momentum.
+    pub fn inertia(&self) -> bool {
+        self.inertia
+    }
+
+    /// Enables or disables fling momentum.
+    ///
+    /// Off by default, so a swipe still moves exactly as far as the pointer travelled.
+    /// When on, a released swipe keeps the scroll moving and [`Widget::tick`] decays the
+    /// velocity over subsequent frames.
+    pub fn set_inertia(&mut self, inertia: bool) {
+        if self.inertia == inertia {
+            return;
+        }
+        self.inertia = inertia;
+        if !inertia {
+            self.fling = (0.0, 0.0);
+        }
+    }
+
+    /// The rectangle of a scroll-bar thumb, if the bar is visible.
+    fn thumb_rect(&self, axis: ScrollAxis) -> Option<Rect> {
+        let chrome = self.assemble_chrome(self.geometry());
+        match axis {
+            ScrollAxis::Horizontal => {
+                let band = chrome.horizontal?;
+                let (length, offset) = Self::thumb_metrics(
+                    band.width,
+                    self.content_size.width,
+                    self.viewport.width.max(1),
+                    self.scroll_position.0,
+                );
+                Some(Rect::new(band.x + offset, band.y, length, band.height))
+            }
+            ScrollAxis::Vertical => {
+                let band = chrome.vertical?;
+                let (length, offset) = Self::thumb_metrics(
+                    band.height,
+                    self.content_size.height,
+                    self.viewport.height.max(1),
+                    self.scroll_position.1,
+                );
+                Some(Rect::new(band.x, band.y + offset, band.width, length))
+            }
+        }
+    }
+
+    /// Which axis has a visible bar under `point`.
+    fn bar_at(&self, point: crate::core::Point) -> Option<ScrollAxis> {
+        let chrome = self.assemble_chrome(self.geometry());
+        if chrome.horizontal.is_some_and(|band| band.contains_point(point)) {
+            Some(ScrollAxis::Horizontal)
+        } else if chrome.vertical.is_some_and(|band| band.contains_point(point)) {
+            Some(ScrollAxis::Vertical)
+        } else {
+            None
         }
     }
     /// Sets the shared widget registry for child forwarding.
@@ -858,6 +934,31 @@ impl Widget for ScrollArea {
     fn children_clip(&self) -> Option<Rect> {
         Some(self.assemble_chrome(self.base.geometry()).content)
     }
+
+    /// Advances fling momentum after a swipe.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.inertia || (self.fling.0 == 0.0 && self.fling.1 == 0.0) {
+            return false;
+        }
+        let step = delta_ms as f32 / 1000.0;
+        let dx = (self.fling.0 * step).round() as i32;
+        let dy = (self.fling.1 * step).round() as i32;
+        self.set_scroll_position(self.scroll_position.0 + dx, self.scroll_position.1 + dy);
+        // Exponential decay, stopped once the remaining speed is imperceptible. A
+        // frame-rate-independent fraction would need the exact delta; at 16 ms this drops the
+        // velocity by about 8% per frame, which is the familiar flick feel.
+        let decay = (1.0 - 0.005 * delta_ms as f32).clamp(0.0, 1.0);
+        self.fling = (self.fling.0 * decay, self.fling.1 * decay);
+        if self.fling.0.abs() + self.fling.1.abs() < 20.0 {
+            self.fling = (0.0, 0.0);
+            return false;
+        }
+        true
+    }
+
+    fn is_animating(&self) -> bool {
+        self.inertia && (self.fling.0 != 0.0 || self.fling.1 != 0.0)
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -990,6 +1091,96 @@ impl EventHandler for ScrollArea {
         }
         // Handle scroll events (mouse wheel + touch swipe)
         match event {
+            Event::MousePress { pos, button: 1, .. } => {
+                if let Some(axis) = self.bar_at(*pos) {
+                    if self.thumb_rect(axis).is_some_and(|thumb| thumb.contains_point(*pos)) {
+                        let coordinate = match axis {
+                            ScrollAxis::Horizontal => pos.x,
+                            ScrollAxis::Vertical => pos.y,
+                        };
+                        self.thumb_drag = Some((axis, coordinate));
+                    }
+                }
+            }
+            Event::MouseMove { pos } => {
+                if let Some((axis, last)) = self.thumb_drag {
+                    let coordinate = match axis {
+                        ScrollAxis::Horizontal => pos.x,
+                        ScrollAxis::Vertical => pos.y,
+                    };
+                    let delta = coordinate - last;
+                    let (content, view, track, thumb) = match axis {
+                        ScrollAxis::Horizontal => {
+                            let chrome = self.assemble_chrome(self.geometry());
+                            let band = chrome.horizontal.map(|band| band.width).unwrap_or(1);
+                            let (thumb, _) = Self::thumb_metrics(
+                                band,
+                                self.content_size.width,
+                                self.viewport.width.max(1),
+                                self.scroll_position.0,
+                            );
+                            (self.content_size.width, self.viewport.width, band, thumb)
+                        }
+                        ScrollAxis::Vertical => {
+                            let chrome = self.assemble_chrome(self.geometry());
+                            let band = chrome.vertical.map(|band| band.height).unwrap_or(1);
+                            let (thumb, _) = Self::thumb_metrics(
+                                band,
+                                self.content_size.height,
+                                self.viewport.height.max(1),
+                                self.scroll_position.1,
+                            );
+                            (self.content_size.height, self.viewport.height, band, thumb)
+                        }
+                    };
+                    let travel = track.saturating_sub(thumb).max(1) as f32;
+                    let scrollable = content.saturating_sub(view) as f32;
+                    let amount = (delta as f32 * scrollable / travel).round() as i32;
+                    if matches!(axis, ScrollAxis::Horizontal) {
+                        self.set_scroll_position(
+                            self.scroll_position.0 + amount,
+                            self.scroll_position.1,
+                        );
+                    } else {
+                        self.set_scroll_position(
+                            self.scroll_position.0,
+                            self.scroll_position.1 + amount,
+                        );
+                    }
+                    self.thumb_drag = Some((axis, coordinate));
+                    return;
+                }
+            }
+            Event::MouseRelease { button: 1, .. } => {
+                self.thumb_drag = None;
+            }
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => {
+                let page = self.viewport.height.max(1) as i32;
+                let (x, y) = self.scroll_position;
+                match *key {
+                    crate::event::key_codes::UP => {
+                        self.set_scroll_position(x, y - WHEEL_PIXELS_PER_LINE)
+                    }
+                    crate::event::key_codes::DOWN => {
+                        self.set_scroll_position(x, y + WHEEL_PIXELS_PER_LINE)
+                    }
+                    crate::event::key_codes::LEFT => {
+                        self.set_scroll_position(x - WHEEL_PIXELS_PER_LINE, y)
+                    }
+                    crate::event::key_codes::RIGHT => {
+                        self.set_scroll_position(x + WHEEL_PIXELS_PER_LINE, y)
+                    }
+                    crate::event::key_codes::PAGE_UP => {
+                        self.set_scroll_position(x, y.saturating_sub(page))
+                    }
+                    crate::event::key_codes::PAGE_DOWN => {
+                        self.set_scroll_position(x, y.saturating_add(page))
+                    }
+                    crate::event::key_codes::HOME => self.set_scroll_position(0, 0),
+                    crate::event::key_codes::END => self.set_scroll_position(i32::MAX, i32::MAX),
+                    _ => {}
+                }
+            }
             Event::Wheel { delta, modifiers } => {
                 // `WheelScroll` owns the notch normalization; this control owns the
                 // line-to-pixel step. The scroll position is clamped by the setter.
@@ -1000,11 +1191,15 @@ impl EventHandler for ScrollArea {
                 );
             }
             #[cfg(feature = "touch")]
-            Event::Swipe { start, end, velocity: _ } => {
+            Event::Swipe { start, end, velocity } => {
                 // Map swipe to scroll
                 let dx = end.x - start.x;
                 let dy = end.y - start.y;
                 self.set_scroll_position(self.scroll_position.0 + dx, self.scroll_position.1 + dy);
+                if self.inertia {
+                    let length = ((dx * dx + dy * dy) as f32).sqrt().max(1.0);
+                    self.fling = (-*velocity * dx as f32 / length, -*velocity * dy as f32 / length);
+                }
             }
             #[cfg(feature = "touch")]
             Event::Drag { delta, .. } => {
@@ -1767,5 +1962,38 @@ mod tests {
         assert_eq!(scrolled.y, unscrolled.y - 40);
         assert_eq!(scrolled.width, unscrolled.width);
         assert_eq!(scrolled.height, unscrolled.height);
+    }
+
+    /// The thumb is draggable, the keyboard scrolls when focused, and an opt-in fling
+    /// keeps moving for a few frames after a swipe.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn thumb_drag_keyboard_and_inertia_are_connected() {
+        let mut sa = ScrollArea::new(Rect::new(0, 0, 200, 100));
+        sa.set_content_size(Size::new(100, 400));
+        sa.handle_event(&Event::MousePress { pos: Point::new(196, 5), button: 1, modifiers: 0 });
+        sa.handle_event(&Event::MouseMove { pos: Point::new(196, 40) });
+        sa.handle_event(&Event::MouseRelease { pos: Point::new(196, 40), button: 1 });
+        assert!(sa.scroll_position().1 > 0, "dragging the thumb scrolls the content");
+
+        let before = sa.scroll_position().1;
+        sa.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Pointer });
+        sa.handle_event(&Event::KeyPress { key: crate::event::key_codes::PAGE_DOWN, modifiers: 0 });
+        assert!(sa.scroll_position().1 > before, "PageDown scrolls one viewport");
+        sa.handle_event(&Event::KeyPress { key: crate::event::key_codes::HOME, modifiers: 0 });
+        assert_eq!(sa.scroll_position(), (0, 0));
+
+        sa.set_content_size(Size::new(100, 400));
+        sa.set_inertia(true);
+        sa.handle_event(&Event::Swipe {
+            start: Point::new(0, 80),
+            end: Point::new(0, 40),
+            velocity: 800.0,
+        });
+        assert!(sa.is_animating());
+        let scrolled = sa.scroll_position().1;
+        assert!(sa.tick(16));
+        assert!(sa.scroll_position().1 > scrolled, "the fling keeps scrolling");
+        assert!(!sa.tick(10_000), "a long frame decays the velocity to rest");
     }
 }

@@ -8,6 +8,7 @@
 //! LVGL's `lv_theme_t` but using Rust's type-safe CSS parser.
 
 use crate::style::css::{CssDeclaration, CssParser, CssSelector};
+use crate::style::selector::ElementRef;
 use crate::style::PseudoState;
 use crate::style::WidgetStyle;
 
@@ -116,6 +117,68 @@ impl StyleSheetManager {
         state: Option<PseudoState>,
         style: &mut WidgetStyle,
     ) -> Result<(), String> {
+        self.apply_to_with_chain(kind, class, id, state, &[], style)
+    }
+
+    /// Apply all matching stylesheet rules with the element's **ancestor chain** available.
+    ///
+    /// A selector using a descendant or child combinator is a fact about the tree, so a caller
+    /// that knows the chain should use this entry point rather than [`Self::apply_to`]; the
+    /// latter passes no chain and therefore matches combinator rules never. `ancestors` is
+    /// ordered root-first.
+    pub fn apply_to_context(
+        &self,
+        element: ElementRef<'_>,
+        ancestors: &[ElementRef<'_>],
+        style: &mut WidgetStyle,
+    ) -> Result<(), String> {
+        self.apply_to_with_chain(
+            element.kind.css_name(),
+            element.class,
+            element.id,
+            element.state,
+            ancestors,
+            style,
+        )
+    }
+
+    /// [`Self::apply_to_context`] plus a final **inline** layer.
+    ///
+    /// # Why inline is a separate call and not part of a sheet
+    ///
+    /// The cascade has three layers in this library: the theme, the registered sheets, and the
+    /// element's own declaration. Inline text has to win over every sheet regardless of
+    /// specificity — that is what makes an explicit `setProperty`/`apply_css` on one control an
+    /// override rather than a hopeful suggestion — so it cannot be modelled as a high-specificity
+    /// rule without inventing a specificity larger than every possible selector. Applying it
+    /// after the sheets, through the same declaration writer, states the precedence directly.
+    ///
+    /// `inline_css` is CSS declaration text (`"background: #333; color: white"`), the same form
+    /// `Widget::apply_css` takes, so a caller does not need a second syntax to override a sheet.
+    pub fn apply_to_context_with_inline(
+        &self,
+        element: ElementRef<'_>,
+        ancestors: &[ElementRef<'_>],
+        inline_css: Option<&str>,
+        style: &mut WidgetStyle,
+    ) -> Result<(), String> {
+        self.apply_to_context(element, ancestors, style)?;
+        if let Some(text) = inline_css {
+            CssParser::apply_declaration_text(text, style)?;
+        }
+        Ok(())
+    }
+
+    /// The shared apply path, so the chain-aware and chain-less entry points cannot drift.
+    fn apply_to_with_chain(
+        &self,
+        kind: &str,
+        class: Option<&str>,
+        id: Option<&str>,
+        state: Option<PseudoState>,
+        ancestors: &[ElementRef<'_>],
+        style: &mut WidgetStyle,
+    ) -> Result<(), String> {
         let mut parse_error: Option<String> = None;
         // (specificity, source order, declarations). Rule counts are small, and this path runs at
         // widget construction / stylesheet change, not per frame.
@@ -130,7 +193,7 @@ impl StyleSheetManager {
                 continue;
             }
             for rule in &sheet.rules {
-                if rule.selector.matches(kind, class, id, state) {
+                if rule.selector.matches_in(kind, class, id, state, ancestors) {
                     matched.push((rule.specificity, source_order, &rule.declarations));
                 }
                 source_order += 1;
@@ -412,5 +475,81 @@ mod tests {
         let mut style = make_style();
         let result = manager.apply_to("Button", None, None, None, &mut style);
         assert!(result.is_err(), "invalid CSS should produce an error");
+    }
+
+    /// A descendant selector matches through the chain, while the chain-less entry point
+    /// deliberately does not.
+    #[test]
+    fn a_descendant_rule_needs_the_ancestor_chain() {
+        use crate::style::selector::ElementRef;
+        use crate::widget::WidgetKind;
+
+        let mut manager = StyleSheetManager::new();
+        manager.register("nav", "Panel Button { background-color: #010203; }", 0);
+        manager.register("direct", "Panel > Button { text-color: #040506; }", 0);
+
+        let button = ElementRef { kind: WidgetKind::Button, class: None, id: None, state: None };
+        let panel = ElementRef { kind: WidgetKind::Panel, ..button };
+        let label = ElementRef { kind: WidgetKind::Label, ..button };
+
+        let mut style = make_style();
+        manager
+            .apply_to_context(button, &[panel, label], &mut style)
+            .expect("apply_to_context should succeed");
+        assert_eq!(
+            style.background_color,
+            Some(Color::rgb(1, 2, 3)),
+            "the panel is an ancestor at depth 2"
+        );
+        assert_eq!(
+            style.text_color, None,
+            "the child combinator must not match with a label between panel and button"
+        );
+
+        let mut immediate = make_style();
+        manager
+            .apply_to_context(button, &[panel], &mut immediate)
+            .expect("apply_to_context should succeed");
+        assert_eq!(
+            immediate.text_color,
+            Some(Color::rgb(4, 5, 6)),
+            "with the panel as the immediate parent the child rule applies"
+        );
+
+        let mut chain_less = make_style();
+        manager
+            .apply_to("Button", None, None, None, &mut chain_less)
+            .expect("apply_to should succeed");
+        assert_eq!(
+            chain_less.background_color, None,
+            "without a chain a combinator rule matches nothing"
+        );
+    }
+
+    /// Inline declarations win over every sheet, regardless of specificity.
+    #[test]
+    fn inline_declarations_override_the_sheet() {
+        use crate::style::selector::ElementRef;
+        use crate::widget::WidgetKind;
+
+        let mut manager = StyleSheetManager::new();
+        manager.register("id-rule", "#main { background-color: #ff0000; }", 0);
+        let element =
+            ElementRef { kind: WidgetKind::Button, class: None, id: Some("main"), state: None };
+
+        let mut style = make_style();
+        manager
+            .apply_to_context_with_inline(
+                element,
+                &[],
+                Some("background-color: #0000ff;"),
+                &mut style,
+            )
+            .expect("inline apply should succeed");
+        assert_eq!(
+            style.background_color,
+            Some(Color::rgb(0, 0, 255)),
+            "the element's own declaration is the last layer"
+        );
     }
 }

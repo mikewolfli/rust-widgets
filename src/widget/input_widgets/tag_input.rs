@@ -51,6 +51,15 @@ pub struct TagInput {
     base: BaseWidget,
     tags: Vec<String>,
     input_buffer: String,
+    // The input buffer's caret, in bytes, and the other end of a selection.
+    input_cursor: usize,
+    input_anchor: Option<usize>,
+    /// Optional upper bound on the number of tags.
+    max_tags: Option<usize>,
+    /// Candidate completions for the current input.
+    suggestions: Vec<String>,
+    /// The tag being dragged, for reordering.
+    dragging_tag: Option<usize>,
     placeholder: String,
     focused: bool,
     /// How the field's placeholder and typed text are aligned within the input area.
@@ -75,6 +84,11 @@ impl TagInput {
             base: BaseWidget::new(WidgetKind::TagInput, geometry, "TagInput"),
             tags: Vec::new(),
             input_buffer: String::new(),
+            input_cursor: 0,
+            input_anchor: None,
+            max_tags: None,
+            suggestions: Vec::new(),
+            dragging_tag: None,
             placeholder: "Type and press Enter\u{2026}".to_string(),
             focused: false,
             alignment: crate::core::Alignment::Left,
@@ -93,6 +107,9 @@ impl TagInput {
     pub fn add_tag(&mut self, tag: &str) {
         let trimmed = tag.trim();
         if trimmed.is_empty() {
+            return;
+        }
+        if self.max_tags.is_some_and(|limit| self.tags.len() >= limit) {
             return;
         }
         // Avoid duplicate tags
@@ -121,6 +138,196 @@ impl TagInput {
     /// Returns a slice of all current tags.
     pub fn tags(&self) -> &[String] {
         &self.tags
+    }
+
+    /// The optional upper bound on the number of tags.
+    pub fn max_tags(&self) -> Option<usize> {
+        self.max_tags
+    }
+
+    /// Sets an upper bound on the number of tags.
+    ///
+    /// A limit that is already exceeded does not remove tags; it only refuses new ones, which
+    /// keeps a limit write from destroying data the user can see.
+    pub fn set_max_tags(&mut self, max_tags: Option<usize>) {
+        if self.max_tags == max_tags {
+            return;
+        }
+        self.max_tags = max_tags;
+    }
+
+    /// The input buffer's caret, in bytes.
+    pub fn input_cursor_position(&self) -> usize {
+        self.input_cursor
+    }
+
+    /// Moves the input caret.
+    pub fn set_input_cursor_position(&mut self, position: usize) {
+        let position = crate::widget::text_utils::floor_char_boundary(
+            &self.input_buffer,
+            position.min(self.input_buffer.len()),
+        );
+        if self.input_cursor == position && self.input_anchor.is_none() {
+            return;
+        }
+        self.input_cursor = position;
+        self.input_anchor = None;
+        self.base.request_redraw();
+    }
+
+    /// The input buffer's selected byte range, if any.
+    pub fn input_selection(&self) -> Option<(usize, usize)> {
+        let anchor = self.input_anchor?;
+        let (start, end) = if anchor <= self.input_cursor {
+            (anchor, self.input_cursor)
+        } else {
+            (self.input_cursor, anchor)
+        };
+        (start != end).then_some((start, end))
+    }
+
+    /// Candidate completions for the current input.
+    pub fn suggestions(&self) -> &[String] {
+        &self.suggestions
+    }
+
+    /// Replaces the candidate completions.
+    pub fn set_suggestions(&mut self, suggestions: Vec<String>) {
+        if self.suggestions == suggestions {
+            return;
+        }
+        self.suggestions = suggestions;
+        self.base.request_redraw();
+    }
+
+    /// Completes the input buffer from the first suggestion that starts with it.
+    ///
+    /// Returns whether a completion was applied. The completed text is selected in full, so
+    /// the next keystroke replaces it rather than appending to it.
+    pub fn complete_input(&mut self) -> bool {
+        let prefix = self.input_buffer.trim().to_lowercase();
+        if prefix.is_empty() {
+            return false;
+        }
+        let Some(completion) = self
+            .suggestions
+            .iter()
+            .find(|candidate| candidate.to_lowercase().starts_with(&prefix))
+            .cloned()
+        else {
+            return false;
+        };
+        let before = self.snapshot_state();
+        self.input_buffer = completion;
+        self.input_cursor = self.input_buffer.len();
+        self.input_anchor = Some(0);
+        self.record_state_change(before);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Pastes text, creating one tag per comma- or newline-separated field.
+    ///
+    /// This is the batch-entry path: a user copying a list from a spreadsheet expects the
+    /// paste to become tags, not one long tag containing the separators.
+    pub fn paste_text(&mut self, text: &str) {
+        let mut added = false;
+        for part in text.split([',', '\n', ';']) {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if self.max_tags.is_some_and(|limit| self.tags.len() >= limit) {
+                break;
+            }
+            if self.tags.iter().any(|tag| tag == trimmed) {
+                continue;
+            }
+            let before = self.snapshot_state();
+            self.tags.push(trimmed.to_string());
+            self.record_state_change(before);
+            added = true;
+        }
+        if added {
+            self.input_buffer.clear();
+            self.input_cursor = 0;
+            self.input_anchor = None;
+            self.tags_changed.emit(self.tags.clone());
+            self.base.request_redraw();
+        }
+    }
+
+    /// Pastes the platform clipboard, creating one tag per separated field.
+    ///
+    /// This is what the primary+V chord calls. It shares [`Self::paste_text`]'s parsing and
+    /// limit handling, so a clipboard paste and a programmatic paste cannot disagree.
+    #[cfg(not(alloc_frugal))]
+    pub fn paste_from_clipboard(&mut self) {
+        let text = crate::get_clipboard_text();
+        if !text.is_empty() {
+            self.paste_text(&text);
+        }
+    }
+
+    /// The allocation-frugal build has no clipboard integration.
+    #[cfg(alloc_frugal)]
+    pub fn paste_from_clipboard(&mut self) {}
+
+    /// Copies the input selection, or the whole input buffer when nothing is selected.
+    ///
+    /// Returns the copied text, or `None` when the buffer is empty. Tags themselves are not
+    /// copied: the input buffer is the field's editable value, and copying a chip would need a
+    /// way to decide which chips a partial selection covers.
+    #[cfg(not(alloc_frugal))]
+    pub fn copy_input_to_clipboard(&self) -> Option<String> {
+        let text = match self.input_selection() {
+            Some((start, end)) => self.input_buffer.get(start..end)?.to_string(),
+            None if !self.input_buffer.is_empty() => self.input_buffer.clone(),
+            None => return None,
+        };
+        crate::set_clipboard_text(&text);
+        Some(text)
+    }
+
+    /// The allocation-frugal build has no clipboard integration.
+    #[cfg(alloc_frugal)]
+    pub fn copy_input_to_clipboard(&self) -> Option<String> {
+        None
+    }
+
+    /// Moves the tag at `from` to `to`, keeping the chips in the order the user dropped them.
+    ///
+    /// Returns whether the order changed.
+    pub fn move_tag(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.tags.len() || to >= self.tags.len() || from == to {
+            return false;
+        }
+        let before = self.snapshot_state();
+        let tag = self.tags.remove(from);
+        self.tags.insert(to, tag);
+        self.record_state_change(before);
+        self.tags_changed.emit(self.tags.clone());
+        self.base.request_redraw();
+        true
+    }
+
+    /// Begins editing the tag at `index` by moving it into the input buffer.
+    ///
+    /// Returns whether the index named a tag. This is the double-click affordance: editing an
+    /// existing chip is the only way to correct a tag without deleting and retyping it.
+    pub fn begin_edit_tag(&mut self, index: usize) -> bool {
+        if index >= self.tags.len() {
+            return false;
+        }
+        let before = self.snapshot_state();
+        let tag = self.tags.remove(index);
+        self.input_buffer = tag;
+        self.input_cursor = self.input_buffer.len();
+        self.input_anchor = None;
+        self.record_state_change(before);
+        self.tags_changed.emit(self.tags.clone());
+        self.base.request_redraw();
+        true
     }
 
     /// Returns the placeholder shown while the input area is empty.
@@ -213,10 +420,15 @@ impl TagInput {
         let before = self.snapshot_state();
         let old_tags = self.tags.clone();
         let text = self.input_buffer.trim().to_string();
-        if !text.is_empty() && !self.tags.iter().any(|tag| tag == &text) {
+        if !text.is_empty()
+            && !self.tags.iter().any(|tag| tag == &text)
+            && !self.max_tags.is_some_and(|limit| self.tags.len() >= limit)
+        {
             self.tags.push(text);
         }
         self.input_buffer.clear();
+        self.input_cursor = 0;
+        self.input_anchor = None;
         self.record_state_change(before);
         if self.tags != old_tags {
             self.tags_changed.emit(self.tags.clone());
@@ -284,10 +496,47 @@ impl TagInput {
         let state = self.history_target.borrow().clone();
         self.tags = state.tags;
         self.input_buffer = state.input_buffer;
+        self.input_cursor = self.input_buffer.len();
+        self.input_anchor = None;
         if self.tags != previous_tags {
             self.tags_changed.emit(self.tags.clone());
         }
         self.base.request_redraw();
+    }
+
+    /// Moves the input caret by `delta` characters, extending the selection when asked.
+    fn move_input_caret(&mut self, delta: i32, extend: bool) {
+        let mut target = self.input_cursor;
+        if delta < 0 {
+            for _ in 0..delta.unsigned_abs() {
+                target =
+                    crate::widget::text_utils::previous_char_boundary(&self.input_buffer, target);
+            }
+        } else {
+            for _ in 0..delta.unsigned_abs() {
+                target = crate::widget::text_utils::next_char_boundary(&self.input_buffer, target);
+            }
+        }
+        self.move_input_caret_to(target, extend);
+    }
+
+    /// Moves the input caret to `position`, extending the selection when asked.
+    fn move_input_caret_to(&mut self, position: usize, extend: bool) {
+        let position = crate::widget::text_utils::floor_char_boundary(
+            &self.input_buffer,
+            position.min(self.input_buffer.len()),
+        );
+        if extend {
+            if self.input_anchor.is_none() {
+                self.input_anchor = Some(self.input_cursor);
+            }
+        } else {
+            self.input_anchor = None;
+        }
+        if self.input_cursor != position {
+            self.input_cursor = position;
+            self.base.request_redraw();
+        }
     }
 
     fn push_input_text(&mut self, text: &str) {
@@ -295,7 +544,12 @@ impl TagInput {
             return;
         }
         let before = self.snapshot_state();
-        self.input_buffer.push_str(text);
+        // Insert at the caret, replacing a selection. Appending unconditionally made the
+        // buffer look editable while every key landed at its end.
+        let (start, end) = self.input_selection().unwrap_or((self.input_cursor, self.input_cursor));
+        self.input_buffer.replace_range(start..end, text);
+        self.input_cursor = start + text.len();
+        self.input_anchor = None;
         self.record_state_change(before);
         self.base.request_redraw();
     }
@@ -355,6 +609,29 @@ impl TagInput {
                 return Some(index);
             }
 
+            current_x += chip_width + TAG_GAP;
+        }
+        None
+    }
+
+    /// Hit-tests whether a point is on a tag chip (not only its close button).
+    fn hit_tag_index(&self, pos: Point) -> Option<usize> {
+        let rect = self.field_rect();
+        let mut current_x = rect.x + TAG_PADDING;
+        let chip_y = self.chip_row_y();
+        let max_width = rect.width as i32 - TAG_PADDING * 2;
+        for (index, tag) in self.tags.iter().enumerate() {
+            let chip_width = self.compute_chip_width(tag).min(max_width);
+            if current_x + chip_width > rect.x + rect.width as i32 - TAG_PADDING {
+                break;
+            }
+            if pos.x >= current_x
+                && pos.x < current_x + chip_width
+                && pos.y >= chip_y
+                && pos.y < chip_y + TAG_HEIGHT
+            {
+                return Some(index);
+            }
             current_x += chip_width + TAG_GAP;
         }
         None
@@ -679,18 +956,49 @@ impl Draw for TagInput {
         // The chip labels in this same file already centred themselves correctly; the field
         // was the one place that had not been brought in line.
         let input_line = context.text_line(input_band, font);
+        let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        // Selection band behind the buffer's selected range.
+        if let Some((start, end)) = self.input_selection() {
+            let advance = context.measure_text(display_text, font).width as i32;
+            let origin = crate::render::fitted_origin(input_line, advance, value_align);
+            let start_x =
+                origin.x + context.measure_text(&self.input_buffer[..start], font).width as i32;
+            let end_x =
+                origin.x + context.measure_text(&self.input_buffer[..end], font).width as i32;
+            context.fill_rect(
+                Rect::new(
+                    start_x.min(end_x),
+                    input_line.y,
+                    (end_x - start_x).unsigned_abs(),
+                    input_line.height.max(1),
+                ),
+                Color::rgba(60, 140, 255, 70),
+            );
+        }
         let drawn = context.draw_text_fitted_cow(
             input_line,
             display_text,
             font,
             input_text_color,
-            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
+            value_align,
         );
 
         // ── Cursor (when focused and input is active) ──
         if self.focused && is_enabled && self.cursor_blink.is_visible() {
-            let cursor_x = input_x + 4 + context.measure_text(&drawn, font).width as i32;
-            // The caret spans the line box it follows, so it marks the same row the text does.
+            // The caret follows the buffer's own caret, measured from the fitted origin so a
+            // centred buffer keeps its caret on the glyphs it belongs to.
+            let advance = context.measure_text(display_text, font).width as i32;
+            let origin = crate::render::fitted_origin(input_line, advance, value_align);
+            let prefix = if self.input_buffer.is_empty() {
+                &drawn[..]
+            } else {
+                let caret = crate::widget::text_utils::floor_char_boundary(
+                    &self.input_buffer,
+                    self.input_cursor,
+                );
+                &self.input_buffer[..caret]
+            };
+            let cursor_x = origin.x + context.measure_text(prefix, font).width as i32;
             let cursor_y1 = input_line.y;
             let cursor_y2 = input_line.y + input_line.height as i32;
             // Clamped to the input box: a caret at the far right of a full buffer belongs on
@@ -717,6 +1025,10 @@ impl EventHandler for TagInput {
                     self.remove_tag(tag_index);
                     return;
                 }
+                // A press on a chip begins a reorder drag; releasing on another chip moves it.
+                if let Some(tag_index) = self.hit_tag_index(*pos) {
+                    self.dragging_tag = Some(tag_index);
+                }
                 // Focus is gained only from a press on the **painted field**. Testing the
                 // control's rectangle instead would let a click on the empty space below a
                 // 48 px field in a 120 px cell focus the control, and the field the user
@@ -725,9 +1037,20 @@ impl EventHandler for TagInput {
                     self.set_focused(true);
                 }
             }
-            Event::MouseRelease { pos: _, button } if *button == 1 => {
-                // No special release handling needed
+            Event::MouseDoubleClick { pos, button } if *button == 1 => {
+                // Double-clicking a chip edits it: its text returns to the input buffer.
+                if let Some(index) = self.hit_tag_index(*pos) {
+                    self.begin_edit_tag(index);
+                }
             }
+            Event::MouseRelease { pos, button } if *button == 1 => {
+                if let Some(from) = self.dragging_tag.take() {
+                    if let Some(to) = self.hit_tag_index(*pos) {
+                        self.move_tag(from, to);
+                    }
+                }
+            }
+            Event::MouseLeave { .. } => self.dragging_tag = None,
             Event::FocusGained { .. } => {
                 self.set_focused(true);
             }
@@ -753,13 +1076,38 @@ impl EventHandler for TagInput {
                     let _ = self.redo();
                     return;
                 }
+                // Clipboard: paste turns a separated list into tags in one gesture, and copy
+                // puts the input buffer (or its selection) back on the clipboard.
+                if primary_shortcut_pressed(*key, *modifiers, Key::V) {
+                    self.paste_from_clipboard();
+                    return;
+                }
+                if primary_shortcut_pressed(*key, *modifiers, Key::C) {
+                    let _ = self.copy_input_to_clipboard();
+                    return;
+                }
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
                 match *key {
                     8 => {
-                        // Backspace — remove last character from buffer
-                        // If buffer is empty, remove the last tag
-                        if !self.input_buffer.is_empty() {
+                        // Backspace removes the selection or the character before the caret;
+                        // at the start of the buffer it removes the last tag.
+                        let range = self.input_selection().or_else(|| {
+                            (self.input_cursor > 0).then(|| {
+                                (
+                                    crate::widget::text_utils::previous_char_boundary(
+                                        &self.input_buffer,
+                                        self.input_cursor,
+                                    ),
+                                    self.input_cursor,
+                                )
+                            })
+                        });
+                        if let Some((start, end)) = range {
                             let before = self.snapshot_state();
-                            self.input_buffer.pop();
+                            self.input_buffer.replace_range(start..end, "");
+                            self.input_cursor = start;
+                            self.input_anchor = None;
                             self.record_state_change(before);
                             self.base.request_redraw();
                         } else if !self.tags.is_empty() {
@@ -770,6 +1118,30 @@ impl EventHandler for TagInput {
                             self.base.request_redraw();
                         }
                     }
+                    127 => {
+                        // Delete removes the selection or the character after the caret.
+                        if let Some((start, end)) = self.input_selection() {
+                            let before = self.snapshot_state();
+                            self.input_buffer.replace_range(start..end, "");
+                            self.input_cursor = start;
+                            self.input_anchor = None;
+                            self.record_state_change(before);
+                            self.base.request_redraw();
+                        } else if self.input_cursor < self.input_buffer.len() {
+                            let before = self.snapshot_state();
+                            let end = crate::widget::text_utils::next_char_boundary(
+                                &self.input_buffer,
+                                self.input_cursor,
+                            );
+                            self.input_buffer.replace_range(self.input_cursor..end, "");
+                            self.record_state_change(before);
+                            self.base.request_redraw();
+                        }
+                    }
+                    37 => self.move_input_caret(-1, shift),
+                    39 => self.move_input_caret(1, shift),
+                    36 => self.move_input_caret_to(0, shift),
+                    35 => self.move_input_caret_to(self.input_buffer.len(), shift),
                     13 => {
                         // Enter — commit the current input as a tag
                         self.commit_input();
@@ -777,6 +1149,10 @@ impl EventHandler for TagInput {
                     44 => {
                         // Comma — commit the current input as a tag
                         self.commit_input();
+                    }
+                    9 => {
+                        // Tab accepts the first matching suggestion.
+                        self.complete_input();
                     }
                     27 => {
                         // Escape — lose focus
@@ -1239,5 +1615,82 @@ mod tests {
         ti.handle_event(&Event::FocusLost);
         assert_eq!(ti.tags(), &["pen"]);
         assert!(!ti.is_focused());
+    }
+
+    /// The input buffer has a caret, so text can be inserted in the middle.
+    #[test]
+    fn the_input_caret_edits_inside_the_buffer() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        for key in [114u32, 115] {
+            ti.handle_event(&Event::KeyPress { key, modifiers: 0 });
+        }
+        assert_eq!(ti.input_cursor_position(), 2);
+        ti.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
+        ti.handle_event(&Event::KeyPress { key: 117, modifiers: 0 }); // 'u'
+        ti.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(ti.tags(), &["rus"]);
+    }
+
+    /// Pasting a separated list creates one tag per field, bounded by `max_tags`.
+    #[test]
+    fn paste_creates_multiple_tags_and_respects_the_limit() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.set_max_tags(Some(3));
+        assert_eq!(ti.max_tags(), Some(3));
+        ti.paste_text("red, green; blue\nyellow");
+        assert_eq!(ti.tags(), &["red", "green", "blue"]);
+        ti.add_tag("black");
+        assert_eq!(ti.tags().len(), 3, "the limit refuses a fourth tag");
+    }
+
+    /// Suggestions complete the buffer, and a suggestion is selected in full.
+    #[test]
+    fn tab_accepts_the_first_matching_suggestion() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.set_suggestions(vec!["rust".to_string(), "ruby".to_string()]);
+        ti.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        ti.handle_event(&Event::KeyPress { key: 114, modifiers: 0 });
+        ti.handle_event(&Event::KeyPress { key: 9, modifiers: 0 });
+        assert_eq!(ti.suggestions().len(), 2);
+        assert_eq!(ti.input_selection(), Some((0, 4)));
+        ti.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(ti.tags(), &["rust"]);
+    }
+
+    /// Dragging a chip reorders the list, and double-clicking edits it.
+    #[test]
+    fn tags_can_be_reordered_and_edited() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.add_tag("one");
+        ti.add_tag("two");
+        ti.add_tag("three");
+        assert!(ti.move_tag(0, 2));
+        assert_eq!(ti.tags(), &["two", "three", "one"]);
+
+        assert!(ti.begin_edit_tag(1));
+        assert_eq!(ti.tags(), &["two", "one"]);
+        assert_eq!(ti.input_buffer, "three");
+        ti.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        ti.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(ti.tags(), &["two", "one", "three"]);
+    }
+
+    /// Primary+V turns a comma-separated clipboard into tags, and Primary+C copies the buffer.
+    #[test]
+    fn clipboard_chords_paste_a_list_and_copy_the_buffer() {
+        let _clipboard = crate::clipboard::clipboard_test_guard();
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.set_focused(true);
+
+        crate::set_clipboard_text("alpha, beta; gamma");
+        // Primary is the host's accelerator chord, not a hard-coded Control bit.
+        ti.handle_event(&Event::KeyPress { key: 86, modifiers: primary_modifier_event_bits() });
+        assert_eq!(ti.tags(), &["alpha", "beta", "gamma"]);
+
+        ti.handle_event(&Event::KeyPress { key: 120, modifiers: 0 });
+        assert_eq!(ti.input_buffer, "x");
+        ti.handle_event(&Event::KeyPress { key: 67, modifiers: primary_modifier_event_bits() });
+        assert_eq!(crate::get_clipboard_text(), "x");
     }
 }

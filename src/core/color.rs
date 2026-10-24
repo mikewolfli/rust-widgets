@@ -299,7 +299,7 @@ impl Color {
     pub const SILVER: Self = Self::rgb(192, 192, 192);
     /// Sandy brown-beige (`#D2B48C`).
     pub const TAN: Self = Self::rgb(210, 180, 140);
-    /// Additional QT-like colors.
+    /// Additional common named colours.
     /// Cyan accent, channel-identical to [`Color::CYAN`] (`#00FFFF`).
     pub const AQUA: Self = Self::rgb(0, 255, 255);
     /// Dark reddish-brown (`#A52A2A`).

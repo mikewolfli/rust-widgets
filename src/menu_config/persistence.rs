@@ -7,6 +7,21 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+
+/// The current configuration file format version.
+///
+/// The file is a line-oriented `key=value` document, not JSON. Its historical name said
+/// JSON and misled anyone who opened it, so the file is now `menu_config.conf` and
+/// carries an explicit `version` line. A file without a version line is read as version
+/// 1, which is what the old name implied.
+pub const CURRENT_CONFIG_VERSION: u32 = 2;
+
+/// The file name this manager writes.
+const CONFIG_FILE_NAME: &str = "menu_config.conf";
+
+/// The pre-versioning file name, still read for migration.
+const LEGACY_FILE_NAME: &str = "menu_config.json";
+
 /// Configuration persistence manager for saving/loading user preferences.
 pub struct ConfigPersistence {
     config_dir: PathBuf,
@@ -21,6 +36,13 @@ pub struct ConfigPersistence {
 pub enum ConfigLoadError {
     /// The file could not be opened or read.
     Io(io::Error),
+    /// The file declares a format version this build does not understand.
+    UnsupportedVersion {
+        /// The version found in the file.
+        found: u32,
+        /// The newest version this build can read.
+        supported: u32,
+    },
     /// A known field held a value that did not parse.
     Parse {
         /// 1-based line number where the bad field appeared.
@@ -39,6 +61,10 @@ impl fmt::Display for ConfigLoadError {
             ConfigLoadError::Parse { line, field, value } => {
                 write!(f, "menu config line {line}: field `{field}` has invalid value `{value}`")
             }
+            ConfigLoadError::UnsupportedVersion { found, supported } => write!(
+                f,
+                "menu config version {found} is newer than this build supports ({supported})"
+            ),
         }
     }
 }
@@ -47,7 +73,7 @@ impl std::error::Error for ConfigLoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ConfigLoadError::Io(err) => Some(err),
-            ConfigLoadError::Parse { .. } => None,
+            ConfigLoadError::Parse { .. } | ConfigLoadError::UnsupportedVersion { .. } => None,
         }
     }
 }
@@ -68,7 +94,7 @@ impl ConfigPersistence {
         Self { config_dir }
     }
 
-    /// The directory this manager reads and writes `menu_config.json` in.
+    /// The directory this manager reads and writes the configuration file in.
     ///
     /// Exposed so hosts can display or log where settings live; it is also what
     /// lets the platform-convention test verify the path without touching disk.
@@ -94,7 +120,17 @@ impl ConfigPersistence {
         Ok(())
     }
     fn config_file_path(&self) -> PathBuf {
-        self.config_dir.join("menu_config.json")
+        self.config_dir.join(CONFIG_FILE_NAME)
+    }
+
+    /// The pre-versioning path, read only when the current file is absent.
+    fn legacy_config_file_path(&self) -> PathBuf {
+        self.config_dir.join(LEGACY_FILE_NAME)
+    }
+
+    /// The path [`Self::save`] writes to.
+    pub fn path(&self) -> PathBuf {
+        self.config_file_path()
     }
     /// Saves menu configuration to disk.
     pub fn save(&self, config: &MenuConfig) -> io::Result<()> {
@@ -131,6 +167,7 @@ impl ConfigPersistence {
         content.push_str("# Rust Widgets Menu Configuration\n");
         content.push_str("# This file contains user overrides for menu settings\n");
         content.push_str("# Delete this file to reset to hardware defaults\n\n");
+        content.push_str(&format!("version={CURRENT_CONFIG_VERSION}\n"));
         for (key, value) in &data {
             content.push_str(&format!("{key}={value}\n"));
         }
@@ -165,7 +202,11 @@ impl ConfigPersistence {
     /// file that fails to parse is rejected so the caller can keep its previous
     /// configuration. Unknown keys are ignored independently of that policy.
     pub fn load(&self) -> Result<UserOverrides, ConfigLoadError> {
-        let path = self.config_file_path();
+        let path = if self.config_file_path().exists() {
+            self.config_file_path()
+        } else {
+            self.legacy_config_file_path()
+        };
         if !path.exists() {
             return Ok(UserOverrides::default());
         }
@@ -183,6 +224,15 @@ impl ConfigPersistence {
                 let key = key.trim();
                 let value = value.trim();
                 match key {
+                    "version" => {
+                        let version: u32 = Self::parse_field(key, value, line_number)?;
+                        if version > CURRENT_CONFIG_VERSION {
+                            return Err(ConfigLoadError::UnsupportedVersion {
+                                found: version,
+                                supported: CURRENT_CONFIG_VERSION,
+                            });
+                        }
+                    }
                     "enabled" => {
                         overrides.enabled = Some(Self::parse_field(key, value, line_number)?)
                     }
@@ -233,17 +283,18 @@ impl ConfigPersistence {
             value: value.to_string(),
         })
     }
-    /// Deletes the saved configuration file.
+    /// Deletes the saved configuration file, including the legacy file name.
     pub fn clear(&self) -> io::Result<()> {
-        let path = self.config_file_path();
-        if path.exists() {
-            fs::remove_file(path)?;
+        for path in [self.config_file_path(), self.legacy_config_file_path()] {
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
         }
         Ok(())
     }
-    /// Checks if a saved configuration exists.
+    /// Checks if a saved configuration exists under either file name.
     pub fn exists(&self) -> bool {
-        self.config_file_path().exists()
+        self.config_file_path().exists() || self.legacy_config_file_path().exists()
     }
 }
 crate::impl_default_via_new!(ConfigPersistence);

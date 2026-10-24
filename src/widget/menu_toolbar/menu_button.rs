@@ -12,7 +12,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -329,6 +329,36 @@ pub(crate) fn draw_menu_panel(
     }
 }
 
+/// How a menu button splits between its face and its disclosure arrow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MenuButtonPopup {
+    /// A press anywhere on the button opens the menu. This is the historical behaviour
+    /// and stays the default, so an unconfigured button is unchanged.
+    #[default]
+    InstantPopup,
+    /// The face reports [`MenuButton::clicked`]; only the arrow segment opens the menu.
+    MenuButtonPopup,
+    /// A press on the face starts a timer; holding still for the configured delay opens
+    /// the menu. Releasing before the delay fires nothing.
+    DelayedPopup,
+}
+
+/// Which way a menu button's disclosure arrow points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MenuArrowType {
+    /// No arrow is painted, and the label may use the full button width.
+    None,
+    /// A downward triangle: the menu opens below the button.
+    #[default]
+    Down,
+    /// An upward triangle.
+    Up,
+    /// A leftward triangle.
+    Left,
+    /// A rightward triangle.
+    Right,
+}
+
 /// MenuButton widget — a button that opens a dropdown menu on click.
 ///
 /// Displays a button with text and an optional icon. When clicked, it toggles
@@ -353,6 +383,20 @@ pub struct MenuButton {
     submenu_panel: Option<Rect>,
     /// The top-level row the pointer last addressed, so Right can open its submenu.
     active_index: Option<usize>,
+    /// How the button's face and arrow divide the press.
+    popup_mode: MenuButtonPopup,
+    /// Which direction the disclosure arrow points.
+    arrow_type: MenuArrowType,
+    /// How long a DelayedPopup press must be held before the menu opens.
+    popup_delay_ms: u32,
+    /// Elapsed milliseconds of the current held press, when one is timing.
+    press_elapsed: Option<u32>,
+    /// Emitted when the face of a [`MenuButtonPopup`]-mode button is pressed.
+    pub clicked: GenericSignal,
+    /// Emitted just before the menu opens.
+    pub about_to_show: GenericSignal,
+    /// Emitted just after the menu closes.
+    pub about_to_hide: GenericSignal,
     /// Emitted when a menu item is clicked, providing the item ID.
     pub item_triggered: Signal1<u64>,
     /// Emitted when a branch row opens its child panel, carrying the branch's text.
@@ -374,6 +418,13 @@ impl MenuButton {
             submenu_open: None,
             submenu_panel: None,
             active_index: None,
+            popup_mode: MenuButtonPopup::InstantPopup,
+            arrow_type: MenuArrowType::Down,
+            popup_delay_ms: 300,
+            press_elapsed: None,
+            clicked: GenericSignal::new(),
+            about_to_show: GenericSignal::new(),
+            about_to_hide: GenericSignal::new(),
             item_triggered: Signal1::new(),
             submenu_requested: Signal1::new(),
         }
@@ -512,6 +563,66 @@ impl MenuButton {
         self.menu_open
     }
 
+    /// How the face and the disclosure arrow divide a press.
+    pub fn popup_mode(&self) -> MenuButtonPopup {
+        self.popup_mode
+    }
+
+    /// Changes the press split. See [`MenuButtonPopup`] for the three modes.
+    pub fn set_popup_mode(&mut self, mode: MenuButtonPopup) {
+        if self.popup_mode == mode {
+            return;
+        }
+        self.popup_mode = mode;
+        self.press_elapsed = None;
+        self.base.request_redraw();
+    }
+
+    /// Which way the disclosure arrow points.
+    pub fn arrow_type(&self) -> MenuArrowType {
+        self.arrow_type
+    }
+
+    /// Sets the disclosure arrow's direction. [`MenuArrowType::None`] removes it and
+    /// hands its width back to the label.
+    pub fn set_arrow_type(&mut self, arrow: MenuArrowType) {
+        if self.arrow_type == arrow {
+            return;
+        }
+        self.arrow_type = arrow;
+        self.base.request_redraw();
+    }
+
+    /// How long a [`MenuButtonPopup::DelayedPopup`] press must be held.
+    pub fn popup_delay_ms(&self) -> u32 {
+        self.popup_delay_ms
+    }
+
+    /// Sets the delayed-popup hold time. Zero opens on the next tick.
+    pub fn set_popup_delay_ms(&mut self, delay_ms: u32) {
+        if self.popup_delay_ms == delay_ms {
+            return;
+        }
+        self.popup_delay_ms = delay_ms;
+    }
+
+    /// The segment of the button that opens the menu directly.
+    ///
+    /// The trailing 20 px, or the whole button when the arrow is hidden.
+    pub fn arrow_rect(&self) -> Rect {
+        let geom = self.geometry();
+        if self.arrow_type == MenuArrowType::None {
+            return geom;
+        }
+        let width = geom.width.min(20);
+        Rect::new(geom.x + geom.width as i32 - width as i32, geom.y, width, geom.height)
+    }
+
+    /// Whether a delayed press is currently counting down.
+    pub fn is_press_pending(&self) -> bool {
+        self.press_elapsed.is_some()
+    }
+
     /// Toggles the dropdown menu visibility.
     pub fn toggle_menu(&mut self) {
         if self.menu_open {
@@ -523,6 +634,10 @@ impl MenuButton {
 
     /// Opens the dropdown menu.
     pub fn open_menu(&mut self) {
+        if self.menu_open {
+            return;
+        }
+        self.about_to_show.emit();
         self.menu_open = true;
         self.reveal.set_open(true);
         #[cfg(not(alloc_frugal))]
@@ -532,6 +647,9 @@ impl MenuButton {
 
     /// Closes the dropdown menu and any open child panel.
     pub fn close_menu(&mut self) {
+        if !self.menu_open && self.submenu_open.is_none() && self.submenu_panel.is_none() {
+            return;
+        }
         self.menu_open = false;
         self.reveal.set_open(false);
         self.submenu_open = None;
@@ -540,6 +658,7 @@ impl MenuButton {
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::clear_popup_grab_for(self.id());
         self.base.request_redraw();
+        self.about_to_hide.emit();
     }
 
     /// Collapses the open child panel, leaving the parent menu open.
@@ -727,11 +846,22 @@ impl Widget for MenuButton {
 
     /// Advances the menu's open/close reveal; `true` while it still owes frames.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        self.reveal.tick(delta_ms)
+        let mut animating = self.reveal.tick(delta_ms);
+        if let Some(elapsed) = self.press_elapsed.as_mut() {
+            *elapsed = elapsed.saturating_add(delta_ms);
+            if *elapsed >= self.popup_delay_ms {
+                self.press_elapsed = None;
+                self.open_menu();
+                animating = true;
+            } else {
+                animating = true;
+            }
+        }
+        animating
     }
 
     fn is_animating(&self) -> bool {
-        self.reveal.is_animating()
+        self.reveal.is_animating() || self.press_elapsed.is_some()
     }
 
     impl_draw_bridge!();
@@ -942,7 +1072,11 @@ impl Draw for MenuButton {
         // unbounded label ran underneath it. ──
         let text_color = if !is_enabled { disabled_ink } else { ink };
         let line = context.text_line(geom, font);
-        let arrow_x = geom.x + geom.width as i32 - PADDING - 8;
+        let arrow_x = if self.arrow_type == MenuArrowType::None {
+            geom.x + geom.width as i32 - PADDING
+        } else {
+            geom.x + geom.width as i32 - PADDING - 8
+        };
         let text_band_width = ((arrow_x - 4) - text_offset_x).max(0) as u32;
         context.draw_text_fitted_cow(
             Rect::new(text_offset_x, line.y, text_band_width, line.height.max(1)),
@@ -955,18 +1089,48 @@ impl Draw for MenuButton {
         // ── Draw dropdown arrow ──
         let arrow_y = geom.y + geom.height as i32 / 2 - 2;
         let arrow_color = if !is_enabled { disabled_ink } else { ink };
-        // Draw a small triangle pointing down (filled path)
-        context.execute_command(RenderCommand::DrawPath {
-            points: vec![
-                Point::new(arrow_x, arrow_y),
-                Point::new(arrow_x + 8, arrow_y),
-                Point::new(arrow_x + 4, arrow_y + 6),
-            ],
-            closed: true,
-            color: arrow_color,
-            filled: true,
-            width: 1,
-        });
+        if self.arrow_type != MenuArrowType::None {
+            // Triangle vertices per direction. `Down` is the historical shape, so the
+            // default rendering is unchanged; the other three are opt-in.
+            let points = match self.arrow_type {
+                MenuArrowType::Down | MenuArrowType::None => vec![
+                    Point::new(arrow_x, arrow_y),
+                    Point::new(arrow_x + 8, arrow_y),
+                    Point::new(arrow_x + 4, arrow_y + 6),
+                ],
+                MenuArrowType::Up => vec![
+                    Point::new(arrow_x, arrow_y + 6),
+                    Point::new(arrow_x + 8, arrow_y + 6),
+                    Point::new(arrow_x + 4, arrow_y),
+                ],
+                MenuArrowType::Left => vec![
+                    Point::new(arrow_x + 6, arrow_y),
+                    Point::new(arrow_x + 6, arrow_y + 6),
+                    Point::new(arrow_x, arrow_y + 3),
+                ],
+                MenuArrowType::Right => vec![
+                    Point::new(arrow_x, arrow_y),
+                    Point::new(arrow_x, arrow_y + 6),
+                    Point::new(arrow_x + 6, arrow_y + 3),
+                ],
+            };
+            context.execute_command(RenderCommand::DrawPath {
+                points,
+                closed: true,
+                color: arrow_color,
+                filled: true,
+                width: 1,
+            });
+        }
+        // A split button states the boundary between its two targets.
+        if self.popup_mode == MenuButtonPopup::MenuButtonPopup && is_enabled {
+            let divider_x = self.arrow_rect().x;
+            context.draw_line(
+                Point::new(divider_x, geom.y + 4),
+                Point::new(divider_x, geom.y + geom.height as i32 - 4),
+                border,
+            );
+        }
 
         // ── Draw dropdown menu ──
         //
@@ -1017,8 +1181,31 @@ impl EventHandler for MenuButton {
                     return;
                 }
                 if self.geometry().contains_point(*pos) {
-                    // Click on the button itself — toggle the menu.
-                    self.toggle_menu();
+                    // The face and the disclosure arrow are separate targets in
+                    // `MenuButtonPopup` mode; every other mode keeps the historical
+                    // whole-button toggle.
+                    let on_arrow = self.arrow_rect().contains_point(*pos);
+                    match self.popup_mode {
+                        MenuButtonPopup::InstantPopup => self.toggle_menu(),
+                        MenuButtonPopup::MenuButtonPopup => {
+                            if on_arrow || self.arrow_type == MenuArrowType::None {
+                                self.toggle_menu();
+                            } else {
+                                self.clicked.emit();
+                            }
+                        }
+                        MenuButtonPopup::DelayedPopup => {
+                            if self.menu_open {
+                                self.close_menu();
+                            } else if on_arrow {
+                                self.open_menu();
+                            } else {
+                                // Start the hold timer; `tick` opens the menu when it fires.
+                                self.press_elapsed = Some(0);
+                                self.base.request_redraw();
+                            }
+                        }
+                    }
                 } else if self.menu_open {
                     if let Some(index) = self.hit_test_submenu_item(*pos) {
                         self.activate_submenu_row(index);
@@ -1034,6 +1221,11 @@ impl EventHandler for MenuButton {
                     }
                 }
             }
+            Event::MouseRelease { .. } => {
+                // A release before the delay fired cancels the pending popup: a held
+                // press that the user let go is not an activation.
+                self.press_elapsed = None;
+            }
             Event::KeyPress { key, modifiers: _ } => match *key {
                 key_codes::ESCAPE if self.submenu_open.is_some() => self.close_submenu(),
                 key_codes::ESCAPE if self.menu_open => self.close_menu(),
@@ -1043,8 +1235,15 @@ impl EventHandler for MenuButton {
                     }
                 }
                 key_codes::LEFT if self.submenu_open.is_some() => self.close_submenu(),
+                key_codes::SPACE | key_codes::ENTER => self.toggle_menu(),
                 _ => { /* Other keys are not relevant */ }
             },
+            Event::MouseLeave { .. } => {
+                // A pointer that left the button during a delayed press is no longer
+                // asking for the popup.
+                self.press_elapsed = None;
+                self.base.handle_event(event);
+            }
             _ => {
                 self.base.handle_event(event);
             }
@@ -1372,5 +1571,97 @@ mod tests {
         let svg = render_to_svg(&mut mb);
         assert!(svg.starts_with("<svg"), "SVG should start with <svg, got: {svg:.60}");
         assert!(svg.ends_with("</svg>"), "SVG should end with </svg>");
+    }
+
+    /// In split mode the face reports a click and only the arrow opens the menu.
+    #[test]
+    fn split_mode_separates_the_face_from_the_arrow() {
+        let mut mb = MenuButton::new("Run", Rect::new(0, 0, 120, 30));
+        mb.add_item(MenuItem::new(1, "Open"));
+        mb.set_popup_mode(MenuButtonPopup::MenuButtonPopup);
+
+        let clicks = Arc::new(AtomicUsize::new(0));
+        let sink = clicks.clone();
+        mb.clicked.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        mb.handle_event(&Event::mouse_press(10, 10, 1));
+        assert_eq!(clicks.load(Ordering::SeqCst), 1);
+        assert!(!mb.is_menu_open(), "the face must not open the menu in split mode");
+
+        let arrow = mb.arrow_rect();
+        mb.handle_event(&Event::mouse_press(arrow.x + 4, arrow.y + 4, 1));
+        assert!(mb.is_menu_open(), "the arrow segment opens the menu");
+        assert_eq!(clicks.load(Ordering::SeqCst), 1, "the arrow is not the face");
+    }
+
+    /// A delayed press opens the menu only after the hold time elapses.
+    #[test]
+    fn a_delayed_press_opens_after_the_hold_time() {
+        let mut mb = MenuButton::new("Run", Rect::new(0, 0, 120, 30));
+        mb.add_item(MenuItem::new(1, "Open"));
+        mb.set_popup_mode(MenuButtonPopup::DelayedPopup);
+        mb.set_popup_delay_ms(100);
+
+        mb.handle_event(&Event::mouse_press(10, 10, 1));
+        assert!(mb.is_press_pending());
+        assert!(!mb.is_menu_open());
+        assert!(mb.tick(60));
+        assert!(!mb.is_menu_open(), "60 ms is before the 100 ms delay");
+        assert!(mb.tick(60));
+        assert!(mb.is_menu_open(), "the second tick crosses the delay");
+        assert!(!mb.is_press_pending());
+    }
+
+    /// Releasing before the delay cancels the pending popup.
+    #[test]
+    fn releasing_a_delayed_press_cancels_it() {
+        let mut mb = MenuButton::new("Run", Rect::new(0, 0, 120, 30));
+        mb.set_popup_mode(MenuButtonPopup::DelayedPopup);
+        mb.set_popup_delay_ms(500);
+        mb.handle_event(&Event::mouse_press(10, 10, 1));
+        assert!(mb.is_press_pending());
+        mb.handle_event(&Event::mouse_release(10, 10, 1));
+        assert!(!mb.is_press_pending());
+        mb.tick(1000);
+        assert!(!mb.is_menu_open());
+    }
+
+    /// The arrow direction is configurable and `None` hands its width back to the label.
+    #[test]
+    fn arrow_type_is_configurable() {
+        let mut mb = MenuButton::new("Run", Rect::new(0, 0, 120, 30));
+        assert_eq!(mb.arrow_type(), MenuArrowType::Down);
+        let full = mb.arrow_rect();
+        assert_eq!(full.width, 20);
+        mb.set_arrow_type(MenuArrowType::None);
+        assert_eq!(mb.arrow_rect().width, 120, "no arrow means the whole button is the target");
+        let without = render_to_svg(&mut mb);
+        mb.set_arrow_type(MenuArrowType::Right);
+        let with = render_to_svg(&mut mb);
+        assert_ne!(without, with, "the arrow direction must reach the painter");
+    }
+
+    /// open/close announce their transitions exactly once.
+    #[test]
+    fn menu_button_announces_show_and_hide() {
+        let mut mb = MenuButton::new("Run", Rect::new(0, 0, 120, 30));
+        let shown = Arc::new(AtomicUsize::new(0));
+        let hidden = Arc::new(AtomicUsize::new(0));
+        let s = shown.clone();
+        let h = hidden.clone();
+        mb.about_to_show.connect(move || {
+            s.fetch_add(1, Ordering::SeqCst);
+        });
+        mb.about_to_hide.connect(move || {
+            h.fetch_add(1, Ordering::SeqCst);
+        });
+        mb.open_menu();
+        mb.open_menu();
+        assert_eq!(shown.load(Ordering::SeqCst), 1);
+        mb.close_menu();
+        mb.close_menu();
+        assert_eq!(hidden.load(Ordering::SeqCst), 1);
     }
 }

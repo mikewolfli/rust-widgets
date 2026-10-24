@@ -4,7 +4,7 @@
 # macOS Backends Status (cocoa-legacy + objc2)
 
 > Last verified: 2026-09-11 on a real Mac (macOS 15.7.3, arm64, rustc 1.98.0).
-> Evidence: `docs/log/archive/log-20260911-2.md`. The runtime AppKit control probes were
+> Evidence: `docs/log/archive/log-20260911-2.md`. The runtime the platform UI framework control probes were
 > deleted with the BLUE15 self-drawn refactor (see the note on the tables below); the
 > surviving static gate is `tools/check_apple_thread_safety.sh`.
 
@@ -33,9 +33,9 @@ per-kind native *control* probe no longer exists (see the note above the tables)
 ## What is implemented
 
 > **Corrected 2026-09-30.** The two tables below used to claim per-kind native controls, an
-> `NSMenu` menu bar and `NSAlert`/`NSOpenPanel` dialogs. **None of that is in the code.** BLUE15
+> `the reference menu` menu bar and `the reference alert`/`the reference open panel` dialogs. **None of that is in the code.** BLUE15
 > #55/#56 removed per-kind control creation (the library paints every `WidgetKind`), and these rows
-> were never updated — `grep -rn "NSButton\|NSTextField\|NSAlert\|NSOpenPanel" src/platform/macos/`
+> were never updated — `grep -rn "the reference button\|the reference text field\|the reference alert\|the reference open panel" src/platform/macos/`
 > matches only prose in this file, and `grep -c "fn create_" platform_impl.rs` returns **1**
 > (`create_window`). Because a status table is what a host reads before choosing a build, the
 > overstatement was the "documentation describes behaviour the code does not have" defect rather
@@ -47,13 +47,13 @@ per-kind native *control* probe no longer exists (see the note above the tables)
 
 | Area | Status | Notes |
 |---|---|---|
-| `create_window` | ✅ Implemented | a real `NSWindow` on the main thread |
-| Native window registered with AppKit | ✅ Verified | `NSApplication.windows.count >= 1` after `create_window` |
-| Per-kind controls (`create_button`…) | ⛔ Removed | BLUE15 #55/#56 — the library paints every `WidgetKind`, so there is no `NSButton`/`NSTextField` and `grep` finds none |
-| Menu bar (`NSMenu`) | ⛔ Removed | no `create_menu_bar`/`menu_add_item` override; `native_menu: false`, and `menu_item_shortcut()`/`poll_menu_triggered()` are the only menu-shaped methods left |
-| Dialogs (`NSAlert` / `NSOpenPanel`) | ⛔ Removed | no `create_message_box`/`create_file_dialog` override |
+| `create_window` | ✅ Implemented | a real `the reference window` on the main thread |
+| Native window registered with the platform UI framework | ✅ Verified | `NSApplication.windows.count >= 1` after `create_window` |
+| Per-kind controls (`create_button`…) | ⛔ Removed | BLUE15 #55/#56 — the library paints every `WidgetKind`, so there is no `the reference button`/`the reference text field` and `grep` finds none |
+| Menu bar (`the reference menu`) | ⛔ Removed | no `create_menu_bar`/`menu_add_item` override; `native_menu: false`, and `menu_item_shortcut()`/`poll_menu_triggered()` are the only menu-shaped methods left |
+| Dialogs (`the reference alert` / `the reference open panel`) | ⛔ Removed | no `create_message_box`/`create_file_dialog` override |
 | Widget surfaces (`mount_surface` + repaint queue) | ✅ Implemented | the library-painted path every `WidgetKind` now uses |
-| Displays / window's screen / generation | ✅ Implemented | `NSScreen` enumeration (`src/platform/macos/displays.rs`), `NSWindow.screen()` for `display_of_window`, and a derived revision |
+| Displays / window's screen / generation | ✅ Implemented | `NSScreen` enumeration (`src/platform/macos/displays.rs`), `the reference window.screen()` for `display_of_window`, and a derived revision |
 | System appearance | ✅ Implemented (2026-10-19) | `NSApplication.effectiveAppearance`'s name → `Some(true)` for Dark Aqua, `Some(false)` otherwise; main-thread-only |
 | Safe area | ✅ Implemented (2026-10-19) | `NSView.safeAreaInsets` on the window's content view (macOS 11+); `None` on older systems or off the main thread |
 | Clipboard (`NSPasteboard`) | ✅ Verified | round-trip on the main thread; also `clipboard_backend()` for rich content |
@@ -66,14 +66,14 @@ per-kind native *control* probe no longer exists (see the note above the tables)
 
 | Area | Status | Notes |
 |---|---|---|
-| `create_window` | ✅ Implemented | real AppKit object; state fallback off-main |
+| `create_window` | ✅ Implemented | real the platform UI framework object; state fallback off-main |
 | `init()` bootstraps `NSApplication` | ✅ Added 2026-09-11 | `sharedApplication` + `finishLaunching` |
-| Native window registered with AppKit | ✅ Verified | `NSApplication.windows.count >= 1` |
+| Native window registered with the platform UI framework | ✅ Verified | `NSApplication.windows.count >= 1` |
 | Per-kind controls / menu bar / dialogs | ⛔ Not implemented | this backend overrides no `create_*` except `create_window`; `capabilities()` reports `ime`, `accessibility`, `native_menu` and `dpi_scaling` as `false` for exactly that reason, and `clipboard`/`open_external` as `true` because both have real bodies (`NSPasteboard`, and the `open` handler) |
 | Widget surfaces | ✅ Implemented | records displayed widgets and returns their frames |
-| Displays / window's screen / generation | ✅ Implemented (2026-10-19) | `+[NSScreen screens]`, `-[NSWindow screen]`, and a revision derived from the same fields — the parity the cocoa backend already had |
+| Displays / window's screen / generation | ✅ Implemented (2026-10-19) | `+[NSScreen screens]`, `-[the reference window screen]`, and a revision derived from the same fields — the parity the cocoa backend already had |
 | System appearance | ✅ Implemented (2026-10-19) | `NSApplication.effectiveAppearance`'s name, main-thread-only |
-| Safe area | ✅ Implemented (2026-10-19) | `NSView.safeAreaInsets` on the window's content view, with a `respondsToSelector:` check for pre-11 AppKit |
+| Safe area | ✅ Implemented (2026-10-19) | `NSView.safeAreaInsets` on the window's content view, with a `respondsToSelector:` check for pre-11 the platform UI framework |
 | Clipboard | ✅ Verified | `NSPasteboard` |
 | Geometry / visibility / text | ✅ Verified | `setNative…` helpers |
 | Off-main-thread calls | ✅ Guarded | `objc2::MainThreadMarker::new()` before every `create_*` |
@@ -88,9 +88,9 @@ per-kind native *control* probe no longer exists (see the note above the tables)
 
 > Fixed 2026-09-11: the `set_native_frame` / `set_native_hidden` helpers sent the
 > **view** selectors `setFrame:` / `setHidden:` to whatever object was stored —
-> including an `NSWindow`, which implements neither (windows use
+> including an `the reference window`, which implements neither (windows use
 > `setFrame:display:` and `orderOut:` / `makeKeyAndOrderFront:`). objc2 raised
-> `invalid message send to -[NSWindow setFrame:]: method not found` and aborted.
+> `invalid message send to -[the reference window setFrame:]: method not found` and aborted.
 > Both helpers are now window/view aware and carry a main-thread guard, and
 > `set_native_enabled` / `set_native_text` probe `respondsToSelector:` first.
 
@@ -104,7 +104,7 @@ per-kind native *control* probe no longer exists (see the note above the tables)
 > window/surface path in the ordinary host test suite
 > (`cargo test --no-default-features --features desktop --lib`).
 
-`cargo run --example apple_appkit_probe --features <backend>` runs on the AppKit
+`cargo run --example apple_appkit_probe --features <backend>` runs on the the platform UI framework
 main thread and asserts against live Objective-C objects:
 
 ```
@@ -125,9 +125,9 @@ RESULT: PASS (12 checks)           RESULT: PASS (12 checks)
 ```
 
 > `native_window_frame_applied` and `native_window_visibility` read back the
-> **native** `NSWindow.frame` / `isVisible`, so they distinguish a real FFI
+> **native** `the reference window.frame` / `isVisible`, so they distinguish a real FFI
 > wiring from a state-only stub. They are what caught the objc2 selector bug
-> above (`setFrame:` on an `NSWindow`).
+> above (`setFrame:` on an `the reference window`).
 
 Test suites on the real Mac:
 

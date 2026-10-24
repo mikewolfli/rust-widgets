@@ -6,7 +6,7 @@
 //! Allows matching widgets by kind, class name, ID, and state,
 //! enabling CSS-like cascading style sheets for the widget system.
 
-use crate::compat::{String, Vec};
+use crate::compat::{Box, String, Vec};
 use crate::widget::WidgetKind;
 
 /// A CSS-style selector that can match widgets by kind, class, ID, and state.
@@ -25,6 +25,27 @@ pub enum Selector {
     Universal,
     /// AND-combination of multiple selectors (e.g., `Button.primary:hover`).
     And(Vec<Selector>),
+    /// A descendant combinator: the subject matches the element and `ancestor` matches any of
+    /// its ancestors, at any depth.
+    ///
+    /// The subject is the **right-hand** compound in the source (`Panel Button` selects the
+    /// button), which is why the two sides are named `ancestor`/`subject` rather than left/right:
+    /// a reader of a selector chain asks "which element gets styled", and that is always the
+    /// subject.
+    Descendant {
+        /// The selector an ancestor must satisfy.
+        ancestor: Box<Selector>,
+        /// The selector the styled element itself must satisfy.
+        subject: Box<Selector>,
+    },
+    /// A child combinator: the subject matches the element and `parent` matches its immediate
+    /// parent only (`Panel > Button`).
+    Child {
+        /// The selector the immediate parent must satisfy.
+        parent: Box<Selector>,
+        /// The selector the styled element itself must satisfy.
+        subject: Box<Selector>,
+    },
 }
 
 /// Widget pseudo-states that can be matched by CSS selectors.
@@ -100,6 +121,12 @@ impl Selector {
             Selector::State(_) => 1,
             Selector::Universal => 0,
             Selector::And(selectors) => selectors.iter().map(|s| s.specificity()).sum(),
+            // A combinator adds no weight of its own in the CSS cascade: specificity is the sum
+            // of the compounds' weights, and the combinator only describes how they are related.
+            Selector::Descendant { ancestor, subject }
+            | Selector::Child { parent: ancestor, subject } => {
+                ancestor.specificity() + subject.specificity()
+            }
         }
     }
 
@@ -109,6 +136,14 @@ impl Selector {
     /// substring or prefix rules, and a widget can carry at most one of each.
     /// `state` must be `Some` for a [`Selector::State`] to match, so a caller
     /// that passes `None` will see every state selector fail.
+    ///
+    /// # Combinators need context
+    ///
+    /// This signature carries one element, so [`Selector::Descendant`] and [`Selector::Child`]
+    /// answer `false` here: without the ancestor chain there is no honest answer. Use
+    /// [`Selector::matches_in`] when the caller has the chain; a caller that does not is asking
+    /// a question the selector cannot answer, and matching nothing is safer than matching
+    /// everything.
     pub fn matches(
         &self,
         kind: WidgetKind,
@@ -116,15 +151,50 @@ impl Selector {
         id: Option<&str>,
         state: Option<PseudoState>,
     ) -> bool {
+        self.matches_in(ElementRef { kind, class, id, state }, &[])
+    }
+
+    /// Matches against an element **and its ancestor chain**.
+    ///
+    /// `ancestors` is ordered root-first (the outermost ancestor at index 0), which is the order
+    /// a caller that walks parents upward collects naturally after reversing. For
+    /// [`Selector::Descendant`] any ancestor may match; for [`Selector::Child`] only the last
+    /// entry (the immediate parent) is consulted.
+    pub fn matches_in(&self, element: ElementRef<'_>, ancestors: &[ElementRef<'_>]) -> bool {
         match self {
-            Selector::Kind(k) => *k == kind,
-            Selector::Class(c) => class == Some(c.as_str()),
-            Selector::Id(i) => id == Some(i.as_str()),
-            Selector::State(s) => state == Some(*s),
+            Selector::Kind(k) => *k == element.kind,
+            Selector::Class(c) => element.class == Some(c.as_str()),
+            Selector::Id(i) => element.id == Some(i.as_str()),
+            Selector::State(s) => element.state == Some(*s),
             Selector::Universal => true,
-            Selector::And(selectors) => selectors.iter().all(|s| s.matches(kind, class, id, state)),
+            Selector::And(selectors) => selectors.iter().all(|s| s.matches_in(element, ancestors)),
+            Selector::Descendant { ancestor, subject } => {
+                subject.matches_in(element, ancestors)
+                    && ancestors.iter().any(|candidate| ancestor.matches_in(*candidate, &[]))
+            }
+            Selector::Child { parent, subject } => {
+                subject.matches_in(element, ancestors)
+                    && ancestors.last().is_some_and(|candidate| parent.matches_in(*candidate, &[]))
+            }
         }
     }
+}
+
+/// One element's identity, as a selector sees it.
+///
+/// A borrowed, `Copy` descriptor rather than a widget reference: the selector engine must be
+/// usable from the CSS parser's tests without constructing controls, and a combinator chain is
+/// then a slice of these values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ElementRef<'a> {
+    /// The widget kind, resolved.
+    pub kind: WidgetKind,
+    /// The element's class, when it has one.
+    pub class: Option<&'a str>,
+    /// The element's id, when it has one.
+    pub id: Option<&'a str>,
+    /// The element's interaction state, when known.
+    pub state: Option<PseudoState>,
 }
 
 /// A collection of style rules that can be matched against widgets.
@@ -160,6 +230,20 @@ impl StyleSheet {
         state: Option<PseudoState>,
     ) -> Vec<&StyleRule> {
         self.rules.iter().filter(|r| r.selector.matches(kind, class, id, state)).collect()
+    }
+
+    /// Find all matching rules for an element **with its ancestor chain**, sorted by
+    /// specificity.
+    ///
+    /// The context-aware counterpart of [`Self::match_rules`]: a rule whose selector uses a
+    /// descendant or child combinator can only be answered with the chain, so a caller that has
+    /// one should use this entry point.
+    pub fn match_rules_in(
+        &self,
+        element: ElementRef<'_>,
+        ancestors: &[ElementRef<'_>],
+    ) -> Vec<&StyleRule> {
+        self.rules.iter().filter(|rule| rule.selector.matches_in(element, ancestors)).collect()
     }
 
     /// Returns the stored rules in cascade order (ascending specificity;
@@ -259,5 +343,65 @@ mod tests {
     fn stylesheet_empty_rules() {
         let ss = StyleSheet::new();
         assert!(ss.rules().is_empty());
+    }
+
+    /// A descendant combinator matches at any depth, which is what distinguishes it from the
+    /// child combinator tested beside it.
+    #[test]
+    fn a_descendant_combinator_matches_at_any_depth() {
+        let selector = Selector::Descendant {
+            ancestor: Box::new(Selector::Kind(WidgetKind::Panel)),
+            subject: Box::new(Selector::Kind(WidgetKind::Button)),
+        };
+        let button = ElementRef { kind: WidgetKind::Button, class: None, id: None, state: None };
+        let panel = ElementRef { kind: WidgetKind::Panel, ..button };
+        let label = ElementRef { kind: WidgetKind::Label, ..button };
+
+        assert!(selector.matches_in(button, &[panel, label]), "the panel is two levels up");
+        assert!(!selector.matches_in(button, &[label]));
+        assert!(!selector.matches_in(panel, &[panel]), "the subject itself must be a button");
+    }
+
+    /// A child combinator matches only the immediate parent.
+    #[test]
+    fn a_child_combinator_matches_only_the_immediate_parent() {
+        let selector = Selector::Child {
+            parent: Box::new(Selector::Kind(WidgetKind::Panel)),
+            subject: Box::new(Selector::Kind(WidgetKind::Button)),
+        };
+        let button = ElementRef { kind: WidgetKind::Button, class: None, id: None, state: None };
+        let panel = ElementRef { kind: WidgetKind::Panel, ..button };
+        let label = ElementRef { kind: WidgetKind::Label, ..button };
+
+        assert!(selector.matches_in(button, &[panel]), "panel is the immediate parent");
+        assert!(
+            !selector.matches_in(button, &[panel, label]),
+            "a label sits between the panel and the button"
+        );
+    }
+
+    /// Without a chain the combinator cannot answer, so it declines instead of guessing.
+    #[test]
+    fn a_combinator_without_context_matches_nothing() {
+        let selector = Selector::Descendant {
+            ancestor: Box::new(Selector::Universal),
+            subject: Box::new(Selector::Kind(WidgetKind::Button)),
+        };
+        assert!(!selector.matches(WidgetKind::Button, None, None, None));
+    }
+
+    /// Specificity sums both compounds and is unaffected by which combinator joins them.
+    #[test]
+    fn a_combinator_weights_its_compounds_and_nothing_else() {
+        let descendant = Selector::Descendant {
+            ancestor: Box::new(Selector::Kind(WidgetKind::Panel)),
+            subject: Box::new(Selector::Class("primary".to_string())),
+        };
+        let child = Selector::Child {
+            parent: Box::new(Selector::Kind(WidgetKind::Panel)),
+            subject: Box::new(Selector::Class("primary".to_string())),
+        };
+        assert_eq!(descendant.specificity(), 11);
+        assert_eq!(child.specificity(), descendant.specificity());
     }
 }

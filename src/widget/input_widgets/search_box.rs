@@ -46,6 +46,13 @@ pub struct SearchBox {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// The insertion point, in bytes from the start of the value.
+    cursor: usize,
+    /// The other end of a selection, in bytes. `None` means there is no selection.
+    selection_anchor: Option<usize>,
+    /// The caret's blink state. Shared with every other caret in the crate so the tempo is one
+    /// implementation rather than a per-control constant.
+    cursor_blink: crate::style::CursorBlink,
 }
 
 impl SearchBox {
@@ -62,6 +69,9 @@ impl SearchBox {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            cursor: 0,
+            selection_anchor: None,
+            cursor_blink: crate::style::CursorBlink::new(),
         }
     }
 
@@ -110,6 +120,10 @@ impl SearchBox {
                     "search_box_text",
                 )));
             }
+            // A programmatic write replaces the value, so the caret belongs at its end and any
+            // selection is meaningless.
+            self.cursor = self.text.len();
+            self.selection_anchor = None;
             self.text_changed.emit(text);
             self.base.request_redraw();
         }
@@ -138,6 +152,12 @@ impl SearchBox {
     pub fn set_focused(&mut self, focused: bool) {
         if self.focused != focused {
             self.focused = focused;
+            if focused {
+                self.cursor_blink.start();
+            } else {
+                self.cursor_blink.stop();
+                self.selection_anchor = None;
+            }
             self.base.request_redraw();
             if focused {
                 self.base.focus_gained.emit();
@@ -145,6 +165,139 @@ impl SearchBox {
                 self.base.focus_lost.emit();
             }
         }
+    }
+
+    /// The caret's byte offset in the value.
+    pub fn cursor_position(&self) -> usize {
+        self.cursor
+    }
+
+    /// Moves the caret, clearing the selection unless `extend` is set.
+    ///
+    /// The offset is clamped to the value and snapped to a character boundary, so slicing the
+    /// value at the caret is always valid.
+    pub fn set_cursor_position(&mut self, position: usize) {
+        let position = crate::widget::text_utils::floor_char_boundary(
+            &self.text,
+            position.min(self.text.len()),
+        );
+        if self.cursor == position && self.selection_anchor.is_none() {
+            return;
+        }
+        self.cursor = position;
+        self.selection_anchor = None;
+        self.base.request_redraw();
+    }
+
+    /// The selected byte range, or `None` when nothing is selected.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        let (start, end) =
+            if anchor <= self.cursor { (anchor, self.cursor) } else { (self.cursor, anchor) };
+        (start != end).then_some((start, end))
+    }
+
+    /// The selected text, or an empty string when nothing is selected.
+    pub fn selected_text(&self) -> String {
+        self.selection_range()
+            .map_or_else(String::new, |(start, end)| self.text[start..end].to_string())
+    }
+
+    /// Selects the whole value.
+    pub fn select_all(&mut self) {
+        if self.text.is_empty() {
+            return;
+        }
+        self.selection_anchor = Some(0);
+        self.cursor = self.text.len();
+        self.base.request_redraw();
+    }
+
+    /// Clears the selection without moving the caret.
+    pub fn clear_selection(&mut self) {
+        if self.selection_anchor.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Advances the caret blink. Returns whether it owes another frame.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.focused {
+            return false;
+        }
+        let running = self.cursor_blink.tick(delta_ms);
+        if running {
+            self.base.request_redraw();
+        }
+        running
+    }
+
+    /// Moves the caret by `delta` characters, extending the selection when `extend` is set.
+    fn move_caret(&mut self, delta: i32, extend: bool) {
+        let mut target = self.cursor;
+        if delta < 0 {
+            for _ in 0..delta.unsigned_abs() {
+                target = crate::widget::text_utils::previous_char_boundary(&self.text, target);
+            }
+        } else {
+            for _ in 0..delta.unsigned_abs() {
+                target = crate::widget::text_utils::next_char_boundary(&self.text, target);
+            }
+        }
+        self.move_caret_to(target, extend);
+    }
+
+    /// Moves the caret to `position`, extending the selection when `extend` is set.
+    fn move_caret_to(&mut self, position: usize, extend: bool) {
+        let position = crate::widget::text_utils::floor_char_boundary(
+            &self.text,
+            position.min(self.text.len()),
+        );
+        if extend {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor);
+            }
+        } else {
+            self.selection_anchor = None;
+        }
+        if self.cursor != position {
+            self.cursor = position;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Removes the selection, or the character before the caret when there is none.
+    fn backspace(&mut self) {
+        let (start, end) = self.selection_range().unwrap_or_else(|| {
+            let start = crate::widget::text_utils::previous_char_boundary(&self.text, self.cursor);
+            (start, self.cursor)
+        });
+        if start == end {
+            return;
+        }
+        self.text.replace_range(start..end, "");
+        self.cursor = start;
+        self.selection_anchor = None;
+        *self.history_target.borrow_mut() = self.text.clone();
+        self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
+    }
+
+    /// Removes the selection, or the character after the caret when there is none.
+    fn delete_forward(&mut self) {
+        let (start, end) = self.selection_range().unwrap_or_else(|| {
+            let end = crate::widget::text_utils::next_char_boundary(&self.text, self.cursor);
+            (self.cursor, end)
+        });
+        if start == end {
+            return;
+        }
+        self.text.replace_range(start..end, "");
+        self.cursor = start;
+        self.selection_anchor = None;
+        *self.history_target.borrow_mut() = self.text.clone();
+        self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
     }
 
     /// Clears the text content. Emits `text_changed` if the text was non-empty.
@@ -203,11 +356,50 @@ impl SearchBox {
     /// emits through `set_text` — has a single implementation. Control characters are dropped so a
     /// stray one cannot replace the query with a non-printing value.
     fn append_committed_text(&mut self, text: &str) {
-        let mut next = self.text.clone();
-        next.extend(text.chars().filter(|c| !c.is_control()));
-        if next != self.text {
-            self.set_text(next);
+        let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
+        if filtered.is_empty() {
+            return;
         }
+        // Insert at the caret, replacing any selected range. Insertion used to be
+        // end-anchored, so there was no way to correct a typo in the middle of a query.
+        let (start, end) = self.selection_range().unwrap_or((self.cursor, self.cursor));
+        self.text.replace_range(start..end, &filtered);
+        self.cursor = start + filtered.len();
+        self.selection_anchor = None;
+        *self.history_target.borrow_mut() = self.text.clone();
+        self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
+    }
+
+    /// The byte offset a horizontal pixel points at, using the same fitted origin the paint uses.
+    fn byte_index_at_x(&self, x: i32) -> usize {
+        if self.text.is_empty() {
+            return 0;
+        }
+        let font = effective_font(self.style());
+        let mut measurement =
+            crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
+        let context = RenderContext::new(&mut measurement);
+        let rect = self.field_rect();
+        let icon_margin = 10;
+        let icon_size = 14;
+        let clear_btn_size = 16;
+        let clear_margin = 8;
+        let text_x = rect.x + icon_margin + icon_size + 6;
+        let text_width = rect.width as i32
+            - (icon_margin + icon_size + 6 + clear_margin + clear_btn_size + clear_margin);
+        let value_box = Rect::new(text_x, rect.y, text_width.max(1) as u32, rect.height);
+        let advance = context.measure_text(&self.text, font).width as i32;
+        let origin = crate::render::fitted_origin(
+            value_box,
+            advance,
+            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
+        );
+        let dx = (x - origin.x).clamp(0, advance.max(1));
+        let chars = self.text.chars().count().max(1) as f32;
+        let boundary =
+            ((dx as f32 * chars / advance.max(1) as f32).round() as usize).min(chars as usize);
+        self.text.char_indices().nth(boundary).map(|(index, _)| index).unwrap_or(self.text.len())
     }
 }
 
@@ -227,6 +419,11 @@ impl Widget for SearchBox {
         // own minimum height — the same 48 a `lineedit` reports, which is what stops the
         // two entry controls in one form being different sizes.
         crate::core::Size::new(200, dimensions::SEARCH_BOX_FIELD_HEIGHT)
+    }
+
+    /// A focused field owes frames for as long as its caret blinks.
+    fn is_animating(&self) -> bool {
+        self.focused && self.cursor_blink.is_running()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -479,13 +676,43 @@ impl Draw for SearchBox {
             ink.blend(&Color::WHITE, 0.55)
         };
         let display_text = if self.text.is_empty() { &self.placeholder } else { &self.text };
+        let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        // The origin the value is laid out from. Both the selection band and the caret use it,
+        // so a centred or right-aligned query keeps its decorations on the glyphs instead of at
+        // the field's leading edge.
+        let value_advance = context.measure_text(display_text, font).width as i32;
+        let value_origin = crate::render::fitted_origin(text_rect, value_advance, value_align);
+        let text_line = context.text_line(text_rect, font);
+
+        // — Selection band —
+        if !self.text.is_empty() {
+            if let Some((start, end)) = self.selection_range() {
+                let start_x =
+                    value_origin.x + context.measure_text(&self.text[..start], font).width as i32;
+                let end_x =
+                    value_origin.x + context.measure_text(&self.text[..end], font).width as i32;
+                let right =
+                    (value_origin.x + value_advance).min(text_rect.x + text_rect.width as i32);
+                let left = start_x.min(right);
+                let right = end_x.min(right).max(left);
+                context.fill_rect(
+                    Rect::new(
+                        left,
+                        text_line.y,
+                        (right - left).max(0) as u32,
+                        text_line.height.max(1),
+                    ),
+                    accent.unwrap_or(Color::rgba(60, 140, 255, 200)).with_alpha(90),
+                );
+            }
+        }
+
         // The field's own line box. A glyph origin is the box's top-left edge, so the old
         // `text_rect.y + text_rect.height / 2 + 4` put that edge on the field's middle line and
         // drew the text half a line low. The value is drawn only when there is one: the
         // placeholder is *text the caller supplied*, so an empty placeholder with no value is
         // nothing to paint rather than a blank row.
         if !display_text.is_empty() {
-            let text_line = context.text_line(text_rect, font);
             // The value (and the placeholder, which shares this run) is fitted into the field's
             // text box so a centred or right-aligned value is positioned against the box it is
             // aligned within rather than against a fixed inset.
@@ -494,7 +721,24 @@ impl Draw for SearchBox {
                 display_text,
                 font,
                 text_color,
-                self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
+                value_align,
+            );
+        }
+
+        // — Caret —
+        // Drawn from the same origin and prefix measurement as the band, and clipped to the
+        // field's text box. A focused field used to show no insertion point at all, so after a
+        // click or a Tab there was nothing saying where typing would land.
+        if self.focused && is_enabled && self.cursor_blink.is_visible() {
+            let caret_byte =
+                crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
+            let caret_x =
+                value_origin.x + context.measure_text(&self.text[..caret_byte], font).width as i32;
+            let caret_x = caret_x.min(text_rect.x + text_rect.width as i32 - 1).max(text_rect.x);
+            context.draw_line(
+                Point::new(caret_x, text_line.y),
+                Point::new(caret_x, text_line.y + text_line.height as i32),
+                text_color,
             );
         }
 
@@ -553,8 +797,12 @@ impl EventHandler for SearchBox {
                         return;
                     }
                 }
-                // Click on the search box → gain focus
+                // Click on the search box → gain focus and place the caret where it landed.
                 self.set_focused(true);
+                let position = self.byte_index_at_x(pos.x);
+                self.cursor = position;
+                self.selection_anchor = None;
+                self.base.request_redraw();
             }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
                 // No special release handling needed
@@ -580,25 +828,22 @@ impl EventHandler for SearchBox {
                     let _ = self.redo();
                     return;
                 }
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
+                // Primary+A selects the whole query, matching the text fields around it.
+                if mods.contains(crate::shortcut::Modifiers::CTRL) && (*key == 65 || *key == 97) {
+                    self.select_all();
+                    return;
+                }
                 match *key {
-                    8 => {
-                        // Backspace — remove last character
-                        if !self.text.is_empty() {
-                            let mut next = self.text.clone();
-                            next.pop();
-                            self.set_text(next);
-                        }
-                    }
-                    127 => {
-                        // Delete removes the character **after** the caret. This field has no
-                        // caret model — editing is end-anchored (Backspace pops the last
-                        // character), so the caret sits at the end and Delete is a no-op,
-                        // the same behaviour every platform toolkit shows for an
-                        // end-of-line caret. Popping the last character instead made the
-                        // two keys indistinguishable.
-                    }
+                    8 => self.backspace(),
+                    127 => self.delete_forward(),
+                    37 => self.move_caret(-1, shift),
+                    39 => self.move_caret(1, shift),
+                    36 => self.move_caret_to(0, shift),
+                    35 => self.move_caret_to(self.text.len(), shift),
                     13 | 27 => {
-                        // Enter / Escape — lose focus
+                        // Enter / Escape — lose focus.
                         self.set_focused(false);
                     }
                     _ => {
@@ -814,21 +1059,27 @@ mod tests {
         assert_eq!(sb.text(), "hel");
     }
 
-    /// Delete must not remove text: this field is end-anchored, so its caret sits
-    /// after the last character and Delete (which removes forward) has nothing to
-    /// remove. Pinning this stops Delete drifting back to Backspace semantics.
+    /// Delete removes the character after the caret, and does nothing at the end of the value.
     #[test]
-    fn search_box_delete_is_a_noop() {
+    fn search_box_delete_removes_forward_from_the_caret() {
         let mut sb = SearchBox::new(Rect::new(0, 0, 200, 32));
         sb.set_text("hello");
         sb.set_focused(true);
 
+        // A click or an arrow can put the caret inside the value, and Delete then removes the
+        // character in front of it rather than being a no-op everywhere.
+        sb.set_cursor_position(2);
         sb.handle_event(&Event::KeyPress { key: 127, modifiers: 0 }); // Delete
-        assert_eq!(sb.text(), "hello");
+        assert_eq!(sb.text(), "helo");
+
+        // At the end there is nothing forward to remove.
+        sb.set_cursor_position(sb.text().len());
+        sb.handle_event(&Event::KeyPress { key: 127, modifiers: 0 }); // Delete
+        assert_eq!(sb.text(), "helo");
 
         // Backspace still edits.
         sb.handle_event(&Event::KeyPress { key: 8, modifiers: 0 }); // Backspace
-        assert_eq!(sb.text(), "hell");
+        assert_eq!(sb.text(), "hel");
     }
 
     #[test]
@@ -1030,5 +1281,61 @@ mod tests {
             modifiers: 0,
         });
         assert_eq!(sb.text(), "query", "a press outside the field must not clear");
+    }
+
+    /// Typing lands at the caret, and the editing keys act around it.
+    ///
+    /// The field used to be append-only, so a typo in the middle of a query could only be
+    /// fixed by clearing everything after it.
+    #[test]
+    fn the_caret_drives_insertion_and_deletion() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 300, 40));
+        sb.set_text("helo");
+        sb.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+
+        // Move the caret before the `o` and insert the missing letter.
+        sb.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
+        sb.handle_event(&Event::KeyPress { key: 108, modifiers: 0 }); // 'l'
+        assert_eq!(sb.text(), "hello");
+        assert_eq!(sb.cursor_position(), 4);
+
+        // Delete removes the character after the caret.
+        sb.handle_event(&Event::KeyPress { key: 36, modifiers: 0 }); // Home
+        sb.handle_event(&Event::KeyPress { key: 127, modifiers: 0 }); // Delete
+        assert_eq!(sb.text(), "ello");
+        assert_eq!(sb.cursor_position(), 0);
+
+        // Backspace with no selection at the start is a no-op.
+        sb.handle_event(&Event::KeyPress { key: 8, modifiers: 0 });
+        assert_eq!(sb.text(), "ello");
+
+        // End returns the caret to the end.
+        sb.handle_event(&Event::KeyPress { key: 35, modifiers: 0 });
+        assert_eq!(sb.cursor_position(), 4);
+    }
+
+    /// Shift+arrows select a range and typing replaces it; the selection is painted.
+    #[test]
+    fn shift_selects_and_the_selection_is_painted() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 300, 40));
+        sb.set_text("alpha");
+        sb.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        let before = crate::widget::svg::render_to_svg(&mut sb);
+
+        sb.handle_event(&Event::KeyPress { key: 37, modifiers: 1 });
+        sb.handle_event(&Event::KeyPress { key: 37, modifiers: 1 });
+        assert_eq!(sb.selection_range(), Some((3, 5)));
+        assert_eq!(sb.selected_text(), "ha");
+        let selected = crate::widget::svg::render_to_svg(&mut sb);
+        assert_ne!(selected, before, "a selection must be visible");
+
+        sb.handle_event(&Event::text_input("ha!"));
+        assert_eq!(sb.text(), "alpha!");
+        assert_eq!(sb.selection_range(), None);
+
+        sb.select_all();
+        assert_eq!(sb.selected_text(), "alpha!");
+        sb.clear_selection();
+        assert_eq!(sb.selection_range(), None);
     }
 }

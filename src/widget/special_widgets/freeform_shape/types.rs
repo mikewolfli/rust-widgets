@@ -71,6 +71,47 @@ pub enum PathSegment {
     Close,
 }
 
+/// One step of a [`ShapePath::UnitCustom`] path, in the widget's unit square.
+///
+/// Coordinates are fractions of the widget's width and height: `(0.0, 0.0)` is its
+/// top-left corner and `(1.0, 1.0)` its bottom-right. A path authored this way scales
+/// with the widget, unlike [`PathSegment`], whose points are pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UnitPathSegment {
+    /// Starts a new subpath at this point, lifting the pen.
+    MoveTo(f32, f32),
+    /// Draws a straight line from the current point to this point.
+    LineTo(f32, f32),
+    /// Draws a cubic Bézier: two control points then the endpoint.
+    CurveTo((f32, f32), (f32, f32), (f32, f32)),
+    /// Draws a quadratic Bézier: one control point then the endpoint.
+    QuadTo((f32, f32), (f32, f32)),
+    /// Joins the subpath back to its [`UnitPathSegment::MoveTo`] point.
+    Close,
+}
+
+impl UnitPathSegment {
+    /// Converts this unit-square step into a pixel step for a `width` × `height` shape.
+    pub fn to_path_segment(self, width: f32, height: f32) -> PathSegment {
+        fn map((x, y): (f32, f32), width: f32, height: f32) -> Point {
+            Point::from_f32(x * width, y * height)
+        }
+        match self {
+            Self::MoveTo(x, y) => PathSegment::MoveTo(map((x, y), width, height)),
+            Self::LineTo(x, y) => PathSegment::LineTo(map((x, y), width, height)),
+            Self::CurveTo(control1, control2, end) => PathSegment::CurveTo(
+                map(control1, width, height),
+                map(control2, width, height),
+                map(end, width, height),
+            ),
+            Self::QuadTo(control, end) => {
+                PathSegment::QuadTo(map(control, width, height), map(end, width, height))
+            }
+            Self::Close => PathSegment::Close,
+        }
+    }
+}
+
 /// The outline a `FreeformShapeWidget` paints and hit-tests against.
 ///
 /// Written as a code span rather than a link because the widget now lives in a
@@ -113,4 +154,8 @@ pub enum ShapePath {
     /// An arbitrary outline built from path segments. Unlike the other variants
     /// this one does not scale with the widget's size.
     Custom(Vec<PathSegment>),
+    /// An arbitrary outline in unit-square coordinates, so it scales with the
+    /// widget's size. Converted to [`ShapePath::Custom`] pixels when hit-tested or
+    /// painted.
+    UnitCustom(Vec<UnitPathSegment>),
 }

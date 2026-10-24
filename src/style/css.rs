@@ -17,10 +17,20 @@
 //! assert!(!sheet.rules().is_empty());
 //! ```
 
-use crate::compat::{format, vec, MiniToString, String, Vec};
+use crate::compat::{format, vec, Box, MiniToString, String, Vec};
 use crate::core::Color;
+use crate::style::selector::ElementRef;
 use crate::style::{PseudoState, Selector, StyleRule, StyleSheet, WidgetStyle};
 use crate::widget::WidgetKind;
+
+/// The two CSS combinators the selector grammar supports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CssCombinator {
+    /// Whitespace: any ancestor may match.
+    Descendant,
+    /// `>`: only the immediate parent may match.
+    Child,
+}
 
 /// A CSS-parsed selector that stores raw selector parts as strings.
 /// Used for matching during CSS rule application.
@@ -38,6 +48,12 @@ pub enum CssSelector {
     State(PseudoState),
     /// AND-combination of multiple selectors.
     And(Vec<CssSelector>),
+    /// A descendant combinator (`Ancestor Subject`): the subject matches the element and the
+    /// ancestor selector matches at least one ancestor.
+    Descendant(Box<CssSelector>, Box<CssSelector>),
+    /// A child combinator (`Parent > Subject`): the subject matches the element and the parent
+    /// selector matches its immediate parent.
+    Child(Box<CssSelector>, Box<CssSelector>),
 }
 
 impl CssSelector {
@@ -54,7 +70,11 @@ impl CssSelector {
             CssSelector::State(_) => 1,
             CssSelector::Class(_) => 10,
             CssSelector::Id(_) => 100,
-            CssSelector::And(selectors) => selectors.iter().map(CssSelector::specificity).sum(),
+            CssSelector::And(selectors) => selectors.iter().map(|s| s.specificity()).sum(),
+            // The combinator itself contributes no weight: specificity is the two compounds' sum.
+            CssSelector::Descendant(ancestor, subject) | CssSelector::Child(ancestor, subject) => {
+                ancestor.specificity() + subject.specificity()
+            }
         }
     }
 
@@ -77,6 +97,14 @@ impl CssSelector {
             CssSelector::And(selectors) => Selector::And(
                 selectors.iter().map(CssSelector::to_selector).collect::<Option<Vec<_>>>()?,
             ),
+            CssSelector::Descendant(ancestor, subject) => Selector::Descendant {
+                ancestor: Box::new(ancestor.to_selector()?),
+                subject: Box::new(subject.to_selector()?),
+            },
+            CssSelector::Child(parent, subject) => Selector::Child {
+                parent: Box::new(parent.to_selector()?),
+                subject: Box::new(subject.to_selector()?),
+            },
         })
     }
 
@@ -103,6 +131,22 @@ impl CssSelector {
         id: Option<&str>,
         state: Option<PseudoState>,
     ) -> bool {
+        self.matches_in(kind, class, id, state, &[])
+    }
+
+    /// Matches against an element and its ancestor chain.
+    ///
+    /// `ancestors` is ordered root-first. A combinator rule evaluated without a chain answers
+    /// `false`, which is the only honest answer: the condition it describes is a fact about the
+    /// tree, not about the element alone.
+    pub fn matches_in(
+        &self,
+        kind: &str,
+        class: Option<&str>,
+        id: Option<&str>,
+        state: Option<PseudoState>,
+        ancestors: &[ElementRef<'_>],
+    ) -> bool {
         match self {
             CssSelector::Universal => true,
             CssSelector::Kind(k) => crate::widget::capability::coercion::same_key(k, kind),
@@ -110,7 +154,31 @@ impl CssSelector {
             CssSelector::Id(i) => id == Some(i.as_str()),
             CssSelector::State(s) => state == Some(*s),
             CssSelector::And(selectors) => {
-                selectors.iter().all(|s| s.matches(kind, class, id, state))
+                selectors.iter().all(|s| s.matches_in(kind, class, id, state, ancestors))
+            }
+            CssSelector::Descendant(ancestor, subject) => {
+                subject.matches_in(kind, class, id, state, ancestors)
+                    && ancestors.iter().any(|candidate| {
+                        ancestor.matches_in(
+                            candidate.kind.css_name(),
+                            candidate.class,
+                            candidate.id,
+                            candidate.state,
+                            &[],
+                        )
+                    })
+            }
+            CssSelector::Child(parent, subject) => {
+                subject.matches_in(kind, class, id, state, ancestors)
+                    && ancestors.last().is_some_and(|candidate| {
+                        parent.matches_in(
+                            candidate.kind.css_name(),
+                            candidate.class,
+                            candidate.id,
+                            candidate.state,
+                            &[],
+                        )
+                    })
             }
         }
     }
@@ -380,13 +448,49 @@ impl CssParser {
     }
 
     /// Parse a selector string into a `CssSelector`.
-    /// Supports: `Button`, `.class`, `#id`, `:hover`, `Button.class`, `Button:hover`, etc.
+    ///
+    /// Supports compounds (`Button`, `.class`, `#id`, `:hover`, `Button.class`,
+    /// `Button:hover`) joined by the CSS combinators: whitespace for a descendant and `>` for a
+    /// child, so `Panel Button` and `Panel > Button` are distinct selectors. A chain is built
+    /// right-associatively, because the rightmost compound is always the element being styled.
+    ///
+    /// A chain needs the element's ancestors to evaluate — see
+    /// [`CssSelector::matches_in`] — so `matches` alone answers `false` for a combinator rule
+    /// instead of treating it as an unconditional match.
     pub fn parse_selector(text: &str) -> Option<CssSelector> {
         let text = text.trim();
         if text.is_empty() || text == "*" {
             return Some(CssSelector::Universal);
         }
 
+        let (parts, combinators) = Self::split_combinators(text);
+        if combinators.len() != parts.len().saturating_sub(1) || parts.is_empty() {
+            return None;
+        }
+        let mut parts = parts.into_iter();
+        let mut selector = Self::parse_compound(&parts.next()?)?;
+        let mut combinators = combinators.into_iter();
+        for part in parts {
+            let subject = Self::parse_compound(&part)?;
+            selector = match combinators.next()? {
+                CssCombinator::Descendant => {
+                    CssSelector::Descendant(Box::new(selector), Box::new(subject))
+                }
+                CssCombinator::Child => CssSelector::Child(Box::new(selector), Box::new(subject)),
+            };
+        }
+        Some(selector)
+    }
+
+    /// Parses one compound selector (no combinators) into a [`CssSelector`].
+    fn parse_compound(text: &str) -> Option<CssSelector> {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        if text == "*" {
+            return Some(CssSelector::Universal);
+        }
         let parts = Self::split_selector_parts(text);
         let mut selectors = Vec::new();
 
@@ -420,6 +524,56 @@ impl CssParser {
             1 => Some(selectors.into_iter().next().unwrap()),
             _ => Some(CssSelector::And(selectors)),
         }
+    }
+
+    /// Splits a complex selector on its top-level combinators.
+    ///
+    /// Returns the compound texts and the joins between them (`parts.len() - 1` joins). Runs of
+    /// whitespace collapse to one descendant join, and whitespace around `>` does not create an
+    /// extra join, so `A  >  B` and `A>B` describe the same selector.
+    fn split_combinators(text: &str) -> (Vec<String>, Vec<CssCombinator>) {
+        let mut parts = Vec::new();
+        let mut joins = Vec::new();
+        let mut current = String::new();
+        let mut pending_descendant = false;
+
+        let flush = |current: &mut String, parts: &mut Vec<String>| {
+            let trimmed = current.trim();
+            if !trimmed.is_empty() {
+                parts.push(trimmed.to_string());
+            }
+            current.clear();
+        };
+
+        for ch in text.chars() {
+            match ch {
+                '>' => {
+                    flush(&mut current, &mut parts);
+                    pending_descendant = false;
+                    // A `>` may end the text (malformed); the missing subject then makes the
+                    // selector fail in `parse_selector`, which is the honest answer.
+                    joins.push(CssCombinator::Child);
+                }
+                c if c.is_whitespace() => {
+                    if !current.trim().is_empty() {
+                        flush(&mut current, &mut parts);
+                        pending_descendant = true;
+                    }
+                }
+                c => {
+                    if pending_descendant && !parts.is_empty() {
+                        joins.push(CssCombinator::Descendant);
+                        pending_descendant = false;
+                    }
+                    current.push(c);
+                }
+            }
+        }
+        flush(&mut current, &mut parts);
+
+        // A trailing join has no compound after it; `parse_selector` rejects the length mismatch
+        // rather than pairing the join with nothing.
+        (parts, joins)
     }
 
     /// Split a compound selector into parts (e.g., "Button.primary:hover" → ["Button", ".primary", ":hover"])
@@ -534,6 +688,12 @@ impl CssParser {
     /// it. The ABI therefore checks the property name against this parser's vocabulary
     /// before applying, using [`Self::is_known_property`].
     pub fn apply_declaration_text(text: &str, style: &mut WidgetStyle) -> Result<(), String> {
+        // A declaration list is the form a widget's own CSS text takes (`"a: 1; b: 2"`), so the
+        // list form is accepted here rather than leaving each caller to split it — two splitters
+        // is how "one trailing semicolon is fine in a sheet but not inline" would happen.
+        if text.contains(';') {
+            return Self::apply_declarations_text(text, style);
+        }
         let (property, value) = Self::split_declaration(text)?;
         Self::apply_one(
             &CssDeclaration { property: property.to_string(), value: value.to_string() },
@@ -542,6 +702,21 @@ impl CssParser {
         // The single-declaration path reconciles too, so a programmatic write behaves exactly
         // like the same line inside a stylesheet.
         style.reconcile_shadow_into_surface();
+        Ok(())
+    }
+
+    /// Applies a semicolon-separated declaration list.
+    ///
+    /// Empty segments (a trailing `;`, a blank line) are skipped rather than reported: a
+    /// declaration list written as CSS ends with one by convention.
+    pub fn apply_declarations_text(text: &str, style: &mut WidgetStyle) -> Result<(), String> {
+        for segment in text.split(';') {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                continue;
+            }
+            Self::apply_declaration_text(segment, style)?;
+        }
         Ok(())
     }
 
@@ -1750,5 +1925,65 @@ mod tests {
         assert!(error.contains("empty value"), "the error should say the value is empty: {error}");
 
         assert!(CssParser::apply_declaration_text("  ", &mut style).is_err());
+    }
+
+    /// `A B` and `A > B` are different selectors, and neither is a compound AND.
+    #[test]
+    fn combinators_parse_as_chains() {
+        let descendant = CssParser::parse_selector("Panel Button").expect("a descendant chain");
+        assert_eq!(
+            descendant,
+            CssSelector::Descendant(
+                Box::new(CssSelector::Kind("Panel".to_string())),
+                Box::new(CssSelector::Kind("Button".to_string())),
+            )
+        );
+
+        let child = CssParser::parse_selector("Panel > Button").expect("a child chain");
+        assert_eq!(
+            child,
+            CssSelector::Child(
+                Box::new(CssSelector::Kind("Panel".to_string())),
+                Box::new(CssSelector::Kind("Button".to_string())),
+            )
+        );
+        // Whitespace around `>` does not create a second, descendant join.
+        assert_eq!(CssParser::parse_selector("Panel>Button"), Some(child));
+    }
+
+    /// A compound on either side of a combinator keeps its parts together.
+    #[test]
+    fn a_compound_is_not_split_by_the_combinator_parser() {
+        let parsed = CssParser::parse_selector("Panel.primary > Button:hover").expect("a chain");
+        assert_eq!(
+            parsed,
+            CssSelector::Child(
+                Box::new(CssSelector::And(vec![
+                    CssSelector::Kind("Panel".to_string()),
+                    CssSelector::Class("primary".to_string()),
+                ])),
+                Box::new(CssSelector::And(vec![
+                    CssSelector::Kind("Button".to_string()),
+                    CssSelector::State(PseudoState::Hover),
+                ])),
+            )
+        );
+    }
+
+    /// A truncated chain is refused rather than silently degraded into its first compound.
+    #[test]
+    fn a_chain_without_a_subject_is_refused() {
+        assert_eq!(CssParser::parse_selector("Panel >"), None);
+        assert_eq!(CssParser::parse_selector("> Button"), None);
+    }
+
+    /// The canonical `Selector` conversion carries the chain, and specificity sums the
+    /// compounds without counting the combinator.
+    #[test]
+    fn a_parsed_chain_converts_and_carries_its_weight() {
+        let parsed = CssParser::parse_selector("Panel > Button").expect("a chain");
+        let selector = parsed.to_selector().expect("both kinds are known");
+        assert_eq!(selector.specificity(), 2);
+        assert!(matches!(selector, Selector::Child { .. }));
     }
 }

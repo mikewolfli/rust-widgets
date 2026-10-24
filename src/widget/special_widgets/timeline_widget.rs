@@ -7,6 +7,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -44,6 +45,14 @@ pub struct TimelineWidget {
     viewport_start: i64,
     viewport_end: i64,
     row_height: u32,
+    /// Rows scrolled out of view at the top.
+    scroll_offset: usize,
+    /// The "now" instant drawn as a marker, if the host supplied one.
+    now: Option<i64>,
+    /// Whether bars grow in on the first paint.
+    animate_entry: bool,
+    /// The entry animation's progress.
+    reveal: PropertyDriver,
     /// Emitted when selected item changes. Payload is selected item id.
     pub item_selected: Signal1<String>,
 }
@@ -59,7 +68,73 @@ impl TimelineWidget {
             viewport_start: 0,
             viewport_end: 100,
             row_height: 24,
+            scroll_offset: 0,
+            now: None,
+            animate_entry: false,
+            reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
             item_selected: Signal1::new(),
+        }
+    }
+
+    /// Sets the instant drawn as a "now" marker, or `None` to hide it.
+    ///
+    /// The control does not read the clock: a widget that called `SystemTime::now` would
+    /// repaint on its own schedule and make every snapshot depend on the moment it ran.
+    pub fn set_now(&mut self, now: Option<i64>) {
+        if self.now == now {
+            return;
+        }
+        self.now = now;
+        self.base.request_redraw();
+    }
+
+    /// Returns the "now" marker instant, if any.
+    pub fn now(&self) -> Option<i64> {
+        self.now
+    }
+
+    /// Returns how many rows are scrolled out of view.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Scrolls the visible rows by `delta`.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let max = self.items.len().saturating_sub(self.visible_count());
+        let next = (self.scroll_offset as isize + delta).clamp(0, max as isize) as usize;
+        if self.scroll_offset == next {
+            return;
+        }
+        self.scroll_offset = next;
+        self.base.request_redraw();
+    }
+
+    /// Enables the bar entry animation.
+    pub fn set_animate_entry(&mut self, animate: bool) {
+        if self.animate_entry == animate {
+            return;
+        }
+        self.animate_entry = animate;
+        if animate {
+            self.reveal.jump_to(0.0);
+            self.reveal.set_target(1.0);
+        } else {
+            self.reveal.jump_to(1.0);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether bars animate in.
+    pub fn animate_entry(&self) -> bool {
+        self.animate_entry
+    }
+
+    /// How far the bars have grown, in `0.0..=1.0`.
+    pub fn reveal_progress(&self) -> f32 {
+        if self.animate_entry {
+            self.reveal.value()
+        } else {
+            1.0
         }
     }
 
@@ -187,8 +262,8 @@ impl TimelineWidget {
         {
             return None;
         }
-        let index = ((pos.y - rect.y) / self.row_height as i32) as usize;
-        (index < self.items.len().min(self.visible_count())).then_some(index)
+        let index = ((pos.y - rect.y) / self.row_height as i32) as usize + self.scroll_offset;
+        (index < self.items.len().min(self.visible_count() + self.scroll_offset)).then_some(index)
     }
 
     fn project_x(&self, value: i64, track_x: i32, track_w: u32) -> i32 {
@@ -214,6 +289,23 @@ impl Widget for TimelineWidget {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(600, 200)
+    }
+
+    /// Advances the entry animation.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.animate_entry {
+            return false;
+        }
+        let moving = self.reveal.tick(delta_ms);
+        if moving {
+            self.base.request_redraw();
+        }
+        moving
+    }
+
+    /// Whether the entry animation still owes frames.
+    fn is_animating(&self) -> bool {
+        self.animate_entry && self.reveal.is_moving()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -355,13 +447,37 @@ impl EventHandler for TimelineWidget {
                     let _ = self.select_index(index);
                 }
             }
-            Event::Wheel { delta, .. } => {
-                if delta.y < 0 {
+            Event::Wheel { delta, modifiers } => {
+                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                if modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
+                    if delta.y != 0 {
+                        self.scroll_by(if delta.y > 0 { 1 } else { -1 });
+                    }
+                } else if delta.y < 0 {
                     self.zoom(1.2);
                 } else if delta.y > 0 {
                     self.zoom(0.8);
                 }
             }
+            Event::KeyPress { key, modifiers: _ } => match *key {
+                38 => {
+                    let next = self.selected_index.map_or(0, |index| index.saturating_sub(1));
+                    let _ = self.select_index(next);
+                }
+                40 => {
+                    if !self.items.is_empty() {
+                        let next = self
+                            .selected_index
+                            .map_or(0, |index| (index + 1).min(self.items.len() - 1));
+                        let _ = self.select_index(next);
+                    }
+                }
+                33 => self.scroll_by(-(self.visible_count() as isize)),
+                34 => self.scroll_by(self.visible_count() as isize),
+                36 => self.scroll_by(-1),
+                35 => self.scroll_by(1),
+                _ => {}
+            },
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -430,10 +546,13 @@ impl Draw for TimelineWidget {
         let track_w = rect.width.saturating_sub(
             dimensions::CHART_LABEL_GUTTER as u32 + dimensions::CHART_TRACK_MARGIN as u32,
         );
-        let max_rows = self.visible_count().min(self.items.len());
+        let max_rows =
+            self.visible_count().min(self.items.len().saturating_sub(self.scroll_offset));
+        let growth = f64::from(self.reveal_progress());
 
-        for index in 0..max_rows {
-            let y = rect.y + index as i32 * self.row_height as i32;
+        for visible in 0..max_rows {
+            let index = self.scroll_offset + visible;
+            let y = rect.y + visible as i32 * self.row_height as i32;
             let row_rect = Rect::new(rect.x, y, rect.width, self.row_height);
 
             if self.selected_index == Some(index) {
@@ -462,7 +581,13 @@ impl Draw for TimelineWidget {
 
                 let x0 = self.project_x(item.start, track_x, track_w);
                 let x1 = self.project_x(item.end, track_x, track_w).max(x0 + 2);
-                let bar_w = (x1 - x0) as u32;
+                // Growth runs from the bar's start, so an animating bar keeps its left edge.
+                let x1 = if growth >= 1.0 {
+                    x1
+                } else {
+                    x0 + ((x1 - x0) as f64 * growth).round() as i32
+                };
+                let bar_w = (x1 - x0).max(2) as u32;
                 context.fill_rect(
                     Rect::new(x0, y + 6, bar_w, self.row_height.saturating_sub(12)),
                     bar,
@@ -473,6 +598,27 @@ impl Draw for TimelineWidget {
                 Point::new(rect.x, y + self.row_height as i32),
                 Point::new(rect.x + rect.width as i32, y + self.row_height as i32),
                 separator,
+            );
+        }
+
+        // ── Now marker ──
+        if let Some(now) = self.now {
+            let x = self.project_x(now, track_x, track_w);
+            let marker = crate::style::semantic_color(crate::style::SemanticColor::Error)
+                .unwrap_or(Color::ERROR);
+            context.draw_line_stroke(
+                Point::new(x, rect.y),
+                Point::new(x, rect.y + rect.height as i32),
+                marker,
+                1,
+            );
+            let label_band = Rect::new((x - 18).max(rect.x), rect.y, 36, 12);
+            context.draw_text_line_cow(
+                label_band,
+                "now",
+                effective_font(style),
+                marker,
+                HorizontalAlignment::Center,
             );
         }
     }

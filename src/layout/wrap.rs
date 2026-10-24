@@ -13,7 +13,7 @@
 //! algorithms — see LAY-N08.
 use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, Vec};
-use crate::core::{ObjectId, Rect, Size};
+use crate::core::{ObjectId, Rect, Size, TextDirection};
 
 /// Direction in which items flow before wrapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -66,6 +66,9 @@ pub struct WrapLayout {
     run_spacing: Option<i32>,
     /// Outer padding.
     padding: i32,
+    /// Reading direction. Left-to-right is the historical behaviour; right-to-left mirrors
+    /// each arranged row horizontally inside the content box.
+    text_direction: TextDirection,
     /// Managed children with size tracking.
     children: Vec<WrapChild>,
 }
@@ -314,6 +317,18 @@ pub(crate) fn place_lines(
     rects
 }
 
+/// Mirrors each rect horizontally inside `content`.
+///
+/// Shared by [`FlowLayout`](crate::layout::FlowLayout) and [`WrapLayout`] so the two RTL
+/// arrangements cannot drift apart. Only `x` changes; a rect keeps its width, so the mirror
+/// is an involution when applied to the same content box.
+pub(crate) fn mirror_horizontally(rects: &mut [Rect], content: Rect) {
+    let right = content.x.saturating_add(content.width as i32);
+    for rect in rects.iter_mut() {
+        rect.x = right.saturating_sub(rect.x.saturating_add(rect.width as i32));
+    }
+}
+
 impl WrapLayout {
     /// Create a new wrap layout with the given parameters.
     pub fn new(
@@ -325,7 +340,29 @@ impl WrapLayout {
         // S-47: negative padding is undefined, so reject it at construction. Without this
         // `content_rect` reached `2 * padding as u32`, which overflowed in debug builds.
         let padding = padding.max(0);
-        Self { direction, alignment, spacing, run_spacing: None, padding, children: Vec::new() }
+        Self {
+            direction,
+            alignment,
+            spacing,
+            run_spacing: None,
+            padding,
+            text_direction: TextDirection::default(),
+            children: Vec::new(),
+        }
+    }
+
+    /// The reading direction used when placing children.
+    pub fn text_direction(&self) -> TextDirection {
+        self.text_direction
+    }
+
+    /// Sets the reading direction.
+    ///
+    /// Right-to-left mirrors each arranged row horizontally inside the content box. The
+    /// break decision, spacing and sizes are untouched, so an RTL layout wraps exactly as
+    /// its LTR counterpart and only the physical origin changes.
+    pub fn set_text_direction(&mut self, direction: TextDirection) {
+        self.text_direction = direction;
     }
 
     /// Sets the gap between wrap lines, independently of the gap between items.
@@ -409,6 +446,10 @@ impl WrapLayout {
             self.run_spacing(),
             content,
         );
+        let mut rects: Vec<Rect> = rects;
+        if self.text_direction.is_right_to_left() {
+            mirror_horizontally(&mut rects, content);
+        }
         self.children.iter().zip(rects).map(|(child, rect)| (child.widget_id, rect)).collect()
     }
 }
@@ -420,6 +461,79 @@ impl Layout for WrapLayout {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    /// The one-line footprint of every child plus the gaps and padding.
+    fn size_hint(&self) -> Size {
+        let padding = self.padding.max(0) as u32;
+        let horizontal = self.direction == WrapDirection::Horizontal;
+        let count = self.children.len() as u32;
+        let gap_total = count.saturating_sub(1).saturating_mul(self.spacing.max(0) as u32);
+        let mut main = 0u32;
+        let mut cross = 0u32;
+        for child in &self.children {
+            if horizontal {
+                main = main.saturating_add(child.size.width);
+                cross = cross.max(child.size.height);
+            } else {
+                main = main.saturating_add(child.size.height);
+                cross = cross.max(child.size.width);
+            }
+        }
+        let padding = padding.saturating_mul(2);
+        let main = main.saturating_add(gap_total).saturating_add(padding);
+        let cross = cross.saturating_add(padding);
+        if horizontal {
+            Size::new(main, cross)
+        } else {
+            Size::new(cross, main)
+        }
+    }
+
+    /// The floor: the largest child across the line, and the largest child along it (the
+    /// layout wraps) rather than the sum.
+    fn minimum_size(&self) -> Size {
+        let padding = (self.padding.max(0) as u32).saturating_mul(2);
+        let horizontal = self.direction == WrapDirection::Horizontal;
+        let mut main = 0u32;
+        let mut cross = 0u32;
+        for child in &self.children {
+            if horizontal {
+                main = main.max(child.size.width);
+                cross = cross.max(child.size.height);
+            } else {
+                main = main.max(child.size.height);
+                cross = cross.max(child.size.width);
+            }
+        }
+        let main = main.saturating_add(padding);
+        let cross = cross.saturating_add(padding);
+        if horizontal {
+            Size::new(main, cross)
+        } else {
+            Size::new(cross, main)
+        }
+    }
+
+    /// The wrapped height at a given width, for a horizontal wrap. A vertical wrap's height
+    /// does not depend on its width, so it keeps the height it was given.
+    fn height_for_width(&self, width: u32, height: u32) -> u32 {
+        if self.direction != WrapDirection::Horizontal {
+            return height;
+        }
+        let padding = self.padding.max(0);
+        let inner = width.saturating_sub((padding as u32).saturating_mul(2));
+        if inner == 0 || self.children.is_empty() {
+            return height;
+        }
+        let sizes: Vec<Size> = self.children.iter().map(|child| child.size).collect();
+        let lines = break_lines(&sizes, self.direction, self.spacing, inner as i32, true);
+        let row_heights: i32 = lines
+            .iter()
+            .map(|line| line.iter().map(|index| sizes[*index].height as i32).max().unwrap_or(0))
+            .sum();
+        let gaps = (lines.len() as i32 - 1).max(0) * self.run_spacing();
+        (row_heights + gaps + 2 * padding).max(0) as u32
     }
 
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
@@ -485,6 +599,7 @@ impl Layout for WrapLayout {
             spacing: self.spacing,
             run_spacing: self.run_spacing,
             padding: self.padding,
+            text_direction: self.text_direction,
             children: sized,
         };
         let content = sized.content_rect(rect);
@@ -526,6 +641,7 @@ impl Layout for WrapLayout {
             spacing: (self.spacing as f32 * scale).round() as i32,
             run_spacing: self.run_spacing.map(|spacing| (spacing as f32 * scale).round() as i32),
             padding: scaled_padding,
+            text_direction: self.text_direction,
             children: self.children.clone(),
         };
 
@@ -1007,5 +1123,42 @@ mod tests {
         });
 
         assert_eq!(placed[&1], Rect::new(0, 0, 30, 12));
+    }
+
+    /// A right-to-left wrap mirrors every row inside the content box while keeping the
+    /// break decision and the item sizes.
+    #[test]
+    fn right_to_left_mirrors_each_row() {
+        let mut layout = WrapLayout::new(WrapDirection::Horizontal, WrapAlignment::Start, 0, 0);
+        for id in 1..=3 {
+            layout.add_widget(id, 0);
+            layout.set_child_size(id, Size::new(40, 10));
+        }
+        layout.set_text_direction(TextDirection::RightToLeft);
+        assert!(layout.text_direction().is_right_to_left());
+
+        let mut placed = HashMap::new();
+        layout.update(Rect::new(0, 0, 90, 100), &mut |id, rect| {
+            placed.insert(id, rect);
+        });
+        assert_eq!(placed[&1], Rect::new(50, 0, 40, 10), "row 1 starts at the right edge");
+        assert_eq!(placed[&2], Rect::new(10, 0, 40, 10));
+        assert_eq!(placed[&3], Rect::new(50, 10, 40, 10), "the wrapped row mirrors too");
+    }
+
+    /// The wrap layout reports its one-line wish, a wrapping floor, and the height it needs
+    /// at a given width.
+    #[test]
+    fn the_wrap_layout_answers_the_upward_channel() {
+        let mut layout = WrapLayout::new(WrapDirection::Horizontal, WrapAlignment::Start, 0, 0);
+        for id in 1..=3 {
+            layout.add_widget(id, 0);
+            layout.set_child_size(id, Size::new(40, 10));
+        }
+        assert_eq!(layout.size_hint(), Size::new(120, 10));
+        assert_eq!(layout.minimum_size(), Size::new(40, 10));
+        assert_eq!(layout.height_for_width(90, 500), 20, "two rows at 90 px");
+        assert_eq!(layout.height_for_width(200, 500), 10, "one row at 200 px");
+        assert_eq!(layout.height_for_width(0, 500), 500, "a degenerate width has no answer");
     }
 }

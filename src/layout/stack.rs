@@ -6,15 +6,70 @@ use super::Layout;
 use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 /// Stack layout that shows one child page at a time.
+/// Stack layout that shows one child page at a time.
+///
+/// [`StackMode::All`] instead emits every page in the same rectangle, which is the
+/// declarative-UI `StackAll` mode: useful for overlays where several layers are live at
+/// once. The default [`StackMode::Single`] is the historical behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StackMode {
+    /// Only the current page is laid out (the default).
+    #[default]
+    Single,
+    /// Every page is laid out in the stack's rectangle.
+    All,
+}
+
+/// Stack layout that shows one child page at a time, or every page in `StackAll` mode.
 #[derive(Debug)]
 pub struct StackLayout {
     items: Vec<ObjectId>,
     current: usize,
+    mode: StackMode,
 }
 impl StackLayout {
     /// Create stack layout with no pages.
     pub fn new() -> Self {
-        Self { items: Vec::new(), current: 0 }
+        Self { items: Vec::new(), current: 0, mode: StackMode::Single }
+    }
+
+    /// The layout mode.
+    pub fn mode(&self) -> StackMode {
+        self.mode
+    }
+
+    /// Sets the layout mode; see [`StackMode`].
+    pub fn set_mode(&mut self, mode: StackMode) {
+        self.mode = mode;
+    }
+
+    /// Lays the current and previous pages out as a horizontal slide.
+    ///
+    /// `progress` runs from `0.0` (previous page fully visible) to `1.0` (current page
+    /// fully visible). Both pages are emitted: the outgoing one moves left and the
+    /// incoming one enters from the right. The layout itself stays stateless, so a host
+    /// animation controller owns the clock.
+    pub fn update_slide(
+        &self,
+        rect: Rect,
+        previous: Option<usize>,
+        progress: f32,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let t = if progress.is_finite() { progress.clamp(0.0, 1.0) } else { 1.0 };
+        let travel = rect.width as f32 * t;
+        if let Some(previous) = previous {
+            if let Some(id) = self.items.get(previous) {
+                widgets(
+                    *id,
+                    Rect::new(rect.x - travel.round() as i32, rect.y, rect.width, rect.height),
+                );
+            }
+        }
+        if let Some(id) = self.items.get(self.current) {
+            let offset = (rect.width as f32 - travel).round() as i32;
+            widgets(*id, Rect::new(rect.x + offset, rect.y, rect.width, rect.height));
+        }
     }
     /// Select visible page by index.
     ///
@@ -117,8 +172,17 @@ impl Layout for StackLayout {
         }
     }
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
-        if let Some(widget_id) = self.items.get(self.current) {
-            widgets(*widget_id, rect);
+        match self.mode {
+            StackMode::Single => {
+                if let Some(widget_id) = self.items.get(self.current) {
+                    widgets(*widget_id, rect);
+                }
+            }
+            StackMode::All => {
+                for widget_id in &self.items {
+                    widgets(*widget_id, rect);
+                }
+            }
         }
     }
     fn child_ids(&self) -> Vec<ObjectId> {
@@ -232,5 +296,24 @@ mod tests {
 
         assert_eq!(layout.remove_at(1), Some(3));
         assert_eq!(layout.current_index(), 0, "an empty tail falls back to the last page");
+    }
+
+    /// `StackAll` emits every page, and the slide transition moves both pages in one pass.
+    #[test]
+    fn stack_all_and_slide_emit_more_than_the_current_page() {
+        let mut layout = stack_of(3);
+        let mut all = Vec::new();
+        layout.set_mode(StackMode::All);
+        layout.update(Rect::new(0, 0, 100, 40), &mut |id, rect| all.push((id, rect)));
+        assert_eq!(all.len(), 3, "StackAll tiles every page");
+
+        layout.set_mode(StackMode::Single);
+        layout.set_current_index(2);
+        let mut slide = Vec::new();
+        layout.update_slide(Rect::new(0, 0, 100, 40), Some(1), 0.5, &mut |id, rect| {
+            slide.push((id, rect))
+        });
+        assert_eq!(slide[0], (2, Rect::new(-50, 0, 100, 40)), "the outgoing page moves left");
+        assert_eq!(slide[1], (3, Rect::new(50, 0, 100, 40)), "the incoming page enters");
     }
 }

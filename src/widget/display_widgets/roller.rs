@@ -11,6 +11,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::style::{MotionCurve, MotionSlot, PropertyDriver, SpringPreset};
 use crate::widget::capability::coercion::{expect_string_list, expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -30,6 +31,18 @@ pub struct Roller {
     visible_count: u32,
     /// Font size for items.
     font_size: f32,
+    /// Whether wheel and drag movement tween to the row target rather than jumping.
+    inertia: bool,
+    /// The drawn row position, in row units: `selected_index` while settled, and a
+    /// fractional row while a tween is running.
+    ///
+    /// A driver rather than a bare float so the wheel slides rather than teleports, and so
+    /// the resting end is expressible: it is built exactly at index `0`, which is the row a
+    /// fresh roller shows.
+    scroll: PropertyDriver,
+    /// A pointer press that may become a drag: the press's y coordinate and the selection
+    /// it started from, in row terms.
+    drag_origin: Option<(i32, usize)>,
     /// Signal emitted when selection changes.
     pub changed_signal: GenericSignal,
 }
@@ -47,6 +60,17 @@ impl Roller {
             selected_index: 0,
             visible_count,
             font_size: 16.0,
+            inertia: false,
+            // A spring, not the easing curve: the driver's value is a **row index**, and the
+            // easing path normalises its target to `0.0..=1.0`, which would stop the wheel at
+            // the first row. The spring integrator works in the units it is given, so a row
+            // target of `3.0` is a real row.
+            scroll: PropertyDriver::with_curve(
+                0.0,
+                MotionSlot::Normal,
+                MotionCurve::Spring(SpringPreset::Settle),
+            ),
+            drag_origin: None,
             changed_signal: GenericSignal::new(),
         }
     }
@@ -64,6 +88,10 @@ impl Roller {
         } else {
             self.selected_index = 0;
         }
+        // A replaced list is not a scroll: the wheel is placed at the surviving row rather
+        // than animating through options that no longer exist.
+        self.scroll.jump_to(self.selected_index as f32);
+        self.drag_origin = None;
         self.changed_signal.emit();
         self.base.request_redraw();
     }
@@ -75,7 +103,9 @@ impl Roller {
 
     /// Sets the selected index, clamped to the valid range.
     ///
-    /// Emits `changed_signal` only when the value actually changes.
+    /// Emits `changed_signal` only when the value actually changes. With inertia enabled the
+    /// *drawn* wheel tweens to the new row over the theme's motion token; without it the row
+    /// is placed immediately, which is the historical behaviour.
     pub fn set_selected_index(&mut self, index: usize) {
         let clamped = if self.options.is_empty() { 0 } else { index.min(self.options.len() - 1) };
         if clamped != self.selected_index {
@@ -83,6 +113,68 @@ impl Roller {
             self.changed_signal.emit();
             self.base.request_redraw();
         }
+        if self.inertia {
+            self.scroll.set_target(self.selected_index as f32);
+            if crate::style::environment::environment().prefers_reduced_motion() {
+                self.scroll.jump_to(self.selected_index as f32);
+            }
+        } else {
+            self.scroll.jump_to(self.selected_index as f32);
+        }
+    }
+
+    /// Whether wheel and drag movement tween to the row target.
+    pub fn inertia(&self) -> bool {
+        self.inertia
+    }
+
+    /// Enables or disables the tween that carries the wheel to its target row.
+    ///
+    /// Defaults to `false`, which is the historical behaviour: a wheel notch or a drag moves
+    /// the row immediately. When enabled, the wheel slides to the new row through
+    /// [`Roller::tick`], and the environment's reduced-motion preference collapses that slide
+    /// into a direct placement.
+    ///
+    /// Switching inertia **off** lands the wheel on the selected row at once, so a picture
+    /// taken after the setter cannot show a tween that is no longer running.
+    pub fn set_inertia(&mut self, on: bool) {
+        if self.inertia == on {
+            return;
+        }
+        self.inertia = on;
+        if !on {
+            let target = self.selected_index as f32;
+            if (self.scroll.value() - target).abs() > f32::EPSILON {
+                self.scroll.jump_to(target);
+                self.base.request_redraw();
+            }
+        }
+    }
+
+    /// The drawn row position, in row units.
+    ///
+    /// Exactly `selected_index` while the wheel is at rest; a fractional value between two
+    /// rows while an inertia tween is in flight. Exposed because it is the only way to assert
+    /// that the wheel slides rather than jumps.
+    pub fn visual_index(&self) -> f32 {
+        self.scroll.value()
+    }
+
+    /// Advances the wheel's inertia tween by `delta_ms`.
+    ///
+    /// Returns `true` while the wheel is still travelling and `false` once it has settled.
+    /// With inertia disabled this is a still picture and owes nothing.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.inertia {
+            return false;
+        }
+        self.scroll.set_target(self.selected_index as f32);
+        self.scroll.tick(delta_ms)
+    }
+
+    /// Whether the wheel owes animation frames.
+    pub fn is_animating(&self) -> bool {
+        self.inertia && (self.scroll.value() - self.selected_index as f32).abs() > f32::EPSILON
     }
 
     /// Returns the text of the currently selected option, or `None` if the
@@ -235,6 +327,16 @@ impl Widget for Roller {
         // has always reported, now also the height it paints at.
         Size::new(width, self.content_height())
     }
+
+    /// One frame of the wheel's inertia tween.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        Roller::tick(self, delta_ms)
+    }
+
+    /// The wheel owes frames while it is still travelling.
+    fn is_animating(&self) -> bool {
+        Roller::is_animating(self)
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -363,6 +465,32 @@ impl EventHandler for Roller {
                         target.clamp(0, self.options.len().saturating_sub(1) as i32) as usize;
                     self.set_selected_index(target);
                 }
+                // The press is also the anchor for a drag. The selection the press landed on
+                // is the origin, so the dragged distance is measured from what the user
+                // grabbed rather than from wherever a previous gesture ended.
+                self.drag_origin = Some((pos.y, self.selected_index));
+            }
+            // A drag moves the selection by the distance the pointer has travelled, in rows:
+            // dragging up walks the wheel toward later options, dragging down toward earlier
+            // ones. `set_selected_index` owns the tween (or the immediate placement) so a
+            // drag and a wheel notch take the same path.
+            Event::MouseMove { pos } => {
+                if let Some((origin_y, origin_index)) = self.drag_origin {
+                    let item_h = self.item_height().max(1) as f32;
+                    let rows = (origin_y - pos.y) as f32 / item_h;
+                    let last = self.options.len().saturating_sub(1) as i64;
+                    let target =
+                        (origin_index as i64 + rows.round() as i64).clamp(0, last) as usize;
+                    self.set_selected_index(target);
+                }
+            }
+            Event::MouseRelease { .. } => {
+                self.drag_origin = None;
+            }
+            Event::MouseLeave { .. } => {
+                // A release delivered outside the control never reaches this widget, so a
+                // departed pointer must abandon the drag rather than leave it armed.
+                self.drag_origin = None;
             }
             #[cfg(feature = "touch")]
             Event::Tap { pos: _ } => {
@@ -443,8 +571,23 @@ impl Draw for Roller {
         // Clipping region to ensure items don't spill outside the wheel.
         context.push_clip(band.x, band.y, band.width, band.height);
 
+        // How far the wheel has slid away from the selected row, in rows. Exactly zero while
+        // the inertia tween is at rest, so the default picture is untouched; fractional while
+        // a tween is in flight. The whole wheel is shifted by it, which is what makes the rows
+        // read as one surface moving rather than as labels being replaced.
+        let slide_rows = self.scroll.value() - self.selected_index as f32;
+        let slide = -(slide_rows * item_h as f32) as i32;
+        // One extra row on each side while sliding, so the band never shows a gap where the
+        // next row has not reached the clip edge yet. A resting wheel asks for the same rows
+        // it always did.
+        let extra = if slide_rows.abs() > f32::EPSILON { 1 } else { 0 };
+
+        // The selection band is fixed chrome: the rows slide *through* it. Drawing it at the
+        // moving row's position instead would make the highlight chase the text during a tween.
+        let highlight_rect = Rect::new(band.x, center_y - item_h / 2, band.width, item_h as u32);
+
         // Draw each visible item around the center.
-        for offset in 0..=half_visible {
+        for offset in 0..=half_visible + extra {
             for &sign in &[1i32, -1i32] {
                 if offset == 0 && sign == -1 {
                     continue; // center item only once
@@ -454,14 +597,14 @@ impl Draw for Roller {
                     continue;
                 }
                 let idx = idx as usize;
-                let y = center_y + sign * offset as i32 * item_h;
+                let y = center_y + sign * offset as i32 * item_h + slide;
 
                 let item_rect = Rect::new(band.x, y - item_h / 2, band.width, item_h as u32);
 
                 let is_selected = offset == 0;
                 if is_selected {
                     // Highlight the selected item in the center.
-                    context.fill_rect(item_rect, selected_bg);
+                    context.fill_rect(highlight_rect, selected_bg);
                 }
 
                 // Draw the option text, measuring to center horizontally.
@@ -864,5 +1007,63 @@ mod tests {
             big_hint.width,
             base_hint.width
         );
+    }
+
+    /// With inertia on, a wheel notch aims the drawn wheel at the new row and it slides there.
+    ///
+    /// The logical selection changes immediately, exactly as it always did; what changes is
+    /// that `visual_index` travels between rows over successive ticks instead of jumping. The
+    /// settle case is half the contract: once it arrives, the roller owes no more frames.
+    #[test]
+    fn inertia_tweens_the_wheel_to_the_target_row() {
+        let mut roller = make_roller();
+        assert!(!roller.inertia(), "a roller is direct by default");
+
+        roller.set_inertia(true);
+        assert!(roller.inertia());
+        roller.set_selected_index(3);
+        assert_eq!(roller.selected_index(), Some(3), "the logical row changes at once");
+        assert!(roller.is_animating(), "the drawn wheel owes frames");
+
+        assert!(roller.tick(30), "a short frame leaves the wheel travelling");
+        let mid = roller.visual_index();
+        assert!(mid > 0.0 && mid < 3.0, "the wheel is between rows: {mid}");
+
+        while roller.tick(1000) {}
+        assert_eq!(roller.visual_index(), 3.0, "the wheel arrives exactly");
+        assert!(!roller.is_animating());
+        assert!(!roller.tick(1000), "a settled wheel owes no more frames");
+    }
+
+    /// A drag moves the selection by the distance the pointer travelled, in rows.
+    #[test]
+    fn dragging_the_wheel_moves_the_selection_by_rows() {
+        let mut roller = make_roller();
+        let band = roller.wheel_band();
+        let item_h = roller.item_height() as i32;
+        let center_y = band.y + (band.height as i32) / 2;
+        let x = band.x + 10;
+
+        roller.set_selected_index(1);
+        roller.handle_event(&Event::MousePress {
+            pos: Point::new(x, center_y),
+            button: 1,
+            modifiers: 0,
+        });
+        // Dragging up by two rows walks two options forward.
+        roller.handle_event(&Event::MouseMove { pos: Point::new(x, center_y - 2 * item_h) });
+        assert_eq!(roller.selected_index(), Some(3));
+
+        // Dragging back down by one row walks back one option.
+        roller.handle_event(&Event::MouseMove { pos: Point::new(x, center_y - item_h) });
+        assert_eq!(roller.selected_index(), Some(2));
+
+        // The drag ends on release; a later move must not keep walking the wheel.
+        roller.handle_event(&Event::MouseRelease {
+            pos: Point::new(x, center_y - item_h),
+            button: 1,
+        });
+        roller.handle_event(&Event::MouseMove { pos: Point::new(x, center_y - 4 * item_h) });
+        assert_eq!(roller.selected_index(), Some(2), "a released drag must not stay armed");
     }
 }

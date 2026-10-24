@@ -97,7 +97,7 @@ This file tracks items that are currently not feasible to complete in the presen
       declared signature and aborted at runtime. Now dispatches typed messages.
     - `init()` now bootstraps `NSApplication` (`sharedApplication` + `finishLaunching`).
     - `create_menu_bar`/`create_menu`/`menu_add_item`/`attach_menu_bar_to_window`
-      now build real `NSMenu`/`NSMenuItem` objects and install the bar via
+      now build real `the reference menu`/`the reference menu item` objects and install the bar via
       `NSApplication.setMainMenu` (previously pure state).
   - Verified: `cargo run --example apple_appkit_probe --features macos` reports
     `RESULT: PASS`, including `NSApplication.windows.count >= 1` and a non-null
@@ -115,10 +115,10 @@ This file tracks items that are currently not feasible to complete in the presen
   - Symptom on macOS: the very first test that reached the C ABI
     (`bindings::binding_impl::tests::c_abi_widget_lifecycle_roundtrip`) aborted the
     whole test process with `fatal runtime error: Rust cannot catch foreign
-    exceptions, aborting` (SIGABRT), because `MacOSPlatform` called AppKit
-    (`NSWindow::alloc`, `NSApplication`, `NSPasteboard`, …) unconditionally, and
+    exceptions, aborting` (SIGABRT), because `MacOSPlatform` called the platform UI framework
+    (`the reference window::alloc`, `NSApplication`, `NSPasteboard`, …) unconditionally, and
     the test harness runs tests on worker threads.
-  - Resolution: every AppKit-touching method now consults a main-thread guard
+  - Resolution: every the platform UI framework-touching method now consults a main-thread guard
     (`is_main_thread()`) and falls back to a state-only handle (`ptr == 0`) when
     off-main, mirroring the `objc2` backend and the pre-existing
     `create_native_dialog` guard. `add_to_parent_window` / `sync_list_box_native`
@@ -146,7 +146,7 @@ This file tracks items that are currently not feasible to complete in the presen
   - Target completion signal (restated): every backend either implements a real native `create_*` or documents an explicit unsupported contract, with no widget falling through to a silent state-only path without a recorded reason.
   - Update 2026-09-11 (Round 7, native routing honesty): `DatePicker`/`TimePicker`/`DateTimePicker` no longer delegate to `create_panel` in `src/control_backend/native.rs`; they now call their dedicated platform methods, which already existed on **all 11 backends** (Linux: GTK `MenuButton`+`Popover`+`Calendar` / dual `SpinButton`; Windows: `SysDateTimePick32`). Before the fix those native implementations were unreachable dead code — a direct violation of the "FFI wiring completeness" rule. Routing deliberately stays `CustomRequired` because only Linux(`gtk-native`) and Windows construct a real OS object; marking them `NativePreferred` would hand the other 9 backends a state handle under a native-sounding label.
   - Update 2026-09-11 (Round 7, matrix truthfulness): the "Degradation notes" fallback table in `docs/plans/platform_capability_matrix.md` is now **mechanically derived** from `src/control_backend/native.rs` by `tools/generate_platform_capability_matrix.py` instead of being a hand-typed mirror that had silently drifted (9 widgets were still listed as degraded long after they gained dedicated implementations). `tools/check_platform_capability_matrix.sh` now fails if the committed document diverges from a fresh generation; the check was negatively verified by appending a drift marker.
-  - **Update 2026-09-28 — the native-control layer described above no longer exists.** BLUE15's self-drawn refactor (2026-09-14/15) deleted every host-native control constructor: `src/platform/windows/helpers.rs` and its Win32 objects (`msctls_updown32`, `SysListView32`, `SysDateTimePick32`, `SysMonthCal32`, `SysTabControl32`, `msctls_trackbar32`, `BS_GROUPBOX`, `PBS_MARQUEE`, …), the Linux GTK widget constructions (`gtk::SpinButton`/`Calendar`/`Notebook`/`ToggleButton`/`ComboBoxText`/`Pane`/`FileChooserDialog`), and the macOS AppKit ones (`NSStepper`, `NSButton`, …). `src/control_backend/native.rs` no longer builds OS objects, `route_preference_for_widget_kind` returns `CustomRequired` unconditionally (`src/control_backend/routing.rs`), and the `native_widget_kinds` capability method was removed. Every widget is painted by the library on every platform; the remaining real OS-facing capabilities are windowing/mounting/clipboard/IME/a11y/dialogs as recorded in the capability matrix. Treat the Round 2-7 notes above as a record of that era, not as current behaviour.
+  - **Update 2026-09-28 — the native-control layer described above no longer exists.** BLUE15's self-drawn refactor (2026-09-14/15) deleted every host-native control constructor: `src/platform/windows/helpers.rs` and its Win32 objects (`msctls_updown32`, `SysListView32`, `SysDateTimePick32`, `SysMonthCal32`, `SysTabControl32`, `msctls_trackbar32`, `BS_GROUPBOX`, `PBS_MARQUEE`, …), the Linux GTK widget constructions (`gtk::SpinButton`/`Calendar`/`Notebook`/`ToggleButton`/`ComboBoxText`/`Pane`/`FileChooserDialog`), and the macOS the platform UI framework ones (`the reference stepper`, `the reference button`, …). `src/control_backend/native.rs` no longer builds OS objects, `route_preference_for_widget_kind` returns `CustomRequired` unconditionally (`src/control_backend/routing.rs`), and the `native_widget_kinds` capability method was removed. Every widget is painted by the library on every platform; the remaining real OS-facing capabilities are windowing/mounting/clipboard/IME/a11y/dialogs as recorded in the capability matrix. Treat the Round 2-7 notes above as a record of that era, not as current behaviour.
 
 - [ ] ITEM 7: Host-invisible test coverage (tests excluded from the build by `#[cfg(target_os)]`)
   - Tracked in [`blue28.md`](blue28.md) B28.16.

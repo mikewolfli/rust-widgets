@@ -53,11 +53,17 @@ define_class!(
         #[unsafe(method(systemColorsDidChange:))]
         fn system_colors_did_change(&self, _notification: &NSNotification) {
             let outcome = std::panic::catch_unwind(|| {
-                let changed = crate::theme::global_theme_manager().refresh_system_accent();
-                if changed {
-                    log::debug!(
-                        "[macos-objc2] system colours changed; the theme accent was re-derived"
-                    );
+                // The theme registry exists only in a device profile. A stripped profile still
+                // compiles this platform module for the cross matrix, but it has no palette to
+                // refresh, so the observer has nothing to do there.
+                #[cfg(device_profile)]
+                {
+                    let changed = crate::theme::global_theme_manager().refresh_system_accent();
+                    if changed {
+                        log::debug!(
+                            "[macos-objc2] system colours changed; the theme accent was re-derived"
+                        );
+                    }
                 }
             });
             if outcome.is_err() {

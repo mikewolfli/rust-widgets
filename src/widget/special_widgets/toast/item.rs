@@ -28,6 +28,8 @@ pub struct ToastItem {
     pub level: ToastLevel,
     /// Suggested ttl for host runtime.
     pub ttl_ms: u32,
+    /// Optional action button label.
+    pub action_label: Option<String>,
 }
 
 impl ToastItem {
@@ -38,6 +40,18 @@ impl ToastItem {
         level: ToastLevel,
         ttl_ms: u32,
     ) -> Self {
-        Self { id: id.into(), message: message.into(), level, ttl_ms: ttl_ms.max(100) }
+        Self {
+            id: id.into(),
+            message: message.into(),
+            level,
+            ttl_ms: ttl_ms.max(100),
+            action_label: None,
+        }
+    }
+
+    /// Adds an action button to the toast.
+    pub fn with_action(mut self, label: impl Into<String>) -> Self {
+        self.action_label = Some(label.into());
+        self
     }
 }

@@ -8,10 +8,11 @@
 //! and overlay-click-to-dismiss. Emits a `dismissed` signal when closed.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
-use crate::widget::capability::coercion::expect_bool;
+use crate::style::{MotionSlot, PropertyDriver};
+use crate::widget::capability::coercion::{expect_bool, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -36,6 +37,20 @@ pub struct ModalBottomSheet {
     /// Kept so `drag_to` can turn an absolute position into the delta `drag_offset`
     /// accumulates from. `None` outside a drag.
     drag_origin_y: Option<i32>,
+    /// Explicit sheet height in logical pixels, or `None` to derive it.
+    ///
+    /// The height used to be a fixed `40 + 24 + 80` sum, so a caller could not make a
+    /// peek-only sheet or a tall list sheet without replacing the control. `None` keeps
+    /// that derived height, which is why the default frame is unchanged.
+    sheet_height: Option<u32>,
+    /// Whether `show`/`hide` slide the panel instead of switching it.
+    ///
+    /// Opt-in: the default control paints the same frames it always did, and a caller that
+    /// wants the rise/slide transition asks for it. The driver still starts at its hidden
+    /// end so enabling the flag while the sheet is up cannot replay the entrance.
+    animated: bool,
+    /// How far the panel has risen: `0.0` fully off-screen, `1.0` at rest.
+    reveal: PropertyDriver,
     /// Emitted when the sheet is dismissed by user interaction.
     pub dismissed: GenericSignal,
 }
@@ -51,28 +66,105 @@ impl ModalBottomSheet {
             drag_offset: 0.0,
             is_dragging: false,
             drag_origin_y: None,
+            sheet_height: None,
+            animated: false,
+            reveal: PropertyDriver::at(0.0, MotionSlot::Normal),
             dismissed: GenericSignal::new(),
         }
     }
 
     /// Shows the bottom sheet.
+    ///
+    /// With [`set_animated`](Self::set_animated) on, the panel rises from below over the
+    /// following frames; off, it appears on this frame, which is the historical behaviour.
     pub fn show(&mut self) {
         if !self.is_visible {
             self.is_visible = true;
             self.drag_offset = 0.0;
             self.is_dragging = false;
+            self.aim_reveal(1.0);
             self.base.request_redraw();
         }
     }
 
     /// Hides the bottom sheet without emitting the dismissed signal.
+    ///
+    /// With animation on, the panel slides back down and stops being painted once it has
+    /// left the control; the logical state is already hidden, so it no longer takes input.
     pub fn hide(&mut self) {
         if self.is_visible {
             self.is_visible = false;
             self.drag_offset = 0.0;
             self.is_dragging = false;
+            self.aim_reveal(0.0);
             self.base.request_redraw();
         }
+    }
+
+    /// Dismisses the sheet as a user action: hides it and emits `dismissed`.
+    ///
+    /// The overlay click, the Escape key and [`command`](WidgetProperties::command)'s
+    /// `dismiss` route all end here, so a sheet has one definition of "the user closed
+    /// it" and a hidden sheet never emits the signal.
+    pub fn dismiss(&mut self) {
+        if !self.is_visible {
+            return;
+        }
+        self.hide();
+        self.dismissed.emit();
+    }
+
+    /// Aims the reveal driver at `target`, snapping it when animation is off.
+    fn aim_reveal(&mut self, target: f32) {
+        if self.animated {
+            self.reveal.set_target(target);
+        } else {
+            self.reveal.jump_to(target);
+        }
+    }
+
+    /// Returns how far the panel has risen, `0.0` hidden and `1.0` at rest.
+    pub fn reveal_progress(&self) -> f32 {
+        self.reveal.value()
+    }
+
+    /// Returns whether show/hide animate the panel.
+    pub fn is_animated(&self) -> bool {
+        self.animated
+    }
+
+    /// Enables or disables the rise/slide transition.
+    ///
+    /// Turning it off snaps the panel to its current logical position, so the next frame
+    /// is the settled frame rather than a half-transitioned one.
+    pub fn set_animated(&mut self, animated: bool) {
+        if self.animated == animated {
+            return;
+        }
+        self.animated = animated;
+        let target = if self.is_visible { 1.0 } else { 0.0 };
+        self.reveal.jump_to(target);
+        self.base.request_redraw();
+    }
+
+    /// Returns the sheet panel's height in logical pixels.
+    ///
+    /// This is the explicit override when one was set, otherwise the height derived from
+    /// the control's own rectangle (the historical `40 + 24 + 80` figure).
+    pub fn sheet_height(&self) -> u32 {
+        self.compute_sheet_height()
+    }
+
+    /// Overrides the sheet panel's height, or restores the derived height with `None`.
+    ///
+    /// The value is clamped to the control's rectangle when painted, so a height taller
+    /// than the sheet's own control cannot paint outside it.
+    pub fn set_sheet_height(&mut self, height: Option<u32>) {
+        if self.sheet_height == height {
+            return;
+        }
+        self.sheet_height = height;
+        self.base.request_redraw();
     }
 
     /// Returns whether the sheet is currently visible.
@@ -198,9 +290,16 @@ impl ModalBottomSheet {
         }
     }
 
-    /// Computes the approximate sheet panel height based on geometry and content.
+    /// Computes the sheet panel height: the caller's override, or the derived default.
+    ///
+    /// The derived figure is the historical `40 (title) + 24 (handle) + 80 (body)` sum,
+    /// clamped to the control. An explicit height is used as given (still clamped to the
+    /// control's height), so a caller can ask for a short peek sheet.
     fn compute_sheet_height(&self) -> u32 {
         let rect = self.geometry();
+        if let Some(explicit) = self.sheet_height {
+            return explicit.min(rect.height);
+        }
         let title_height: u32 = 40;
         let handle_area: u32 = 24;
         let min_sheet = 120;
@@ -223,6 +322,17 @@ impl Widget for ModalBottomSheet {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(300, 200)
     }
+
+    /// Advances the rise/slide transition, returning whether another frame is owed.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.reveal.tick(delta_ms)
+    }
+
+    /// Whether the panel is mid-transition and owes the frame bus another frame.
+    fn is_animating(&self) -> bool {
+        self.reveal.is_moving()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -254,6 +364,8 @@ impl WidgetProperties for ModalBottomSheet {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "visible" => Ok(CapabilityValue::Bool(self.is_sheet_visible())),
+            "sheet_height" => Ok(CapabilityValue::UInt(u64::from(self.sheet_height.unwrap_or(0)))),
+            "animated" => Ok(CapabilityValue::Bool(self.is_animated())),
             _ => base_property_get(self, name),
         }
     }
@@ -268,12 +380,23 @@ impl WidgetProperties for ModalBottomSheet {
                 }
                 Ok(())
             }
+            // `0` means "derive the height from the control", which is what makes the
+            // override clearable over the property route as well as through the setter.
+            "sheet_height" => {
+                let height = expect_u32(value)?;
+                self.set_sheet_height(if height == 0 { None } else { Some(height) });
+                Ok(())
+            }
+            "animated" => {
+                self.set_animated(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["visible", BASE_PROPERTY_NAMES]
+        property_names_of!["visible", "sheet_height", "animated", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `modal_bottom_sheet` publishes.
@@ -292,7 +415,7 @@ impl WidgetProperties for ModalBottomSheet {
                 Ok(())
             }
             "dismiss" => {
-                self.hide();
+                self.dismiss();
                 Ok(())
             }
             "set_visible" => Err(CapabilityAccessError::OutOfRange),
@@ -367,13 +490,18 @@ impl Draw for ModalBottomSheet {
         context.fill_rect(overlay_rect, scrim);
 
         // A hidden sheet paints only the scrim; the panel, its handle and its title belong to
-        // the open state alone.
-        if !self.is_visible {
+        // the open state alone. With the transition enabled the panel keeps painting while it
+        // slides out, which is why the test is the reveal rather than the logical flag.
+        let reveal = self.reveal.value();
+        if !self.is_visible && reveal <= 0.0 {
             return;
         }
 
-        // 2. Sheet panel at the bottom, shifted by drag offset
-        let sheet_y = rect.y + rect.height as i32 - sheet_height as i32 + drag_offset_px;
+        // 2. Sheet panel at the bottom, shifted by the drag offset and by however far the
+        // panel has still to rise. At `reveal = 1.0` the slide term is zero, so the settled
+        // frame is byte-identical to the pre-animation one.
+        let slide = ((1.0 - reveal) * sheet_height as f32) as i32;
+        let sheet_y = rect.y + rect.height as i32 - sheet_height as i32 + drag_offset_px + slide;
         let sheet_rect_panel = Rect::new(rect.x, sheet_y, rect.width, sheet_height);
         let corner_radius: u32 = 16;
 
@@ -452,9 +580,7 @@ impl EventHandler for ModalBottomSheet {
                         self.drag_origin_y = Some(pos.y);
                     } else {
                         // Click on overlay — dismiss
-                        self.is_visible = false;
-                        self.dismissed.emit();
-                        self.base.request_redraw();
+                        self.dismiss();
                     }
                 }
             }
@@ -477,6 +603,11 @@ impl EventHandler for ModalBottomSheet {
             Event::MouseLeave { .. } if self.is_dragging => {
                 self.cancel_drag();
             }
+            // Escape is the keyboard counterpart of the overlay click, and it goes through the
+            // same `dismiss` entry point so the signal and the hidden state agree.
+            Event::KeyPress { key, .. } if *key == key_codes::ESCAPE => {
+                self.dismiss();
+            }
             _ => {
                 self.base.handle_event(event);
             }
@@ -488,8 +619,9 @@ impl EventHandler for ModalBottomSheet {
 mod tests {
     use super::*;
     use crate::core::Point;
+    use crate::widget::capability::types::CapabilityValue;
     use crate::widget::svg::render_to_svg;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 
     fn make_sheet() -> ModalBottomSheet {
@@ -773,5 +905,93 @@ mod tests {
             "a near-black backdrop needs a heavier veil than a light one (dark {dark:?}, light \
              {light:?})"
         );
+    }
+
+    /// Escape dismisses the sheet through the same path as an overlay click.
+    ///
+    /// A modal sheet that only answers the pointer strands a keyboard user: there was no
+    /// key arm at all, so the only exit was a click on the backdrop.
+    #[test]
+    fn escape_dismisses_the_sheet_once() {
+        let mut sheet = make_sheet();
+        sheet.show();
+        let dismissed = Arc::new(AtomicUsize::new(0));
+        sheet.dismissed.connect({
+            let d = Arc::clone(&dismissed);
+            move || {
+                d.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        sheet.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+        assert!(!sheet.is_visible(), "Escape must close the sheet");
+        assert_eq!(dismissed.load(Ordering::SeqCst), 1, "one Escape is one dismissal");
+
+        sheet.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+        assert_eq!(
+            dismissed.load(Ordering::SeqCst),
+            1,
+            "a hidden sheet must not keep emitting dismissals"
+        );
+    }
+
+    /// The panel height is parameterised, and the default is still the derived figure.
+    #[test]
+    fn the_sheet_height_is_parameterised() {
+        let mut sheet = make_sheet();
+        assert_eq!(sheet.sheet_height(), 144, "the derived height is unchanged");
+
+        sheet.set_sheet_height(Some(220));
+        assert_eq!(sheet.sheet_height(), 220);
+        // Clamped to the control, so a taller request cannot paint outside it.
+        sheet.set_sheet_height(Some(10_000));
+        assert_eq!(sheet.sheet_height(), 600);
+
+        sheet.set_sheet_height(None);
+        assert_eq!(sheet.sheet_height(), 144, "None restores the derived height");
+
+        // The property route publishes the same value and accepts 0 as "derive".
+        sheet.set("sheet_height", CapabilityValue::UInt(180)).expect("writable");
+        assert_eq!(sheet.sheet_height(), 180);
+        assert_eq!(sheet.get("sheet_height"), Ok(CapabilityValue::UInt(180)));
+        sheet.set("sheet_height", CapabilityValue::UInt(0)).expect("writable");
+        assert_eq!(sheet.sheet_height(), 144);
+        assert_eq!(
+            sheet.get("sheet_height"),
+            Ok(CapabilityValue::UInt(0)),
+            "the property reports the override, not the effective height"
+        );
+    }
+
+    /// The slide transition is opt-in, and while it runs it paints an intermediate panel.
+    #[test]
+    fn the_slide_transition_is_opt_in() {
+        let mut sheet = make_sheet();
+        sheet.show();
+        assert_eq!(sheet.reveal_progress(), 1.0, "a static show is settled at once");
+        assert!(!sheet.is_animating());
+
+        sheet.set_animated(true);
+        assert_eq!(
+            sheet.reveal_progress(),
+            1.0,
+            "enabling the flag snaps to the current position, not a replay"
+        );
+        assert!(!sheet.is_animating());
+
+        sheet.hide();
+        assert!(sheet.is_animating(), "an animated hide owes frames");
+        assert_eq!(sheet.reveal_progress(), 1.0, "the exit starts from the shown frame");
+        while sheet.tick(1000) {}
+        assert_eq!(sheet.reveal_progress(), 0.0, "the panel settles fully slid out");
+
+        sheet.show();
+        assert!(sheet.is_animating(), "an animated show owes frames");
+        assert!(sheet.tick(16), "the first step still owes frames");
+        let mid = sheet.reveal_progress();
+        assert!(mid > 0.0 && mid < 1.0, "the panel must pass through an interior rise, got {mid}");
+        while sheet.tick(1000) {}
+        assert_eq!(sheet.reveal_progress(), 1.0);
+        assert!(!sheet.is_animating());
     }
 }

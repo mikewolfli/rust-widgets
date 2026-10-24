@@ -19,7 +19,8 @@ carries a replacement that *preserves the mechanism* and only drops the vendor n
 
 # Scope
 
-`docs/plans/blue*.md` and `docs/log/*.md` only. `gtk-native`, `cocoa` and `objc2` are deliberately
+`docs/plans/blue*.md`, `docs/log/*.md`, `docs/issues/*.md` and
+`docs/issues/slices/*.md` only. `gtk-native`, `cocoa` and `objc2` are deliberately
 NOT touched: they are this crate's own feature and module names (`Cargo.toml`,
 `src/platform/{linux,macos,macos_objc2}/`), i.e. code identifiers rather than citations.
 """
@@ -28,8 +29,12 @@ import collections
 import pathlib
 import re
 
-TARGETS = sorted(pathlib.Path("docs/plans").glob("blue*.md")) + sorted(
-    pathlib.Path("docs/log").glob("*.md")
+TARGETS = (
+    sorted(pathlib.Path("docs/plans").glob("*.md"))
+    + sorted(pathlib.Path("docs/log").glob("*.md"))
+    + sorted(pathlib.Path("docs/issues").glob("*.md"))
+    + sorted(pathlib.Path("docs/issues/slices").glob("*.md"))
+    + sorted(pathlib.Path("src/platform").glob("*/status.md"))
 )
 
 # Each entry is (pattern, replacement). The replacement states the mechanism the citation was
@@ -48,8 +53,29 @@ SUBS = [
     # ── bare names ──
     (re.compile(r"\bQt Quick\b"), "the reference toolkit"),
     (re.compile(r"\bQML\b"), "the reference markup set"),
+    # The reference toolkit's style-sheet language and the platform UI classes it names.
+    (re.compile(r"\bQSS\b"), "the reference style sheet"),
+    (re.compile(r"\bQ[A-Z][a-z][A-Za-z0-9_]*\b"), "the reference control"),
+    (re.compile(r"\bQ_[A-Z][A-Z0-9_]*\b"), "the reference control"),
+    (re.compile(r"\bqwidget\b", re.IGNORECASE), "reference-toolkit control"),
+    (re.compile(r"\bNSSegmentedControl\b"), "the reference segmented control"),
+    (re.compile(r"\bNSStepper\b"), "the reference stepper"),
+    (re.compile(r"\bNSAlert\b"), "the reference alert"),
+    (re.compile(r"\bNSTableView\b"), "the reference table view"),
+    (re.compile(r"\bNSWindow\b"), "the reference window"),
+    (re.compile(r"\bNSMenuItem\b"), "the reference menu item"),
     (re.compile(r"\bFlutter\b"), "a mainstream material toolkit"),
     (re.compile(r"\bSwiftUI\b"), "a mainstream declarative toolkit"),
+    (re.compile(r"\bCompose\b"), "a mainstream declarative toolkit"),
+    (re.compile(r"\bwxWidgets\b"), "a native toolkit"),
+    (re.compile(r"\bAppKit\b"), "the platform UI framework"),
+    (re.compile(r"\bqt-src\b"), "reference-toolkit-source"),
+    (re.compile(r"\bNSMenu\b"), "the reference menu"),
+    (re.compile(r"\bNSOpenPanel\b"), "the reference open panel"),
+    (re.compile(r"\bNSColorPanel\b"), "the reference colour panel"),
+    (re.compile(r"\bNSFontPanel\b"), "the reference font panel"),
+    (re.compile(r"\bNSButton\b"), "the reference button"),
+    (re.compile(r"\bNSTextField\b"), "the reference text field"),
     (re.compile(r"\bMaterial 3\b"), "the Material palette spec"),
     (re.compile(r"\bMaterial Design\b"), "the Material design spec"),
     (re.compile(r"\bReact\b"), "a web UI framework"),

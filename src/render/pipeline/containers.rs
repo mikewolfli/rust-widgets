@@ -9,7 +9,8 @@
 
 use crate::compat::atomic::{AtomicU64, Ordering};
 use crate::compat::{HashMap, Rc, RefCell, Vec, VecDeque};
-use crate::core::{Color, Font, Rect, Size};
+use crate::core::{Color, Font, Point, Rect, Size};
+use crate::render::backend::surface::PathClip;
 use crate::render::default_software_render_config;
 use crate::render::pipeline::pixel_ops::{fill_pixels, pixel_visible, write_pixel_with_mode};
 use crate::render::{
@@ -136,10 +137,34 @@ impl SoftwareSurface {
             buffer: BackBuffer::new(size, dpi_scale),
             aa_samples_per_axis: config.aa_samples_per_axis,
             clip_stack: Vec::new(),
+            path_clips: Vec::new(),
             nonzero_intersections: Vec::new(),
             text_coverage_scratch: Vec::new(),
             blend_mode: BlendMode::Normal,
+            glyph_run_text: false,
         }
+    }
+
+    /// Sets whether text is painted glyph by glyph through a shaped run.
+    ///
+    /// Off by default. Turning it on is an opt-in rendering mode: when a face matches
+    /// `Font::family`, `draw_text` shapes the line with the face's standard ligatures enabled and
+    /// fills each glyph's outline, so `ffi` is drawn as the face's ligature. A face the build does
+    /// not ship leaves the cluster renderer in charge, unchanged.
+    ///
+    /// The measured advance of a glyph-run line comes from the shaped run (`letter_spacing`
+    /// included), not from `shape_text`; a caller that mixes the two for the same string can see
+    /// a difference in width when the face applies a ligature.
+    pub fn set_glyph_run_text(&mut self, enabled: bool) {
+        if self.glyph_run_text == enabled {
+            return;
+        }
+        self.glyph_run_text = enabled;
+    }
+
+    /// Whether text is painted glyph by glyph through a shaped run.
+    pub fn glyph_run_text(&self) -> bool {
+        self.glyph_run_text
     }
 
     /// Sets the blend mode every subsequent pixel write composites through.
@@ -179,6 +204,35 @@ impl SoftwareSurface {
     /// Presents the back buffer as the current frame.
     pub fn end_frame(&mut self) {
         self.buffer.present();
+    }
+
+    /// Reports `rect` as changed since the last present.
+    ///
+    /// Pass the region a frame painted rather than the whole surface and end the frame with
+    /// [`Self::present_damage`]: the front buffer keeps the previous frame outside the reported
+    /// rectangles, so an incremental repaint costs one copy per damaged row instead of a swap.
+    /// A caller that redraws everything should keep using [`Self::end_frame`].
+    pub fn mark_damage(&mut self, rect: Rect) {
+        self.buffer.mark_damage(rect);
+    }
+
+    /// The damaged rectangles reported since the last present.
+    pub fn damage_regions(&self) -> &[(i32, i32, u32, u32)] {
+        self.buffer.damage_regions()
+    }
+
+    /// Forgets the reported damage without publishing it.
+    pub fn clear_damage(&mut self) {
+        self.buffer.clear_damage();
+    }
+
+    /// Publishes only the reported damage, returning whether anything was published.
+    ///
+    /// The back buffer must contain the previous frame outside the damaged regions (seed it from
+    /// [`Self::frame_rgba`] or let the caller adopt the previous frame); this is what makes a
+    /// region-sized present correct rather than a frame with stale holes.
+    pub fn present_damage(&mut self) -> bool {
+        self.buffer.present_damage()
     }
     /// Returns logical surface size.
     pub fn size(&self) -> Size {
@@ -409,15 +463,253 @@ impl SoftwareSurface {
         } else {
             self.clip_stack.push((x, y, width, height));
         }
+        // A rectangle clip is the `None` member of the path-clip stack. Keeping the two stacks
+        // the same height is what lets `pop_clip` release exactly one entry of each, whichever
+        // kind of clip was pushed.
+        self.path_clips.push(None);
     }
     /// Pops the top clip rectangle from the clip stack.
+    ///
+    /// When the popped entry was a path clip (pushed by `RenderCommand::ClipPath`), the path's
+    /// coverage mask is applied
+    /// to the pixels drawn since: fully covered pixels stay, uncovered pixels are replaced by the
+    /// backdrop captured at the push, and partial coverage composites the two. The mask therefore
+    /// clips every primitive exactly, including the antialiased edge of the path itself.
     pub fn pop_clip(&mut self) {
         self.clip_stack.pop();
+        let Some(Some(clip)) = self.path_clips.pop() else { return };
+        let size = self.buffer.size();
+        apply_path_clip(&mut self.buffer.back, size, &clip);
+    }
+
+    /// Pushes a path clip: a rectangle clip over the path's bounds plus an exact coverage mask.
+    ///
+    /// The rectangle half restricts every primitive to the path's bounding box, which is the cheap
+    /// early-out. The mask half is what makes the clip exact: at the matching
+    /// [`Self::pop_clip`] every pixel inside the box that the path does not cover is restored from
+    /// the backdrop captured here, so no primitive needs a path-aware raster path of its own.
+    ///
+    /// A degenerate path (fewer than three points) pushes an empty rectangle, so a malformed clip
+    /// draws nothing rather than falling back to an unclipped surface.
+    pub(crate) fn push_path_clip(&mut self, points: &[Point]) {
+        let bounds = path_bounds(points);
+        match bounds {
+            Some((x, y, width, height)) => self.push_clip(x, y, width, height),
+            None => self.push_clip(0, 0, 0, 0),
+        }
+        let size = self.buffer.size();
+        let Some(rect) = visible_path_region(self.current_clip(), size) else {
+            return;
+        };
+        let coverage = path_coverage(points, rect);
+        let backdrop = capture_region(self.buffer.back.as_slice(), size.width as usize, rect);
+        if let Some(slot) = self.path_clips.last_mut() {
+            *slot = Some(PathClip { rect, coverage, backdrop });
+        }
     }
     /// Returns the current effective clip rect, or `None` if the clip stack is empty.
     pub fn current_clip(&self) -> Option<(i32, i32, u32, u32)> {
         self.clip_stack.last().copied()
     }
+}
+
+/// The bounding box of `points`, or `None` when the path cannot enclose an area.
+fn path_bounds(points: &[Point]) -> Option<(i32, i32, u32, u32)> {
+    if points.len() < 3 {
+        return None;
+    }
+    let mut min_x = i64::MAX;
+    let mut min_y = i64::MAX;
+    let mut max_x = i64::MIN;
+    let mut max_y = i64::MIN;
+    for point in points {
+        min_x = min_x.min(point.x as i64);
+        min_y = min_y.min(point.y as i64);
+        max_x = max_x.max(point.x as i64);
+        max_y = max_y.max(point.y as i64);
+    }
+    let width = max_x - min_x;
+    let height = max_y - min_y;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    // Clamp the origin into `i32` before casting: an extreme pair of points can overflow the
+    // `i32` differences even when their ordering is valid.
+    let x = min_x.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    let y = min_y.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    let width = width.min(u32::MAX as i64) as u32;
+    let height = height.min(u32::MAX as i64) as u32;
+    Some((x, y, width, height))
+}
+
+/// The part of `clip` inside `size`, or `None` when there is no visible part.
+fn visible_path_region(
+    clip: Option<(i32, i32, u32, u32)>,
+    size: Size,
+) -> Option<(i32, i32, u32, u32)> {
+    let (x, y, width, height) = clip?;
+    let x0 = (x as i64).max(0);
+    let y0 = (y as i64).max(0);
+    let x1 = (x as i64 + width as i64).min(size.width as i64);
+    let y1 = (y as i64 + height as i64).min(size.height as i64);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some((x0 as i32, y0 as i32, (x1 - x0) as u32, (y1 - y0) as u32))
+}
+
+/// Vertical sub-samples per pixel row used to antialias a path clip's edge.
+const PATH_CLIP_SUBSAMPLES: usize = 4;
+
+/// Rasterises `points` (implicitly closed) into per-pixel coverage over `rect`.
+///
+/// Each pixel row is sampled on [`PATH_CLIP_SUBSAMPLES`] sub-scanlines. On each sub-scanline the
+/// non-zero winding rule produces horizontal spans, whose exact overlap with each pixel column is
+/// accumulated. Four sub-rows therefore give 4×1 horizontal resolution (the horizontal overlap is
+/// analytic, not sampled), which is the same order of antialiasing the geometry rasteriser uses
+/// for a polygon edge.
+fn path_coverage(points: &[Point], rect: (i32, i32, u32, u32)) -> Vec<u8> {
+    let (_, y0, width, height) = rect;
+    let pixel_count = width as usize * height as usize;
+    let mut coverage = vec![0u8; pixel_count];
+    if points.len() < 3 || width == 0 || height == 0 {
+        return coverage;
+    }
+    let mut accumulated = vec![0f32; pixel_count];
+    let mut crossings: Vec<(f32, i32)> = Vec::new();
+    for row in 0..height as usize {
+        for sub in 0..PATH_CLIP_SUBSAMPLES {
+            let sample_y =
+                y0 as f32 + row as f32 + (sub as f32 + 0.5) / PATH_CLIP_SUBSAMPLES as f32;
+            crossings.clear();
+            for index in 0..points.len() {
+                let first = points[index];
+                let second = points[(index + 1) % points.len()];
+                let first_y = first.y as f32;
+                let second_y = second.y as f32;
+                let winding = if first_y <= sample_y && second_y > sample_y {
+                    1
+                } else if second_y <= sample_y && first_y > sample_y {
+                    -1
+                } else {
+                    continue;
+                };
+                let t = (sample_y - first_y) / (second_y - first_y);
+                let x = first.x as f32 + (second.x - first.x) as f32 * t;
+                crossings.push((x, winding));
+            }
+            crossings.sort_by(|left, right| {
+                left.0.partial_cmp(&right.0).unwrap_or(core::cmp::Ordering::Equal)
+            });
+            let mut index = 0;
+            let mut winding = 0;
+            let mut span_start: Option<f32> = None;
+            while index < crossings.len() {
+                let x = crossings[index].0;
+                if winding != 0 {
+                    if let Some(start) = span_start {
+                        add_span(&mut accumulated, width, row, start, x);
+                    }
+                }
+                let mut delta = 0;
+                while index < crossings.len() && crossings[index].0 == x {
+                    delta += crossings[index].1;
+                    index += 1;
+                }
+                winding += delta;
+                span_start = Some(x);
+            }
+        }
+    }
+    let scale = 255.0 / PATH_CLIP_SUBSAMPLES as f32;
+    for (slot, value) in coverage.iter_mut().zip(accumulated.iter()) {
+        *slot = (value * scale).round().clamp(0.0, 255.0) as u8;
+    }
+    coverage
+}
+
+/// Adds the horizontal overlap of the span `start..end` with each pixel of `row`.
+fn add_span(accumulated: &mut [f32], width: u32, row: usize, start: f32, end: f32) {
+    if !(start.is_finite() && end.is_finite()) || end <= start {
+        return;
+    }
+    let width_f = width as f32;
+    let start = start.max(0.0);
+    let end = end.min(width_f);
+    if end <= start {
+        return;
+    }
+    let first = start.floor() as usize;
+    let last = (end.ceil() as usize).min(width as usize);
+    let row_start = row * width as usize;
+    for column in first..last {
+        let left = (column as f32).max(start);
+        let right = (column as f32 + 1.0).min(end);
+        if right > left {
+            accumulated[row_start + column] += right - left;
+        }
+    }
+}
+
+/// Applies a popped path clip's mask to the pixels it covers.
+fn apply_path_clip(frame: &mut [u8], size: Size, clip: &PathClip) {
+    let (x, y, width, height) = clip.rect;
+    if width == 0 || height == 0 {
+        return;
+    }
+    let pixel_count = width as usize * height as usize;
+    if clip.coverage.len() != pixel_count || clip.backdrop.len() != pixel_count * 4 {
+        return;
+    }
+    let surface_width = size.width as usize;
+    for row in 0..height as usize {
+        for column in 0..width as usize {
+            let mask_index = row * width as usize + column;
+            let coverage = clip.coverage[mask_index];
+            if coverage == 255 {
+                continue;
+            }
+            let frame_index = ((y as usize + row) * surface_width + x as usize + column) * 4;
+            let backdrop_index = mask_index * 4;
+            let Some(pixel) = frame.get_mut(frame_index..frame_index + 4) else { continue };
+            let backdrop = &clip.backdrop[backdrop_index..backdrop_index + 4];
+            if coverage == 0 {
+                pixel.copy_from_slice(backdrop);
+                continue;
+            }
+            // Masked composite: the backdrop is the base and the clipped painting is the source,
+            // weighted by the path's coverage. That is exactly source-over with a scaled source
+            // alpha, so the partial edge of the path blends the same way a partial glyph does.
+            let foreground = [pixel[0], pixel[1], pixel[2], pixel[3]];
+            pixel.copy_from_slice(backdrop);
+            crate::render::pipeline::pixel_ops::blend_pixel(
+                frame,
+                surface_width as u32,
+                (x as usize + column) as u32,
+                (y as usize + row) as u32,
+                Color::rgba(foreground[0], foreground[1], foreground[2], foreground[3]),
+                coverage as f32 / 255.0,
+            );
+        }
+    }
+}
+
+/// Copies a clipped region out of `back` into a tightly packed RGBA buffer.
+fn capture_region(back: &[u8], surface_width: usize, rect: (i32, i32, u32, u32)) -> Vec<u8> {
+    let (x, y, width, height) = rect;
+    let row_bytes = width as usize * 4;
+    let mut out = vec![0u8; row_bytes * height as usize];
+    for row in 0..height as usize {
+        let source = (y as usize + row) * surface_width * 4 + x as usize * 4;
+        let destination = row * row_bytes;
+        if let (Some(source), Some(target)) = (
+            back.get(source..source + row_bytes),
+            out.get_mut(destination..destination + row_bytes),
+        ) {
+            target.copy_from_slice(source);
+        }
+    }
+    out
 }
 
 // Test-only counters of how many times the shaping and measurement work actually ran. They make
@@ -568,5 +860,71 @@ mod tests {
     fn fingerprint_summary(text: &str) -> (usize, &[u8], &[u8]) {
         let bytes = text.as_bytes();
         (bytes.len(), &bytes[..bytes.len().min(8)], &bytes[bytes.len().saturating_sub(8)..])
+    }
+
+    /// Reads one pixel out of a presented frame.
+    fn pixel(frame: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+        let offset = ((y * width + x) * 4) as usize;
+        [frame[offset], frame[offset + 1], frame[offset + 2], frame[offset + 3]]
+    }
+
+    /// A path clip removes the pixels its bounding box would otherwise keep.
+    ///
+    /// The triangle covers the lower-left half of a 4×4 box. A rectangle clip (the previous
+    /// implementation) would leave the upper-right triangle untouched too, so asserting that the
+    /// upper-right corner is still the backdrop is the evidence that the mask, not the box, is
+    /// what clipped the fill.
+    #[test]
+    fn a_path_clip_keeps_only_the_pixels_the_path_covers() {
+        let mut surface = SoftwareSurface::new(Size::new(4, 4), 1.0);
+        surface.begin_frame(Color::WHITE);
+        // A triangle occupying the lower-left half of the box.
+        surface.push_path_clip(&[Point::new(0, 0), Point::new(0, 4), Point::new(4, 4)]);
+        surface.fill_rect(Rect::new(0, 0, 4, 4), Color::RED);
+        surface.pop_clip();
+        surface.end_frame();
+
+        let frame = surface.frame_rgba();
+        assert_eq!(pixel(frame, 4, 0, 3), [255, 0, 0, 255], "inside the triangle");
+        assert_eq!(pixel(frame, 4, 3, 0), [255, 255, 255, 255], "outside it, inside the box");
+    }
+
+    /// Popping a path clip restores the enclosed region's backdrop before the next draw.
+    ///
+    /// `PopClip` is what applies the mask, so a later primitive must see the restored pixels. If
+    /// the mask leaked past the pop, the second fill would be clipped by the first path.
+    #[test]
+    fn popping_a_path_clip_restores_the_backdrop_for_the_next_draw() {
+        let mut surface = SoftwareSurface::new(Size::new(4, 4), 1.0);
+        surface.begin_frame(Color::WHITE);
+        surface.push_path_clip(&[Point::new(0, 0), Point::new(0, 2), Point::new(2, 2)]);
+        surface.fill_rect(Rect::new(0, 0, 4, 4), Color::RED);
+        surface.pop_clip();
+        surface.fill_rect(Rect::new(3, 0, 1, 1), Color::GREEN);
+        surface.end_frame();
+
+        let frame = surface.frame_rgba();
+        assert_eq!(pixel(frame, 4, 3, 0), [0, 255, 0, 255], "the later fill is unclipped");
+        assert_eq!(pixel(frame, 4, 3, 3), [255, 255, 255, 255], "and the mask was removed");
+    }
+
+    /// A degenerate path draws nothing rather than silently not clipping.
+    #[test]
+    fn a_degenerate_path_clip_draws_nothing() {
+        let mut surface = SoftwareSurface::new(Size::new(4, 4), 1.0);
+        surface.begin_frame(Color::WHITE);
+        surface.push_path_clip(&[Point::new(1, 1), Point::new(2, 2)]);
+        surface.fill_rect(Rect::new(0, 0, 4, 4), Color::RED);
+        surface.pop_clip();
+        surface.end_frame();
+        assert!(
+            surface
+                .frame_rgba()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [255, 255, 255, 255]),
+            "an unclosed path encloses no area and must clip everything away"
+        );
     }
 }

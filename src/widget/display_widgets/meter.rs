@@ -24,7 +24,7 @@
 
 use crate::compat::{format, String, ToString, Vec};
 use crate::core::{deg_to_rad, Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::{RenderCommand, RenderContext};
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -82,6 +82,12 @@ pub struct Meter {
     thresholds: Vec<MeterThreshold>,
     /// Whether the numeric value is drawn at each tick.
     show_tick_labels: bool,
+    /// Whether pointer drags and the wheel set the value.
+    interactive: bool,
+    /// Whether the value arc fills whole tick segments instead of continuously.
+    discrete: bool,
+    /// Whether a primary-button drag is currently underway.
+    dragging: bool,
     /// Suffix appended to the value in labels, e.g. `°C`.
     unit: String,
 }
@@ -90,7 +96,7 @@ impl Meter {
     /// Creates a new Meter widget with the given geometry.
     ///
     /// Defaults: value 0, range 0-100, 5 tick marks, no threshold bands, tick
-    /// labels off, no unit.
+    /// labels off, no unit, read-only and continuous.
     pub fn new(rect: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::Meter, rect, "Meter"),
@@ -100,6 +106,9 @@ impl Meter {
             tick_count: 5,
             thresholds: Vec::new(),
             show_tick_labels: false,
+            interactive: false,
+            discrete: false,
+            dragging: false,
             unit: String::new(),
         }
     }
@@ -232,6 +241,50 @@ impl Meter {
         self.show_tick_labels
     }
 
+    /// Returns whether dragging and the wheel may set the value.
+    ///
+    /// A meter is a read-only indicator by default; interaction is opt-in so a
+    /// gauge displaying a measurement its host owns cannot be moved by a stray
+    /// drag.
+    pub fn is_interactive(&self) -> bool {
+        self.interactive
+    }
+
+    /// Enables or disables pointer and wheel input.
+    ///
+    /// When enabled, a drag inside the control (and the wheel over it) writes
+    /// the value through [`Self::set_value`], so the existing `changed` signal
+    /// is emitted exactly once per real change.
+    pub fn set_interactive(&mut self, interactive: bool) {
+        if self.interactive == interactive {
+            return;
+        }
+        self.interactive = interactive;
+        if !interactive {
+            self.dragging = false;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the value arc fills whole tick segments.
+    pub fn is_discrete(&self) -> bool {
+        self.discrete
+    }
+
+    /// Chooses between a continuous value arc and one that fills whole tick
+    /// segments.
+    ///
+    /// In discrete mode the arc stops at the last tick at or below the value,
+    /// so it always agrees with the scale drawn beside it. The default is
+    /// `false`, which keeps the continuous sweep.
+    pub fn set_discrete(&mut self, discrete: bool) {
+        if self.discrete == discrete {
+            return;
+        }
+        self.discrete = discrete;
+        self.base.request_redraw();
+    }
+
     /// Sets the unit suffix shown after the value, e.g. `°C`.
     pub fn set_unit(&mut self, unit: &str) {
         if self.unit == unit {
@@ -301,6 +354,101 @@ impl Meter {
     fn value_at_fraction(&self, fraction: f32) -> u32 {
         let span = (self.max - self.min) as f32;
         (self.min as f32 + span * fraction).round() as u32
+    }
+
+    /// The fraction of the sweep the value arc covers.
+    ///
+    /// This is the continuous value fraction unless [`Self::is_discrete`] is
+    /// set, in which case it is snapped down to the tick grid the scale is
+    /// drawn on. Snapping here rather than at the stored value keeps the
+    /// reading and the needle exact while the arc alone moves in whole
+    /// segments.
+    fn filled_fraction(&self) -> f32 {
+        let fraction = self.normalized_value();
+        let steps = self.tick_count.saturating_sub(1);
+        if !self.discrete || steps == 0 {
+            return fraction;
+        }
+        let step = 1.0 / steps as f32;
+        (fraction / step).floor() * step
+    }
+
+    /// The value a pointer position selects on the gauge, or `None` when the
+    /// control has no drawn gauge to point at.
+    ///
+    /// The sweep runs clockwise from 45° to 315°, so the pointer's angle is
+    /// measured in the same frame the arcs are drawn in. The 90° wedge below the
+    /// pivot is outside the scale; a pointer there snaps to the nearer end
+    /// rather than wrapping to the other side.
+    fn value_at_point(&self, point: Point) -> Option<u32> {
+        let (center, _) = self.gauge_geometry()?;
+        let dx = (point.x - center.x) as f32;
+        let dy = (point.y - center.y) as f32;
+        if dx == 0.0 && dy == 0.0 {
+            return None;
+        }
+        let angle = dy.atan2(dx).to_degrees();
+        let sweep = 270.0_f32;
+        let relative = (angle - 45.0).rem_euclid(360.0);
+        let along = if relative <= sweep {
+            relative
+        } else if relative - sweep <= 360.0 - relative {
+            sweep
+        } else {
+            0.0
+        };
+        Some(self.value_at_fraction(along / sweep))
+    }
+
+    /// How far one wheel notch moves the value: one tick's worth, at least one.
+    fn wheel_step(&self) -> u32 {
+        let steps = self.tick_count.saturating_sub(1).max(1);
+        ((self.max - self.min) / steps).max(1)
+    }
+
+    /// The gauge's drawn centre and radius, or `None` when the control is too
+    /// small to draw one.
+    ///
+    /// Shared by the paint path and the input mapping so a drag reads the same
+    /// geometry the gauge was drawn with.
+    ///
+    /// # The fit
+    ///
+    /// The reading is written below the pivot, so one of the two has to give when
+    /// the box is short. Reserving the reading's band up front lets the answer be
+    /// "the arc shrinks" rather than "half the arc is drawn outside the control and
+    /// a raster backend clips it away silently". A tall box reserves the whole
+    /// band; a short one caps it at half the height, because otherwise there would
+    /// be no arc left to shrink and the control would paint nothing at all (P1).
+    ///
+    /// The 270° sweep runs from 45° to 315° once the −90° phase offset is applied.
+    /// Its extreme x are `cos 135° = -0.707` (left) and `cos 45° = +0.707` (right),
+    /// and its extreme y are `sin 45° = +0.707`/`sin 315° = -0.707`, so the drawn
+    /// box is `1.414 · radius` on **both** axes — a square, biased neither left nor
+    /// right. The radius therefore comes from the drawn band's half-extent, and the
+    /// centre is placed so the drawn box is centred in the control.
+    fn gauge_geometry(&self) -> Option<(Point, u32)> {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
+            return None;
+        }
+        let reading_reserve = Meter::reading_band();
+        let arc_band_height =
+            (rect.height as i32 - reading_reserve.min(rect.height as i32 / 2)).max(1);
+        let ring_radius = ((rect.width.min(rect.height) / 2) as f32 / SWEEP_HALF_EXTENT) as u32;
+        let ring_radius = ring_radius.saturating_sub(4).min(arc_band_height as u32 / 2).max(1);
+        if ring_radius < 10 {
+            return None;
+        }
+        // The `- 4` above is the ring's breathing room plus the half-width of its
+        // stroke; the clamp keeps the whole drawn box inside the control when the
+        // radius is small relative to the rectangle it was offered.
+        let half_extent = (ring_radius as f32 * SWEEP_HALF_EXTENT).ceil() as i32;
+        let max_center_x = (rect.x + rect.width as i32 - half_extent).max(rect.x + half_extent);
+        let center_x = (rect.x + rect.width as i32 / 2).clamp(rect.x + half_extent, max_center_x);
+        let max_center_y = (rect.y + rect.height as i32 - half_extent).max(rect.y + half_extent);
+        let center_y = (rect.y + rect.height as i32 / 2).clamp(rect.y + half_extent, max_center_y);
+        Some((Point::new(center_x, center_y), ring_radius))
     }
 
     /// The angular step between the ring's polyline vertices, in radians.
@@ -515,6 +663,44 @@ impl WidgetProperties for Meter {
 impl EventHandler for Meter {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.interactive || !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos, button, .. }
+                if *button == crate::event::mouse_button::PRIMARY =>
+            {
+                if !self.geometry().contains(*pos) {
+                    return;
+                }
+                self.dragging = true;
+                if let Some(value) = self.value_at_point(*pos) {
+                    self.set_value(value);
+                }
+            }
+            Event::MouseMove { pos } if self.dragging => {
+                if let Some(value) = self.value_at_point(*pos) {
+                    self.set_value(value);
+                }
+            }
+            // Every press is expected to be followed by a release, but a release
+            // outside the control is not delivered. Ending the drag on leave as
+            // well keeps the next hover from moving the needle with no button held.
+            Event::MouseRelease { .. } | Event::MouseLeave { .. } => self.dragging = false,
+            Event::Wheel { delta, modifiers } => {
+                // One notch is one tick. A negative vertical delta is the wheel
+                // turning away, so it raises the reading.
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y == 0 {
+                    return;
+                }
+                let step = self.wheel_step() as i64;
+                let next = (self.value as i64 - scroll.lines_y as i64 * step)
+                    .clamp(self.min as i64, self.max as i64) as u32;
+                self.set_value(next);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -525,18 +711,9 @@ impl Draw for Meter {
             return;
         }
 
-        // Vertical band the arc may occupy.
-        //
-        // The reading is written below the pivot, so one of the two has to give when the
-        // box is short. Reserving the reading's band up front lets the answer be "the arc
-        // shrinks" rather than "half the arc is drawn outside the control and a raster
-        // backend clips it away silently". A tall box reserves the whole band; a short one
-        // caps it at half the height, because otherwise there would be no arc left to
-        // shrink and the control would paint nothing at all (P1). The reading itself is
-        // then dropped by its own fit test below rather than being drawn off the edge.
-        let reading_reserve = Meter::reading_band();
-        let arc_band_height =
-            (rect.height as i32 - reading_reserve.min(rect.height as i32 / 2)).max(1);
+        // The arc's fitted radius and centre come from `gauge_geometry`, which
+        // reserves the band the reading needs below the pivot. Keeping the fit in
+        // one place also means a drag reads the geometry the gauge was drawn with.
 
         // Arc angles: 270° sweep starting from 135° (top-right quadrant).
         // The offset of -90° converts from "0 = top" to "0 = 3 o'clock".
@@ -552,53 +729,23 @@ impl Draw for Meter {
         let offset = -90.0_f32;
         let start_angle = deg_to_rad(arc_start_deg + offset);
         let value_angle =
-            deg_to_rad(arc_start_deg + arc_sweep_deg * self.normalized_value() + offset);
+            deg_to_rad(arc_start_deg + arc_sweep_deg * self.filled_fraction() + offset);
 
-        // Radius and centre fitted to the sweep's **actual** bounding box, then centred in
-        // the control.
-        //
-        // The 270° sweep runs from 45° to 315° once the −90° phase offset is applied. Its
-        // extreme x are `cos 135° = -0.707` (left) and `cos 45° = +0.707` (right), and its
-        // extreme y are `sin 45° = +0.707`/`sin 315° = -0.707`, so the drawn box is
-        // `1.414 · radius` on **both** axes — a square, biased neither left nor right.
-        //
-        // Two earlier readings of this were wrong in opposite directions. Deriving the
-        // radius from the *height* while centring on the rectangle put the top of the arc a
-        // full radius above the centre and past the control's edge. Anchoring the centre at
-        // `rect.x + radius + 4` then pinned the whole gauge to the left edge — `meter.svg`
-        // drew its arc at x 4..71 inside a 240 px cell — while the sweep's rightmost point
-        // still reached a full radius to the right of that centre and left the control.
-        //
-        // So the radius comes from the drawn band's **half-extent** (half of `1.414 ·
-        // radius`), and the centre is placed so the drawn box is centred in the control. The
-        // `- 4` at each end is the ring's breathing room plus the half-width of its stroke.
-        let ring_radius = ((rect.width.min(rect.height) / 2) as f32 / SWEEP_HALF_EXTENT) as u32;
-        let ring_radius = ring_radius.saturating_sub(4).min(arc_band_height as u32 / 2).max(1);
-        if ring_radius < 10 {
+        // The arc's fitted radius and centre, and the tick label's radius, all come
+        // from one derivation so the paint path and the input mapping agree.
+        let Some((center, radius)) = self.gauge_geometry() else {
             return;
-        }
+        };
         // The tick labels sit inside the ring, so the radius they are placed at is derived
         // from what a label actually measures rather than from one more magic subtraction.
         // `tick_inner.saturating_sub(10)` rarely left a radius and was `.max(1)`, which let
         // the fit test below drop every label — `meter.svg` drew the arc and the needle with
         // no scale on them at all.
         let tick_label_font = Font::simple("Sans", 9.0);
-        let tick_outer = ring_radius.saturating_sub(TICK_MARK_LENGTH).max(1);
+        let tick_outer = radius.saturating_sub(TICK_MARK_LENGTH).max(1);
         let label_half = context.measure_text("000", &tick_label_font).width.max(1) / 2;
         let label_radius =
-            ring_radius.saturating_sub(TICK_MARK_LENGTH).saturating_sub(label_half).max(1);
-        let radius = ring_radius;
-        // The centre. The drawn horizontal box is `[center.x - 0.707r, center.x + 0.707r]`, so
-        // the centre is placed by centring that box in the control — and the vertical box is
-        // the same size, so the centre sits one half-extent below the control's own middle.
-        // The clamp keeps the whole drawn box inside the control when the radius is small
-        // relative to the rectangle it was offered.
-        let half_extent = (ring_radius as f32 * SWEEP_HALF_EXTENT).ceil() as i32;
-        let max_center_x = (rect.x + rect.width as i32 - half_extent).max(rect.x + half_extent);
-        let center_x = (rect.x + rect.width as i32 / 2).clamp(rect.x + half_extent, max_center_x);
-        let max_center_y = (rect.y + rect.height as i32 - half_extent).max(rect.y + half_extent);
-        let center_y = (rect.y + rect.height as i32 / 2).clamp(rect.y + half_extent, max_center_y);
-        let center = Point::new(center_x, center_y);
+            radius.saturating_sub(TICK_MARK_LENGTH).saturating_sub(label_half).max(1);
 
         // Resolve colors from style.
         //
@@ -815,6 +962,7 @@ impl Draw for Meter {
         let _ = write!(text, "{}{}", self.value, self.unit);
         let value_font = role_font(style, 12.0);
         let metrics = context.measure_text(&text, &value_font);
+        let reading_reserve = Meter::reading_band();
         let band_top = rect.y + rect.height as i32 - reading_reserve;
         let value_y = band_top + (reading_reserve - metrics.height as i32) / 2;
         if value_y >= rect.y && value_y + metrics.height as i32 <= rect.y + rect.height as i32 {
@@ -1229,5 +1377,109 @@ mod tests {
         meter.add_threshold_range(0, 100, Color::rgb(255, 0, 0));
         let rgba = render(&mut meter, Size::new(12, 12));
         assert!(!rgba.is_empty());
+    }
+
+    /// An interactive meter writes drags and wheel notches through
+    /// `set_value`, so the widget's existing `changed` signal follows them;
+    /// a read-only meter ignores both.
+    #[test]
+    fn meter_interaction_sets_the_value_and_emits_changed() {
+        let mut meter = Meter::new(Rect::new(0, 0, 200, 200));
+        assert!(!meter.is_interactive(), "a meter is a read-only indicator by default");
+
+        // Read-only: neither a drag nor a wheel notch moves it.
+        meter.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        meter.handle_event(&Event::MousePress {
+            pos: Point::new(100, 188),
+            button: crate::event::mouse_button::PRIMARY,
+            modifiers: 0,
+        });
+        assert_eq!(meter.value(), 0);
+
+        meter.set_interactive(true);
+        assert!(meter.is_interactive());
+        let changes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        meter.base.changed.connect({
+            let changes = std::sync::Arc::clone(&changes);
+            move || {
+                changes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        // The pivot is the middle of this square control. A press at the
+        // sweep's start angle (45° below the pivot) reads one sixth of the way
+        // round, and a move to the sweep's beginning reads the maximum.
+        meter.handle_event(&Event::MousePress {
+            pos: Point::new(100, 188),
+            button: crate::event::mouse_button::PRIMARY,
+            modifiers: 0,
+        });
+        assert_eq!(meter.value(), 17, "the press maps its angle onto the sweep");
+        meter.handle_event(&Event::MouseMove { pos: Point::new(188, 100) });
+        assert_eq!(meter.value(), 100, "the drag keeps tracking the pointer");
+
+        // One notch is one tick (the range split into tick intervals), and a
+        // notch away from the reader lowers the value.
+        meter.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(meter.value(), 75, "a notch is one tick of the range");
+        meter.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(meter.value(), 100);
+
+        // Four real changes: the press, the move and the two notches. A
+        // clamped write to the value it already holds stays silent.
+        assert_eq!(changes.load(std::sync::atomic::Ordering::SeqCst), 4);
+
+        // A release ends the drag: hover motion no longer moves the needle.
+        meter.handle_event(&Event::MouseRelease {
+            pos: Point::new(188, 100),
+            button: crate::event::mouse_button::PRIMARY,
+        });
+        meter.handle_event(&Event::MouseMove { pos: Point::new(100, 188) });
+        assert_eq!(meter.value(), 100, "a released meter ignores hover motion");
+
+        // Disabling interaction cancels a drag in progress.
+        meter.set_interactive(false);
+        meter.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(meter.value(), 100);
+    }
+
+    /// Discrete mode fills whole tick segments while the needle and reading
+    /// keep the exact value.
+    #[test]
+    fn meter_discrete_fills_whole_tick_segments() {
+        let mut meter = Meter::new(Rect::new(0, 0, 200, 200));
+        meter.set_value(30);
+        assert!(!meter.is_discrete(), "the sweep is continuous by default");
+        assert!((meter.filled_fraction() - 0.3).abs() < 1e-6, "continuous arc follows the value");
+
+        // With five ticks the range has four intervals, so 30% falls in the
+        // first one and the arc stops at 25%.
+        meter.set_discrete(true);
+        assert!(meter.is_discrete());
+        assert!((meter.filled_fraction() - 0.25).abs() < 1e-6, "the arc snaps down to the tick");
+        assert_eq!(meter.value(), 30, "the reading itself is not snapped");
+
+        // Both ends land exactly on the scale.
+        meter.set_value(100);
+        assert!((meter.filled_fraction() - 1.0).abs() < 1e-6);
+        meter.set_value(0);
+        assert!((meter.filled_fraction() - 0.0).abs() < 1e-6);
+
+        // Changing the tick count changes the grid the arc snaps to.
+        meter.set_tick_count(3);
+        meter.set_value(60);
+        assert!((meter.filled_fraction() - 0.5).abs() < 1e-6, "two intervals snap 60% down to 50%");
+
+        // The rendered arc changes with the mode, proving the flag reaches the
+        // paint path rather than only the model.
+        let continuous = {
+            meter.set_discrete(false);
+            render(&mut meter, Size::new(200, 200))
+        };
+        let discrete = {
+            meter.set_discrete(true);
+            render(&mut meter, Size::new(200, 200))
+        };
+        assert_ne!(continuous, discrete, "discrete mode paints a different arc");
     }
 }

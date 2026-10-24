@@ -26,21 +26,95 @@ impl CodeEditor {
         let chars: Vec<char> = self.model.borrow().line(head.line).chars().collect();
         let prefix: String =
             chars[prefix_start.min(chars.len())..head.column.min(chars.len())].iter().collect();
-        let text = self.text();
-        let items = self.completion_source.completions(&text, &prefix, MAX_COMPLETIONS);
+        let items = if self.completion_source.document_indexed() {
+            // The built-in provider answers from the revision-keyed word index. The
+            // old path materialised the whole document (`self.text()`) and rescanned
+            // it for every trigger, which made completion O(file) per keystroke.
+            if self.completion_index.as_ref().map(DocumentWordIndex::revision)
+                != Some(self.revision)
+            {
+                let text = self.text();
+                self.completion_index = Some(DocumentWordIndex::build(&text, self.revision));
+            }
+            self.completion_index
+                .as_ref()
+                .map(|index| index.completions(&prefix, MAX_COMPLETIONS))
+                .unwrap_or_default()
+        } else {
+            let text = self.text();
+            self.completion_source.completions(&text, &prefix, MAX_COMPLETIONS)
+        };
         if items.is_empty() {
             self.dismiss_completion();
             return 0;
         }
         self.completion.items = items;
         self.completion.selected = 0;
+        self.completion.scroll = 0;
         self.completion.anchor_column = prefix_start;
         self.completion.visible = true;
         self.context_menu.visible = false;
+        if self.config.fade_popups {
+            self.popup_reveal = 0.0;
+        }
         self.completion_changed.emit(true);
         self.base.request_layout();
         self.base.request_redraw();
         self.completion.items.len()
+    }
+
+    /// Revision of the cached completion word index, for tests.
+    #[cfg(test)]
+    pub(crate) fn completion_index_revision(&self) -> Option<u64> {
+        self.completion_index.as_ref().map(DocumentWordIndex::revision)
+    }
+
+    /// Number of completion rows the popup may show at once.
+    pub fn completion_visible_rows(&self) -> usize {
+        let count = self.completion.items.len();
+        let cap = self.config.max_visible_completions;
+        if cap == 0 {
+            count
+        } else {
+            count.min(cap)
+        }
+    }
+
+    /// Scrolls the completion popup by `delta` rows.
+    ///
+    /// The popup used to be `items × row height` tall with no viewport, so a large
+    /// candidate list ran off the widget. A configured cap now turns the list into
+    /// a scrolling viewport, and the selection is kept inside it.
+    pub fn scroll_completion(&mut self, delta: isize) -> bool {
+        if !self.completion.visible {
+            return false;
+        }
+        let visible = self.completion_visible_rows().max(1);
+        let max_scroll = self.completion.items.len().saturating_sub(visible);
+        let target =
+            (self.completion.scroll as isize + delta).clamp(0, max_scroll as isize) as usize;
+        if target == self.completion.scroll {
+            return false;
+        }
+        self.completion.scroll = target;
+        self.base.request_redraw();
+        true
+    }
+
+    /// Keeps the selected row inside the popup viewport.
+    fn clamp_completion_scroll(&mut self) {
+        let visible = self.completion_visible_rows();
+        if visible == 0 {
+            self.completion.scroll = 0;
+            return;
+        }
+        if self.completion.selected < self.completion.scroll {
+            self.completion.scroll = self.completion.selected;
+        } else if self.completion.selected >= self.completion.scroll + visible {
+            self.completion.scroll = self.completion.selected + 1 - visible;
+        }
+        let max_scroll = self.completion.items.len().saturating_sub(visible);
+        self.completion.scroll = self.completion.scroll.min(max_scroll);
     }
 
     /// Hides the completion popup.
@@ -63,6 +137,7 @@ impl CodeEditor {
         let count = self.completion.items.len();
         let current = self.completion.selected.min(count - 1) as isize;
         self.completion.selected = (current + delta).rem_euclid(count as isize) as usize;
+        self.clamp_completion_scroll();
         self.base.request_redraw();
         true
     }
@@ -81,6 +156,7 @@ impl CodeEditor {
         let end = TextPosition::new(line, self.cursor.head.column);
         self.completion.visible = false;
         self.completion.items.clear();
+        self.completion.scroll = 0;
         let head = TextPosition::new(line, start.column + item.label.chars().count());
         self.splice_range(start, end, &item.label, head);
         self.completion_changed.emit(false);
@@ -165,6 +241,9 @@ impl CodeEditor {
             self.context_menu.items.iter().position(|item| !item.disabled).unwrap_or(0);
         self.context_menu.visible = true;
         self.completion.visible = false;
+        if self.config.fade_popups {
+            self.popup_reveal = 0.0;
+        }
         self.base.request_layout();
         self.base.request_redraw();
     }

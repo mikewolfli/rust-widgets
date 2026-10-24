@@ -12,6 +12,25 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Width of the leading glyph gutter, in logical pixels.
+///
+/// The gutter is reserved only while [`CommandLink::shield_visible`] is set, so a link that
+/// never asked for a glyph paints its label exactly where it always did.
+const GLYPH_GUTTER: u32 = 22;
+/// Half of the shield glyph's top edge, in logical pixels.
+const SHIELD_HALF_WIDTH: i32 = 7;
+/// Height of the shield glyph, in logical pixels.
+const SHIELD_HEIGHT: i32 = 16;
+
+/// The keys that activate a command link from the keyboard.
+///
+/// Enter, line feed and space are the same three codes every other activatable control in
+/// the crate accepts, so a link is reachable with the key the user already expects.
+fn is_keyboard_activation(key: u32) -> bool {
+    matches!(key, 13 | 10 | 32)
+}
+
 /// Command link widget for command link buttons.
 ///
 /// A two-line button: a title line plus a secondary description, typically used
@@ -23,10 +42,17 @@ pub struct CommandLink {
     base: BaseWidget,
     text: String,
     description: String,
+    /// Whether the leading shield glyph is painted.
+    ///
+    /// Opt-in because it is a visible change to the link's own layout: the reference
+    /// vocabulary uses the shield to mark a command that needs elevation, and a plain
+    /// command link must keep its unadorned label.
+    shield_visible: bool,
     /// Emitted when command link is clicked.
     ///
-    /// Fires from [`CommandLink::click`] and from a completed primary-button
-    /// click, but only while enabled. Carries no payload.
+    /// Fires from [`CommandLink::click`], from the keyboard activation keys, and from a
+    /// pointer gesture that is **completed** on the link — a press that is dragged off
+    /// and released elsewhere cancels. Carries no payload.
     pub clicked: GenericSignal,
     /// Emitted with the new hover flag when the pointer enters or leaves the
     /// widget. Not emitted when the pointer moves within the widget.
@@ -42,6 +68,7 @@ impl CommandLink {
             base: BaseWidget::new(WidgetKind::CommandLink, geometry, "CommandLink"),
             text: "Command".to_string(),
             description: "".to_string(),
+            shield_visible: false,
             clicked: GenericSignal::new(),
             hovered: Signal1::new(),
         }
@@ -86,6 +113,23 @@ impl CommandLink {
         self.base.set_enabled(enabled);
         self.base.request_redraw();
     }
+
+    /// Whether the leading shield glyph is painted.
+    pub fn shield_visible(&self) -> bool {
+        self.shield_visible
+    }
+
+    /// Shows or hides the leading shield glyph and requests a redraw.
+    ///
+    /// The glyph occupies a reserved gutter, so the title and description shift right by
+    /// the same amount and neither is ever painted under it. A same-value write is a no-op.
+    pub fn set_shield_visible(&mut self, visible: bool) {
+        if self.shield_visible == visible {
+            return;
+        }
+        self.shield_visible = visible;
+        self.base.request_redraw();
+    }
     /// Emits `clicked` if the widget is enabled; a no-op otherwise.
     ///
     /// Takes `&self` because the click carries no state: unlike a button, there
@@ -108,7 +152,10 @@ impl Widget for CommandLink {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(300, 40)
+        // The gutter is part of the link's content when the glyph is shown, so the implicit
+        // width grows with it rather than squeezing the label into the same box.
+        let gutter = if self.shield_visible { GLYPH_GUTTER } else { 0 };
+        crate::core::Size::new(300 + gutter, 40)
     }
 
     fn is_enabled(&self) -> bool {
@@ -149,6 +196,7 @@ impl WidgetProperties for CommandLink {
         match name {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "description" => Ok(CapabilityValue::String(self.description().to_string())),
+            "shield" => Ok(CapabilityValue::Bool(self.shield_visible())),
             "enabled" => Ok(CapabilityValue::Bool(self.is_enabled())),
             _ => base_property_get(self, name),
         }
@@ -164,6 +212,10 @@ impl WidgetProperties for CommandLink {
                 self.set_description(expect_string(value)?);
                 Ok(())
             }
+            "shield" => {
+                self.set_shield_visible(expect_bool(value)?);
+                Ok(())
+            }
             "enabled" => {
                 self.set_enabled(expect_bool(value)?);
                 Ok(())
@@ -174,7 +226,7 @@ impl WidgetProperties for CommandLink {
 
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `COMMAND_LINK_PROPERTIES`.
-        property_names_of!["text", "description", "enabled", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "description", "shield", "enabled", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `command_link` publishes.
@@ -200,11 +252,51 @@ impl WidgetProperties for CommandLink {
 }
 
 impl EventHandler for CommandLink {
+    /// The activation contract: a press arms, a release decides, the keyboard commits.
+    ///
+    /// # Why the commit moved to the release
+    ///
+    /// `clicked` used to fire on `MousePress`, so a press that immediately slid off the
+    /// link and was released somewhere else still activated it. Every other activatable
+    /// control in the crate treats the release as the decision: inside commits, outside
+    /// cancels. A link that fires on the press cannot be slid out of, which is exactly the
+    /// gesture a user makes when they change their mind.
+    ///
+    /// The gesture runs **before** `base.handle_event` because the base clears `pressed`
+    /// on the release; reading it afterwards would no longer tell this handler whether the
+    /// release belonged to its own gesture.
     fn handle_event(&mut self, event: &Event) {
-        self.base.handle_event(event);
         match event {
-            Event::MousePress { button: 1, .. } if self.base.is_enabled() => {
-                self.clicked.emit();
+            Event::MousePress { pos, button, .. } if *button == 1 && self.base.is_enabled() => {
+                // Only a press that resolves to this control arms it: a direct dispatch (a
+                // test, a designer preview) may not have been hit-tested by the runtime.
+                if self.base.contains_point_with_touch_expansion(*pos) {
+                    self.base.set_grabbed(true);
+                    self.base.set_pressed(true);
+                }
+            }
+            // A drag off the link clears the painted pressed state; a drag back restores it.
+            Event::MouseMove { pos } if self.base.is_grabbed() => {
+                self.base.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
+            }
+            Event::MouseRelease { pos, button, .. } if *button == 1 && self.base.is_grabbed() => {
+                let inside = self.base.contains_point_with_touch_expansion(*pos);
+                self.base.set_grabbed(false);
+                self.base.set_pressed(false);
+                if inside {
+                    self.click();
+                }
+            }
+            Event::KeyPress { key, .. }
+                if is_keyboard_activation(*key) && self.base.is_enabled() =>
+            {
+                self.click();
+            }
+            // A focus change mid-press abandons the gesture: the release belongs to whatever
+            // the window switch moved to.
+            Event::FocusLost => {
+                self.base.set_grabbed(false);
+                self.base.set_pressed(false);
             }
             Event::MouseEnter { .. } => {
                 self.hovered.emit(true);
@@ -214,6 +306,7 @@ impl EventHandler for CommandLink {
             }
             _ => { /* Other events are not relevant */ }
         }
+        self.base.handle_event(event);
     }
 }
 impl Draw for CommandLink {
@@ -264,7 +357,11 @@ impl Draw for CommandLink {
         // Draw main text
         let padding = &style.padding;
         let text_font = role_font(style, 12.0).with_italic(true);
-        let text_x = rect.x + padding.left as i32;
+        // The glyph gutter is reserved **between** the padding and the label, so the shield
+        // never shares a box with the text and the two lines shift together.
+        let gutter = if self.shield_visible { GLYPH_GUTTER as i32 } else { 0 };
+        let leading_x = rect.x + padding.left as i32;
+        let text_x = leading_x + gutter;
         // The two lines are stacked from their **measured** line boxes rather than from the
         // literals `+ 12` and `+ 16`. Those constants pinned the layout to one particular font
         // size: the label's offset had no relation to its own line height, so a theme or a
@@ -275,11 +372,45 @@ impl Draw for CommandLink {
         let text_band = Rect {
             x: text_x,
             y: content_top,
-            width: rect.width.saturating_sub(padding.left + padding.right),
+            width: rect.width.saturating_sub(padding.left + padding.right + gutter as u32),
             height: rect.height.saturating_sub(padding.top + padding.bottom),
         };
         let line = context.text_line(text_band, &text_font);
         let text_y = line.y;
+        // ── The leading glyph slot ──
+        //
+        // A shield outline drawn from line segments rather than an icon-registry lookup: the
+        // glyph is seven short strokes at any scale, so it needs no asset and follows the same
+        // hover/disabled ink as the label it marks. It is centred on the title's own line box,
+        // which keeps it attached to the text when the theme grows the font.
+        if self.shield_visible {
+            let center_x = leading_x + GLYPH_GUTTER as i32 / 2;
+            let center_y = text_y + line.height as i32 / 2;
+            let top = center_y - SHIELD_HEIGHT / 2;
+            let bottom = top + SHIELD_HEIGHT;
+            let left = center_x - SHIELD_HALF_WIDTH;
+            let right = center_x + SHIELD_HALF_WIDTH;
+            let shoulder_y = top + SHIELD_HEIGHT * 2 / 5;
+            let stroke = current_text_color;
+            context.draw_line(Point::new(left, top), Point::new(right, top), stroke);
+            context.draw_line(Point::new(left, top), Point::new(left, shoulder_y), stroke);
+            context.draw_line(Point::new(right, top), Point::new(right, shoulder_y), stroke);
+            context.draw_line(Point::new(left, shoulder_y), Point::new(center_x, bottom), stroke);
+            context.draw_line(Point::new(right, shoulder_y), Point::new(center_x, bottom), stroke);
+            // The check inside says the command is the sanctioned one; a disabled link draws
+            // it in the same receded ink as the outline, so the two cannot disagree.
+            let check_y = top + SHIELD_HEIGHT / 2;
+            context.draw_line(
+                Point::new(center_x - 3, check_y),
+                Point::new(center_x - 1, check_y + 2),
+                stroke,
+            );
+            context.draw_line(
+                Point::new(center_x - 1, check_y + 2),
+                Point::new(center_x + 3, check_y - 3),
+                stroke,
+            );
+        }
         context.draw_text_fitted_cow(
             line,
             &self.text,
@@ -476,6 +607,119 @@ mod tests {
             dark, "rgba(0,0,255,255)",
             "the hover ink must not be the fixed blue the defect used"
         );
+    }
+
+    /// A press only arms the link; the release decides whether it activated.
+    ///
+    /// # The defect this pins
+    ///
+    /// `clicked` used to fire on `MousePress`, so sliding off the link before releasing —
+    /// the standard "changed my mind" gesture — still ran the command. The fix gives the
+    /// link the same four-part contract every other activatable control has: press arms,
+    /// move follows, release inside commits, release outside (or focus loss) cancels.
+    #[test]
+    fn a_completed_press_activates_and_a_drag_off_cancels() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let inside = Point::new(10, 10);
+        let outside = Point::new(9000, 9000);
+        let run = |events: &[Event]| {
+            let mut cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+            let clicks = Arc::new(AtomicUsize::new(0));
+            let counter = clicks.clone();
+            cl.clicked.connect(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            });
+            for event in events {
+                cl.handle_event(event);
+            }
+            clicks.load(Ordering::SeqCst)
+        };
+
+        // A bare press is not an activation.
+        assert_eq!(run(&[Event::MousePress { pos: inside, button: 1, modifiers: 0 }]), 0);
+        // Press inside and release inside is one activation.
+        assert_eq!(
+            run(&[
+                Event::MousePress { pos: inside, button: 1, modifiers: 0 },
+                Event::MouseRelease { pos: inside, button: 1 },
+            ]),
+            1
+        );
+        // Press inside and release outside is a cancellation.
+        assert_eq!(
+            run(&[
+                Event::MousePress { pos: inside, button: 1, modifiers: 0 },
+                Event::MouseRelease { pos: outside, button: 1 },
+            ]),
+            0
+        );
+        // A release with no press is not an activation either.
+        assert_eq!(run(&[Event::MouseRelease { pos: inside, button: 1 }]), 0);
+        // Dragging off and back restores the armed state.
+        assert_eq!(
+            run(&[
+                Event::MousePress { pos: inside, button: 1, modifiers: 0 },
+                Event::MouseMove { pos: outside },
+                Event::MouseMove { pos: inside },
+                Event::MouseRelease { pos: inside, button: 1 },
+            ]),
+            1
+        );
+        // Focus loss abandons a held press.
+        assert_eq!(
+            run(&[
+                Event::MousePress { pos: inside, button: 1, modifiers: 0 },
+                Event::FocusLost,
+                Event::MouseRelease { pos: inside, button: 1 },
+            ]),
+            0
+        );
+    }
+
+    /// Enter, line feed and space activate the link; other keys do not.
+    #[test]
+    fn enter_and_space_activate_the_link() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let clicks_for = |key: u32| {
+            let mut cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+            let clicks = Arc::new(AtomicUsize::new(0));
+            let counter = clicks.clone();
+            cl.clicked.connect(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            });
+            cl.handle_event(&Event::KeyPress { key, modifiers: 0 });
+            clicks.load(Ordering::SeqCst)
+        };
+
+        assert_eq!(clicks_for(13), 1, "Enter activates");
+        assert_eq!(clicks_for(10), 1, "line feed activates");
+        assert_eq!(clicks_for(32), 1, "space activates");
+        assert_eq!(clicks_for(9), 0, "tab is not an activation");
+    }
+
+    /// The shield slot is opt-in, round-trips through the property route, and widens the hint.
+    #[test]
+    fn the_shield_slot_is_opt_in_and_shifts_the_label() {
+        let mut cl = CommandLink::new(Rect::new(0, 0, 300, 60));
+        assert!(!cl.shield_visible(), "a plain command link has no glyph");
+        assert_eq!(cl.size_hint(), crate::core::Size::new(300, 40));
+
+        cl.set_shield_visible(true);
+        assert!(cl.shield_visible());
+        assert_eq!(
+            cl.size_hint(),
+            crate::core::Size::new(300 + GLYPH_GUTTER, 40),
+            "the reserved gutter is part of the implicit width"
+        );
+
+        assert_eq!(cl.get("shield").unwrap(), CapabilityValue::Bool(true));
+        cl.set("shield", CapabilityValue::Bool(false)).unwrap();
+        assert!(!cl.shield_visible());
+        assert_eq!(cl.get("shield").unwrap(), CapabilityValue::Bool(false));
     }
 
     /// The `stroke` of the SVG `<line>` element, if the document has one.

@@ -48,6 +48,38 @@ struct GridPlacement {
     row_span: u32,
 }
 
+/// Which corner of the grid cell `(0, 0)` is anchored to.
+///
+/// The cell indices remain the caller's addressing scheme; only their physical placement
+/// mirrors. This is the grid layout's `origin corner` setting.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum GridOriginCorner {
+    /// Row 0 at the top, column 0 at the left.
+    #[default]
+    TopLeft,
+    /// Row 0 at the top, column 0 at the right.
+    TopRight,
+    /// Row 0 at the bottom, column 0 at the left.
+    BottomLeft,
+    /// Row 0 at the bottom, column 0 at the right.
+    BottomRight,
+}
+
+/// One occupied cell, exported for callers that need the full placement map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridItemPosition {
+    /// The widget occupying the cell.
+    pub widget_id: ObjectId,
+    /// Row of the placement's origin cell.
+    pub row: u32,
+    /// Column of the placement's origin cell.
+    pub column: u32,
+    /// Rows covered, at least 1.
+    pub row_span: u32,
+    /// Columns covered, at least 1.
+    pub col_span: u32,
+}
+
 /// Fixed-grid layout manager with row/column cell placement.
 pub struct GridLayout {
     rows: u32,
@@ -75,6 +107,7 @@ pub struct GridLayout {
     /// Four-way margins. `None` means the uniform [`Self::margin`] is used on every side.
     margins: Option<EdgeOffsets>,
     row_sizing: RowSizing,
+    origin_corner: GridOriginCorner,
     cells: Vec<Option<GridPlacement>>,
 }
 impl GridLayout {
@@ -109,8 +142,62 @@ impl GridLayout {
             cell_alignments: HashMap::new(),
             margins: None,
             row_sizing: RowSizing::Fill,
+            origin_corner: GridOriginCorner::TopLeft,
             cells: vec![None; cell_count],
         }
+    }
+
+    /// Returns the origin corner.
+    pub fn origin_corner(&self) -> GridOriginCorner {
+        self.origin_corner
+    }
+
+    /// Sets the corner cell `(0, 0)` is anchored to.
+    ///
+    /// The default [`GridOriginCorner::TopLeft`] preserves every existing layout; a
+    /// mirrored corner changes placement only when a caller opts in.
+    pub fn set_origin_corner(&mut self, corner: GridOriginCorner) {
+        self.origin_corner = corner;
+    }
+
+    /// Every occupied cell, with its widget id and span.
+    ///
+    /// The placement map was previously write-only: a caller could place a widget but had
+    /// no way to enumerate where the widgets ended up. This is the full export the grid's
+    /// get-item-position query is built on.
+    pub fn item_positions(&self) -> Vec<GridItemPosition> {
+        let mut out = Vec::new();
+        for (index, cell) in self.cells.iter().enumerate() {
+            let Some(placement) = cell else { continue };
+            if placement.widget_id == 0 {
+                continue;
+            }
+            out.push(GridItemPosition {
+                widget_id: placement.widget_id,
+                row: (index as u32) / self.cols,
+                column: (index as u32) % self.cols,
+                row_span: placement.row_span.max(1),
+                col_span: placement.col_span.max(1),
+            });
+        }
+        out
+    }
+
+    /// Mirrors an origin cell and its span into the configured corner.
+    fn mirrored_cell(&self, row: u32, col: u32, row_span: u32, col_span: u32) -> (u32, u32) {
+        let row = match self.origin_corner {
+            GridOriginCorner::TopLeft | GridOriginCorner::TopRight => row,
+            GridOriginCorner::BottomLeft | GridOriginCorner::BottomRight => {
+                self.rows.saturating_sub(row.saturating_add(row_span))
+            }
+        };
+        let col = match self.origin_corner {
+            GridOriginCorner::TopLeft | GridOriginCorner::BottomLeft => col,
+            GridOriginCorner::TopRight | GridOriginCorner::BottomRight => {
+                self.cols.saturating_sub(col.saturating_add(col_span))
+            }
+        };
+        (row, col)
     }
 
     /// Reduces `(rows, cols)` until `rows * cols <= MAX_CELLS`, preserving the aspect
@@ -778,13 +865,19 @@ impl GridLayout {
 
                 let last_col = (col + placement.col_span - 1).min(self.cols - 1);
                 let last_row = (row + placement.row_span - 1).min(self.rows - 1);
+                let (origin_row, origin_col) = self.mirrored_cell(
+                    row,
+                    col,
+                    placement.row_span.max(1),
+                    placement.col_span.max(1),
+                );
                 let cell_width: u32 = (col..=last_col).map(|c| col_widths[c as usize]).sum::<u32>()
                     + spacing_x * (last_col - col);
                 let cell_height: u32 =
                     (row..=last_row).map(|r| row_heights[r as usize]).sum::<u32>()
                         + spacing_y * (last_row - row);
-                let x = rect.x + left as i32 + col_x_offsets[col as usize];
-                let y = rect.y + top as i32 + row_y_offsets[row as usize];
+                let x = rect.x + left as i32 + col_x_offsets[origin_col as usize];
+                let y = rect.y + top as i32 + row_y_offsets[origin_row as usize];
                 // Per-cell alignment (the reference toolkit's `setAlignment`): a cell is the slot, the hint's
                 // preferred extent is what the child wants inside it. An axis the alignment
                 // does not name keeps the full cell, and an unconstrained axis has no size to
@@ -1527,5 +1620,25 @@ mod tests {
         layout.set_cell_alignment(1, Some(Alignment::Center));
         layout.remove_widget(1);
         assert_eq!(layout.cell_alignment(1), None, "a stale alignment must not outlive the child");
+    }
+
+    /// The origin corner mirrors physical placement without changing cell indices, and the
+    /// placement map can be exported in full.
+    #[test]
+    fn a_bottom_right_origin_mirrors_placement_and_the_map_is_exported() {
+        let mut grid = GridLayout::new(2, 2, 0, 0);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(1, 1, 2);
+        assert_eq!(grid.origin_corner(), GridOriginCorner::TopLeft);
+        assert_eq!(grid.item_positions().len(), 2);
+        assert_eq!(
+            grid.item_positions().iter().find(|p| p.widget_id == 2).map(|p| (p.row, p.column)),
+            Some((1, 1))
+        );
+
+        grid.set_origin_corner(GridOriginCorner::BottomRight);
+        let out = placed(&grid, Rect::new(0, 0, 100, 50));
+        assert_eq!(rect_of(&out, 1), Rect::new(50, 25, 50, 25), "cell (0, 0) mirrors");
+        assert_eq!(rect_of(&out, 2), Rect::new(0, 0, 50, 25), "cell (1, 1) mirrors");
     }
 }

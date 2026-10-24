@@ -37,6 +37,8 @@ pub struct SafeArea {
     insets: SafeAreaInsets,
     /// Background color for the safe area margins.
     margin_color: Color,
+    /// Optional child placed inside the safe content rectangle.
+    content_child: Option<crate::core::ObjectId>,
 }
 
 impl SafeArea {
@@ -50,6 +52,7 @@ impl SafeArea {
             base: BaseWidget::new(WidgetKind::SafeArea, geometry, "SafeArea"),
             insets: SafeAreaInsets::default(),
             margin_color: Color::WHITE,
+            content_child: None,
         }
     }
     /// Replaces all four insets at once and requests a redraw.
@@ -108,6 +111,44 @@ impl SafeArea {
             g.height.saturating_sub(self.insets.top + self.insets.bottom),
         )
     }
+
+    /// Mounts `child` as the control laid out inside [`Self::content_rect`].
+    ///
+    /// The previous API published the rect and left the host to place content, which
+    /// meant the one thing a safe area exists to do — keep a child out of the notch — was
+    /// the caller's job. Calling [`Self::apply`] (or resizing/mounting) now writes the
+    /// content rect to the child through the runtime's geometry entry point.
+    pub fn set_content(&mut self, child: Option<crate::core::ObjectId>) {
+        if self.content_child == child {
+            return;
+        }
+        if let Some(previous) = self.content_child {
+            self.base.remove_child(previous);
+        }
+        self.content_child = child;
+        if let Some(child) = child {
+            self.base.add_child_linked(child);
+        }
+        self.apply();
+        self.base.request_redraw();
+    }
+
+    /// The mounted content child, if any.
+    pub fn content(&self) -> Option<crate::core::ObjectId> {
+        self.content_child
+    }
+
+    /// Places the content child inside the safe rectangle.
+    ///
+    /// This is idempotent and cheap, so a host may call it after a layout pass or on every
+    /// resize; a control with no child is a no-op.
+    pub fn apply(&mut self) {
+        if let Some(child) = self.content_child {
+            let rect = self.content_rect();
+            crate::set_widget_geometry(child, rect.x, rect.y, rect.width, rect.height);
+            crate::set_widget_visible(child, true);
+        }
+    }
 }
 
 impl Widget for SafeArea {
@@ -119,6 +160,11 @@ impl Widget for SafeArea {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.apply();
     }
 
     fn size_hint(&self) -> Size {
@@ -380,5 +426,23 @@ mod tests {
             1,
             "the same colour is not a change"
         );
+    }
+
+    /// A mounted content child is placed inside the safe rectangle.
+    #[test]
+    fn a_content_child_is_placed_inside_the_safe_rect() {
+        let mut area = SafeArea::new(Rect::new(0, 0, 200, 200));
+        area.set_insets(safe_area_insets());
+        let child = 0x5AFE;
+        area.set_content(Some(child));
+        assert_eq!(area.content(), Some(child));
+        area.apply();
+        assert_eq!(area.content_rect(), Rect::new(10, 20, 180, 160));
+        area.set_content(None);
+        assert_eq!(area.content(), None);
+    }
+
+    fn safe_area_insets() -> SafeAreaInsets {
+        SafeAreaInsets { top: 20, bottom: 20, left: 10, right: 10 }
     }
 }

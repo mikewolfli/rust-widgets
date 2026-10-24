@@ -34,17 +34,61 @@ pub struct GalleryImage {
     pub width: u32,
     /// Image height in pixels.
     pub height: u32,
+    /// Decoded RGBA image, when one was loaded.
+    ///
+    /// The gallery previously drew a placeholder for every tile because it held only a path.
+    /// This slot lets a host (or [`Self::load_from_path`]) supply the decoded pixels, and the
+    /// paint path draws them inside the tile; `None` keeps the placeholder.
+    #[cfg(feature = "image")]
+    pub image: Option<crate::image::Image>,
 }
 
 impl GalleryImage {
     /// Creates a new GalleryImage.
     pub fn new(path: &str, width: u32, height: u32) -> Self {
-        Self { path: path.to_string(), label: None, width, height }
+        Self {
+            path: path.to_string(),
+            label: None,
+            width,
+            height,
+            #[cfg(feature = "image")]
+            image: None,
+        }
+    }
+
+    /// Loads and decodes the image from disk.
+    ///
+    /// Returns the decoder's error rather than panicking; a missing or malformed file leaves
+    /// the placeholder in place.
+    #[cfg(feature = "image")]
+    pub fn load_from_path(&mut self) -> Result<(), String> {
+        let image = crate::image::Image::from_file(&self.path)?;
+        self.width = image.width();
+        self.height = image.height();
+        self.image = Some(image);
+        Ok(())
+    }
+
+    /// Decodes the image from an in-memory byte slice.
+    #[cfg(feature = "image")]
+    pub fn load_from_bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let image = crate::image::Image::from_bytes(bytes)?;
+        self.width = image.width();
+        self.height = image.height();
+        self.image = Some(image);
+        Ok(())
     }
 
     /// Creates a new GalleryImage with an optional label.
     pub fn with_label(path: &str, label: Option<&str>, width: u32, height: u32) -> Self {
-        Self { path: path.to_string(), label: label.map(|s| s.to_string()), width, height }
+        Self {
+            path: path.to_string(),
+            label: label.map(|s| s.to_string()),
+            width,
+            height,
+            #[cfg(feature = "image")]
+            image: None,
+        }
     }
 }
 
@@ -133,7 +177,14 @@ fn gallery_image_from_record(
             Some(_) => Err(CapabilityAccessError::TypeMismatch),
         }
     };
-    Ok(GalleryImage { path, label, width: dimension("width")?, height: dimension("height")? })
+    Ok(GalleryImage {
+        path,
+        label,
+        width: dimension("width")?,
+        height: dimension("height")?,
+        #[cfg(feature = "image")]
+        image: None,
+    })
 }
 
 /// ImageGallery — an image gallery/browser widget with thumbnails and large view.
@@ -166,6 +217,16 @@ pub struct ImageGallery {
     hovered_thumb: Option<usize>,
     /// Emitted when the selected image changes. Passes the new index.
     pub image_changed: Signal1<usize>,
+    /// Scale applied to the thumbnail strip and preview, default `1.0`.
+    zoom: f32,
+    /// Whether ctrl/shift-click extends the selection set.
+    multi_select: bool,
+    /// Additional selected indices, used only in multi-select mode.
+    selected: std::collections::BTreeSet<usize>,
+    /// Emitted when the selection set changes.
+    pub selection_changed: Signal1<Vec<usize>>,
+    /// Emitted when the current image is double-clicked (a full-screen request).
+    pub fullscreen_requested: Signal1<usize>,
 }
 
 impl ImageGallery {
@@ -181,6 +242,11 @@ impl ImageGallery {
             reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
             hovered_thumb: None,
             image_changed: Signal1::new(),
+            zoom: 1.0,
+            multi_select: false,
+            selected: std::collections::BTreeSet::new(),
+            selection_changed: Signal1::new(),
+            fullscreen_requested: Signal1::new(),
         }
     }
 
@@ -329,8 +395,11 @@ impl ImageGallery {
     /// copies could drift; both now read this one derivation.
     fn preview_rect(&self) -> Rect {
         let rect = self.geometry();
-        let thumb_strip_height =
-            if self.show_thumbnails { self.thumbnail_size + THUMB_STRIP_CHROME } else { 0 };
+        let thumb_strip_height = if self.show_thumbnails {
+            self.effective_thumbnail_size() + THUMB_STRIP_CHROME
+        } else {
+            0
+        };
         Rect::new(rect.x, rect.y, rect.width, rect.height.saturating_sub(thumb_strip_height))
     }
 
@@ -350,9 +419,9 @@ impl ImageGallery {
             rect.x,
             preview.y + preview.height as i32,
             rect.width,
-            self.thumbnail_size + THUMB_STRIP_CHROME,
+            self.effective_thumbnail_size() + THUMB_STRIP_CHROME,
         );
-        let thumb_total = self.thumbnail_size + THUMB_SPACING;
+        let thumb_total = self.effective_thumbnail_size() + THUMB_SPACING;
         let max_visible = strip.width.checked_div(thumb_total).map_or(1, |v| v.max(1) as usize);
         let start_offset = if self.current_index >= max_visible / 2 {
             (self.current_index - max_visible / 2)
@@ -382,7 +451,7 @@ impl ImageGallery {
             if img_idx >= self.images.len() {
                 break;
             }
-            if Self::thumbnail_rect(strip, self.thumbnail_size, i).contains_point(pos) {
+            if Self::thumbnail_rect(strip, self.effective_thumbnail_size(), i).contains_point(pos) {
                 return Some(img_idx);
             }
         }
@@ -422,6 +491,52 @@ impl ImageGallery {
     /// Returns the current thumbnail size.
     pub fn thumbnail_size(&self) -> u32 {
         self.thumbnail_size
+    }
+
+    /// The painted thumbnail size after the zoom factor is applied.
+    fn effective_thumbnail_size(&self) -> u32 {
+        ((self.thumbnail_size as f32 * self.zoom).round() as u32).max(1)
+    }
+
+    /// The current zoom factor.
+    pub fn zoom(&self) -> f32 {
+        self.zoom
+    }
+
+    /// Sets the zoom factor, clamped to `0.25..=4.0`.
+    pub fn set_zoom(&mut self, zoom: f32) {
+        if !zoom.is_finite() {
+            return;
+        }
+        let zoom = zoom.clamp(0.25, 4.0);
+        if (self.zoom - zoom).abs() < f32::EPSILON {
+            return;
+        }
+        self.zoom = zoom;
+        self.base.request_redraw();
+    }
+
+    /// Whether ctrl/shift-click extends the selection.
+    pub fn multi_select(&self) -> bool {
+        self.multi_select
+    }
+
+    /// Enables or disables multi-select.
+    pub fn set_multi_select(&mut self, multi_select: bool) {
+        if self.multi_select == multi_select {
+            return;
+        }
+        self.multi_select = multi_select;
+        if !multi_select {
+            self.selected.clear();
+            self.selection_changed.emit(Vec::new());
+        }
+        self.base.request_redraw();
+    }
+
+    /// The additional selected indices, in ascending order.
+    pub fn selected_indices(&self) -> Vec<usize> {
+        self.selected.iter().copied().collect()
     }
 
     /// Shows or hides the thumbnail strip.
@@ -835,7 +950,7 @@ impl Draw for ImageGallery {
                 break;
             }
 
-            let thumb_rect = Self::thumbnail_rect(strip_rect, self.thumbnail_size, i);
+            let thumb_rect = Self::thumbnail_rect(strip_rect, self.effective_thumbnail_size(), i);
 
             // Thumbnail background.
             let is_selected = img_idx == self.current_index;
@@ -859,6 +974,19 @@ impl Draw for ImageGallery {
             // sits in, so the tile reads as a framed slot rather than a flat square. It was a fixed
             // `rgba(60,60,60,200)`, which on a tinted tile left no visible inner edge at all.
             context.fill_rounded_rect(inner_rect, 2, thumb_bg.blend(&stage_ink, 0.12));
+            #[cfg(feature = "image")]
+            if let Some(image) = self.images.get(img_idx).and_then(|image| image.image.as_ref()) {
+                if let crate::image::ImageData::Rgba8(pixels) = &image.inner.data {
+                    if !pixels.is_empty() {
+                        let fitted = crate::widget::icon_source::fit_image_into(
+                            image.width(),
+                            image.height(),
+                            inner_rect,
+                        );
+                        context.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, pixels);
+                    }
+                }
+            }
 
             // Draw image label under thumbnail.
             if let Some(image) = self.images.get(img_idx) {
@@ -870,11 +998,11 @@ impl Draw for ImageGallery {
                     let label_text: Cow<'_, str> = crate::widget::text_utils::elide_end(label, 10);
                     let label_metrics = context.measure_text(&label_text, font);
                     let label_x = thumb_rect.x
-                        + (self.thumbnail_size as i32 - label_metrics.width as i32) / 2;
+                        + (self.effective_thumbnail_size() as i32 - label_metrics.width as i32) / 2;
                     // Top-aligned caption under the thumbnail, not a centred box: the origin
                     // is already the glyph box's top edge, so the declared-baseline `+ ascent`
                     // only dropped the caption on top of the row below it.
-                    let label_y = thumb_rect.y + self.thumbnail_size as i32 + 2;
+                    let label_y = thumb_rect.y + self.effective_thumbnail_size() as i32 + 2;
                     context.draw_text(
                         Point::new(label_x, label_y),
                         &label_text,
@@ -894,7 +1022,7 @@ impl EventHandler for ImageGallery {
             return;
         }
         match event {
-            Event::MousePress { pos, button, .. } => {
+            Event::MousePress { pos, button, modifiers } => {
                 if *button == 1 {
                     let rect = self.geometry();
                     if !rect.contains_point(*pos) {
@@ -933,6 +1061,19 @@ impl EventHandler for ImageGallery {
                     // `strip_layout`/`thumbnail_rect` derivation `draw` paints through, so a
                     // click selects exactly the tile that was painted.
                     if let Some(img_idx) = self.thumbnail_at(*pos) {
+                        if self.multi_select {
+                            let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                            if mods.contains(crate::shortcut::Modifiers::CTRL)
+                                || mods.contains(crate::shortcut::Modifiers::SHIFT)
+                            {
+                                if !self.selected.remove(&img_idx) {
+                                    self.selected.insert(img_idx);
+                                }
+                                self.selection_changed.emit(self.selected_indices());
+                                self.base.request_redraw();
+                                return;
+                            }
+                        }
                         self.set_current_index(img_idx);
                     }
                 }
@@ -950,6 +1091,22 @@ impl EventHandler for ImageGallery {
             Event::MouseLeave { .. } => {
                 if self.hovered_thumb.take().is_some() {
                     self.base.request_redraw();
+                }
+            }
+            Event::MouseDoubleClick { pos, button: 1 } => {
+                if self.thumbnail_at(*pos).is_some() || self.preview_rect().contains_point(*pos) {
+                    self.fullscreen_requested.emit(self.current_index);
+                }
+            }
+            Event::Wheel { delta, modifiers } => {
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                if mods.contains(crate::shortcut::Modifiers::CTRL) {
+                    let step = if delta.y > 0 { -0.1 } else { 0.1 };
+                    self.set_zoom(self.zoom + step);
+                } else if delta.y < 0 {
+                    self.next_image();
+                } else if delta.y > 0 {
+                    self.previous_image();
                 }
             }
             Event::KeyPress { key, modifiers: _ } => {
@@ -1310,5 +1467,46 @@ mod tests {
 
         assert!(g.strip_layout().is_none());
         assert!(g.thumbnail_at(Point::new(10, 280)).is_none());
+    }
+
+    /// Zoom, wheel paging, double-click full-screen and ctrl-click multi-select are wired.
+    #[test]
+    fn zoom_wheel_double_click_and_multi_select_are_wired() {
+        use crate::event::EventHandler;
+        let mut g = make_gallery(Rect::new(0, 0, 400, 300));
+        g.set_zoom(2.0);
+        assert_eq!(g.zoom(), 2.0);
+        g.set_zoom(f32::NAN);
+        assert_eq!(g.zoom(), 2.0, "a non-finite zoom is ignored");
+
+        g.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert!(g.selected_index().unwrap_or(0) > 0 || g.image_count() < 2);
+        g.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0b0010 });
+        assert!(g.zoom() > 0.0);
+
+        let fullscreen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&fullscreen);
+        g.fullscreen_requested.connect(move |index| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*index);
+            }
+        });
+        let preview = g.preview_rect();
+        g.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(preview.x + 2, preview.y + 2),
+            button: 1,
+        });
+        assert!(fullscreen.lock().map(|slot| slot.is_some()).unwrap_or(false));
+
+        g.set_multi_select(true);
+        if let Some((strip, _, _)) = g.strip_layout() {
+            let rect = ImageGallery::thumbnail_rect(strip, g.effective_thumbnail_size(), 0);
+            g.handle_event(&Event::MousePress {
+                pos: Point::new(rect.x + 2, rect.y + 2),
+                button: 1,
+                modifiers: 0b0010,
+            });
+            assert_eq!(g.selected_indices(), vec![0]);
+        }
     }
 }

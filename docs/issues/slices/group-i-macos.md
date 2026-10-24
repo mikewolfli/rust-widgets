@@ -1,0 +1,1 @@
+| R446 | macOS 主线 | Cupertino 系命名与尺寸对齐 iOS 而非 macOS（CUPERTINO_SWITCH_TRACK 51x31）；**cupertino 目录无 macOS 桌面对应物**（无 the reference segmented control mac 尺寸/the reference stepper/NSToolbar/source list/窗口 chrome）→ 分离 cupertino(iOS) 与 macos(desktop) 组件集。 | 914 | ⬜ |

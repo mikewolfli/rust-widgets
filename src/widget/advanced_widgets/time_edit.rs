@@ -155,6 +155,37 @@ impl std::fmt::Display for Time {
         write!(f, "{:02}:{:02}:{:02}", self.hour, self.minute, self.second)
     }
 }
+/// One editable component of a time field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeSection {
+    /// The hour component.
+    Hour,
+    /// The minute component.
+    Minute,
+    /// The second component.
+    Second,
+}
+
+impl TimeSection {
+    /// The next section, wrapping from second back to hour.
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Hour => Self::Minute,
+            Self::Minute => Self::Second,
+            Self::Second => Self::Hour,
+        }
+    }
+
+    /// The previous section, wrapping from hour back to second.
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Hour => Self::Second,
+            Self::Minute => Self::Hour,
+            Self::Second => Self::Minute,
+        }
+    }
+}
+
 /// Time editor widget.
 ///
 /// Shows a time of day and allows it to be changed a second at a time (see
@@ -164,14 +195,8 @@ impl std::fmt::Display for Time {
 ///
 /// The accepted range defaults to `00:00:00.000 ..= 23:59:59.999` and is
 /// inclusive at both ends. Stepping is second-based, so the millisecond
-/// component is only reachable through [`TimeEdit::set_time`].
-///
-/// # Display format
-///
-/// [`TimeEdit::display_format`] holds a format pattern string that is exposed
-/// as a property, but the widget's own `draw` always uses the fixed `HH:MM:SS`
-/// spelling. The pattern is stored and round-tripped, not yet applied when
-/// painting.
+/// component is only reachable through [`TimeEdit::set_time`]; a selected
+/// section steps that component instead.
 pub struct TimeEdit {
     base: BaseWidget,
     time: Time,
@@ -208,6 +233,12 @@ pub struct TimeEdit {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<Time>>,
     restoring_history: bool,
+    /// The section the user is editing, or `None` for whole-second stepping.
+    current_section: Option<TimeSection>,
+    /// Digits typed into the active section.
+    digit_buffer: String,
+    /// The clock face's reveal.
+    clock_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal,
 }
 
 /// Which ring of the clock face a point or a click belongs to.
@@ -245,6 +276,9 @@ impl TimeEdit {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(Time::new(0, 0, 0, 0))),
             restoring_history: false,
+            current_section: None,
+            digit_buffer: String::new(),
+            clock_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal::new(false),
         }
     }
     /// Returns the current time.
@@ -289,6 +323,7 @@ impl TimeEdit {
             return;
         }
         self.clock_popup = popup;
+        self.clock_reveal.set_open(popup);
         if !popup {
             self.hovered_hand = None;
         }
@@ -299,6 +334,111 @@ impl TimeEdit {
     /// Opens the clock if it is closed, closes it if it is open.
     pub fn toggle_clock_popup(&mut self) {
         self.set_clock_popup(!self.clock_popup);
+    }
+
+    /// The section the user is editing, or `None` for whole-second stepping.
+    pub fn current_section(&self) -> Option<TimeSection> {
+        self.current_section
+    }
+
+    /// Selects the section Up/Down and typed digits apply to.
+    pub fn set_current_section(&mut self, section: Option<TimeSection>) {
+        if self.current_section == section {
+            return;
+        }
+        self.current_section = section;
+        self.digit_buffer.clear();
+        self.base.request_redraw();
+    }
+
+    /// The box one section occupies inside the value text.
+    ///
+    /// The three zones are equal thirds of the text run. A custom `display_format` can
+    /// order the components differently and this control does not parse the pattern to
+    /// recover their positions, so the zones are the documented approximation; the
+    /// underline and the pointer target still agree with each other.
+    pub fn section_zone(&self, section: TimeSection) -> Rect {
+        let rect = self.geometry();
+        let width = rect.width.saturating_sub(12);
+        let third = width / 3;
+        let index = match section {
+            TimeSection::Hour => 0,
+            TimeSection::Minute => 1,
+            TimeSection::Second => 2,
+        };
+        Rect::new(rect.x + 6 + index * third as i32, rect.y, third, rect.height)
+    }
+
+    /// The section containing `pos`, when the point is on the value text.
+    fn section_at(&self, pos: crate::core::Point) -> Option<TimeSection> {
+        if !self.geometry().contains_point(pos) {
+            return None;
+        }
+        [TimeSection::Hour, TimeSection::Minute, TimeSection::Second]
+            .into_iter()
+            .find(|section| self.section_zone(*section).contains_point(pos))
+    }
+
+    /// Steps the active section, or one whole second when none is active.
+    pub fn step_current_section(&mut self, delta: i32) {
+        let Some(section) = self.current_section else {
+            if delta >= 0 {
+                self.step_up();
+            } else {
+                self.step_down();
+            }
+            return;
+        };
+        if delta == 0 {
+            return;
+        }
+        let mut next = self.time;
+        match section {
+            TimeSection::Hour => {
+                next.set_hour((next.hour() as i32 + delta).rem_euclid(24) as u8);
+            }
+            TimeSection::Minute => {
+                let total = next.minute() as i32 + delta;
+                let carry = total.div_euclid(60);
+                next.set_minute(total.rem_euclid(60) as u8);
+                next.set_hour((next.hour() as i32 + carry).rem_euclid(24) as u8);
+            }
+            TimeSection::Second => {
+                let total = next.second() as i32 + delta;
+                let carry = total.div_euclid(60);
+                next.set_second(total.rem_euclid(60) as u8);
+                let minute_total = next.minute() as i32 + carry;
+                let hour_carry = minute_total.div_euclid(60);
+                next.set_minute(minute_total.rem_euclid(60) as u8);
+                next.set_hour((next.hour() as i32 + hour_carry).rem_euclid(24) as u8);
+            }
+        }
+        self.set_time(next);
+    }
+
+    /// Types one digit into the active section.
+    pub fn type_digit(&mut self, digit: char) -> bool {
+        if !digit.is_ascii_digit() {
+            return false;
+        }
+        let Some(section) = self.current_section else {
+            return false;
+        };
+        self.digit_buffer.push(digit);
+        while self.digit_buffer.len() > 2 {
+            self.digit_buffer.remove(0);
+        }
+        let Ok(value) = self.digit_buffer.parse::<i32>() else {
+            return false;
+        };
+        let mut next = self.time;
+        match section {
+            TimeSection::Hour => next.set_hour(value as u8),
+            TimeSection::Minute => next.set_minute(value as u8),
+            TimeSection::Second => next.set_second(value as u8),
+        }
+        self.set_time(next);
+        true
     }
 
     /// The box the clock face occupies: as tall as it is wide, centred under the field.
@@ -713,6 +853,16 @@ impl Widget for TimeEdit {
         );
         Size::new(hint.width, hint.height.max(line_height))
     }
+
+    /// Advances the clock face's reveal; `true` while it owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.clock_reveal.tick(delta_ms)
+    }
+
+    /// Whether the clock face is mid-reveal.
+    fn is_animating(&self) -> bool {
+        self.clock_reveal.is_animating()
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -850,10 +1000,26 @@ impl EventHandler for TimeEdit {
                     }
                 }
                 if self.geometry().contains_point(*pos) {
+                    // A press on one of the value's three zones both selects that section
+                    // and toggles the face, so the field keeps its original "click to open"
+                    // gesture while gaining a section target.
+                    if let Some(section) = self.section_at(*pos) {
+                        self.set_current_section(Some(section));
+                    }
                     self.toggle_clock_popup();
                 } else if self.clock_popup {
                     // A press outside both dismisses the face, which is what a popup owes its user.
                     self.set_clock_popup(false);
+                }
+            }
+            Event::Wheel { delta, .. } => {
+                // The wheel steps the value instead of doing nothing: the picker's arrows are
+                // the keyboard path, and a host that forwards wheel events expects a spin box's
+                // behaviour from a time field.
+                if delta.y > 0 {
+                    self.step_current_section(1);
+                } else if delta.y < 0 {
+                    self.step_current_section(-1);
                 }
             }
             // The ring under the pointer is highlighted, derived from the same `hand_at_point` a click
@@ -903,8 +1069,25 @@ impl EventHandler for TimeEdit {
                 // Escape closes it without changing anything, which is the one way out that leaves the
                 // value alone.
                 27 if self.clock_popup => self.set_clock_popup(false),
-                38 => self.step_up(),
-                40 => self.step_down(),
+                38 => self.step_current_section(1),
+                40 => self.step_current_section(-1),
+                37 => {
+                    if let Some(section) = self.current_section {
+                        let previous = section.previous();
+                        self.set_current_section(Some(previous));
+                    }
+                }
+                39 => {
+                    if let Some(section) = self.current_section {
+                        let next = section.next();
+                        self.set_current_section(Some(next));
+                    }
+                }
+                48..=57 if self.current_section.is_some() => {
+                    if let Some(digit) = char::from_u32(*key) {
+                        self.type_digit(digit);
+                    }
+                }
                 _ => { /* Other keys are not relevant */ }
             },
             _ => { /* Other events are not relevant */ }
@@ -1007,8 +1190,33 @@ impl Draw for TimeEdit {
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
 
-        if self.clock_popup {
+        if let Some(section) = self.current_section {
+            let zone = self.section_zone(section);
+            let y = line.y + line.height as i32;
+            context.draw_line(
+                crate::core::Point::new(zone.x + 1, y),
+                crate::core::Point::new(zone.x + zone.width as i32 - 1, y),
+                ink,
+            );
+        }
+
+        if self.clock_popup || !self.clock_reveal.is_closed() {
+            let face = self.clock_rect();
+            let revealed = self.clock_reveal.revealed(
+                face,
+                crate::widget::menu_toolbar::popup_reveal::RevealDirection::Down,
+                crate::widget::menu_toolbar::popup_reveal::PopupReveal::travel_cap_for(
+                    crate::core::Size::new(face.width, face.height),
+                ),
+            );
+            let clipped = !self.clock_reveal.is_closed();
+            if clipped {
+                context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
+            }
             self.draw_clock_face(context, surface, border, ink);
+            if clipped {
+                context.pop_clip();
+            }
         }
     }
 }
@@ -1526,16 +1734,48 @@ mod tests {
     }
 
     #[test]
-    fn time_edit_mouse_wheel_does_not_change_time() {
-        // TimeEdit does not handle wheel events
+    fn time_edit_mouse_wheel_steps_the_value() {
+        // The wheel steps the value. A time field that ignored it made the picker the
+        // only pointer path, while every other numeric field spins on the wheel.
         let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
         editor.set_time(Time::new(10, 0, 0, 0));
 
         editor.handle_event(&Event::Wheel { delta: Point::new(0, 120), modifiers: 0 });
-        assert_eq!(editor.time(), Time::new(10, 0, 0, 0));
+        assert_eq!(editor.time(), Time::new(10, 0, 1, 0), "wheel up advances");
 
         editor.handle_event(&Event::Wheel { delta: Point::new(0, -120), modifiers: 0 });
-        assert_eq!(editor.time(), Time::new(10, 0, 0, 0));
+        assert_eq!(editor.time(), Time::new(10, 0, 0, 0), "wheel down reverses");
+    }
+
+    /// Sections edit each component, Left/Right move between them, and the face reveals.
+    #[test]
+    fn time_sections_edit_components_and_the_clock_reveals() {
+        use crate::widget::Widget;
+
+        let mut editor = TimeEdit::new(Rect::new(0, 0, 240, 30));
+        editor.set_time(Time::new(10, 0, 0, 0));
+        assert!(!editor.type_digit('5'), "no section, no typing");
+
+        let minute = editor.section_zone(TimeSection::Minute);
+        editor.handle_event(&Event::mouse_press(minute.x + 1, minute.y + 2, 1));
+        assert_eq!(editor.current_section(), Some(TimeSection::Minute));
+        assert!(editor.type_digit('4'));
+        assert!(editor.type_digit('5'));
+        assert_eq!(editor.time().minute(), 45);
+        editor.step_current_section(1);
+        assert_eq!(editor.time().minute(), 46);
+
+        editor.handle_event(&Event::key_press(39, 0));
+        assert_eq!(editor.current_section(), Some(TimeSection::Second));
+        editor.handle_event(&Event::key_press(37, 0));
+        assert_eq!(editor.current_section(), Some(TimeSection::Minute));
+
+        editor.set_clock_popup(true);
+        assert!(editor.is_animating(), "opening the face starts a reveal");
+        for _ in 0..120 {
+            editor.tick(16);
+        }
+        assert!(!editor.is_animating());
     }
 
     #[test]

@@ -133,24 +133,29 @@ impl ChartContext for ChartContextAdapter<'_, '_> {
         // RenderContext exposes only a full circle, so an arc is stroked as a
         // polyline. Segment count scales with the swept angle so a wide arc is
         // smooth while a sliver stays cheap.
+        //
+        // The points are emitted as each step is computed rather than collected into a
+        // `Vec` first: the arc used to allocate one `Point` per segment on every frame of
+        // every chart that draws an arc, and the previous point is all the next stroke needs.
         let sweep = (end_angle - start_angle).abs();
         let segments = ((sweep * radius as f64 / 2.0).ceil() as i64).clamp(2, 180);
         // Stay in f32 until the end: `Point` stores i32, so rounding once here is
         // what keeps the arc smooth instead of stair-stepping per component.
         let cx = center.x as f32;
         let cy = center.y as f32;
-        let points: Vec<Point> = (0..=segments)
-            .map(|step| {
-                let t = step as f64 / segments as f64;
-                let angle = start_angle + (end_angle - start_angle) * t;
-                Point {
-                    x: Self::px(cx + (radius as f64 * angle.cos()) as f32),
-                    y: Self::px(cy + (radius as f64 * angle.sin()) as f32),
-                }
-            })
-            .collect();
-        for pair in points.windows(2) {
-            self.inner.draw_line(pair[0], pair[1], color);
+        let point_at = |step: i64| -> Point {
+            let t = step as f64 / segments as f64;
+            let angle = start_angle + (end_angle - start_angle) * t;
+            Point {
+                x: Self::px(cx + (radius as f64 * angle.cos()) as f32),
+                y: Self::px(cy + (radius as f64 * angle.sin()) as f32),
+            }
+        };
+        let mut previous = point_at(0);
+        for step in 1..=segments {
+            let next = point_at(step);
+            self.inner.draw_line(previous, next, color);
+            previous = next;
         }
     }
 

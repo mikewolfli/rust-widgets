@@ -13,6 +13,78 @@ use crate::widget::view_widgets::list_view::ListModel;
 use crate::widget::view_widgets::table_widget::TableModel;
 use crate::widget::view_widgets::tree_view::TreeModel;
 
+/// A logical cell address: an optional parent row plus a row and column.
+///
+/// The row index is relative to `parent` (`None` means a root row). This is the addressing
+/// form a tree-shaped model needs and a flat row/column pair cannot express.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ModelIndex {
+    /// The parent row, or `None` for a root row.
+    pub parent: Option<usize>,
+    /// Row within the parent (or the root list).
+    pub row: usize,
+    /// Column within the row.
+    pub column: usize,
+}
+
+impl ModelIndex {
+    /// A root cell at `row`/`column`.
+    pub fn root(row: usize, column: usize) -> Self {
+        Self { parent: None, row, column }
+    }
+
+    /// A cell below `parent`.
+    pub fn child(parent: usize, row: usize, column: usize) -> Self {
+        Self { parent: Some(parent), row, column }
+    }
+}
+
+/// The purpose a value is being read for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DataRole {
+    /// The text a table cell paints.
+    Display,
+    /// The text an assistive technology announces.
+    AccessibleText,
+    /// The text an editor starts with.
+    Edit,
+    /// A decoration token (an icon name, for example).
+    Decoration,
+    /// The checked state, spelled `"true"`/`"false"`.
+    CheckState,
+    /// A host-defined role.
+    User(u32),
+}
+
+/// What a cell allows.
+///
+/// A plain struct of booleans rather than a bitmask: models are written by callers, and
+/// four named flags are harder to mis-combine than an integer whose bit positions must be
+/// remembered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellFlags {
+    /// The cell can be selected.
+    pub selectable: bool,
+    /// The cell can be edited.
+    pub editable: bool,
+    /// The cell is enabled.
+    pub enabled: bool,
+    /// The cell carries a check state.
+    pub checkable: bool,
+}
+
+impl Default for CellFlags {
+    fn default() -> Self {
+        Self { selectable: true, editable: false, enabled: true, checkable: false }
+    }
+}
+
+impl CellFlags {
+    /// The permissive set: selectable, editable and enabled.
+    pub const EDITABLE: Self =
+        Self { selectable: true, editable: true, enabled: true, checkable: false };
+}
+
 /// Pull-based data source protocol used by modern data controls.
 pub trait IncrementalTableDataSource: Send + Sync {
     /// Total rows available in source.
@@ -38,6 +110,76 @@ pub trait IncrementalTableDataSource: Send + Sync {
     }
     /// Returns cell text for a row/column if available.
     fn data(&self, row: usize, column: usize) -> Option<String>;
+
+    /// Returns a cell value for a specific purpose.
+    ///
+    /// The default answers [`DataRole::Display`] from [`Self::data`] and `None` for every
+    /// other role, so a model that has only display text behaves exactly as before.
+    fn data_role(&self, row: usize, column: usize, role: DataRole) -> Option<String> {
+        match role {
+            DataRole::Display => self.data(row, column),
+            _ => None,
+        }
+    }
+
+    /// Returns a cell value addressed by a [`ModelIndex`].
+    ///
+    /// The default delegates to [`Self::data_role`] for a root index and returns `None` for
+    /// a child index, so a flat model needs no change and a tree model overrides this.
+    fn data_at(&self, index: ModelIndex, role: DataRole) -> Option<String> {
+        if index.parent.is_none() {
+            self.data_role(index.row, index.column, role)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the parent row of `row`, if the model is hierarchical.
+    fn parent_index(&self, row: usize) -> Option<usize> {
+        let _ = row;
+        None
+    }
+
+    /// Writes a cell value.
+    ///
+    /// Returns `false` by default, which is the honest answer for a read-only source. A
+    /// writable model overrides this and emits a fine-grained change signal afterwards.
+    fn set_data(&mut self, row: usize, column: usize, value: &str) -> bool {
+        let _ = (row, column, value);
+        false
+    }
+
+    /// What the cell allows.
+    fn flags(&self, row: usize, column: usize) -> CellFlags {
+        let _ = (row, column);
+        CellFlags::default()
+    }
+
+    /// A drag payload for the cell, if the model supplies one.
+    fn mime_data(&self, row: usize, column: usize) -> Option<String> {
+        let _ = (row, column);
+        None
+    }
+
+    /// A signal emitted when one cell changes.
+    fn cell_changed_signal(&self) -> Option<&GenericSignal> {
+        None
+    }
+
+    /// A signal emitted when rows are inserted.
+    fn rows_inserted_signal(&self) -> Option<&GenericSignal> {
+        None
+    }
+
+    /// A signal emitted when rows are removed.
+    fn rows_removed_signal(&self) -> Option<&GenericSignal> {
+        None
+    }
+
+    /// A signal emitted when the whole model is reset.
+    fn rows_reset_signal(&self) -> Option<&GenericSignal> {
+        None
+    }
     /// Writes cell text for a row/column into `out`, returning whether the cell exists.
     ///
     /// # Why this exists
@@ -509,5 +651,51 @@ mod tests {
         let recovered = adapter.model_ref();
         assert_eq!(recovered.node_count(), 2);
         assert_eq!(recovered.node_path(1), Some("node-1".to_string()));
+    }
+
+    /// Role-addressed reads, index addressing, flags and writes are part of the protocol,
+    /// and a flat read-only source keeps every default.
+    #[test]
+    fn roles_and_model_indices_are_addressable() {
+        use super::{CellFlags, DataRole, ModelIndex};
+
+        struct Editable {
+            cells: Vec<Vec<String>>,
+        }
+        impl IncrementalTableDataSource for Editable {
+            fn row_count(&self) -> usize {
+                self.cells.len()
+            }
+            fn column_count(&self) -> usize {
+                self.cells.first().map(Vec::len).unwrap_or(0)
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                self.cells.get(row).and_then(|line| line.get(column)).cloned()
+            }
+            fn flags(&self, _row: usize, _column: usize) -> CellFlags {
+                CellFlags::EDITABLE
+            }
+            fn set_data(&mut self, row: usize, column: usize, value: &str) -> bool {
+                match self.cells.get_mut(row).and_then(|line| line.get_mut(column)) {
+                    Some(cell) => {
+                        *cell = value.to_string();
+                        true
+                    }
+                    None => false,
+                }
+            }
+        }
+
+        let mut source = Editable { cells: vec![vec!["a".into(), "b".into()]] };
+        assert_eq!(source.data_at(ModelIndex::root(0, 1), DataRole::Display), Some("b".into()));
+        assert_eq!(source.data_at(ModelIndex::child(0, 0, 0), DataRole::Display), None);
+        assert_eq!(source.data_role(0, 0, DataRole::AccessibleText), None);
+        assert!(source.flags(0, 0).editable);
+        assert!(source.set_data(0, 0, "changed"));
+        assert_eq!(source.data(0, 0), Some("changed".into()));
+        assert!(!source.set_data(9, 9, "nope"));
+        assert!(source.parent_index(0).is_none());
+        assert!(source.mime_data(0, 0).is_none());
+        assert!(source.cell_changed_signal().is_none());
     }
 }

@@ -104,13 +104,17 @@ mod tests_batch4;
 #[cfg(test)]
 mod tests_batch5;
 
+#[cfg(test)]
+mod tests_batch6;
+
 pub use editor::CodeEditor;
 pub use multicursor::MultiCursor;
 pub use syntax::{BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter};
 pub use types::{
-    CodeEditorConfig, CompletionItem, CompletionSource, CompletionState, ContextMenuState, Cursor,
-    DiagnosticMarker, DocumentCompletions, DocumentScale, EditRejection, EditorBuffer, FindState,
-    FoldRegion, MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch, SearchOptions, SyntaxPalette,
+    CaretStyle, CodeEditorConfig, CompletionItem, CompletionSource, CompletionState,
+    ContextMenuState, Cursor, DiagnosticMarker, DocumentCompletions, DocumentScale,
+    DocumentWordIndex, EditRejection, EditorBuffer, ExtraSelection, FindState, FoldRegion,
+    LineEnding, MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch, SearchOptions, SyntaxPalette,
     TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine, DEFAULT_FONT_FAMILY,
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT_RATIO, DEFAULT_TAB_WIDTH, MAX_COMPLETIONS,
     MIN_TOUCH_TARGET, SCALE_REDUCED_LINES, SCALE_VIEW_ONLY_LINES,

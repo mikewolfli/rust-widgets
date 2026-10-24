@@ -46,13 +46,29 @@ impl EventHandler for CodeEditor {
                 }
                 self.base.request_redraw();
             }
-            Event::MousePress { pos, button, modifiers } if *button == 1 => {
-                self.pointer_press_with_modifiers(*pos, *modifiers);
-            }
+            Event::MousePress { pos, button, modifiers } => match *button {
+                crate::event::mouse_button::PRIMARY => {
+                    self.pointer_press_with_modifiers(*pos, *modifiers);
+                }
+                // A secondary click opens the context menu. The menu has always
+                // existed, but no event path could open it: only button 1 was
+                // handled, so the whole menu was unreachable from the pointer.
+                crate::event::mouse_button::SECONDARY => {
+                    self.open_context_menu(*pos);
+                }
+                _ => {}
+            },
             Event::MouseRelease { .. } => self.pointer_release(),
             Event::MouseMove { pos } => self.pointer_drag(*pos),
             Event::MouseDoubleClick { pos, .. } => {
-                self.select_word_at_point(*pos);
+                // A double-click in the gutter folds the block, which is the
+                // gesture every editor attaches to the fold chevron's column.
+                if let Some(line) = self.hit_gutter_line(*pos) {
+                    self.toggle_fold(line);
+                } else {
+                    self.select_word_at_point(*pos);
+                    self.double_click_at = Some(*pos);
+                }
             }
             Event::MouseEnter { pos } => {
                 // Enter carries the position, so a tab can light up without waiting for
@@ -76,6 +92,12 @@ impl EventHandler for CodeEditor {
                 self.refresh_visible_rows();
                 self.base.request_layout();
             }
+            Event::FocusGained { .. } => {
+                self.set_focused(true);
+            }
+            Event::FocusLost => {
+                self.set_focused(false);
+            }
             _ => {}
         }
     }
@@ -83,6 +105,14 @@ impl EventHandler for CodeEditor {
 
 impl CodeEditor {
     fn handle_wheel(&mut self, delta: Point, modifiers: u32) {
+        // A popup owns the wheel while it is open: scrolling the document behind
+        // a candidate list the pointer is over is never what the reader meant.
+        if self.completion.visible && delta.y != 0 {
+            let rows = (delta.y.abs() as f32 / self.line_height()).ceil().max(1.0) as isize;
+            let direction = if delta.y < 0 { rows } else { -rows };
+            self.scroll_completion(direction);
+            return;
+        }
         if modifiers & Self::MODIFIER_CONTROL != 0 {
             // Ctrl+wheel is the universal editor font-size gesture.
             let step = if delta.y < 0 { 1.0 } else { -1.0 };

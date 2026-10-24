@@ -109,6 +109,15 @@ pub struct AudioVisualizer {
     peak_hold_duration: u64,
     /// Current peak hold values for each bar.
     peak_values: Vec<f32>,
+    /// Smoothed bar levels, parallel to `peak_values`.
+    ///
+    /// Only used when smoothing is enabled; an empty vector (the default) means "draw the raw
+    /// level", which keeps every existing picture byte-identical.
+    smoothed_levels: Vec<f32>,
+    /// Attack time constant in milliseconds (how fast a rising bar follows the signal).
+    attack_ms: f32,
+    /// Release time constant in milliseconds (how fast a falling bar follows the signal).
+    release_ms: f32,
     /// Milliseconds each bar's peak has been held, indexed like `peak_values`.
     ///
     /// Per bar rather than one clock for the whole control: a peak is raised by *its own* bar, so
@@ -162,6 +171,9 @@ impl AudioVisualizer {
             peak_hold_duration: 500,
             peak_values: vec![0.0; bar_count],
             peak_ages: vec![0; bar_count],
+            smoothed_levels: Vec::new(),
+            attack_ms: 0.0,
+            release_ms: 0.0,
         }
     }
 
@@ -193,6 +205,63 @@ impl AudioVisualizer {
         self.samples.push(value.clamp(-1.0, 1.0));
         self.spectrum_cache.set(None);
         self.base.request_redraw();
+    }
+
+    /// Sets a one-pole attack/release smoother for the bar bodies.
+    ///
+    /// `attack_ms` is the time constant for a rising bar and `release_ms` for a falling one, in
+    /// milliseconds. Zero for both (the default) disables smoothing entirely, so the bars are
+    /// the raw level. Enabling it is a visual choice: the peaks still use the raw value, so a
+    /// marker is not slowed down by the body's filter.
+    pub fn set_smoothing(&mut self, attack_ms: f32, release_ms: f32) {
+        let attack = if attack_ms.is_finite() { attack_ms.max(0.0) } else { 0.0 };
+        let release = if release_ms.is_finite() { release_ms.max(0.0) } else { 0.0 };
+        if self.attack_ms == attack && self.release_ms == release {
+            return;
+        }
+        self.attack_ms = attack;
+        self.release_ms = release;
+        if attack == 0.0 && release == 0.0 {
+            self.smoothed_levels.clear();
+        } else {
+            self.smoothed_levels.resize(self.bar_count, 0.0);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether the one-pole smoother is active.
+    pub fn is_smoothing_enabled(&self) -> bool {
+        !self.smoothed_levels.is_empty()
+    }
+
+    /// The level the paint path should use for bar `index`: the smoothed value when the
+    /// smoother is active, otherwise the raw derivation.
+    fn display_level(&self, index: usize) -> f32 {
+        self.smoothed_levels.get(index).copied().unwrap_or_else(|| self.bar_value(index))
+    }
+
+    /// Advances the one-pole smoother by `delta_ms`; `true` if any level moved.
+    fn advance_smoothing(&mut self, delta_ms: u32) -> bool {
+        if self.smoothed_levels.is_empty() || delta_ms == 0 {
+            return false;
+        }
+        let mut moved = false;
+        for index in 0..self.smoothed_levels.len() {
+            let target = self.bar_value(index);
+            let current = self.smoothed_levels[index];
+            let tau = if target > current { self.attack_ms } else { self.release_ms };
+            let next = if tau <= 0.0 {
+                target
+            } else {
+                let coefficient = 1.0 - (-(delta_ms as f32) / tau).exp();
+                current + (target - current) * coefficient
+            };
+            if (next - current).abs() > f32::EPSILON {
+                self.smoothed_levels[index] = next;
+                moved = true;
+            }
+        }
+        moved
     }
 
     /// Clears all audio samples.
@@ -251,6 +320,9 @@ impl AudioVisualizer {
         // next tick after any widening.
         self.peak_values.resize(self.bar_count, 0.0);
         self.peak_ages.resize(self.bar_count, 0);
+        if !self.smoothed_levels.is_empty() {
+            self.smoothed_levels.resize(self.bar_count, 0.0);
+        }
         self.base.request_redraw();
     }
 
@@ -643,11 +715,12 @@ impl Widget for AudioVisualizer {
     /// it stop once they have settled, rather than asking a still visualizer to run at frame rate
     /// forever.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        let moved = self.advance_peak_hold(delta_ms as u64);
-        if moved {
+        let peaked = self.advance_peak_hold(delta_ms as u64);
+        let smoothed = self.advance_smoothing(delta_ms);
+        if peaked || smoothed {
             self.base.request_redraw();
         }
-        moved
+        peaked || smoothed
     }
 
     /// Whether the peak-hold markers are still falling, i.e. whether a frame is owed.
@@ -662,9 +735,12 @@ impl Widget for AudioVisualizer {
     /// [`Self::advance_peak_hold`]: a marker is in flight while peak-hold is on and it sits above the
     /// bar it tracks.
     fn is_animating(&self) -> bool {
-        self.peak_hold
+        (self.peak_hold
             && (0..self.peak_values.len())
-                .any(|index| self.peak_values[index] > self.bar_value(index))
+                .any(|index| self.peak_values[index] > self.bar_value(index)))
+            || (0..self.smoothed_levels.len()).any(|index| {
+                (self.smoothed_levels[index] - self.bar_value(index)).abs() > f32::EPSILON
+            })
     }
 
     /// Reports this widget as the object that paints it.
@@ -734,7 +810,7 @@ impl Draw for AudioVisualizer {
         // Prepare sample data: one shared derivation, so the marker and its bar cannot measure
         // different samples. Empty samples yield the synthetic sweep, which is what makes a
         // data-less control still a usable preview.
-        let bars: Vec<f32> = (0..self.bar_count).map(|i| self.bar_value(i)).collect();
+        let bars: Vec<f32> = (0..self.bar_count).map(|i| self.display_level(i)).collect();
 
         for (i, &value) in bars.iter().enumerate() {
             let value = value.min(1.0);
@@ -1366,5 +1442,21 @@ mod tests {
             derived_peak,
             "an empty spectrum must return the widget to its own FFT"
         );
+    }
+
+    #[test]
+    fn smoothing_approaches_the_signal_instead_of_jumping() {
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        av.set_bar_count(4);
+        av.set_samples(vec![1.0, 1.0, 1.0, 1.0]);
+        let raw = av.bar_value(0);
+        av.set_smoothing(100.0, 100.0);
+        assert!(av.is_smoothing_enabled());
+        assert_eq!(av.display_level(0), 0.0, "a fresh smoother starts at rest");
+        av.tick(16);
+        let first = av.display_level(0);
+        assert!(first > 0.0 && first < raw, "one tick is a step toward the signal: {first}");
+        av.tick(1000);
+        assert!((av.display_level(0) - raw).abs() < 1e-3);
     }
 }

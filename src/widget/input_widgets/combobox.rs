@@ -19,7 +19,7 @@
 //! stated as "the value takes what the indicator does not", which makes "the value yields to the
 //! indicator" true by construction rather than by two subtractions that happen to agree.
 
-use crate::compat::{String, ToString, Vec};
+use crate::compat::{Rc, String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
@@ -226,6 +226,127 @@ impl IndicatorGeometry {
         ]
     }
 }
+/// A completion provider: given the typed prefix, returns candidate strings.
+pub type ComboBoxCompleter = Rc<dyn Fn(&str) -> Vec<String>>;
+
+/// Presentation metadata for one combo-box row.
+///
+/// The label vector stays the public item accessor, so a host that only deals in strings is
+/// unchanged; this carries the per-item extras a combo box tends to grow. Every field is
+/// optional or defaults to the plain state.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ComboBoxItem {
+    /// A short glyph or marker drawn before the label.
+    pub icon: Option<String>,
+    /// A caller-owned data token.
+    pub data: Option<String>,
+    /// Whether the row can be selected.
+    pub enabled: bool,
+}
+
+impl ComboBoxItem {
+    /// Creates a plain, enabled row.
+    pub fn new() -> Self {
+        Self { icon: None, data: None, enabled: true }
+    }
+
+    /// Sets the row's icon text.
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Attaches a caller-owned data token.
+    pub fn with_data(mut self, data: impl Into<String>) -> Self {
+        self.data = Some(data.into());
+        self
+    }
+
+    /// Marks the row as disabled.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+/// What an editable combo box does with a value that is not already an item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ComboBoxInsertPolicy {
+    /// The typed value is selected only when it matches an existing item.
+    NoInsert,
+    /// A new item is inserted at the top of the list.
+    InsertAtTop,
+    /// A new item is inserted at the current index.
+    InsertAtCurrent,
+    /// A new item is appended to the list. This is the default, so an editable box keeps
+    /// the long-standing "type a custom value and it is kept" contract.
+    #[default]
+    InsertAtBottom,
+    /// A new item is inserted in alphabetical order.
+    InsertAlphabetically,
+}
+
+/// How a combo box adjusts its width to its contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ComboBoxSizeAdjustPolicy {
+    /// The control keeps the width the layout gave it.
+    AdjustToMinimumContentsLength,
+    /// The hint follows the widest item. This is the default, so the control keeps the
+    /// hint it has always reported.
+    #[default]
+    AdjustToContents,
+    /// The hint follows the widest item measured on the first show only.
+    AdjustToContentsOnFirstShow,
+}
+
+/// The published token naming a [`ComboBoxInsertPolicy`].
+fn insert_policy_token(policy: ComboBoxInsertPolicy) -> &'static str {
+    match policy {
+        ComboBoxInsertPolicy::NoInsert => "no_insert",
+        ComboBoxInsertPolicy::InsertAtTop => "insert_at_top",
+        ComboBoxInsertPolicy::InsertAtCurrent => "insert_at_current",
+        ComboBoxInsertPolicy::InsertAtBottom => "insert_at_bottom",
+        ComboBoxInsertPolicy::InsertAlphabetically => "insert_alphabetically",
+    }
+}
+
+/// The insert policy a published token names, or `None` for an unknown token.
+fn insert_policy_from_token(token: &str) -> Option<ComboBoxInsertPolicy> {
+    match token {
+        "no_insert" => Some(ComboBoxInsertPolicy::NoInsert),
+        "insert_at_top" => Some(ComboBoxInsertPolicy::InsertAtTop),
+        "insert_at_current" => Some(ComboBoxInsertPolicy::InsertAtCurrent),
+        "insert_at_bottom" => Some(ComboBoxInsertPolicy::InsertAtBottom),
+        "insert_alphabetically" => Some(ComboBoxInsertPolicy::InsertAlphabetically),
+        _ => None,
+    }
+}
+
+/// The published token naming a [`ComboBoxSizeAdjustPolicy`].
+fn size_adjust_policy_token(policy: ComboBoxSizeAdjustPolicy) -> &'static str {
+    match policy {
+        ComboBoxSizeAdjustPolicy::AdjustToMinimumContentsLength => {
+            "adjust_to_minimum_contents_length"
+        }
+        ComboBoxSizeAdjustPolicy::AdjustToContents => "adjust_to_contents",
+        ComboBoxSizeAdjustPolicy::AdjustToContentsOnFirstShow => "adjust_to_contents_on_first_show",
+    }
+}
+
+/// The size-adjust policy a published token names, or `None` for an unknown token.
+fn size_adjust_policy_from_token(token: &str) -> Option<ComboBoxSizeAdjustPolicy> {
+    match token {
+        "adjust_to_minimum_contents_length" => {
+            Some(ComboBoxSizeAdjustPolicy::AdjustToMinimumContentsLength)
+        }
+        "adjust_to_contents" => Some(ComboBoxSizeAdjustPolicy::AdjustToContents),
+        "adjust_to_contents_on_first_show" => {
+            Some(ComboBoxSizeAdjustPolicy::AdjustToContentsOnFirstShow)
+        }
+        _ => None,
+    }
+}
+
 /// Combo box widget.
 pub struct ComboBox {
     base: BaseWidget,
@@ -292,6 +413,20 @@ pub struct ComboBox {
     /// Emitted with the new open state when the drop-down is shown or hidden, so a
     /// host can dismiss its other popups without polling.
     pub popup_visibility_changed: Signal1<bool>,
+    /// Per-item presentation metadata, parallel to `items`.
+    item_meta: Vec<ComboBoxItem>,
+    /// What an editable box does with a value that is not already an item.
+    insert_policy: ComboBoxInsertPolicy,
+    /// How the control's width hint follows its contents.
+    size_adjust_policy: ComboBoxSizeAdjustPolicy,
+    /// Prefix typed since the last navigation, for first-letter selection.
+    type_ahead: String,
+    /// Optional completion provider: given the typed prefix, returns candidates.
+    completer: Option<ComboBoxCompleter>,
+    /// The candidates the completer produced for the current text.
+    completions: Vec<String>,
+    /// Fade progress of the drop-down, `0.0..=1.0`, advanced by [`ComboBox::tick`].
+    reveal_progress: f32,
 }
 impl ComboBox {
     /// The band the control actually paints: full width, one field tall, centred.
@@ -371,6 +506,13 @@ impl ComboBox {
             current_text_changed: Signal1::new(),
             activated: Signal1::new(),
             popup_visibility_changed: Signal1::new(),
+            item_meta: Vec::new(),
+            insert_policy: ComboBoxInsertPolicy::InsertAtBottom,
+            size_adjust_policy: ComboBoxSizeAdjustPolicy::AdjustToContents,
+            type_ahead: String::new(),
+            completer: None,
+            completions: Vec::new(),
+            reveal_progress: 1.0,
         }
     }
     /// Returns number of items.
@@ -388,6 +530,8 @@ impl ComboBox {
     /// Adds an item.
     pub fn add_item(&mut self, text: String) {
         self.items.push(text);
+        self.item_meta.push(ComboBoxItem::new());
+        self.refresh_completions();
         self.base.request_redraw();
     }
     /// Adds multiple items.
@@ -398,7 +542,9 @@ impl ComboBox {
         if items.is_empty() {
             return;
         }
+        let added = items.len();
         self.items.extend(items);
+        self.item_meta.resize(self.item_meta.len() + added, ComboBoxItem::new());
         self.base.request_redraw();
     }
     /// Replaces all items with the given items. Clears the current selection.
@@ -406,11 +552,139 @@ impl ComboBox {
     /// Repaints: both the item list and the now-empty current text are painted, so a caller that
     /// swapped the items saw the previous value and list until an unrelated event repainted.
     pub fn set_items(&mut self, items: Vec<String>) {
+        let added = items.len();
         self.items = items;
+        self.item_meta.clear();
+        self.item_meta.resize(added, ComboBoxItem::new());
         self.current_index = None;
         self.current_index_changed.emit(None);
         self.current_text_changed.emit(String::new());
         self.base.request_redraw();
+    }
+
+    /// Replaces the items together with their presentation metadata.
+    ///
+    /// `items` supplies the labels; `meta` is matched by position and padded with plain rows
+    /// when it is shorter, so a caller that only decorates some rows does not have to build a
+    /// full parallel vector.
+    pub fn set_items_rich(&mut self, items: Vec<String>, meta: Vec<ComboBoxItem>) {
+        let count = items.len();
+        self.items = items;
+        self.item_meta = meta;
+        self.item_meta.resize(count, ComboBoxItem::new());
+        self.current_index = None;
+        self.current_index_changed.emit(None);
+        self.current_text_changed.emit(String::new());
+        self.base.request_redraw();
+    }
+
+    /// The presentation metadata for a row.
+    pub fn item_meta(&self, index: usize) -> Option<&ComboBoxItem> {
+        self.item_meta.get(index)
+    }
+
+    /// Replaces one row's presentation metadata.
+    pub fn set_item_meta(&mut self, index: usize, meta: ComboBoxItem) {
+        let Some(slot) = self.item_meta.get_mut(index) else {
+            return;
+        };
+        if *slot == meta {
+            return;
+        }
+        *slot = meta;
+        self.base.request_redraw();
+    }
+
+    /// Sets a row's icon text, or clears it with `None`.
+    pub fn set_item_icon(&mut self, index: usize, icon: Option<String>) {
+        if let Some(meta) = self.item_meta.get_mut(index) {
+            if meta.icon == icon {
+                return;
+            }
+            meta.icon = icon;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Enables or disables a row. A disabled row is drawn dimmed and cannot be selected.
+    pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
+        if let Some(meta) = self.item_meta.get_mut(index) {
+            if meta.enabled == enabled {
+                return;
+            }
+            meta.enabled = enabled;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a row can be selected.
+    pub fn is_item_enabled(&self, index: usize) -> bool {
+        self.item_meta.get(index).is_none_or(|meta| meta.enabled)
+    }
+
+    /// What an editable box does with an unmatched value.
+    pub fn insert_policy(&self) -> ComboBoxInsertPolicy {
+        self.insert_policy
+    }
+
+    /// Sets what an editable box does with an unmatched value.
+    pub fn set_insert_policy(&mut self, policy: ComboBoxInsertPolicy) {
+        if self.insert_policy == policy {
+            return;
+        }
+        self.insert_policy = policy;
+    }
+
+    /// How the control's width hint follows its contents.
+    pub fn size_adjust_policy(&self) -> ComboBoxSizeAdjustPolicy {
+        self.size_adjust_policy
+    }
+
+    /// Sets how the control's width hint follows its contents.
+    pub fn set_size_adjust_policy(&mut self, policy: ComboBoxSizeAdjustPolicy) {
+        if self.size_adjust_policy == policy {
+            return;
+        }
+        self.size_adjust_policy = policy;
+        self.base.request_redraw();
+    }
+
+    /// Installs a completion provider.
+    ///
+    /// The provider is consulted whenever the typed value changes, and its result is
+    /// published through [`Self::completions`] so a host can show candidates wherever it
+    /// draws them.
+    pub fn set_completer(&mut self, completer: Option<ComboBoxCompleter>) {
+        self.completer = completer;
+        self.refresh_completions();
+        self.base.request_redraw();
+    }
+
+    /// The candidates the completer produced for the current text.
+    pub fn completions(&self) -> &[String] {
+        &self.completions
+    }
+
+    fn refresh_completions(&mut self) {
+        self.completions = match &self.completer {
+            Some(completer) => {
+                let base = self.current_text();
+                completer(&base)
+            }
+            None => Vec::new(),
+        };
+    }
+
+    /// Selects the first row at or after `start` whose label begins with `prefix`.
+    fn find_prefix(&self, prefix: &str, start: usize) -> Option<usize> {
+        let needle = prefix.to_lowercase();
+        let count = self.items.len();
+        if count == 0 {
+            return None;
+        }
+        (0..count).map(|offset| (start + offset) % count).find(|&index| {
+            self.is_item_enabled(index) && self.items[index].to_lowercase().starts_with(&needle)
+        })
     }
     /// Inserts an item at specified position.
     ///
@@ -419,6 +693,7 @@ impl ComboBox {
     pub fn insert_item(&mut self, index: usize, text: String) {
         if index <= self.items.len() {
             self.items.insert(index, text);
+            self.item_meta.insert(index.min(self.item_meta.len()), ComboBoxItem::new());
             // Adjust current index if needed
             if let Some(current) = &mut self.current_index {
                 if index <= *current {
@@ -435,6 +710,9 @@ impl ComboBox {
     pub fn remove_item(&mut self, index: usize) {
         if index < self.items.len() {
             self.items.remove(index);
+            if index < self.item_meta.len() {
+                self.item_meta.remove(index);
+            }
             // Adjust current index if needed
             if let Some(current) = &mut self.current_index {
                 if index == *current {
@@ -456,6 +734,7 @@ impl ComboBox {
             return;
         }
         self.items.clear();
+        self.item_meta.clear();
         self.current_index = None;
         self.current_text_changed.emit(String::new());
         self.current_index_changed.emit(None);
@@ -471,10 +750,12 @@ impl ComboBox {
             return;
         }
         if let Some(idx) = index {
-            if idx < self.items.len() {
+            if idx < self.items.len() && self.is_item_enabled(idx) {
                 self.current_index = Some(idx);
                 self.current_text_changed.emit(self.items[idx].clone());
                 self.current_index_changed.emit(Some(idx));
+            } else {
+                return;
             }
         } else {
             self.current_index = None;
@@ -498,12 +779,32 @@ impl ComboBox {
         if !self.editable {
             return;
         }
+        self.refresh_completions();
         let index = self.items.iter().position(|item| item == &text);
         let index = match index {
             Some(idx) => Some(idx),
-            None if !text.is_empty() => {
-                self.items.push(text);
-                Some(self.items.len() - 1)
+            None if !text.is_empty() && self.insert_policy != ComboBoxInsertPolicy::NoInsert => {
+                let at = match self.insert_policy {
+                    ComboBoxInsertPolicy::InsertAtTop => 0,
+                    ComboBoxInsertPolicy::InsertAtCurrent => {
+                        self.current_index.unwrap_or(self.items.len())
+                    }
+                    ComboBoxInsertPolicy::InsertAtBottom => self.items.len(),
+                    ComboBoxInsertPolicy::InsertAlphabetically => self
+                        .items
+                        .iter()
+                        .position(|item| item.to_lowercase() > text.to_lowercase())
+                        .unwrap_or(self.items.len()),
+                    ComboBoxInsertPolicy::NoInsert => self.items.len(),
+                };
+                self.items.insert(at, text);
+                self.item_meta.insert(at.min(self.item_meta.len()), ComboBoxItem::new());
+                if let Some(current) = &mut self.current_index {
+                    if at <= *current {
+                        *current += 1;
+                    }
+                }
+                Some(at)
             }
             None => None,
         };
@@ -561,6 +862,7 @@ impl ComboBox {
         self.open = open;
         if open {
             self.scroll_to_current();
+            self.reveal_progress = 0.0;
             // The list owns the press that dismisses it, even when that press lands on a
             // control below the list. See `runtime::POPUP_GRAB`.
             #[cfg(not(alloc_frugal))]
@@ -652,8 +954,10 @@ impl ComboBox {
         if !self.open || !self.list_rect().contains_point(point) {
             return None;
         }
-        (self.first_visible_item()..self.items.len())
-            .find(|index| self.item_rect(*index).is_some_and(|row| row.contains_point(point)))
+        (self.first_visible_item()..self.items.len()).find(|index| {
+            self.is_item_enabled(*index)
+                && self.item_rect(*index).is_some_and(|row| row.contains_point(point))
+        })
     }
 
     /// Scrolls the window so `index` is shown, moving it as little as it takes.
@@ -692,7 +996,7 @@ impl ComboBox {
             return false;
         }
         let last = self.items.len() - 1;
-        let next = match self.hovered_item {
+        let mut next = match self.hovered_item {
             Some(index) => (index as isize + delta).clamp(0, last as isize) as usize,
             // No highlight yet: the first move starts from whichever end the caller is heading
             // towards, so an up-arrow from nothing selects the last row rather than the first.
@@ -704,6 +1008,18 @@ impl ComboBox {
                 }
             }
         };
+        // A disabled row is skipped in the direction of travel, so the highlight always names
+        // a row a press would actually take.
+        let step: isize = if delta < 0 { -1 } else { 1 };
+        let mut guard = 0usize;
+        while !self.is_item_enabled(next) && guard <= self.items.len() {
+            let candidate = next as isize + step;
+            if candidate < 0 || candidate > last as isize {
+                return false;
+            }
+            next = candidate as usize;
+            guard += 1;
+        }
         let moved = self.hovered_item != Some(next);
         self.hovered_item = Some(next);
         self.scroll_to(next);
@@ -718,7 +1034,7 @@ impl ComboBox {
         let Some(index) = self.hovered_item else {
             return false;
         };
-        if index >= self.items.len() {
+        if index >= self.items.len() || !self.is_item_enabled(index) {
             return false;
         }
         self.set_current_index(Some(index));
@@ -759,6 +1075,18 @@ impl ComboBox {
     }
 }
 // Implement Widget trait
+impl ComboBox {
+    /// Advances the drop-down fade. Returns whether another frame is due.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.open || self.reveal_progress >= 1.0 {
+            return false;
+        }
+        self.reveal_progress = (self.reveal_progress + delta_ms as f32 / 150.0).min(1.0);
+        self.base.request_redraw();
+        self.reveal_progress < 1.0
+    }
+}
+
 impl Widget for ComboBox {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -823,7 +1151,21 @@ impl Widget for ComboBox {
         let hint = ControlMetrics::implicit_size(Size::new(widest, 0), padding, floor);
         // The height is the band's, not a second numeral: this is what makes "the reported
         // size and the drawn box agree" checkable rather than merely intended.
-        Size::new(hint.width, self.field_band().height.max(floor.height))
+        let width = match self.size_adjust_policy {
+            ComboBoxSizeAdjustPolicy::AdjustToContents
+            | ComboBoxSizeAdjustPolicy::AdjustToContentsOnFirstShow => hint.width,
+            // The minimum-length policy asks only for the field's own chrome; the layout gives
+            // the rest of the width.
+            ComboBoxSizeAdjustPolicy::AdjustToMinimumContentsLength => floor
+                .width
+                .max(dimensions::TEXT_FIELD_PADDING_H + dimensions::BUTTON_ICON_SIZE + trailing),
+        };
+        Size::new(width, self.field_band().height.max(floor.height))
+    }
+
+    /// An opening drop-down owes frames while it fades in.
+    fn is_animating(&self) -> bool {
+        self.open && self.reveal_progress < 1.0
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -887,6 +1229,12 @@ impl WidgetProperties for ComboBox {
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
             "max_visible_items" => Ok(CapabilityValue::UInt(self.max_visible_items() as u64)),
+            "insert_policy" => {
+                Ok(CapabilityValue::String(insert_policy_token(self.insert_policy()).to_string()))
+            }
+            "size_adjust_policy" => Ok(CapabilityValue::String(
+                size_adjust_policy_token(self.size_adjust_policy()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -943,6 +1291,20 @@ impl WidgetProperties for ComboBox {
                 self.set_max_visible_items(expect_usize(value)?);
                 Ok(())
             }
+            "insert_policy" => {
+                let token = expect_string(value)?;
+                let policy =
+                    insert_policy_from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_insert_policy(policy);
+                Ok(())
+            }
+            "size_adjust_policy" => {
+                let token = expect_string(value)?;
+                let policy = size_adjust_policy_from_token(&token)
+                    .ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_size_adjust_policy(policy);
+                Ok(())
+            }
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             "items" => {
                 self.set_items(expect_string_list(value)?);
@@ -962,6 +1324,8 @@ impl WidgetProperties for ComboBox {
             "editable",
             "open",
             "max_visible_items",
+            "insert_policy",
+            "size_adjust_policy",
             "direction",
             "alignment",
             BASE_PROPERTY_NAMES
@@ -1078,13 +1442,17 @@ impl EventHandler for ComboBox {
                             self.base.request_redraw();
                         }
                     } else if let Some(current) = self.current_index {
-                        if current < self.items.len().saturating_sub(1) {
-                            self.set_current_index(Some(current + 1));
-                            self.activated.emit(current + 1);
+                        if let Some(next) = (current + 1..self.items.len())
+                            .find(|&index| self.is_item_enabled(index))
+                        {
+                            self.set_current_index(Some(next));
+                            self.activated.emit(next);
                         }
-                    } else if !self.items.is_empty() {
-                        self.set_current_index(Some(0));
-                        self.activated.emit(0);
+                    } else if let Some(first) =
+                        (0..self.items.len()).find(|&index| self.is_item_enabled(index))
+                    {
+                        self.set_current_index(Some(first));
+                        self.activated.emit(first);
                     }
                 }
                 13 => {
@@ -1112,6 +1480,50 @@ impl EventHandler for ComboBox {
                 // of "can this list be opened" from drifting.
                 32 | 113 if !self.items.is_empty() => {
                     self.toggle_open();
+                }
+                // Page keys move the highlight by a windowful while open, and jump to the
+                // ends with Home/End.
+                33 if self.open => {
+                    let page = self.visible_item_count() as isize;
+                    if self.move_hover(-page) {
+                        self.base.request_redraw();
+                    }
+                }
+                34 if self.open => {
+                    let page = self.visible_item_count() as isize;
+                    if self.move_hover(page) {
+                        self.base.request_redraw();
+                    }
+                }
+                36 if self.open => {
+                    let first = (0..self.items.len()).find(|&index| self.is_item_enabled(index));
+                    if let Some(index) = first {
+                        self.hovered_item = Some(index);
+                        self.scroll_to_current();
+                        self.base.request_redraw();
+                    }
+                }
+                35 if self.open => {
+                    let last =
+                        (0..self.items.len()).rev().find(|&index| self.is_item_enabled(index));
+                    if let Some(index) = last {
+                        self.hovered_item = Some(index);
+                        self.scroll_to_current();
+                        self.base.request_redraw();
+                    }
+                }
+                // First-letter type-ahead: a printable key picks the next matching row.
+                32..=126 if !self.items.is_empty() => {
+                    if let Some(ch) = char::from_u32(*key) {
+                        self.type_ahead.push(ch);
+                        let start =
+                            self.hovered_item.or(self.current_index).map_or(0, |index| index + 1);
+                        if let Some(index) = self.find_prefix(&self.type_ahead, start) {
+                            self.hovered_item = Some(index);
+                            self.set_current_index(Some(index));
+                            self.base.request_redraw();
+                        }
+                    }
                 }
                 // Unknown key; ignore
                 _ => {}
@@ -1263,8 +1675,9 @@ impl Draw for ComboBox {
         if self.open {
             let list = self.list_rect();
             let border_color = style.border_color.unwrap_or_else(|| bg.blend(&text_color, 0.35));
-            context.fill_rect(list, bg);
-            context.draw_rect(list, border_color);
+            let reveal_alpha = (self.reveal_progress.clamp(0.0, 1.0) * 255.0).round() as u8;
+            context.fill_rect(list, bg.with_alpha(reveal_alpha));
+            context.draw_rect(list, border_color.with_alpha(reveal_alpha));
 
             if self.items.is_empty() {
                 // An open list with nothing in it still has to say so: a bare rectangle reads as a
@@ -1285,24 +1698,43 @@ impl Draw for ComboBox {
                     // pointer position, and the row the field currently holds is a committed value.
                     // Painting them the same would lose "which one am I already on".
                     if self.hovered_item == Some(index) {
-                        context.fill_rect(row, bg.blend(&text_color, 0.18));
+                        context
+                            .fill_rect(row, bg.blend(&text_color, 0.18).with_alpha(reveal_alpha));
                     } else if self.current_index == Some(index) {
-                        context.fill_rect(row, bg.blend(&text_color, 0.08));
+                        context
+                            .fill_rect(row, bg.blend(&text_color, 0.08).with_alpha(reveal_alpha));
                     }
                     // The label's band is the row inset by the field's own padding, so a list entry
                     // lines up with the value shown in the field above it.
                     let inset = dimensions::TEXT_FIELD_PADDING_H;
+                    let line = context.text_line(row, font);
+                    let mut label_x = row.x + inset as i32;
+                    let meta = self.item_meta.get(index);
+                    let enabled = meta.is_none_or(|meta| meta.enabled);
+                    if let Some(icon) = meta.and_then(|meta| meta.icon.as_deref()) {
+                        if !icon.is_empty() {
+                            let advance = context.measure_text(icon, font).width as i32;
+                            context.draw_text(
+                                Point::new(label_x, line.y),
+                                icon,
+                                font,
+                                text_color.with_alpha(if enabled { 255 } else { 110 }),
+                                HorizontalAlignment::Left,
+                            );
+                            label_x += advance + 6;
+                        }
+                    }
                     let label = Rect::new(
-                        row.x + inset as i32,
-                        context.text_line(row, font).y,
-                        row.width.saturating_sub(inset * 2),
-                        context.text_line(row, font).height,
+                        label_x,
+                        line.y,
+                        (row.x + row.width as i32 - inset as i32 - label_x).max(1) as u32,
+                        line.height,
                     );
                     context.draw_text_fitted_cow(
                         label,
                         &self.items[index],
                         font,
-                        text_color,
+                        if enabled { text_color } else { text_color.with_alpha(110) },
                         HorizontalAlignment::Left,
                     );
                 }
@@ -1631,6 +2063,7 @@ mod tests {
     }
 
     /// The reported height is the band that is painted.
+    #[cfg(device_profile)]
     #[test]
     fn the_reported_height_is_the_band_that_is_painted() {
         // The assertion is the Material height, so a concurrent test that activates the Macos
@@ -2134,5 +2567,102 @@ mod tests {
             "the ring must sit inside the field band, not the 120 px cell"
         );
         assert!(ring.rect.height < 120, "a 120 px cell must not produce a 120 px focus ring");
+    }
+
+    /// Rows carry icons, data and an enabled flag, and a disabled row is skipped.
+    #[test]
+    fn structured_rows_and_disabled_navigation() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items_rich(
+            vec!["Alpha".to_string(), "Beta".to_string(), "Gamma".to_string()],
+            vec![
+                ComboBoxItem::new().with_icon("*").with_data("a"),
+                ComboBoxItem::new().with_enabled(false),
+                ComboBoxItem::new(),
+            ],
+        );
+        assert_eq!(cb.item_meta(0).and_then(|meta| meta.data.as_deref()), Some("a"));
+        assert!(!cb.is_item_enabled(1));
+        cb.set_open(true);
+        cb.set_current_index(Some(0));
+
+        cb.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        cb.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        cb.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(cb.current_index(), Some(2), "the disabled row is skipped");
+
+        assert_eq!(cb.item_meta(0).and_then(|meta| meta.icon.as_deref()), Some("*"));
+    }
+
+    /// The insert policy decides where an unmatched editable value lands.
+    #[test]
+    fn insert_policies_place_a_new_value() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items(vec!["Alpha".to_string(), "Gamma".to_string()]);
+        cb.set_editable(true);
+        cb.set_insert_policy(ComboBoxInsertPolicy::InsertAtTop);
+        assert_eq!(cb.insert_policy(), ComboBoxInsertPolicy::InsertAtTop);
+        cb.set_current_text("First".to_string());
+        assert_eq!(cb.items()[0], "First");
+
+        cb.set_insert_policy(ComboBoxInsertPolicy::InsertAlphabetically);
+        cb.set_current_text("Beta".to_string());
+        assert_eq!(
+            cb.items(),
+            vec!["Beta".to_string(), "First".to_string(), "Alpha".to_string(), "Gamma".to_string()]
+                .as_slice()
+        );
+    }
+
+    /// Both policies are published by token and round-trip through the property route.
+    #[test]
+    fn the_insert_and_size_adjust_policies_are_published() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items(vec!["Alpha".to_string(), "Gamma".to_string()]);
+        assert_eq!(
+            cb.get("insert_policy").unwrap(),
+            CapabilityValue::String("insert_at_bottom".to_string())
+        );
+        assert_eq!(
+            cb.get("size_adjust_policy").unwrap(),
+            CapabilityValue::String("adjust_to_contents".to_string())
+        );
+
+        cb.set("insert_policy", CapabilityValue::String("insert_at_top".to_string())).unwrap();
+        assert_eq!(cb.insert_policy(), ComboBoxInsertPolicy::InsertAtTop);
+        cb.set(
+            "size_adjust_policy",
+            CapabilityValue::String("adjust_to_minimum_contents_length".to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            cb.size_adjust_policy(),
+            ComboBoxSizeAdjustPolicy::AdjustToMinimumContentsLength
+        );
+
+        assert_eq!(
+            cb.set("insert_policy", CapabilityValue::String("sideways".to_string())),
+            Err(CapabilityAccessError::OutOfRange),
+            "an unknown token is refused rather than silently ignored"
+        );
+    }
+
+    /// The drop-down fades in, and the completer is asked for candidates.
+    #[test]
+    fn the_dropdown_fades_and_the_completer_is_consulted() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items(vec!["Alpha".to_string(), "Beta".to_string()]);
+        cb.set_editable(true);
+        cb.set_completer(Some(Rc::new(|prefix: &str| {
+            vec![format!("{prefix}-one"), format!("{prefix}-two")]
+        })));
+        cb.set_current_text("Al".to_string());
+        assert_eq!(cb.completions().len(), 2);
+
+        cb.set_open(true);
+        assert!(cb.is_animating());
+        assert!(cb.tick(16));
+        cb.tick(500);
+        assert!(!cb.is_animating());
     }
 }

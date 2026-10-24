@@ -8,30 +8,175 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 
-use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+/// A named color-dialog feature that can be switched on independently.
+///
+/// These are the options that are actually honoured by the control's layout and input
+/// handling; keeping them as an enum rather than one boolean per field gives a caller one
+/// spelling and one setter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorDialogOption {
+    /// Offer an alpha rail below the picker and preserve alpha while picking.
+    ShowAlphaChannel,
+    /// Hide the OK/Cancel row. Enter and Escape still commit and cancel.
+    NoButtons,
+    /// Replace the hex readout with an editable hex field.
+    ShowHexInput,
+    /// Paint the built-in preset swatches in the preview row.
+    ShowPresetPalette,
+    /// Paint a hue rail beside the saturation/value plane.
+    ShowHueRail,
+}
+
+/// The number of strips the two soft ramps are quantised into.
+///
+/// The renderer exposes a solid-fill primitive but not a per-context gradient fill, so a
+/// multi-colour surface is composed from strips. Thirty-two is finer than the eye resolves
+/// on a picker of this size and still cheap enough to repaint with the dialog.
+const RAMP_STEPS: u32 = 32;
+
+/// Paints one saturation/value plane at `hue`.
+fn paint_sv_plane(context: &mut RenderContext, rect: Rect, hue: Color) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let steps = RAMP_STEPS.min(rect.width).max(1);
+    for step in 0..steps {
+        let t = step as f32 / (steps - 1).max(1) as f32;
+        let x = rect.x + (rect.width as f32 * t) as i32;
+        let next = rect.x + (rect.width as f32 * (step + 1) as f32 / steps as f32) as i32;
+        let strip = Rect::new(x, rect.y, (next - x).max(1) as u32, rect.height);
+        context.fill_rect(strip, Color::WHITE.blend(&hue, t));
+    }
+    let steps = RAMP_STEPS.min(rect.height).max(1);
+    for step in 0..steps {
+        let t = step as f32 / (steps - 1).max(1) as f32;
+        let y = rect.y + (rect.height as f32 * t) as i32;
+        let next = rect.y + (rect.height as f32 * (step + 1) as f32 / steps as f32) as i32;
+        let strip = Rect::new(rect.x, y, rect.width, (next - y).max(1) as u32);
+        context.fill_rect(strip, Color::BLACK.with_alpha((t * 255.0).round() as u8));
+    }
+}
+
+/// Paints a transparent-to-opaque ramp of `color` for the alpha rail.
+fn paint_alpha_rail(context: &mut RenderContext, rect: Rect, color: Color) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    context.fill_rect(rect, Color::WHITE);
+    let steps = RAMP_STEPS.min(rect.width).max(1);
+    for step in 0..steps {
+        let t = step as f32 / (steps - 1).max(1) as f32;
+        let x = rect.x + (rect.width as f32 * t) as i32;
+        let next = rect.x + (rect.width as f32 * (step + 1) as f32 / steps as f32) as i32;
+        let strip = Rect::new(x, rect.y, (next - x).max(1) as u32, rect.height);
+        context.fill_rect(strip, color.with_alpha((t * 255.0).round() as u8));
+    }
+}
+
+/// The saturation and value of a color, each in `0.0..=1.0`.
+fn sv_of(color: Color) -> (f32, f32) {
+    let r = color.r as f32 / 255.0;
+    let g = color.g as f32 / 255.0;
+    let b = color.b as f32 / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let saturation = if max <= f32::EPSILON { 0.0 } else { (max - min) / max };
+    (saturation, max)
+}
+
+/// The built-in palette applied by [`ColorDialog::apply_preset`].
+const PRESET_COLORS: [Color; 8] = [
+    Color::rgb(0, 0, 0),
+    Color::rgb(255, 255, 255),
+    Color::rgb(220, 53, 69),
+    Color::rgb(255, 140, 0),
+    Color::rgb(255, 193, 7),
+    Color::rgb(40, 167, 69),
+    Color::rgb(0, 123, 255),
+    Color::rgb(111, 66, 193),
+];
+
+/// The hue of a color in degrees, `0.0..360.0`.
+fn hue_of(color: Color) -> f32 {
+    let r = color.r as f32 / 255.0;
+    let g = color.g as f32 / 255.0;
+    let b = color.b as f32 / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+    if delta <= f32::EPSILON {
+        return 0.0;
+    }
+    let hue = if max == r {
+        60.0 * (((g - b) / delta) % 6.0)
+    } else if max == g {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    if hue < 0.0 {
+        hue + 360.0
+    } else {
+        hue
+    }
+}
+
+/// A color from a hue, saturation and value, each in `0.0..=1.0`.
+fn color_from_hsv(hue: f32, saturation: f32, value: f32, alpha: u8) -> Color {
+    let h = hue.rem_euclid(360.0) / 60.0;
+    let s = saturation.clamp(0.0, 1.0);
+    let v = value.clamp(0.0, 1.0);
+    let c = v * s;
+    let x = c * (1.0 - ((h % 2.0) - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    Color::rgba(
+        ((r + m) * 255.0).round() as u8,
+        ((g + m) * 255.0).round() as u8,
+        ((b + m) * 255.0).round() as u8,
+        alpha,
+    )
+}
 /// Color dialog for picking RGBA colors.
 ///
-/// # Not a full picker
-///
-/// The "picker" area is a synthetic two-axis field, not a real palette: the x
-/// axis drives the red and blue channels inversely and the y axis drives green,
-/// so only a subset of RGB space is reachable by clicking. The alpha channel is
-/// never changed by clicking — it is carried over from the previous color (or
-/// forced to fully opaque when `options_alpha` is off).
-///
-/// Alpha is only ever preserved or set to `255`; there is no control for
-/// choosing it.
-///
+/// The picker is a saturation/value plane at the current hue: the x axis is saturation and
+/// the y axis is value (brightness), with the hue taken from the selected color. That is the
+/// surface the dialog paints, so a click's position and the color it produces are the same
+/// fact rather than two mappings that happen to disagree.
 pub struct ColorDialog {
     base: BaseWidget,
     current_color: Color,
     options_alpha: bool,
+    /// Whether the action row is hidden.
+    no_buttons: bool,
+    /// Whether the hex readout is editable.
+    show_hex_input: bool,
+    /// Whether the preset swatches are painted.
+    show_presets: bool,
+    /// Whether the hue rail is painted.
+    show_hue_rail: bool,
+    /// The hue the picker plane is drawn at, in degrees.
+    hue: f32,
+    /// The caller's custom colors, drawn after the built-in presets.
+    custom_colors: Vec<Color>,
+    /// The typed hex text while the hex field is focused.
+    hex_input: String,
+    /// Whether the hex field has focus.
+    hex_focused: bool,
     modal: bool,
     /// Emitted with the new color on every colour change, including ones made
     /// by keyboard nudges and by clicks in the picker area. Fires during
@@ -70,6 +215,15 @@ impl ColorDialog {
 
     /// Bottom margin below the button row.
     const BOTTOM_MARGIN: i32 = 12;
+
+    /// Height of the alpha rail, in logical pixels.
+    const ALPHA_RAIL_HEIGHT: u32 = 10;
+    /// The gap between the picker and the alpha rail.
+    const ALPHA_RAIL_GAP: u32 = 4;
+    /// The width of the hue rail.
+    const HUE_RAIL_WIDTH: u32 = 14;
+    /// The gap between the picker plane and the hue rail.
+    const HUE_RAIL_GAP: u32 = 6;
 
     /// The frame the dialog actually paints: at most its intrinsic size, centred in the
     /// area it was given.
@@ -133,6 +287,14 @@ impl ColorDialog {
             base: BaseWidget::new(WidgetKind::ColorDialog, geometry, "ColorDialog"),
             current_color: Color::rgb(255, 255, 255),
             options_alpha: false,
+            no_buttons: false,
+            show_hex_input: false,
+            show_presets: false,
+            show_hue_rail: false,
+            hue: 0.0,
+            custom_colors: Vec::new(),
+            hex_input: String::new(),
+            hex_focused: false,
             modal: true,
             color_selected: Signal1::new(),
             accepted: GenericSignal::new(),
@@ -173,18 +335,126 @@ impl ColorDialog {
     }
     /// Sets the current color and emits `color_selected`.
     ///
-    /// Unlike most widgets' setters this is **not** a no-op for a repeated
-    /// value — it always signals and always requests a redraw. A slot that
-    /// calls back into a setter will therefore recurse.
+    /// A write of the value the dialog already holds is a no-op: it neither signals nor
+    /// redraws. Signalling on a repeated value made a slot that called back into this setter
+    /// recurse without ever making progress; the signal is named `color_selected`, so reporting
+    /// a selection the caller already made would be false.
     pub fn set_current_color(&mut self, color: Color) {
+        if self.current_color == color {
+            return;
+        }
+        // A chromatic write moves the plane's hue, so the next pick starts from the hue the
+        // caller just selected. A grey write carries no hue and leaves it alone.
+        let (saturation, _) = sv_of(color);
+        if saturation > 0.0 {
+            self.hue = hue_of(color);
+        }
         self.current_color = color;
         self.color_selected.emit(color);
         self.base.request_redraw();
     }
     /// Enables or disables alpha handling for picker clicks. See
-    /// [`ColorDialog::options_alpha`]. Does not request a redraw.
+    /// [`ColorDialog::options_alpha`]. Repaints because the alpha rail appears or disappears.
     pub fn set_options_alpha(&mut self, enabled: bool) {
+        if self.options_alpha == enabled {
+            return;
+        }
         self.options_alpha = enabled;
+        self.base.request_redraw();
+    }
+
+    /// Whether `option` is enabled.
+    pub fn test_option(&self, option: ColorDialogOption) -> bool {
+        match option {
+            ColorDialogOption::ShowAlphaChannel => self.options_alpha,
+            ColorDialogOption::NoButtons => self.no_buttons,
+            ColorDialogOption::ShowHexInput => self.show_hex_input,
+            ColorDialogOption::ShowPresetPalette => self.show_presets,
+            ColorDialogOption::ShowHueRail => self.show_hue_rail,
+        }
+    }
+
+    /// Enables or disables `option` and repaints when it changes.
+    pub fn set_option(&mut self, option: ColorDialogOption, enabled: bool) {
+        match option {
+            ColorDialogOption::ShowAlphaChannel => self.set_options_alpha(enabled),
+            ColorDialogOption::NoButtons => {
+                if self.no_buttons == enabled {
+                    return;
+                }
+                self.no_buttons = enabled;
+            }
+            ColorDialogOption::ShowHexInput => {
+                if self.show_hex_input == enabled {
+                    return;
+                }
+                self.show_hex_input = enabled;
+                if !enabled {
+                    self.hex_focused = false;
+                }
+            }
+            ColorDialogOption::ShowPresetPalette => {
+                if self.show_presets == enabled {
+                    return;
+                }
+                self.show_presets = enabled;
+            }
+            ColorDialogOption::ShowHueRail => {
+                if self.show_hue_rail == enabled {
+                    return;
+                }
+                self.show_hue_rail = enabled;
+            }
+        }
+        self.base.request_redraw();
+    }
+
+    /// The built-in palette, in display order.
+    pub fn presets(&self) -> &[Color] {
+        &PRESET_COLORS
+    }
+
+    /// Applies the preset at `index`, reporting whether the index addressed one.
+    pub fn apply_preset(&mut self, index: usize) -> bool {
+        let Some(color) = PRESET_COLORS.get(index).copied() else {
+            return false;
+        };
+        let alpha = if self.options_alpha { self.current_color.a } else { 255 };
+        self.set_current_color(Color::rgba(color.r, color.g, color.b, alpha));
+        true
+    }
+
+    /// Parses `hex` and selects it, reporting whether the text was a valid color.
+    pub fn set_hex(&mut self, hex: &str) -> bool {
+        let Some(color) = Color::parse_hex(hex) else {
+            return false;
+        };
+        let alpha = if self.options_alpha { color.a } else { 255 };
+        self.set_current_color(Color::rgba(color.r, color.g, color.b, alpha));
+        true
+    }
+
+    /// The caller's custom colors, in the order they were added.
+    pub fn custom_colors(&self) -> &[Color] {
+        &self.custom_colors
+    }
+
+    /// Replaces the custom palette and repaints.
+    pub fn set_custom_colors(&mut self, colors: Vec<Color>) {
+        if self.custom_colors == colors {
+            return;
+        }
+        self.custom_colors = colors;
+        self.base.request_redraw();
+    }
+
+    /// Adds a custom color and repaints.
+    pub fn add_custom_color(&mut self, color: Color) {
+        if self.custom_colors.contains(&color) {
+            return;
+        }
+        self.custom_colors.push(color);
+        self.base.request_redraw();
     }
     /// Emits `accepted` and hides the dialog.
     ///
@@ -231,8 +501,96 @@ impl ColorDialog {
         // The picker stops at the top of whichever row is drawn below it: the preview
         // band when the dialog can hold one, otherwise the button row itself.
         let below_top = self.preview_row_top().unwrap_or_else(|| self.button_row_top());
-        let height = (below_top - picker_top - Self::PICKER_GAP).max(0) as u32;
-        Rect::new(rect.x + 10, picker_top, rect.width.saturating_sub(20), height)
+        let rail = if self.options_alpha {
+            (Self::ALPHA_RAIL_HEIGHT + Self::ALPHA_RAIL_GAP) as i32
+        } else {
+            0
+        };
+        let height = (below_top - picker_top - Self::PICKER_GAP - rail).max(0) as u32;
+        let mut width = rect.width.saturating_sub(20);
+        if self.show_hue_rail {
+            width = width.saturating_sub(Self::HUE_RAIL_WIDTH + Self::HUE_RAIL_GAP);
+        }
+        Rect::new(rect.x + 10, picker_top, width, height)
+    }
+
+    /// The hue rail beside the picker, present only when the option is on.
+    fn hue_rect(&self) -> Option<Rect> {
+        if !self.show_hue_rail {
+            return None;
+        }
+        let picker = self.picker_rect();
+        (picker.width > 0 && picker.height > 0).then(|| {
+            Rect::new(
+                picker.x + picker.width as i32 + Self::HUE_RAIL_GAP as i32,
+                picker.y,
+                Self::HUE_RAIL_WIDTH,
+                picker.height,
+            )
+        })
+    }
+
+    /// Maps a point on the hue rail to a hue in degrees.
+    fn hue_from_point(&self, pos: Point) -> Option<f32> {
+        let rail = self.hue_rect()?;
+        if !Self::point_in_rect(pos, rail) {
+            return None;
+        }
+        let fraction = ((pos.y - rail.y) as f32 / rail.height.max(1) as f32).clamp(0.0, 1.0);
+        Some(fraction * 360.0)
+    }
+
+    /// The alpha rail below the picker, present only when alpha editing is on.
+    fn alpha_rect(&self) -> Option<Rect> {
+        if !self.options_alpha {
+            return None;
+        }
+        let picker = self.picker_rect();
+        Some(Rect::new(
+            picker.x,
+            picker.y + picker.height as i32 + Self::ALPHA_RAIL_GAP as i32,
+            picker.width,
+            Self::ALPHA_RAIL_HEIGHT,
+        ))
+    }
+
+    /// The editable hex field's rect, when the option is on and a preview row exists.
+    fn hex_field_rect(&self) -> Option<Rect> {
+        if !self.show_hex_input {
+            return None;
+        }
+        let preview_y = self.preview_row_top()?;
+        let rect = self.frame_rect();
+        let presets = self.preset_rects().len() as u32;
+        let presets_width = if presets == 0 { 0 } else { presets * 18 + 4 };
+        let x = rect.x + 80 + presets_width as i32;
+        let width = (rect.x + rect.width as i32 - 10 - x).max(0) as u32;
+        (width > 0).then(|| Rect::new(x, preview_y + 2, width, Self::PREVIEW_HEIGHT as u32 - 4))
+    }
+
+    /// The preset swatch rects in the preview row, in palette order.
+    fn preset_rects(&self) -> Vec<Rect> {
+        if !self.show_presets {
+            return Vec::new();
+        }
+        let Some(preview_y) = self.preview_row_top() else {
+            return Vec::new();
+        };
+        let rect = self.frame_rect();
+        let count = (PRESET_COLORS.len() + self.custom_colors.len()).min(8) as u32;
+        let available = (rect.width.saturating_sub(96)) / 18;
+        let count = count.min(available);
+        (0..count)
+            .map(|index| Rect::new(rect.x + 80 + index as i32 * 18, preview_y + 6, 14, 14))
+            .collect()
+    }
+
+    /// The preset color at a swatch index, including custom colors after the built-ins.
+    fn palette_color(&self, index: usize) -> Option<Color> {
+        PRESET_COLORS
+            .get(index)
+            .copied()
+            .or_else(|| self.custom_colors.get(index.saturating_sub(PRESET_COLORS.len())).copied())
     }
 
     /// The action labels this dialog paints, in row order.
@@ -291,13 +649,20 @@ impl ColorDialog {
         }
         let w = picker.width.max(1) as f32;
         let h = picker.height.max(1) as f32;
-        let rx = ((pos.x - picker.x) as f32 / w).clamp(0.0, 1.0);
-        let ry = ((pos.y - picker.y) as f32 / h).clamp(0.0, 1.0);
-        let r = (rx * 255.0).round() as u8;
-        let g = ((1.0 - ry) * 255.0).round() as u8;
-        let b = ((1.0 - rx) * 255.0).round() as u8;
+        let saturation = ((pos.x - picker.x) as f32 / w).clamp(0.0, 1.0);
+        let value = (1.0 - (pos.y - picker.y) as f32 / h).clamp(0.0, 1.0);
         let a = if self.options_alpha { self.current_color.a } else { 255 };
-        Some(Color::rgba(r, g, b, a))
+        Some(color_from_hsv(self.hue, saturation, value, a))
+    }
+
+    /// Maps a point on the alpha rail to an alpha value.
+    fn alpha_from_point(&self, pos: Point) -> Option<u8> {
+        let rail = self.alpha_rect()?;
+        if !Self::point_in_rect(pos, rail) {
+            return None;
+        }
+        let fraction = ((pos.x - rail.x) as f32 / rail.width.max(1) as f32).clamp(0.0, 1.0);
+        Some((fraction * 255.0).round() as u8)
     }
 
     fn nudge_rgb(&mut self, dr: i16, dg: i16, db: i16) {
@@ -376,6 +741,21 @@ impl WidgetProperties for ColorDialog {
             "current_color" => Ok(CapabilityValue::String(self.current_color.to_hex_rgba())),
             "modal" => Ok(CapabilityValue::Bool(self.modal)),
             "options_alpha" => Ok(CapabilityValue::Bool(self.options_alpha)),
+            "hex_rgba" => Ok(CapabilityValue::String(self.current_color.to_hex_rgba())),
+            "preset_index" => Ok(
+                match self.presets().iter().position(|preset| {
+                    Color::rgba(preset.r, preset.g, preset.b, self.current_color.a)
+                        == self.current_color
+                        || *preset == self.current_color
+                }) {
+                    Some(index) => CapabilityValue::UInt(index as u64),
+                    None => CapabilityValue::Null,
+                },
+            ),
+            "show_hex_input" => Ok(CapabilityValue::Bool(self.show_hex_input)),
+            "show_presets" => Ok(CapabilityValue::Bool(self.show_presets)),
+            "show_hue_rail" => Ok(CapabilityValue::Bool(self.show_hue_rail)),
+            "custom_color_count" => Ok(CapabilityValue::UInt(self.custom_colors.len() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -390,6 +770,38 @@ impl WidgetProperties for ColorDialog {
                 self.set_options_alpha(expect_bool(value)?);
                 Ok(())
             }
+            "hex_rgba" => {
+                if self.set_hex(&expect_string(value)?) {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::TypeMismatch)
+                }
+            }
+            "preset_index" => {
+                let index = match value {
+                    CapabilityValue::UInt(v) => v as usize,
+                    CapabilityValue::Int(v) if v >= 0 => v as usize,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                if self.apply_preset(index) {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "show_hex_input" => {
+                self.set_option(ColorDialogOption::ShowHexInput, expect_bool(value)?);
+                Ok(())
+            }
+            "show_presets" => {
+                self.set_option(ColorDialogOption::ShowPresetPalette, expect_bool(value)?);
+                Ok(())
+            }
+            "show_hue_rail" => {
+                self.set_option(ColorDialogOption::ShowHueRail, expect_bool(value)?);
+                Ok(())
+            }
+            "custom_color_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             // The edited colour is not writable here: it changes through the picker
             // area and through `set_current_color`, both of which emit
             // `color_selected`. Making it writable through a generic property write
@@ -400,15 +812,27 @@ impl WidgetProperties for ColorDialog {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["current_color", "modal", "options_alpha", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "current_color",
+            "modal",
+            "options_alpha",
+            "hex_rgba",
+            "preset_index",
+            "show_hex_input",
+            "show_presets",
+            "show_hue_rail",
+            "custom_color_count",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `color_dialog` publishes.
     ///
-    /// `set_hex` takes the hex text and `apply_preset` takes the preset index, so
-    /// neither can complete without a payload: they are refused as
-    /// [`CapabilityAccessError::OutOfRange`], meaning the name is valid and the
-    /// argument is what is missing.
+    /// `set_hex` takes the hex text and `apply_preset` takes the preset index, so neither can
+    /// complete without a payload: they are refused as
+    /// [`CapabilityAccessError::OutOfRange`], meaning the name is valid and the argument is
+    /// what is missing. The payload-carrying half of the same features is the writable
+    /// `hex_rgba` and `preset_index` properties, which is where the value goes.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "set_hex" | "apply_preset" => Err(CapabilityAccessError::OutOfRange),
@@ -427,19 +851,76 @@ impl EventHandler for ColorDialog {
             Event::MousePress { pos, button: 1, .. } => {
                 // The buttons share the bottom band with nothing else, but the check comes
                 // first anyway: a press on a button must never fall through to the picker.
-                if let Some(index) = self.button_at(*pos) {
-                    if index == 0 {
-                        self.accept();
-                    } else {
-                        self.reject();
+                if !self.no_buttons {
+                    if let Some(index) = self.button_at(*pos) {
+                        if index == 0 {
+                            self.accept();
+                        } else {
+                            self.reject();
+                        }
+                        return;
                     }
+                }
+                if self.show_presets {
+                    if let Some(index) =
+                        self.preset_rects().iter().position(|rect| Self::point_in_rect(*pos, *rect))
+                    {
+                        if let Some(color) = self.palette_color(index) {
+                            let alpha = if self.options_alpha { self.current_color.a } else { 255 };
+                            self.set_current_color(Color::rgba(color.r, color.g, color.b, alpha));
+                        }
+                        return;
+                    }
+                }
+                if self.hex_field_rect().is_some_and(|rect| Self::point_in_rect(*pos, rect)) {
+                    self.hex_focused = true;
+                    // The field starts empty so the first typed character is the first
+                    // character of the new value rather than an append to the old one.
+                    self.hex_input.clear();
+                    self.base.request_redraw();
+                    return;
+                }
+                if let Some(alpha) = self.alpha_from_point(*pos) {
+                    let color = self.current_color;
+                    self.set_current_color(Color::rgba(color.r, color.g, color.b, alpha));
+                    return;
+                }
+                if let Some(hue) = self.hue_from_point(*pos) {
+                    let (saturation, value) = sv_of(self.current_color);
+                    let alpha = if self.options_alpha { self.current_color.a } else { 255 };
+                    self.hue = hue;
+                    self.set_current_color(color_from_hsv(hue, saturation, value, alpha));
+                    // A grey selection keeps the same RGB while the plane's hue changes, so the
+                    // paint still has to be refreshed even when the colour write was a no-op.
+                    self.base.request_redraw();
                     return;
                 }
                 if let Some(color) = self.pick_color_from_point(*pos) {
                     self.set_current_color(color);
                 }
             }
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                if self.hex_focused {
+                    let mut candidate = self.hex_input.clone();
+                    candidate.extend(text.chars().filter(|character| !character.is_control()));
+                    self.hex_input = candidate.clone();
+                    let _ = self.set_hex(&candidate);
+                    self.base.request_redraw();
+                }
+            }
             Event::KeyPress { key, .. } => {
+                if self.hex_focused {
+                    if *key == key_codes::BACKSPACE {
+                        self.hex_input.pop();
+                        let candidate = self.hex_input.clone();
+                        let _ = self.set_hex(&candidate);
+                        self.base.request_redraw();
+                    } else if *key == key_codes::ENTER || *key == key_codes::ESCAPE {
+                        self.hex_focused = false;
+                        self.base.request_redraw();
+                    }
+                    return;
+                }
                 if *key == key_codes::ENTER {
                     self.accept();
                 } else if *key == key_codes::ESCAPE {
@@ -572,8 +1053,55 @@ impl Draw for ColorDialog {
         // SVG backend emits while the rasteriser skips it.
         let picker_rect = self.picker_rect();
         if picker_rect.width > 0 && picker_rect.height > 0 {
-            context.fill_rect(picker_rect, Color::rgb(200, 200, 200));
+            // The plane is the one the click maps onto: a saturation/value field at the
+            // current hue. The old flat grey fill was a swatch of nothing — the click mapped
+            // to an RGB pair the user could not see, so the picker's appearance and its
+            // meaning disagreed.
+            let hue = color_from_hsv(self.hue, 1.0, 1.0, 255);
+            paint_sv_plane(context, picker_rect, hue);
             context.draw_rect(picker_rect, border);
+        }
+        if let Some(rail) = self.hue_rect() {
+            if rail.width > 0 && rail.height > 0 {
+                let steps = RAMP_STEPS.min(rail.height).max(1);
+                for step in 0..steps {
+                    let t = step as f32 / (steps - 1).max(1) as f32;
+                    let y = rail.y + (rail.height as f32 * t) as i32;
+                    let next =
+                        rail.y + (rail.height as f32 * (step + 1) as f32 / steps as f32) as i32;
+                    let strip = Rect::new(rail.x, y, rail.width, (next - y).max(1) as u32);
+                    context.fill_rect(strip, color_from_hsv(t * 360.0, 1.0, 1.0, 255));
+                }
+                context.draw_rect(rail, border);
+                let marker_y = rail.y + (rail.height as f32 * (self.hue / 360.0)) as i32;
+                context.draw_line(
+                    Point::new(rail.x, marker_y),
+                    Point::new(rail.x + rail.width as i32, marker_y),
+                    ink,
+                );
+            }
+        }
+        // The alpha rail is the same value the picker preserves: a transparent-to-opaque
+        // ramp of the selected hue, so choosing alpha is a click rather than an unexposed
+        // channel.
+        if let Some(rail) = self.alpha_rect() {
+            if rail.width > 0 && rail.height > 0 {
+                let solid = Color::rgba(
+                    self.current_color.r,
+                    self.current_color.g,
+                    self.current_color.b,
+                    255,
+                );
+                paint_alpha_rail(context, rail, solid);
+                context.draw_rect(rail, border);
+                let marker_x =
+                    rail.x + (rail.width as f32 * (self.current_color.a as f32 / 255.0)) as i32;
+                context.draw_line(
+                    Point::new(marker_x, rail.y),
+                    Point::new(marker_x, rail.y + rail.height as i32),
+                    ink,
+                );
+            }
         }
         // Color preview. Drawn only when a band's worth of room is left between the
         // title bar and the button row; on a shorter dialog the picker takes that space
@@ -590,31 +1118,67 @@ impl Draw for ColorDialog {
             let preview_rect = Rect::new(rect.x + 10, preview_y, 60, Self::PREVIEW_HEIGHT as u32);
             context.fill_rect(preview_rect, self.current_color);
             context.draw_rect(preview_rect, border);
-            // The hex readout sits in the strip between the swatch and the panel's right
-            // margin, so a long hex string truncates there rather than running under the
-            // buttons. It is centred on the 30 px swatch band through the shared primitive:
-            // the glyph origin is the box's top-left, so the old `preview_y + 15` put the
-            // line's top edge on the swatch's middle line.
-            let band = Rect::new(
-                rect.x + 80,
-                preview_y,
-                rect.width.saturating_sub(88),
-                Self::PREVIEW_HEIGHT as u32,
-            );
-            let line = context.text_line(band, preview_font);
-            context.draw_text_fitted_cow(
-                Rect::new(band.x, line.y, band.width.max(1), line.height.max(1)),
-                preview_text,
-                preview_font,
-                ink,
-                HorizontalAlignment::Left,
-            );
+            // Preset swatches are an opt-in palette: each one is a flat fill of the colour it
+            // applies, and a press on it is resolved by the same rects this paints.
+            let swatches = self.preset_rects();
+            for (index, swatch) in swatches.iter().enumerate() {
+                if let Some(color) = self.palette_color(index) {
+                    context.fill_rect(*swatch, color);
+                    context.draw_rect(*swatch, border);
+                }
+            }
+            if let Some(field) = self.hex_field_rect() {
+                context.fill_rect(field, surface);
+                context.draw_rect(field, if self.hex_focused { accent } else { border });
+                let text = if self.hex_focused {
+                    &self.hex_input
+                } else {
+                    &self.current_color.to_hex_rgba()
+                };
+                let line = context.text_line(field, preview_font);
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        field.x + 4,
+                        line.y,
+                        field.width.saturating_sub(8),
+                        line.height.max(1),
+                    ),
+                    text,
+                    preview_font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            } else {
+                // The hex readout sits in the strip between the swatch and the panel's right
+                // margin, so a long hex string truncates there rather than running under the
+                // buttons. It is centred on the 30 px swatch band through the shared primitive:
+                // the glyph origin is the box's top-left, so the old `preview_y + 15` put the
+                // line's top edge on the swatch's middle line.
+                let text_x = 80 + swatches.len() as i32 * 18;
+                let band = Rect::new(
+                    rect.x + text_x,
+                    preview_y,
+                    (rect.x + rect.width as i32 - 10 - (rect.x + text_x)).max(0) as u32,
+                    Self::PREVIEW_HEIGHT as u32,
+                );
+                let line = context.text_line(band, preview_font);
+                context.draw_text_fitted_cow(
+                    Rect::new(band.x, line.y, band.width.max(1), line.height.max(1)),
+                    preview_text,
+                    preview_font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
         // OK/Cancel buttons. The row's y comes from the same stack that fixes the preview
         // band, so the rows cannot drift; its x comes from the shared [`action_row_geometry`]
         // derivation, so this dialog and the five others that draw the same pair cannot
         // disagree about the button width, the gap between them, or where the row's left edge
         // falls. The labels are centred in their buttons and fitted to them.
+        if self.no_buttons {
+            return;
+        }
         let band = super::message_box::inset_action_band(
             Rect::new(rect.x, self.button_row_top(), rect.width, Self::BUTTON_HEIGHT as u32),
             rect.y,
@@ -706,5 +1270,110 @@ mod tests {
 
         let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec![Color::rgb(1, 2, 3)]);
+    }
+
+    #[test]
+    fn setting_the_same_color_again_is_a_no_op() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
+        dialog.set_current_color(Color::rgb(10, 20, 30));
+        let emitted = Arc::new(Mutex::new(0usize));
+        let sink = emitted.clone();
+        dialog.color_selected.connect(move |_| {
+            if let Ok(mut count) = sink.lock() {
+                *count += 1;
+            }
+        });
+        dialog.set_current_color(Color::rgb(10, 20, 30));
+        assert_eq!(*emitted.lock().expect("lock"), 0, "a repeated write must not signal");
+    }
+
+    #[test]
+    fn the_picker_maps_position_to_the_saturation_value_plane() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
+        let picker = dialog.picker_rect();
+        // Top-left is white (saturation 0, value 1).
+        dialog.handle_event(&Event::mouse_press(picker.x + 1, picker.y + 1, 1));
+        let top_left = dialog.current_color();
+        assert!(top_left.r > 240 && top_left.g > 240 && top_left.b > 240, "{top_left:?}");
+        // Bottom-right is black (value 0).
+        dialog.handle_event(&Event::mouse_press(
+            picker.x + picker.width as i32 - 1,
+            picker.y + picker.height as i32 - 1,
+            1,
+        ));
+        let bottom_right = dialog.current_color();
+        assert!(
+            bottom_right.r < 10 && bottom_right.g < 10 && bottom_right.b < 10,
+            "{bottom_right:?}"
+        );
+    }
+
+    #[test]
+    fn the_alpha_rail_changes_the_alpha_channel() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
+        dialog.set_options_alpha(true);
+        let rail = dialog.alpha_rect().expect("alpha on exposes the rail");
+        dialog.handle_event(&Event::mouse_press(rail.x + rail.width as i32 / 2, rail.y + 2, 1));
+        let alpha = dialog.current_color().a;
+        assert!((120..=135).contains(&alpha), "the midpoint is half alpha, got {alpha}");
+    }
+
+    #[test]
+    fn hex_and_presets_are_published_properties() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
+        dialog
+            .set("hex_rgba", CapabilityValue::String("#11223344".to_string()))
+            .expect("hex is writable");
+        assert_eq!(dialog.current_color(), Color::rgba(0x11, 0x22, 0x33, 0xFF));
+        assert_eq!(dialog.get("hex_rgba"), Ok(CapabilityValue::String("#112233FF".to_string())));
+
+        dialog.set("preset_index", CapabilityValue::UInt(6)).expect("preset is writable");
+        assert_eq!(dialog.current_color(), PRESET_COLORS[6]);
+        assert_eq!(
+            dialog.set("preset_index", CapabilityValue::UInt(99)),
+            Err(CapabilityAccessError::OutOfRange)
+        );
+        assert!(!dialog.set_hex("not a color"));
+    }
+
+    #[test]
+    fn typing_into_the_hex_field_applies_the_color() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 400, 300));
+        dialog.set_option(ColorDialogOption::ShowHexInput, true);
+        let field = dialog.hex_field_rect().expect("a preview row carries the field");
+        dialog.handle_event(&Event::mouse_press(field.x + 2, field.y + 2, 1));
+        assert!(dialog.hex_focused);
+        dialog.handle_event(&Event::TextInput { text: "#00FF00".to_string() });
+        assert_eq!(dialog.current_color(), Color::rgb(0, 255, 0));
+    }
+
+    #[test]
+    fn switching_options_off_restores_the_plain_row() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 400, 300));
+        dialog.set_option(ColorDialogOption::ShowPresetPalette, true);
+        assert!(!dialog.preset_rects().is_empty());
+        dialog.set_option(ColorDialogOption::NoButtons, true);
+        assert!(dialog.no_buttons);
+        dialog.set_option(ColorDialogOption::ShowPresetPalette, false);
+        assert!(dialog.preset_rects().is_empty());
+    }
+
+    #[test]
+    fn the_hue_rail_moves_the_picker_hue() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 400, 300));
+        dialog.set_current_color(Color::rgb(255, 0, 0));
+        dialog.set_option(ColorDialogOption::ShowHueRail, true);
+        let rail = dialog.hue_rect().expect("the option exposes the rail");
+        // Two thirds of the way down is roughly 240 degrees: blue.
+        dialog.handle_event(&Event::mouse_press(
+            rail.x + 2,
+            rail.y + (rail.height as i32 * 2) / 3,
+            1,
+        ));
+        let color = dialog.current_color();
+        assert!(
+            color.b > color.r && color.b > color.g,
+            "the rail must select a blue hue, got {color:?}"
+        );
     }
 }

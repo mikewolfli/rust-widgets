@@ -65,6 +65,12 @@ pub struct MapView {
     zoom_t: PropertyDriver,
     /// The zoom the current transition started from, so `zoom_t` has a left endpoint.
     zoom_from: f32,
+    /// The last pointer position, used to anchor wheel zoom.
+    last_pointer: Option<Point>,
+    /// A pan in progress: `(press position, center at press)`.
+    drag: Option<(Point, f32, f32)>,
+    /// Whether nearby markers are grouped into one count badge.
+    cluster_markers: bool,
     /// Emitted when center changes. Payload is (x, y).
     pub center_changed: Signal1<(f32, f32)>,
     /// Emitted when zoom changes.
@@ -83,6 +89,9 @@ impl MapView {
             zoom: 1.0,
             zoom_t: PropertyDriver::at(1.0, MotionSlot::Normal),
             zoom_from: 1.0,
+            last_pointer: None,
+            drag: None,
+            cluster_markers: false,
             markers: Vec::new(),
             selected_marker: None,
             center_changed: Signal1::new(),
@@ -121,6 +130,43 @@ impl MapView {
     /// Returns zoom level.
     pub fn zoom(&self) -> f32 {
         self.zoom
+    }
+
+    /// Enables grouping markers that are close together on screen into one count badge.
+    ///
+    /// Clustering is opt-in: a map with a handful of pins reads better ungrouped, and the
+    /// grouped form is a different picture rather than a correction of one.
+    pub fn set_cluster_markers(&mut self, cluster: bool) {
+        if self.cluster_markers == cluster {
+            return;
+        }
+        self.cluster_markers = cluster;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether markers are clustered.
+    pub fn cluster_markers(&self) -> bool {
+        self.cluster_markers
+    }
+
+    /// Zooms by `factor` while keeping the world point under `anchor` fixed on screen.
+    fn zoom_at(&mut self, factor: f32, anchor: Point) {
+        let rect = self.geometry();
+        let zoom_before = self.painted_zoom().max(0.0001);
+        let center_px = rect.x as f32 + rect.width as f32 / 2.0;
+        let center_py = rect.y as f32 + rect.height as f32 / 2.0;
+        let world_x = self.center_x + (anchor.x as f32 - center_px) / zoom_before;
+        let world_y = self.center_y + (anchor.y as f32 - center_py) / zoom_before;
+        let before = self.zoom;
+        self.zoom_by(factor);
+        if (self.zoom - before).abs() < f32::EPSILON {
+            return;
+        }
+        let zoom_after = self.painted_zoom().max(0.0001);
+        self.center_x = world_x - (anchor.x as f32 - center_px) / zoom_after;
+        self.center_y = world_y - (anchor.y as f32 - center_py) / zoom_after;
+        self.center_changed.emit((self.center_x, self.center_y));
+        self.base.request_redraw();
     }
 
     /// Sets zoom level.
@@ -409,11 +455,33 @@ impl EventHandler for MapView {
 
         match event {
             Event::Wheel { delta, .. } => {
+                // Zoom around the pointer rather than the centre: the place under the cursor is
+                // what the user is looking at, and a centre-anchored zoom slides it away.
+                let anchor = self.last_pointer.unwrap_or_else(|| {
+                    let rect = self.geometry();
+                    Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2)
+                });
                 if delta.y < 0 {
-                    self.zoom_by(1.15);
+                    self.zoom_at(1.15, anchor);
                 } else if delta.y > 0 {
-                    self.zoom_by(0.87);
+                    self.zoom_at(0.87, anchor);
                 }
+            }
+            Event::MouseMove { pos } => {
+                self.last_pointer = Some(*pos);
+                if let Some((origin, center_x, center_y)) = self.drag {
+                    let zoom = self.painted_zoom().max(0.0001);
+                    self.set_center(
+                        center_x - (pos.x - origin.x) as f32 / zoom,
+                        center_y - (pos.y - origin.y) as f32 / zoom,
+                    );
+                }
+            }
+            Event::MouseRelease { button: 1, .. } => {
+                self.drag = None;
+            }
+            Event::MouseLeave { .. } => {
+                self.drag = None;
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
                 37 => self.pan_by(-20.0 / self.zoom, 0.0),
@@ -427,6 +495,9 @@ impl EventHandler for MapView {
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.hit_marker_index(*pos) {
                     let _ = self.select_marker(index);
+                } else {
+                    // A press on empty map starts a pan; a press on a pin selects instead.
+                    self.drag = Some((*pos, self.center_x, self.center_y));
                 }
             }
             _ => { /* Other events are not relevant */ }
@@ -520,37 +591,94 @@ impl Draw for MapView {
             }
         }
 
-        for (index, marker) in self.markers.iter().enumerate() {
-            // A marker panned or zoomed out of the pane is not drawn: its pin would land over
-            // the neighbouring widget, since nothing clips a widget at this layer. The hit test
-            // asks the same question, so an invisible pin is also not clickable.
-            if !self.marker_is_inside(index) {
-                continue;
-            }
-            let (sx, sy) = self.world_to_screen(marker.x, marker.y);
-            let half = MAP_MARKER_SIZE as i32 / 2;
-            let marker_rect =
-                Rect::new((sx as i32) - half, (sy as i32) - half, MAP_MARKER_SIZE, MAP_MARKER_SIZE);
-            // A marker's colour is **data**: it distinguishes the selected place from the
-            // rest, and a theme colour would carry no such meaning.
-            let color = if self.selected_marker == Some(index) {
-                Color::rgb(230, 88, 76)
-            } else {
-                Color::rgb(59, 114, 190)
-            };
-            context.fill_rect(marker_rect, color);
-            // A marker label is bounded by the pane: it is placed beside a point that may sit
-            // anywhere, so unbounded it could start inside and end past the edge.
-            let label_left = (sx as i32) + half + 3;
-            let label_width = (rect.x + rect.width as i32 - label_left).max(0) as u32;
-            if label_width > 0 {
-                context.draw_text_fitted_cow(
-                    Rect::new(label_left, sy as i32 - half, label_width, 14),
-                    &marker.label,
-                    effective_font(style),
-                    ink,
-                    HorizontalAlignment::Left,
+        if self.cluster_markers {
+            // Greedy grouping in screen space: a pin's cluster is every unclaimed marker within
+            // one badge-width of it. The point is to stop a zoomed-out map from painting a
+            // solid block of overlapping pins.
+            let mut claimed = vec![false; self.markers.len()];
+            for index in 0..self.markers.len() {
+                if claimed[index] || !self.marker_is_inside(index) {
+                    continue;
+                }
+                let (sx, sy) = self.world_to_screen(self.markers[index].x, self.markers[index].y);
+                claimed[index] = true;
+                let mut members = 1usize;
+                for (other, marker) in self.markers.iter().enumerate().skip(index + 1) {
+                    if claimed[other] {
+                        continue;
+                    }
+                    let (ox, oy) = self.world_to_screen(marker.x, marker.y);
+                    if (ox - sx).abs() <= 36.0 && (oy - sy).abs() <= 36.0 {
+                        claimed[other] = true;
+                        members += 1;
+                    }
+                }
+                let radius = if members > 1 { 9u32 } else { MAP_MARKER_SIZE / 2 };
+                context.fill_circle(
+                    Point::new(sx as i32, sy as i32),
+                    radius,
+                    Color::rgb(59, 114, 190),
                 );
+                if members > 1 {
+                    context.draw_text(
+                        Point::new(sx as i32 - 4, sy as i32 - 6),
+                        &members.to_string(),
+                        effective_font(style),
+                        Color::WHITE,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
+        } else {
+            for (index, marker) in self.markers.iter().enumerate() {
+                // A marker panned or zoomed out of the pane is not drawn: its pin would land over
+                // the neighbouring widget, since nothing clips a widget at this layer. The hit test
+                // asks the same question, so an invisible pin is also not clickable.
+                if !self.marker_is_inside(index) {
+                    continue;
+                }
+                let (sx, sy) = self.world_to_screen(marker.x, marker.y);
+                let half = MAP_MARKER_SIZE as i32 / 2;
+                // A pin, not a square: a circle over a tapering tip points at the place the
+                // marker names, which a square centred on the coordinate does not.
+                let color = if self.selected_marker == Some(index) {
+                    Color::rgb(230, 88, 76)
+                } else {
+                    Color::rgb(59, 114, 190)
+                };
+                let head = Point::new(sx as i32, sy as i32 - half);
+                context.fill_circle(head, half.max(3) as u32, color);
+                context.execute_command(crate::render::RenderCommand::DrawPath {
+                    points: vec![
+                        Point::new(sx as i32 - half / 2, sy as i32 - 1),
+                        Point::new(sx as i32 + half / 2, sy as i32 - 1),
+                        Point::new(sx as i32, sy as i32 + half),
+                    ],
+                    closed: true,
+                    color,
+                    filled: true,
+                    width: 0,
+                });
+                let marker_rect = Rect::new(
+                    (sx as i32) - half,
+                    (sy as i32) - half,
+                    MAP_MARKER_SIZE,
+                    MAP_MARKER_SIZE,
+                );
+                let _ = marker_rect;
+                // A marker label is bounded by the pane: it is placed beside a point that may sit
+                // anywhere, so unbounded it could start inside and end past the edge.
+                let label_left = (sx as i32) + half + 3;
+                let label_width = (rect.x + rect.width as i32 - label_left).max(0) as u32;
+                if label_width > 0 {
+                    context.draw_text_fitted_cow(
+                        Rect::new(label_left, sy as i32 - half, label_width, 14),
+                        &marker.label,
+                        effective_font(style),
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
         }
 

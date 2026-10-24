@@ -53,6 +53,20 @@ pub struct GridTableSortSpec {
 // GridTableWidget
 // ---------------------------------------------------------------------------
 
+/// How column widths are decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GridSectionResizeMode {
+    /// The caller drags a column edge; widths start at the default (the historical mode).
+    #[default]
+    Interactive,
+    /// Every column divides the data area equally.
+    Stretch,
+    /// Every column uses the minimum width and never grows.
+    Fixed,
+    /// Columns keep their current widths and are not draggable.
+    ResizeToContents,
+}
+
 /// Feature-rich virtualized table with grid lines, fixed headers, row numbers,
 /// sortable columns, cell/row selection, and interactive column resizing.
 pub struct GridTableWidget {
@@ -84,6 +98,15 @@ pub struct GridTableWidget {
 
     // Selection
     selected_cell: Option<(usize, usize)>,
+    /// The full selection when extended selection is on; holds cells, not rows, so the
+    /// three selection modes can each interpret membership differently.
+    selected_cells: std::collections::BTreeSet<(usize, usize)>,
+    /// Rows selected in row mode.
+    selected_rows: std::collections::BTreeSet<usize>,
+    /// Columns selected in column mode.
+    selected_columns: std::collections::BTreeSet<usize>,
+    /// Whether ctrl/shift extend the selection instead of replacing it.
+    multi_select: bool,
     selection_mode: GridTableSelectionMode,
     /// The row the pointer is over, for the hover tint. Row-level (not cell-level) to match
     /// `table_widget`: a whole-row tint is the affordance the family shares, and a cell-sized
@@ -113,6 +136,16 @@ pub struct GridTableWidget {
     pub sort_changed: Signal1<(usize, bool)>,
     /// Emitted when a header is clicked (before sort toggle): `column`.
     pub header_clicked: Signal1<usize>,
+    /// How column widths are decided.
+    section_resize_mode: GridSectionResizeMode,
+    /// Whether odd rows receive the alternating wash.
+    alternating_rows: bool,
+    /// Emitted when an edit is requested for `(row, column)`.
+    pub edit_requested: Signal1<(usize, usize)>,
+    /// Emitted when the context menu is requested at a point.
+    pub context_menu_requested: Signal1<Point>,
+    /// Whether a vertical scroll-bar thumb is painted.
+    show_scrollbar: bool,
 }
 
 impl GridTableWidget {
@@ -152,6 +185,10 @@ impl GridTableWidget {
             header_text_color: Self::DEFAULT_HEADER_TEXT_COLOR,
             selected_bg: Self::DEFAULT_SELECTED_BG,
             selected_cell: None,
+            selected_cells: std::collections::BTreeSet::new(),
+            selected_rows: std::collections::BTreeSet::new(),
+            selected_columns: std::collections::BTreeSet::new(),
+            multi_select: false,
             selection_mode: GridTableSelectionMode::Cell,
             hovered_row: None,
             column_widths: Vec::new(),
@@ -164,6 +201,11 @@ impl GridTableWidget {
             cell_double_clicked: Signal1::new(),
             sort_changed: Signal1::new(),
             header_clicked: Signal1::new(),
+            section_resize_mode: GridSectionResizeMode::Interactive,
+            alternating_rows: false,
+            edit_requested: Signal1::new(),
+            context_menu_requested: Signal1::new(),
+            show_scrollbar: false,
         }
     }
 
@@ -177,6 +219,9 @@ impl GridTableWidget {
         self.scroll_row = 0;
         self.scroll_column = 0;
         self.selected_cell = None;
+        self.selected_cells.clear();
+        self.selected_rows.clear();
+        self.selected_columns.clear();
         self.sort_specs.clear();
         self.column_widths.clear();
         self.update_visibility();
@@ -190,6 +235,9 @@ impl GridTableWidget {
         self.scroll_row = 0;
         self.scroll_column = 0;
         self.selected_cell = None;
+        self.selected_cells.clear();
+        self.selected_rows.clear();
+        self.selected_columns.clear();
         self.sort_specs.clear();
         self.column_widths.clear();
         self.visible_rows = 0;
@@ -270,11 +318,262 @@ impl GridTableWidget {
 
     /// Sets the selection mode.
     pub fn set_selection_mode(&mut self, mode: GridTableSelectionMode) {
+        if self.selection_mode == mode {
+            return;
+        }
         self.selection_mode = mode;
         if mode == GridTableSelectionMode::None {
             self.selected_cell = None;
+            self.selected_cells.clear();
+            self.selected_rows.clear();
+            self.selected_columns.clear();
             self.base.request_redraw();
         }
+    }
+
+    /// Whether ctrl/shift extend the selection instead of replacing it.
+    pub fn multi_select(&self) -> bool {
+        self.multi_select
+    }
+
+    /// Enables or disables extended selection.
+    ///
+    /// Off by default, which keeps a plain click replacing the selection exactly as before.
+    pub fn set_multi_select(&mut self, multi_select: bool) {
+        if self.multi_select == multi_select {
+            return;
+        }
+        self.multi_select = multi_select;
+        if !multi_select {
+            self.selected_cells.clear();
+        }
+        self.base.request_redraw();
+    }
+
+    /// The extended selection, in ascending order.
+    ///
+    /// In row mode this lists every selected column of each row, and in column mode every
+    /// selected row of each column; the mode decides the unit, so one accessor serves all
+    /// three.
+    pub fn selected_cells(&self) -> Vec<(usize, usize)> {
+        match self.selection_mode {
+            GridTableSelectionMode::Row => {
+                let columns = self.column_count();
+                self.selected_rows
+                    .iter()
+                    .flat_map(|row| (0..columns).map(move |column| (*row, column)))
+                    .collect()
+            }
+            GridTableSelectionMode::Column => {
+                let rows = self.row_count();
+                self.selected_columns
+                    .iter()
+                    .flat_map(|column| (0..rows).map(move |row| (row, *column)))
+                    .collect()
+            }
+            _ => self.selected_cells.iter().copied().collect(),
+        }
+    }
+
+    /// The selected rows, in ascending order.
+    pub fn selected_rows(&self) -> Vec<usize> {
+        match self.selection_mode {
+            GridTableSelectionMode::Row => self.selected_rows.iter().copied().collect(),
+            GridTableSelectionMode::Cell => {
+                self.selected_cells.iter().map(|(row, _)| *row).collect()
+            }
+            GridTableSelectionMode::Column => self.selected_columns.iter().copied().collect(),
+            GridTableSelectionMode::None => Vec::new(),
+        }
+    }
+
+    /// Whether `(row, column)` is inside the painted selection.
+    fn is_cell_selected(&self, row: usize, column: usize) -> bool {
+        let anchor = self.selected_cell;
+        match self.selection_mode {
+            GridTableSelectionMode::None => false,
+            GridTableSelectionMode::Cell => {
+                self.selected_cells.contains(&(row, column))
+                    || (!self.multi_select && anchor == Some((row, column)))
+            }
+            GridTableSelectionMode::Row => {
+                self.selected_rows.contains(&row)
+                    || (!self.multi_select && anchor.map(|(r, _)| r) == Some(row))
+            }
+            GridTableSelectionMode::Column => {
+                self.selected_columns.contains(&column)
+                    || (!self.multi_select && anchor.map(|(_, c)| c) == Some(column))
+            }
+        }
+    }
+
+    /// Adds the selection unit under `(row, column)` without touching the rest.
+    fn push_selection_unit(&mut self, row: usize, column: usize) {
+        match self.selection_mode {
+            GridTableSelectionMode::None => {}
+            GridTableSelectionMode::Cell => {
+                self.selected_cells.insert((row, column));
+            }
+            GridTableSelectionMode::Row => {
+                self.selected_rows.insert(row);
+            }
+            GridTableSelectionMode::Column => {
+                self.selected_columns.insert(column);
+            }
+        }
+    }
+
+    /// Toggles the selection unit under `(row, column)`.
+    fn toggle_selection_unit(&mut self, row: usize, column: usize) {
+        match self.selection_mode {
+            GridTableSelectionMode::None => {}
+            GridTableSelectionMode::Cell => {
+                if !self.selected_cells.remove(&(row, column)) {
+                    self.selected_cells.insert((row, column));
+                }
+            }
+            GridTableSelectionMode::Row => {
+                if !self.selected_rows.remove(&row) {
+                    self.selected_rows.insert(row);
+                }
+            }
+            GridTableSelectionMode::Column => {
+                if !self.selected_columns.remove(&column) {
+                    self.selected_columns.insert(column);
+                }
+            }
+        }
+    }
+
+    /// Adds every unit between the anchor and `(row, column)`.
+    fn push_selection_range(
+        &mut self,
+        anchor_row: usize,
+        anchor_column: usize,
+        row: usize,
+        column: usize,
+    ) {
+        match self.selection_mode {
+            GridTableSelectionMode::None => {}
+            GridTableSelectionMode::Cell => {
+                let rows = anchor_row.min(row)..=anchor_row.max(row);
+                let columns = anchor_column.min(column)..=anchor_column.max(column);
+                for r in rows {
+                    for c in columns.clone() {
+                        self.selected_cells.insert((r, c));
+                    }
+                }
+            }
+            GridTableSelectionMode::Row => {
+                for r in anchor_row.min(row)..=anchor_row.max(row) {
+                    self.selected_rows.insert(r);
+                }
+            }
+            GridTableSelectionMode::Column => {
+                for c in anchor_column.min(column)..=anchor_column.max(column) {
+                    self.selected_columns.insert(c);
+                }
+            }
+        }
+    }
+
+    /// Applies a pointer click to the selection, honouring ctrl/shift when extended
+    /// selection is enabled. Without extended selection a click replaces the selection.
+    fn apply_selection(&mut self, row: usize, column: usize, modifiers: u32) {
+        use crate::shortcut::Modifiers;
+        if self.selection_mode == GridTableSelectionMode::None {
+            return;
+        }
+        let modifiers = Modifiers::from_event_bits(modifiers);
+        let toggle = self.multi_select
+            && (modifiers.contains(Modifiers::CTRL) || modifiers.contains(Modifiers::META));
+        let extend = self.multi_select && modifiers.contains(Modifiers::SHIFT);
+        let before = (
+            self.selected_cell,
+            self.selected_cells.clone(),
+            self.selected_rows.clone(),
+            self.selected_columns.clone(),
+        );
+
+        if !self.multi_select || (!toggle && !extend) {
+            self.selected_cells.clear();
+            self.selected_rows.clear();
+            self.selected_columns.clear();
+            self.selected_cell = Some((row, column));
+            self.push_selection_unit(row, column);
+        } else if extend {
+            match self.selected_cell {
+                Some((anchor_row, anchor_column)) => {
+                    self.push_selection_range(anchor_row, anchor_column, row, column)
+                }
+                None => {
+                    self.selected_cell = Some((row, column));
+                    self.push_selection_unit(row, column);
+                }
+            }
+        } else {
+            self.toggle_selection_unit(row, column);
+            self.selected_cell = Some((row, column));
+        }
+        let after = (
+            self.selected_cell,
+            self.selected_cells.clone(),
+            self.selected_rows.clone(),
+            self.selected_columns.clone(),
+        );
+        if after != before {
+            self.cell_selected.emit((row, column));
+            self.base.request_redraw();
+        }
+    }
+
+    /// Moves the selection to the next row whose first cell begins with `character`.
+    ///
+    /// The search starts after the current row and wraps once, which is the type-ahead
+    /// behaviour a keyboard user expects from a table. Returns whether a row matched.
+    fn type_ahead(&mut self, character: char) -> bool {
+        let Some(source) = self.data_source.clone() else {
+            return false;
+        };
+        let rows = self.row_count();
+        if rows == 0 {
+            return false;
+        }
+        let start = self.selected_cell.map(|(row, _)| row.saturating_add(1)).unwrap_or(0);
+        let needle = character.to_ascii_lowercase();
+        let mut text = String::new();
+        let mut found = None;
+        for step in 0..rows {
+            let row = (start + step) % rows;
+            text.clear();
+            if source.fill_cell(row, 0, &mut text) && text.to_lowercase().starts_with(needle) {
+                found = Some(row);
+                break;
+            }
+        }
+        let Some(row) = found else {
+            return false;
+        };
+        let column = self.selected_cell.map(|(_, column)| column).unwrap_or(0);
+        self.apply_selection(row, column, 0);
+        if row < self.scroll_row || row >= self.scroll_row + self.visible_rows.max(1) {
+            self.set_scroll_row(row);
+        }
+        true
+    }
+
+    /// Whether a vertical scroll-bar thumb is painted.
+    pub fn show_scrollbar(&self) -> bool {
+        self.show_scrollbar
+    }
+
+    /// Enables or disables the vertical scroll-bar thumb.
+    pub fn set_show_scrollbar(&mut self, show: bool) {
+        if self.show_scrollbar == show {
+            return;
+        }
+        self.show_scrollbar = show;
+        self.base.request_redraw();
     }
 
     // -----------------------------------------------------------------------
@@ -356,8 +655,15 @@ impl GridTableWidget {
 
     /// Clears the current selection.
     pub fn clear_selection(&mut self) {
-        if self.selected_cell.is_some() {
+        if self.selected_cell.is_some()
+            || !self.selected_cells.is_empty()
+            || !self.selected_rows.is_empty()
+            || !self.selected_columns.is_empty()
+        {
             self.selected_cell = None;
+            self.selected_cells.clear();
+            self.selected_rows.clear();
+            self.selected_columns.clear();
             self.base.request_redraw();
         }
     }
@@ -409,7 +715,72 @@ impl GridTableWidget {
     /// [`Self::min_column_width`] and its unsized width is at least 120 — and they were spelled
     /// separately in four places. Read through [`Self::column_width`] by every walk.
     fn default_column_width(&self) -> u32 {
-        120u32.max(self.min_column_width)
+        match self.section_resize_mode {
+            GridSectionResizeMode::Stretch => {
+                let columns = self.column_count().max(1) as u32;
+                let usable =
+                    self.geometry().width.saturating_sub(self.row_number_width).max(columns);
+                (usable / columns).max(self.min_column_width)
+            }
+            GridSectionResizeMode::Fixed => self.min_column_width,
+            GridSectionResizeMode::Interactive | GridSectionResizeMode::ResizeToContents => {
+                120u32.max(self.min_column_width)
+            }
+        }
+    }
+
+    /// How column widths are decided.
+    pub fn section_resize_mode(&self) -> GridSectionResizeMode {
+        self.section_resize_mode
+    }
+
+    /// Sets the column resize mode, discarding explicit widths.
+    ///
+    /// A mode change is a statement about how every column is sized, so keeping the old
+    /// per-column widths would make the mode apply to none of them.
+    pub fn set_section_resize_mode(&mut self, mode: GridSectionResizeMode) {
+        if self.section_resize_mode == mode {
+            return;
+        }
+        self.section_resize_mode = mode;
+        self.column_widths.clear();
+        self.update_visibility();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Whether odd rows receive the alternating wash.
+    pub fn alternating_rows(&self) -> bool {
+        self.alternating_rows
+    }
+
+    /// The height of the column-title strip.
+    pub fn header_height(&self) -> u32 {
+        self.header_height
+    }
+
+    /// Sets the height of the column-title strip.
+    ///
+    /// A caller that wants the heavier header a file browser uses raises this; the default
+    /// keeps the historical 28 px strip.
+    pub fn set_header_height(&mut self, height: u32) {
+        let height = height.max(12);
+        if self.header_height == height {
+            return;
+        }
+        self.header_height = height;
+        self.update_visibility();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Enables or disables the alternating row wash.
+    pub fn set_alternating_rows(&mut self, alternating: bool) {
+        if self.alternating_rows == alternating {
+            return;
+        }
+        self.alternating_rows = alternating;
+        self.base.request_redraw();
     }
 
     /// The columns that fit in the data area, in draw order: `(column, x, width)` with `x` **relative
@@ -1025,21 +1396,14 @@ impl Draw for GridTableWidget {
                 let cell_rect = Rect::new(cx, cy, cw as u32, self.row_height);
 
                 // Selection highlight
-                let is_selected = match self.selection_mode {
-                    GridTableSelectionMode::None => false,
-                    GridTableSelectionMode::Cell => self.selected_cell == Some((abs_row, ci)),
-                    GridTableSelectionMode::Row => {
-                        self.selected_cell.map(|(r, _)| r == abs_row).unwrap_or(false)
-                    }
-                    GridTableSelectionMode::Column => {
-                        self.selected_cell.map(|(_, c)| c == ci).unwrap_or(false)
-                    }
-                };
+                let is_selected = self.is_cell_selected(abs_row, ci);
 
                 if is_selected {
                     context.fill_rect(cell_rect, selected_bg);
                 } else if Some(abs_row) == self.hovered_row {
                     context.fill_rect(cell_rect, hovered_bg);
+                } else if self.alternating_rows && abs_row % 2 == 1 {
+                    context.fill_rect(cell_rect, header_bg);
                 }
 
                 // Grid lines
@@ -1068,6 +1432,27 @@ impl Draw for GridTableWidget {
 
         // ── Outer border ──
         context.draw_rect(rect, outer_border);
+
+        // The scroll-bar thumb is opt-in: the grid is virtualized, so the wheel and keyboard
+        // already reach every row; the thumb is the visible statement of how much is off-screen.
+        if self.show_scrollbar {
+            let total = self.row_count().max(1);
+            let visible = self.visible_rows.max(1).min(total);
+            let track = rect.height.max(1);
+            let thumb =
+                ((track as u64 * visible as u64) / total as u64).max(24).min(track as u64) as u32;
+            let travel = track.saturating_sub(thumb);
+            let max_scroll = total.saturating_sub(visible);
+            let offset = if max_scroll == 0 {
+                0
+            } else {
+                (travel as u64 * self.scroll_row.min(max_scroll) as u64 / max_scroll as u64) as u32
+            };
+            context.fill_rect(
+                Rect::new(rect.x + rect.width as i32 - 6, rect.y + offset as i32, 4, thumb),
+                accent.with_alpha(120),
+            );
+        }
     }
 }
 
@@ -1083,10 +1468,15 @@ impl EventHandler for GridTableWidget {
         }
 
         match event {
-            Event::MousePress { pos, .. } => {
+            Event::MousePress { pos, button, modifiers } => {
+                if *button != 1 {
+                    return;
+                }
                 // Check resize handles first
                 if let Some(col) = self.resize_handle_at_point(*pos) {
-                    self.resizing_column = Some(col);
+                    if self.section_resize_mode == GridSectionResizeMode::Interactive {
+                        self.resizing_column = Some(col);
+                    }
                     self.resize_start_x = pos.x;
                     self.resize_start_width = self.column_width(col);
                     return;
@@ -1101,26 +1491,11 @@ impl EventHandler for GridTableWidget {
 
                 // Check cell click for selection
                 if let Some((row, col)) = self.cell_at_point(*pos) {
-                    // Apply selection based on mode
-                    let new_sel = match self.selection_mode {
-                        GridTableSelectionMode::None => None,
-                        GridTableSelectionMode::Cell => Some((row, col)),
-                        GridTableSelectionMode::Row => Some((row, col)),
-                        GridTableSelectionMode::Column => Some((row, col)),
-                    };
-
-                    if self.selected_cell != new_sel {
-                        self.selected_cell = new_sel;
-                        if let Some((r, c)) = new_sel {
-                            self.cell_selected.emit((r, c));
-                        }
-                        self.base.request_redraw();
-                    }
+                    self.apply_selection(row, col, *modifiers);
                 } else {
                     // Click outside → clear selection
                     if self.selected_cell.is_some() {
-                        self.selected_cell = None;
-                        self.base.request_redraw();
+                        self.clear_selection();
                     }
                 }
             }
@@ -1128,8 +1503,11 @@ impl EventHandler for GridTableWidget {
             Event::MouseDoubleClick { pos, button: _ } => {
                 if let Some((row, col)) = self.cell_at_point(*pos) {
                     self.cell_double_clicked.emit((row, col));
+                    self.edit_requested.emit((row, col));
                 }
             }
+
+            Event::ContextMenu { pos } => self.context_menu_requested.emit(*pos),
 
             Event::MouseMove { pos } => {
                 // Column resize dragging
@@ -1185,6 +1563,30 @@ impl EventHandler for GridTableWidget {
                 39 => self.set_scroll_column(self.scroll_column.saturating_add(1)),
                 38 => self.set_scroll_row(self.scroll_row.saturating_sub(1)),
                 40 => self.set_scroll_row(self.scroll_row.saturating_add(1)),
+                crate::event::key_codes::HOME => self.set_scroll_row(0),
+                crate::event::key_codes::END => {
+                    let last = self.row_count().saturating_sub(1);
+                    self.set_scroll_row(last);
+                }
+                crate::event::key_codes::PAGE_UP => {
+                    let page = self.visible_rows.max(1);
+                    self.set_scroll_row(self.scroll_row.saturating_sub(page));
+                }
+                crate::event::key_codes::PAGE_DOWN => {
+                    let page = self.visible_rows.max(1);
+                    let last = self.row_count().saturating_sub(1);
+                    self.set_scroll_row(self.scroll_row.saturating_add(page).min(last));
+                }
+                13 => {
+                    if let Some(cell) = self.selected_cell {
+                        self.edit_requested.emit(cell);
+                    }
+                }
+                32..=126 => {
+                    if let Some(character) = char::from_u32(*key) {
+                        self.type_ahead(character);
+                    }
+                }
                 _ => {}
             },
 
@@ -1795,5 +2197,80 @@ mod tests {
 
         tbl.handle_event(&Event::wheel(0, 120, 0));
         assert_eq!(tbl.scroll_row(), 1, "the opposite notch scrolls back one row");
+    }
+
+    /// Section resize modes, alternating rows, keyboard paging and the edit request are wired.
+    #[test]
+    fn resize_modes_alternating_rows_and_keyboard_are_wired() {
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 200));
+        tbl.set_data_source(Arc::new(TestSource { rows: 30, cols: 4 }));
+        tbl.set_section_resize_mode(GridSectionResizeMode::Stretch);
+        assert_eq!(tbl.section_resize_mode(), GridSectionResizeMode::Stretch);
+        assert!(tbl.column_width(0) > 0);
+        tbl.set_alternating_rows(true);
+        assert!(tbl.alternating_rows());
+
+        let edited = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&edited);
+        tbl.edit_requested.connect(move |cell| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*cell);
+            }
+        });
+        tbl.handle_event(&Event::MouseDoubleClick { pos: Point::new(200, 80), button: 1 });
+        assert!(
+            edited.lock().map(|slot| slot.is_some()).unwrap_or(false),
+            "a double-click requests an edit"
+        );
+
+        tbl.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        tbl.handle_event(&Event::KeyPress { key: crate::event::key_codes::END, modifiers: 0 });
+        assert!(tbl.scroll_row() > 0, "End reaches the last row");
+    }
+
+    /// Extended selection, type-ahead and the scroll-bar flag are wired.
+    #[test]
+    fn multi_select_type_ahead_and_scrollbar_are_wired() {
+        let rnw = 48;
+        let header_h = 28;
+        let row_h = 24;
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 200));
+        tbl.set_data_source(Arc::new(TestSource { rows: 6, cols: 3 }));
+        tbl.set_multi_select(true);
+        assert!(tbl.multi_select());
+
+        let first = Point::new(rnw + 5, header_h + 5);
+        let second = Point::new(rnw + 5, header_h + row_h + 5);
+        tbl.handle_event(&Event::MousePress { pos: first, button: 1, modifiers: 0 });
+        tbl.handle_event(&Event::MousePress {
+            pos: second,
+            button: 1,
+            modifiers: crate::shortcut::Modifiers::CTRL.bits() as u32,
+        });
+        assert_eq!(tbl.selected_rows(), vec![0, 1], "ctrl adds a second row");
+
+        tbl.set_selection_mode(GridTableSelectionMode::Row);
+        tbl.clear_selection();
+        tbl.handle_event(&Event::MousePress { pos: first, button: 1, modifiers: 0 });
+        tbl.handle_event(&Event::MousePress {
+            pos: second,
+            button: 1,
+            modifiers: crate::shortcut::Modifiers::SHIFT.bits() as u32,
+        });
+        assert_eq!(tbl.selected_rows(), vec![0, 1], "shift extends the row range");
+
+        tbl.set_selection_mode(GridTableSelectionMode::Row);
+        tbl.clear_selection();
+        tbl.handle_event(&Event::MousePress { pos: first, button: 1, modifiers: 0 });
+        tbl.handle_event(&Event::KeyPress { key: 51, modifiers: 0 });
+        assert_eq!(
+            tbl.selected_cell().map(|(row, _)| row),
+            Some(3),
+            "typing '3' jumps to the next row whose first cell starts with it"
+        );
+
+        tbl.set_show_scrollbar(true);
+        assert!(tbl.show_scrollbar());
+        let _ = crate::widget::svg::render_to_svg(&mut tbl);
     }
 }

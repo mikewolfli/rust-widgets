@@ -2,18 +2,28 @@
 // SPDX-License-Identifier: MIT
 
 //! Button widget implementation.
+#[cfg(full_widgets)]
+use crate::compat::Vec;
 use crate::compat::{format, String, ToString};
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+#[cfg(full_widgets)]
+use crate::event::key_codes;
 #[cfg(test)]
 use crate::event::FocusReason;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
-use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::base_widgets::button_group::{self, GroupKey};
+use crate::widget::base_widgets::label::{draw_elided_line, TextElideMode};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+#[cfg(full_widgets)]
+use crate::widget::menu_toolbar::menu_button::{
+    draw_menu_panel, menu_item_rect, menu_panel_rect, MenuItem,
+};
 use crate::widget::metrics::{
     active_profile, dimensions, effective_font, estimate_line_height, estimate_text_width,
     focus_ring_color, profile_metrics, ControlMetrics, ControlMetricsProfile, FocusRing,
@@ -67,6 +77,49 @@ pub struct Button {
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     shared_icon_pixels: Option<crate::widget::icon_source::SharedIconPixels>,
     default_button: bool,
+    /// The icon slot's size in logical pixels.
+    ///
+    /// [`dimensions::BUTTON_ICON_SIZE`] is the default, but the reference toolkit treats the icon
+    /// size as a property of the button rather than of the widget class, so a control with a
+    /// larger icon can say so.
+    icon_size: u32,
+    /// The keyboard chord that activates this button, if one was declared.
+    shortcut: Option<crate::shortcut::Shortcut>,
+    /// Whether gaining focus makes this button the default button.
+    auto_default: bool,
+    /// Whether this button's default emphasis is exclusive with its siblings.
+    auto_exclusive: bool,
+    /// Whether the button paints without a face or frame.
+    flat: bool,
+    /// How a label wider than the button is shortened.
+    elide_mode: TextElideMode,
+    /// The attached drop-down menu's rows, when the `full_widgets` surface is built.
+    ///
+    /// A push button that owns a menu is the reference toolkit's `setMenu`: the menu is part of
+    /// the button's behaviour, not a separate control the caller has to wire up.
+    #[cfg(full_widgets)]
+    menu_items: Vec<MenuItem>,
+    /// Whether the attached menu is currently showing.
+    #[cfg(full_widgets)]
+    menu_open: bool,
+    /// Where an open menu is anchored, when it was opened as a context menu.
+    ///
+    /// `None` means "below the button", which is where a click-opened menu belongs. A right-click
+    /// opens the menu *at the pointer*, so that anchor is stored instead.
+    #[cfg(full_widgets)]
+    menu_anchor: Option<Point>,
+    /// The open menu's active row, for keyboard activation.
+    #[cfg(full_widgets)]
+    active_menu_index: Option<usize>,
+    /// Whether a press on this button can start a cross-control drag.
+    drag_enabled: bool,
+    /// Whether this button accepts a dropped payload.
+    accepts_drops: bool,
+    /// Whether a drag payload is currently hovering this button.
+    drop_hovered: bool,
+    /// Emitted when a row of the attached menu is activated.
+    #[cfg(full_widgets)]
+    pub item_triggered: crate::signal::Signal1<u64>,
     /// The last value `pressed_signal`/`released_signal` were emitted for.
     ///
     /// # Why a second flag exists at all
@@ -134,6 +187,25 @@ impl Button {
             #[cfg(all(feature = "image", not(alloc_frugal)))]
             shared_icon_pixels: None,
             default_button: false,
+            icon_size: dimensions::BUTTON_ICON_SIZE,
+            shortcut: None,
+            auto_default: false,
+            auto_exclusive: false,
+            flat: false,
+            elide_mode: TextElideMode::ElideRight,
+            #[cfg(full_widgets)]
+            menu_items: Vec::new(),
+            #[cfg(full_widgets)]
+            menu_open: false,
+            #[cfg(full_widgets)]
+            menu_anchor: None,
+            #[cfg(full_widgets)]
+            active_menu_index: None,
+            drag_enabled: false,
+            accepts_drops: false,
+            drop_hovered: false,
+            #[cfg(full_widgets)]
+            item_triggered: crate::signal::Signal1::new(),
             signaled_pressed: false,
             // A freshly constructed button is at rest, so its progress is at the rest end of the
             // interpolation. Starting at the interactive end would make every button fade *out* on
@@ -232,7 +304,7 @@ impl Button {
     /// icon field to read at all, so this is the honest answer rather than a special case.
     fn icon_advance(&self) -> u32 {
         if self.has_icon() {
-            dimensions::BUTTON_ICON_SIZE + dimensions::BUTTON_ICON_SPACING
+            self.icon_size + dimensions::BUTTON_ICON_SPACING
         } else {
             0
         }
@@ -241,7 +313,7 @@ impl Button {
     /// The height the icon contributes, or zero without one.
     fn icon_height(&self) -> u32 {
         if self.has_icon() {
-            dimensions::BUTTON_ICON_SIZE
+            self.icon_size
         } else {
             0
         }
@@ -293,7 +365,7 @@ impl Button {
             self.geometry(),
             EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
         );
-        let size = dimensions::BUTTON_ICON_SIZE.min(content.width).min(content.height);
+        let size = self.icon_size.min(content.width).min(content.height);
         Some(ControlMetrics::center_in(
             Rect::new(content.x, content.y, size, content.height),
             Size::new(size, size),
@@ -562,16 +634,369 @@ impl Button {
     }
     /// Sets whether this button is the default button.
     pub fn set_default(&mut self, default: bool) {
-        if self.default_button == default {
-            return;
-        }
+        let already_default = self.default_button == default;
         self.default_button = default;
-        self.base.request_redraw();
+        if self.auto_exclusive {
+            if default {
+                // A repeat "default" on an auto-exclusive button may still need to claim the group
+                // selection once, which is the same rule the radio family follows.
+                self.claim_group_selection();
+            } else if let Some(key) = self.exclusive_key() {
+                // Clearing the flag on the emphasised member clears the group's selection, so
+                // `is_default` does not keep answering `true` from the stale selection.
+                if button_group::is_selected(&key, self.id()) {
+                    button_group::clear_selection(&key);
+                }
+            }
+        }
+        if !already_default {
+            self.base.request_redraw();
+        }
     }
 
     /// Returns whether this button is the default button.
+    ///
+    /// An auto-exclusive button's answer comes from its group: the member last made default (or
+    /// clicked) is the one the emphasis ring marks, and its siblings are not.
     pub fn is_default(&self) -> bool {
+        if self.auto_exclusive {
+            if let Some(key) = self.exclusive_key() {
+                if let Some(selected) = button_group::selected(&key) {
+                    return selected == self.id();
+                }
+            }
+        }
         self.default_button
+    }
+
+    /// The icon slot's size in logical pixels.
+    pub fn icon_size(&self) -> u32 {
+        self.icon_size
+    }
+
+    /// Sets the icon slot's size.
+    ///
+    /// The room the intrinsic size reserves and the square the draw path paints both read this
+    /// one value, so a custom icon size cannot make the two disagree.
+    pub fn set_icon_size(&mut self, size: u32) {
+        if self.icon_size == size {
+            return;
+        }
+        self.icon_size = size;
+        self.base.request_redraw();
+    }
+
+    /// The keyboard chord that activates this button, if one was declared.
+    pub fn shortcut(&self) -> Option<crate::shortcut::Shortcut> {
+        self.shortcut.clone()
+    }
+
+    /// Declares the keyboard chord that activates this button.
+    ///
+    /// The button checks it in its own `KeyPress` arm, so a host that delivers key events to its
+    /// focused control gets shortcut activation without a separate application-level table. A
+    /// process-wide shortcut map is still the right place for accelerators that must fire while
+    /// another control has focus.
+    pub fn set_shortcut(&mut self, shortcut: Option<crate::shortcut::Shortcut>) {
+        if self.shortcut == shortcut {
+            return;
+        }
+        self.shortcut = shortcut;
+        self.base.request_redraw();
+    }
+
+    /// Whether focus makes this button the default button.
+    pub fn is_auto_default(&self) -> bool {
+        self.auto_default
+    }
+
+    /// Makes gaining focus set the default flag, and losing it clear the flag.
+    ///
+    /// This is the reference toolkit's `autoDefault`: in a dialog, the button the keyboard is on
+    /// is the one Enter presses. An explicit [`Button::set_default`] remains available and writes
+    /// the same flag, so the two cannot disagree about what "default" means.
+    pub fn set_auto_default(&mut self, auto_default: bool) {
+        if self.auto_default == auto_default {
+            return;
+        }
+        self.auto_default = auto_default;
+        if !auto_default && self.is_default() {
+            self.set_default(false);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether this button's default emphasis is exclusive with its siblings.
+    pub fn is_auto_exclusive(&self) -> bool {
+        self.auto_exclusive
+    }
+
+    /// Groups this button with the other auto-exclusive buttons under the same parent.
+    ///
+    /// A push button has no latch for `autoExclusive` to guard, so the exclusive fact here is the
+    /// **default emphasis**: clicking one member of the group moves the emphasis to it, which is
+    /// the visible "this is the button Enter presses" state. Off by default; a lone button with no
+    /// parent has no peers and is therefore unaffected.
+    pub fn set_auto_exclusive(&mut self, exclusive: bool) {
+        if self.auto_exclusive == exclusive {
+            return;
+        }
+        let previous_key = self.exclusive_key();
+        self.auto_exclusive = exclusive;
+        if let Some(key) = previous_key {
+            button_group::unregister(&key, self.id());
+        }
+        self.sync_group_registration();
+        self.base.request_redraw();
+    }
+
+    /// Whether the button paints without a face or frame.
+    pub fn is_flat(&self) -> bool {
+        self.flat
+    }
+
+    /// Draws the button as a flat, chrome-less control.
+    ///
+    /// A flat button paints only its content until the pointer interacts with it, which is the
+    /// reference toolkit's `flat` property. Off by default so the existing appearance is
+    /// untouched.
+    pub fn set_flat(&mut self, flat: bool) {
+        if self.flat == flat {
+            return;
+        }
+        self.flat = flat;
+        self.base.request_redraw();
+    }
+
+    /// How a label that does not fit the button is shortened.
+    pub fn elide_mode(&self) -> TextElideMode {
+        self.elide_mode
+    }
+
+    /// Sets the label's elide mode.
+    pub fn set_elide_mode(&mut self, mode: TextElideMode) {
+        if self.elide_mode == mode {
+            return;
+        }
+        self.elide_mode = mode;
+        self.base.request_redraw();
+    }
+
+    /// Whether a press on this button can start a cross-control drag.
+    pub fn is_drag_enabled(&self) -> bool {
+        self.drag_enabled
+    }
+
+    /// Enables the button as a drag source.
+    ///
+    /// The payload is the button's own caption as `text/plain`, so it can land in any text
+    /// control. Off by default: a push button that suddenly became draggable when the runtime
+    /// grew a drag coordinator would change the meaning of every existing press.
+    pub fn set_drag_enabled(&mut self, enabled: bool) {
+        if self.drag_enabled == enabled {
+            return;
+        }
+        self.drag_enabled = enabled;
+        self.base.request_redraw();
+    }
+
+    /// Whether this button accepts dropped payloads.
+    pub fn accepts_drops(&self) -> bool {
+        self.accepts_drops
+    }
+
+    /// Enables the button as a drop target for `text/plain` payloads.
+    ///
+    /// A drop replaces the button's caption. Off by default, matching the reference toolkit's
+    /// `setAcceptDrops` opt-in.
+    pub fn set_accepts_drops(&mut self, accepts: bool) {
+        if self.accepts_drops == accepts {
+            return;
+        }
+        self.accepts_drops = accepts;
+        if !accepts {
+            self.drop_hovered = false;
+        }
+        self.base.request_redraw();
+    }
+
+    /// The group this button belongs to, when auto-exclusive.
+    fn exclusive_key(&self) -> Option<GroupKey> {
+        if !self.auto_exclusive {
+            return None;
+        }
+        self.parent().map(GroupKey::Parent)
+    }
+
+    /// Records this button's current facts with its group.
+    fn sync_group_registration(&self) {
+        if let Some(key) = self.exclusive_key() {
+            button_group::register(key, self.id(), self.geometry(), self.base.is_enabled());
+        }
+    }
+
+    /// Makes this button the group's emphasised member.
+    fn claim_group_selection(&mut self) {
+        let Some(key) = self.exclusive_key() else {
+            return;
+        };
+        button_group::register(key.clone(), self.id(), self.geometry(), self.base.is_enabled());
+        button_group::select(&key, self.id());
+        self.base.request_redraw();
+    }
+
+    /// The attached menu's rows.
+    #[cfg(full_widgets)]
+    pub fn menu_items(&self) -> &[MenuItem] {
+        &self.menu_items
+    }
+
+    /// Attaches (or replaces) this button's drop-down menu.
+    ///
+    /// An empty list removes the menu. The button then behaves exactly as it did before: a click
+    /// emits `clicked` and nothing is painted below it.
+    #[cfg(full_widgets)]
+    pub fn set_menu(&mut self, items: Vec<MenuItem>) {
+        self.menu_items = items;
+        if self.menu_items.is_empty() {
+            self.close_menu();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Adds one row to the attached menu.
+    #[cfg(full_widgets)]
+    pub fn add_menu_item(&mut self, item: MenuItem) {
+        self.menu_items.push(item);
+        self.base.request_redraw();
+    }
+
+    /// Removes every row from the attached menu and closes it.
+    #[cfg(full_widgets)]
+    pub fn clear_menu(&mut self) {
+        if self.menu_items.is_empty() {
+            return;
+        }
+        self.menu_items.clear();
+        self.close_menu();
+        self.base.request_redraw();
+    }
+
+    /// Whether the attached menu is open.
+    #[cfg(full_widgets)]
+    pub fn is_menu_open(&self) -> bool {
+        self.menu_open
+    }
+
+    /// The rectangle the open menu occupies.
+    #[cfg(full_widgets)]
+    pub fn menu_rect(&self) -> Rect {
+        let anchor = match self.menu_anchor {
+            Some(point) => Rect::new(point.x, point.y, 0, 0),
+            None => self.geometry(),
+        };
+        menu_panel_rect(anchor, self.menu_items.len())
+    }
+
+    /// Opens the attached menu below the button.
+    #[cfg(full_widgets)]
+    pub fn open_menu(&mut self) {
+        if self.menu_items.is_empty() || self.menu_open {
+            return;
+        }
+        self.menu_open = true;
+        self.menu_anchor = None;
+        self.active_menu_index = self.menu_items.iter().position(|item| item.enabled);
+        self.base.request_redraw();
+    }
+
+    /// Opens the attached menu at `pos`, which is how a context-menu request anchors it.
+    #[cfg(full_widgets)]
+    pub fn open_menu_at(&mut self, pos: Point) {
+        if self.menu_items.is_empty() {
+            return;
+        }
+        self.menu_open = true;
+        self.menu_anchor = Some(pos);
+        self.active_menu_index = self.menu_items.iter().position(|item| item.enabled);
+        self.base.request_redraw();
+    }
+
+    /// Closes the attached menu.
+    #[cfg(full_widgets)]
+    pub fn close_menu(&mut self) {
+        if !self.menu_open {
+            return;
+        }
+        self.menu_open = false;
+        self.menu_anchor = None;
+        self.active_menu_index = None;
+        self.base.request_redraw();
+    }
+
+    /// Toggles the attached menu.
+    #[cfg(full_widgets)]
+    pub fn toggle_menu(&mut self) {
+        if self.menu_open {
+            self.close_menu();
+        } else {
+            self.open_menu();
+        }
+    }
+
+    /// The enabled menu row at `pos`, if any.
+    #[cfg(full_widgets)]
+    fn hit_test_menu_item(&self, pos: Point) -> Option<usize> {
+        if !self.menu_open {
+            return None;
+        }
+        let panel = self.menu_rect();
+        if !panel.contains_point(pos) {
+            return None;
+        }
+        self.menu_items.iter().enumerate().find_map(|(index, item)| {
+            let row = menu_item_rect(panel, index);
+            (item.enabled && row.contains_point(pos)).then_some(index)
+        })
+    }
+
+    /// Activates the menu row at `index`: emits `item_triggered` and closes the menu.
+    #[cfg(full_widgets)]
+    fn activate_menu_row(&mut self, index: usize) {
+        let Some(item) = self.menu_items.get(index) else {
+            return;
+        };
+        if !item.enabled {
+            return;
+        }
+        let id = item.id;
+        self.item_triggered.emit(id);
+        self.close_menu();
+    }
+
+    /// Moves the keyboard highlight through the menu's enabled rows.
+    #[cfg(full_widgets)]
+    fn move_menu_highlight(&mut self, forward: bool) {
+        let enabled: Vec<usize> = self
+            .menu_items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.enabled)
+            .map(|(i, _)| i)
+            .collect();
+        if enabled.is_empty() {
+            return;
+        }
+        let position = self
+            .active_menu_index
+            .and_then(|active| enabled.iter().position(|index| *index == active));
+        let next = match position {
+            Some(position) if forward => (position + 1) % enabled.len(),
+            Some(position) => (position + enabled.len() - 1) % enabled.len(),
+            None => 0,
+        };
+        self.active_menu_index = Some(enabled[next]);
+        self.base.request_redraw();
     }
 
     /// Programmatically clicks the button (press, release, emit clicked signal).
@@ -581,7 +1006,53 @@ impl Button {
         }
         self.press();
         self.release();
+        if self.auto_exclusive {
+            self.claim_group_selection();
+        }
         self.base.clicked.emit();
+    }
+
+    /// Whether `key`/`modifiers` is this button's declared shortcut.
+    ///
+    /// The modifier set must match exactly: a `Ctrl+S` shortcut does not fire on `Ctrl+Shift+S`,
+    /// which is a different binding that the caller did not declare. Both halves go through the
+    /// crate's existing key vocabulary rather than raw numbers, so a platform mapping change
+    /// cannot make a declared shortcut unreachable.
+    fn shortcut_matches(&self, key: u32, modifiers: u32) -> bool {
+        let Some(shortcut) = self.shortcut.as_ref() else {
+            return false;
+        };
+        let Some(pressed) = crate::shortcut::Key::from_key_code(key) else {
+            return false;
+        };
+        if shortcut.key != pressed {
+            return false;
+        }
+        // The event bitmask is the framework's own convention, so the comparison works on those
+        // bits rather than on the `Modifiers` bits: `Modifiers::PRIMARY` has no event bit of its
+        // own (it is the *meaning* of the Command/Meta bit), which is why a naive equality between
+        // the two representations would never match a `Shortcut::primary` binding.
+        use crate::shortcut::Modifiers;
+        let shift = modifiers & 0b0001 != 0;
+        let ctrl = modifiers & 0b0010 != 0;
+        let alt = modifiers & 0b0100 != 0;
+        let meta = modifiers & 0b1000 != 0;
+        if shortcut.modifiers.contains(Modifiers::SHIFT) != shift {
+            return false;
+        }
+        if shortcut.modifiers.contains(Modifiers::ALT) != alt {
+            return false;
+        }
+        // A "primary" declaration accepts the host's accelerator bit: Command on macOS, Control
+        // on the other platforms. A physical-Control declaration accepts only the Control bit.
+        let wants_ctrl_like = shortcut.modifiers.contains(Modifiers::PRIMARY)
+            || shortcut.modifiers.contains(Modifiers::CTRL);
+        if wants_ctrl_like != (ctrl || meta) {
+            return false;
+        }
+        // The Meta event bit doubles as the primary accelerator, so a declared `META` cannot be
+        // told apart from a declared `PRIMARY`; both accept it rather than one silently failing.
+        true
     }
 
     /// Submits one animated or interactive frame as damage bounded by the painted box
@@ -689,6 +1160,64 @@ impl Widget for Button {
 
     fn set_enabled(&mut self, enabled: bool) {
         self.set_enabled_state(enabled);
+        self.sync_group_registration();
+    }
+
+    /// Keeps the exclusive group's geometry snapshot current.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.sync_group_registration();
+    }
+
+    /// Keeps the exclusive group in step with the parent it is keyed by.
+    fn set_parent(&mut self, parent: Option<crate::core::ObjectId>) {
+        let previous = self.exclusive_key();
+        self.base.set_parent(parent);
+        if let Some(key) = previous {
+            button_group::unregister(&key, self.id());
+        }
+        self.sync_group_registration();
+    }
+
+    /// The button, and its open menu, accept the pointer.
+    ///
+    /// The menu is painted outside the button's own rectangle, so without this override the
+    /// runtime would hit-test a click on a menu row to whatever is behind the button.
+    fn contains_point(&self, point: Point) -> bool {
+        #[cfg(full_widgets)]
+        if self.menu_open && self.menu_rect().contains_point(point) {
+            return true;
+        }
+        self.base.contains_point_with_touch_expansion(point)
+    }
+
+    #[cfg(full_widgets)]
+    fn has_open_popup(&self) -> bool {
+        self.menu_open
+    }
+
+    /// Turns a context-menu request into the attached menu's anchor.
+    ///
+    /// The host decides *when* a context menu is requested; the button owns *what* it contains, so
+    /// a right-click on a button with a menu opens that menu at the pointer. A button without one
+    /// answers `false`, which tells the host it may show its own.
+    #[cfg(full_widgets)]
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        if self.menu_items.is_empty() {
+            return false;
+        }
+        self.open_menu_at(pos);
+        true
+    }
+
+    /// A press on a draggable button carries its caption.
+    fn drag_source_mut(&mut self) -> Option<&mut dyn crate::event::dnd::DragSource> {
+        (self.drag_enabled && self.base.is_enabled() && !self.text.is_empty()).then_some(self)
+    }
+
+    /// A button that accepts drops receives `text/plain` payloads.
+    fn drop_target_mut(&mut self) -> Option<&mut dyn crate::event::dnd::DropTarget> {
+        (self.accepts_drops && self.base.is_enabled()).then_some(self)
     }
 
     /// Sets hover and repaints only the area this control can change.
@@ -761,6 +1290,21 @@ impl WidgetProperties for Button {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "pressed" => Ok(CapabilityValue::Bool(self.is_pressed())),
             "default" => Ok(CapabilityValue::Bool(self.is_default())),
+            "icon_size" => Ok(CapabilityValue::UInt(self.icon_size() as u64)),
+            "shortcut" => match self.shortcut() {
+                Some(shortcut) => Ok(CapabilityValue::String(shortcut.format_shortcut())),
+                None => Ok(CapabilityValue::Null),
+            },
+            "auto_default" => Ok(CapabilityValue::Bool(self.is_auto_default())),
+            "auto_exclusive" => Ok(CapabilityValue::Bool(self.is_auto_exclusive())),
+            "flat" => Ok(CapabilityValue::Bool(self.is_flat())),
+            "elide" => Ok(CapabilityValue::String(self.elide_mode().as_str().to_string())),
+            "drag_enabled" => Ok(CapabilityValue::Bool(self.is_drag_enabled())),
+            "accepts_drops" => Ok(CapabilityValue::Bool(self.accepts_drops())),
+            #[cfg(full_widgets)]
+            "menu_open" => Ok(CapabilityValue::Bool(self.is_menu_open())),
+            #[cfg(full_widgets)]
+            "menu_item_count" => Ok(CapabilityValue::UInt(self.menu_items.len() as u64)),
             "icon_source" => match self.icon_source() {
                 None => Ok(CapabilityValue::Null),
                 Some(IconSource::Builtin(name)) => Ok(CapabilityValue::IconSpec(
@@ -788,6 +1332,62 @@ impl WidgetProperties for Button {
                 self.set_default(expect_bool(value)?);
                 Ok(())
             }
+            "icon_size" => {
+                self.set_icon_size(expect_u32(value)?);
+                Ok(())
+            }
+            "shortcut" => {
+                match value {
+                    CapabilityValue::Null => self.set_shortcut(None),
+                    other => {
+                        let token = expect_string(other)?;
+                        let Some(shortcut) = crate::shortcut::Shortcut::from_string(&token) else {
+                            return Err(CapabilityAccessError::TypeMismatch);
+                        };
+                        self.set_shortcut(Some(shortcut));
+                    }
+                }
+                Ok(())
+            }
+            "auto_default" => {
+                self.set_auto_default(expect_bool(value)?);
+                Ok(())
+            }
+            "auto_exclusive" => {
+                self.set_auto_exclusive(expect_bool(value)?);
+                Ok(())
+            }
+            "flat" => {
+                self.set_flat(expect_bool(value)?);
+                Ok(())
+            }
+            "elide" => {
+                let token = expect_string(value)?;
+                let Some(mode) = TextElideMode::from_name(&token) else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_elide_mode(mode);
+                Ok(())
+            }
+            "drag_enabled" => {
+                self.set_drag_enabled(expect_bool(value)?);
+                Ok(())
+            }
+            "accepts_drops" => {
+                self.set_accepts_drops(expect_bool(value)?);
+                Ok(())
+            }
+            #[cfg(full_widgets)]
+            "menu_open" => {
+                if expect_bool(value)? {
+                    self.open_menu();
+                } else {
+                    self.close_menu();
+                }
+                Ok(())
+            }
+            #[cfg(full_widgets)]
+            "menu_item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             "icon_source" => {
                 match value {
                     CapabilityValue::Null => self.set_icon_source(None),
@@ -816,8 +1416,42 @@ impl WidgetProperties for Button {
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `BUTTON_PROPERTIES` for the properties this control owns; the
         // shared four are appended from `BASE_PROPERTY_NAMES` so they are not
-        // retyped per control.
-        property_names_of!["text", "pressed", "default", "icon_source", BASE_PROPERTY_NAMES]
+        // retyped per control. The menu names exist only on the `full_widgets`
+        // surface, which is the only build that has a menu model to attach.
+        #[cfg(full_widgets)]
+        return property_names_of![
+            "text",
+            "pressed",
+            "default",
+            "icon_source",
+            "icon_size",
+            "shortcut",
+            "auto_default",
+            "auto_exclusive",
+            "flat",
+            "elide",
+            "drag_enabled",
+            "accepts_drops",
+            "menu_open",
+            "menu_item_count",
+            BASE_PROPERTY_NAMES
+        ];
+        #[cfg(not(full_widgets))]
+        return property_names_of![
+            "text",
+            "pressed",
+            "default",
+            "icon_source",
+            "icon_size",
+            "shortcut",
+            "auto_default",
+            "auto_exclusive",
+            "flat",
+            "elide",
+            "drag_enabled",
+            "accepts_drops",
+            BASE_PROPERTY_NAMES
+        ];
     }
 
     /// Runs one of the commands `button` publishes.
@@ -866,6 +1500,57 @@ impl EventHandler for Button {
     /// `PointerPress`/`PointerMove`/`PointerRelease` take the same arms as their mouse
     /// counterparts, so a pen tap activates the button and a pen drag-off cancels it.
     fn handle_event(&mut self, event: &Event) {
+        // Refresh the exclusive group's geometry/enabled snapshot before anything reads it.
+        self.sync_group_registration();
+        // An open menu owns the next interaction: a click either activates a row or dismisses the
+        // popup, and the keyboard drives the highlight instead of the button's activation.
+        #[cfg(full_widgets)]
+        if self.menu_open {
+            let mut consumed = false;
+            match event {
+                Event::KeyPress { key, .. } if *key == key_codes::ESCAPE => {
+                    self.close_menu();
+                    consumed = true;
+                }
+                Event::KeyPress { key, .. } if *key == key_codes::DOWN => {
+                    self.move_menu_highlight(true);
+                    consumed = true;
+                }
+                Event::KeyPress { key, .. } if *key == key_codes::UP => {
+                    self.move_menu_highlight(false);
+                    consumed = true;
+                }
+                Event::KeyPress { key, .. }
+                    if *key == key_codes::ENTER || *key == key_codes::SPACE =>
+                {
+                    if let Some(index) = self.active_menu_index {
+                        self.activate_menu_row(index);
+                    }
+                    consumed = true;
+                }
+                Event::MousePress { pos, button, .. } if *button == 1 => {
+                    if let Some(index) = self.hit_test_menu_item(*pos) {
+                        self.activate_menu_row(index);
+                    } else if !self.menu_rect().contains_point(*pos) {
+                        self.close_menu();
+                    }
+                    consumed = true;
+                }
+                Event::MouseMove { pos } => {
+                    if let Some(index) = self.hit_test_menu_item(*pos) {
+                        if self.active_menu_index != Some(index) {
+                            self.active_menu_index = Some(index);
+                            self.base.request_redraw();
+                        }
+                    }
+                }
+                _ => { /* Other events still reach the ordinary arms below */ }
+            }
+            if consumed {
+                self.base.handle_event(event);
+                return;
+            }
+        }
         // Gesture logic runs **before** the base records the event. The base both paints and
         // records from the same primitive facts, and it clears `grabbed`/`pressed` on the
         // release — so a control that read them after delegating could no longer tell
@@ -919,6 +1604,10 @@ impl EventHandler for Button {
                 self.release();
                 if inside {
                     self.base.clicked.emit();
+                    #[cfg(full_widgets)]
+                    if !self.menu_items.is_empty() {
+                        self.open_menu();
+                    }
                 } else {
                     self.canceled.emit();
                 }
@@ -929,6 +1618,10 @@ impl EventHandler for Button {
                 self.release();
                 if inside {
                     self.base.clicked.emit();
+                    #[cfg(full_widgets)]
+                    if !self.menu_items.is_empty() {
+                        self.open_menu();
+                    }
                 } else {
                     self.canceled.emit();
                 }
@@ -952,13 +1645,26 @@ impl EventHandler for Button {
             }
             Event::FocusGained { reason } => {
                 let _ = reason;
+                // `autoDefault`: the button the keyboard is on is the one Enter presses.
+                if self.auto_default && self.base.is_enabled() {
+                    self.set_default(true);
+                }
                 self.base.request_redraw();
             }
             Event::FocusLost => {
                 // Focus lost mid-press abandons the gesture: the release belongs to
                 // whatever the window switch moved to.
                 self.cancel_gesture();
+                if self.auto_default {
+                    self.set_default(false);
+                }
                 self.base.request_redraw();
+            }
+            // A declared shortcut activates the button wherever the host delivers it.
+            Event::KeyPress { key, modifiers }
+                if self.shortcut_matches(*key, *modifiers) && self.base.is_enabled() =>
+            {
+                self.click();
             }
             Event::KeyPress { key, .. }
                 if is_keyboard_activation(*key) && self.base.is_enabled() =>
@@ -966,6 +1672,13 @@ impl EventHandler for Button {
                 // A keyboard activation is `Shortcut`: the user is on the keyboard, so
                 // the ring stays lit. Only the activation itself runs here; the ring
                 // follows from the focus reason already stored.
+                #[cfg(full_widgets)]
+                if !self.menu_items.is_empty() {
+                    self.toggle_menu();
+                } else {
+                    self.click();
+                }
+                #[cfg(not(full_widgets))]
                 self.click();
             }
             Event::MouseEnter { .. } => {
@@ -985,6 +1698,76 @@ impl EventHandler for Button {
         // After the control's own gesture: let the base record the primitive facts
         // (hover, press, grab, focus reason) for the state channel.
         self.base.handle_event(event);
+    }
+}
+
+/// A dropped button leaves its exclusive group.
+///
+/// The group registry is thread-local and has no lifetime of its own, so a control that is never
+/// unregistered would keep a group alive after it is gone.
+impl Drop for Button {
+    fn drop(&mut self) {
+        if let Some(key) = self.exclusive_key() {
+            button_group::unregister(&key, self.id());
+        }
+    }
+}
+
+/// A draggable button carries its own caption.
+///
+/// `text/plain` is the type the crate's text controls already exchange (see `LineEdit`), so a
+/// button dragged onto a field needs no adapter at either end.
+impl crate::event::dnd::DragSource for Button {
+    fn drag_payload(&self, pos: Point) -> Option<crate::event::dnd::DragPayload> {
+        if !self.base.is_enabled() || !self.drag_enabled || self.text.is_empty() {
+            return None;
+        }
+        if !self.base.contains_point_with_touch_expansion(pos) {
+            return None;
+        }
+        Some(
+            crate::event::dnd::DragPayload::new("text/plain", self.text.clone())
+                .with_label(self.text.clone())
+                .with_origin(pos),
+        )
+    }
+}
+
+/// A drop-accepting button takes a plain-text payload as its caption.
+///
+/// `Copy` rather than `Move`: the payload is text, and the source control's own copy is still
+/// there — the button is a second place it can appear, not a container that consumed it.
+impl crate::event::dnd::DropTarget for Button {
+    fn can_accept(&self, payload: &crate::event::dnd::DragPayload) -> bool {
+        payload.is_type("text/plain")
+    }
+
+    fn on_drop(
+        &mut self,
+        payload: &crate::event::dnd::DragPayload,
+        _pos: Point,
+    ) -> crate::event::dnd::DropEffect {
+        let label = if payload.label.is_empty() { &payload.item_id } else { &payload.label };
+        self.set_text(label.clone());
+        crate::event::dnd::DropEffect::Copy
+    }
+
+    fn preview_rect(&self, _payload: &crate::event::dnd::DragPayload, _pos: Point) -> Option<Rect> {
+        Some(self.geometry())
+    }
+
+    fn report_hover(&mut self, _payload: &crate::event::dnd::DragPayload) {
+        if !self.drop_hovered {
+            self.drop_hovered = true;
+            self.base.request_redraw();
+        }
+    }
+
+    fn report_leave(&mut self) {
+        if self.drop_hovered {
+            self.drop_hovered = false;
+            self.base.request_redraw();
+        }
     }
 }
 
@@ -1080,21 +1863,43 @@ impl Draw for Button {
         // `solid()` is the identity, so a button on the flat preset emits exactly the fill and
         // outline it emitted before surfaces existed: the snapshot suite is the proof.
         let surface = style.surface.unwrap_or_else(crate::render::SurfaceStyle::solid);
-        surface.paint_with_gradient(
-            context,
-            rect,
-            bg,
-            // `background_gradient` was settable and mergeable but read by **no** painter; passing
-            // it here is what makes a declared gradient actually paint. `None` is the identity, so a
-            // button without one draws exactly what it always did.
-            style.background_gradient.as_ref(),
-            style.border_color.unwrap_or(bg),
-            style.border_width.unwrap_or(0),
-            br,
-            // The shadow's hue. Black is the conventional shadow colour and the one the role
-            // table's elevations were tuned against; each level applies its own alpha.
-            Color::BLACK,
-        );
+        if self.flat {
+            // A flat button shows no face of its own. A background the **caller** declared is still
+            // honoured (that is an explicit request), and the interaction wash is painted so the
+            // control acknowledges the pointer — but the theme's own role fill is chrome, which is
+            // exactly what `flat` removes.
+            let caller_background = !style.theme_derived
+                && (style.background_color.is_some() || style.background_gradient.is_some());
+            if caller_background {
+                context.face_with_gradient(
+                    rect,
+                    bg,
+                    style.background_gradient.as_ref(),
+                    surface,
+                    br,
+                    Color::BLACK,
+                );
+            } else if progress > 0.0 {
+                let interactive = bg.blend(&bg.contrast_color(), 0.22);
+                context.fill_rounded_rect(rect, br, interactive);
+            }
+            if let (Some(color), Some(width)) = (style.border_color, style.border_width) {
+                if width > 0 {
+                    context.draw_rounded_rect_stroke(rect, br, color, width);
+                }
+            }
+        } else {
+            surface.paint_with_gradient(
+                context,
+                rect,
+                bg,
+                style.background_gradient.as_ref(),
+                style.border_color.unwrap_or(bg),
+                style.border_width.unwrap_or(0),
+                br,
+                Color::BLACK,
+            );
+        }
 
         // ── Icon ──
         //
@@ -1202,13 +2007,40 @@ impl Draw for Button {
             // it. Without an icon the advance is zero and this is the whole content box.
             let label_box = self.label_rect();
             let label_bounds = Rect::new(label_box.x, line.y, label_box.width, line.height);
-            context.draw_text_fitted_cow(
-                label_bounds,
-                &self.text,
-                font,
-                text_color,
-                HorizontalAlignment::Center,
-            );
+            match self.elide_mode {
+                // `ElideRight` is the historical fitted draw, byte for byte.
+                TextElideMode::ElideRight => {
+                    context.draw_text_fitted_cow(
+                        label_bounds,
+                        &self.text,
+                        font,
+                        text_color,
+                        HorizontalAlignment::Center,
+                    );
+                }
+                // `None` paints the whole string at the aligned origin, which is the "let the
+                // renderer clip" behaviour a caller asks for explicitly.
+                TextElideMode::None => {
+                    let width = context.measure_text(&self.text, font).width as i32;
+                    let x = label_bounds.x + (label_bounds.width as i32 - width).max(0) / 2;
+                    context.draw_text(
+                        Point::new(x, label_bounds.y),
+                        &self.text,
+                        font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
+                mode => draw_elided_line(
+                    context,
+                    label_bounds,
+                    &self.text,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Center,
+                    mode,
+                ),
+            }
         }
 
         // ── Default-button emphasis ──
@@ -1224,7 +2056,7 @@ impl Draw for Button {
         // The colour is the theme's accent -- the emphasis has to be visible on a button whose
         // surface and border the host may have styled arbitrarily, and `style.background_color` is
         // exactly the resolved value the accent already lands in for an active/primary button.
-        if self.default_button {
+        if self.is_default() {
             let ring = FocusRing::for_control(rect, br);
             if ring.is_drawable() {
                 context.draw_rounded_rect_stroke(
@@ -1244,7 +2076,7 @@ impl Draw for Button {
         // for visual focus, and it is why `Button` carries a `FocusReason` rather than
         // a bare `focused` bool.
         //
-        // The macOS metrics profile asks for AppKit's outer accent halo instead of the inset
+        // The macOS metrics profile asks for the platform's outer accent halo instead of the inset
         // stroke. Both are selected here so the two styles cannot be mixed up: every other
         // profile keeps the inset ring byte for byte, which is what preserves the Material
         // snapshot.
@@ -1270,6 +2102,36 @@ impl Draw for Button {
                         focus_ring_color(bg.contrast_color()),
                         FOCUS_RING_WIDTH,
                     );
+                }
+            }
+        }
+
+        // ── Drop feedback ──
+        //
+        // Only reachable when the caller opted in to drops; a plain button is unchanged.
+        if self.drop_hovered {
+            context.draw_rounded_rect_stroke(rect, br, focus_ring_color(bg.contrast_color()), 2);
+        }
+
+        // ── Attached menu ──
+        //
+        // Painted after the button's own chrome because it sits outside its rectangle. The
+        // geometry comes from `menu_rect`, the same derivation the hit test uses, so a row is
+        // clickable exactly where it was drawn.
+        #[cfg(full_widgets)]
+        if self.menu_open {
+            let panel = self.menu_rect();
+            let accent = crate::style::theme_manager()
+                .current_theme()
+                .map(|theme| theme.colors.accent)
+                .unwrap_or_else(|| bg.contrast_color());
+            draw_menu_panel(context, panel, &self.menu_items, &[], style, accent);
+            // The keyboard highlight is the button's own chrome, so it is painted here rather
+            // than being a property of the shared menu painter (which the menu button owns).
+            if let Some(index) = self.active_menu_index {
+                if self.menu_items.get(index).is_some_and(|item| item.enabled) {
+                    let row = menu_item_rect(panel, index);
+                    context.draw_rounded_rect_stroke(row, 2, accent, 1);
                 }
             }
         }
@@ -2019,6 +2881,7 @@ mod tests {
     /// Focus-ring styling is now selected by the theme's metrics profile, so this is the
     /// regression guard that the default profile did not acquire the macOS halo. The inner
     /// ring is a 2 px stroke and no box-blur filter is emitted.
+    #[cfg(device_profile)]
     #[test]
     fn a_material_focused_button_keeps_the_inset_ring() {
         let _theme_guard = crate::style::theme_test_guard();
@@ -2039,7 +2902,7 @@ mod tests {
 
     /// A theme on the macOS metrics profile draws the focus ring outside the control.
     ///
-    /// AppKit's focus indicator is a blurred accent glow around the control, not an inset
+    /// The macOS focus indicator is a blurred accent glow around the control, not an inset
     /// stroke. The halo goes through the renderer's existing box-blur command, so the marker
     /// to assert is the emitted blur filter (and the absence of the 2 px inset stroke).
     #[cfg(device_profile)]
@@ -2074,6 +2937,7 @@ mod tests {
     ///
     /// This is the regression guard for the default appearance: the button's hint is the old
     /// `64x40` floor and the painted face keeps the old 4 px radius.
+    #[cfg(device_profile)]
     #[test]
     fn the_material_profile_keeps_the_button_constants() {
         let _theme_guard = crate::style::theme_test_guard();
@@ -2761,6 +3625,7 @@ mod tests {
     /// This is §B.9's mechanical test in its smallest form (§B.7 chose this template first for
     /// exactly that reason): the room a control claims must be derived from its children's own
     /// sizes, so a part that gets wider pushes the rest along rather than overlapping it.
+    #[cfg(device_profile)]
     #[test]
     fn the_implicit_size_is_the_icon_and_the_label_on_one_line() {
         // The assertions are the Material floor, so a concurrent test that activates the
@@ -3045,5 +3910,213 @@ mod tests {
             "Full mode records no damage, so the control repaints whole"
         );
         runtime::unregister(id);
+    }
+
+    // ── Icon size, shortcut, flat, auto-default (R001, R002, R006) ─────
+
+    #[test]
+    fn a_larger_icon_size_grows_the_hint_and_the_icon_box() {
+        let mut button = make_button();
+        button.set_icon_source(Some(IconSource::Builtin(crate::widget::IconName::Info)));
+        let small = button.implicit_size();
+        let icon = button.icon_rect().expect("an icon is present");
+        assert_eq!(icon.width, dimensions::BUTTON_ICON_SIZE);
+
+        button.set_icon_size(20);
+        assert_eq!(button.icon_size(), 20);
+        assert!(button.implicit_size().width > small.width, "the reserved advance follows");
+        assert_eq!(button.icon_rect().expect("icon").width, 20);
+    }
+
+    #[test]
+    fn the_shortcut_property_round_trips_and_parses() {
+        let mut button = make_button();
+        assert_eq!(button.get("shortcut"), Ok(CapabilityValue::Null));
+        button
+            .set("shortcut", CapabilityValue::String("Primary+S".into()))
+            .expect("a parseable shortcut is writable");
+        assert_eq!(
+            button.get("shortcut"),
+            Ok(CapabilityValue::String("Primary+S".into())),
+            "the canonical spelling round-trips"
+        );
+        assert_eq!(
+            button.set("shortcut", CapabilityValue::String("Primary+S+T".into())),
+            Err(CapabilityAccessError::TypeMismatch),
+            "a malformed chord is refused rather than half-parsed"
+        );
+        button.set("shortcut", CapabilityValue::Null).expect("null clears it");
+        assert!(button.shortcut().is_none());
+    }
+
+    #[test]
+    fn the_declared_shortcut_activates_the_button() {
+        use crate::shortcut::{Key, Shortcut};
+        let mut button = make_button();
+        button.set_shortcut(Some(Shortcut::primary(Key::S)));
+        let clicked = Arc::new(AtomicBool::new(false));
+        let flag = clicked.clone();
+        button.clicked_signal().connect(move || flag.store(true, Ordering::SeqCst));
+
+        let modifiers = 0b1000;
+        button.handle_event(&Event::KeyPress { key: 83, modifiers });
+        assert!(clicked.load(Ordering::SeqCst), "the declared chord activates the button");
+
+        // A different chord is a different binding.
+        clicked.store(false, Ordering::SeqCst);
+        button.handle_event(&Event::KeyPress { key: 83, modifiers: 0 });
+        assert!(!clicked.load(Ordering::SeqCst), "the bare key is not the declared chord");
+    }
+
+    #[test]
+    fn flat_and_auto_flags_are_published_and_writable() {
+        let mut button = make_button();
+        for name in ["flat", "auto_default", "auto_exclusive", "drag_enabled", "accepts_drops"] {
+            assert_eq!(button.get(name), Ok(CapabilityValue::Bool(false)), "{name} defaults off");
+            button.set(name, CapabilityValue::Bool(true)).expect("writable");
+            assert_eq!(button.get(name), Ok(CapabilityValue::Bool(true)));
+        }
+        assert!(button.is_flat());
+    }
+
+    #[test]
+    fn auto_default_follows_focus() {
+        let mut button = make_button();
+        button.set_auto_default(true);
+        button.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        assert!(button.is_default(), "focus makes an auto-default button the default");
+        button.handle_event(&Event::FocusLost);
+        assert!(!button.is_default(), "losing focus gives the emphasis back");
+    }
+
+    #[test]
+    fn auto_exclusive_buttons_move_the_default_emphasis_inside_one_parent() {
+        let mut first = make_button();
+        let mut second = Button::new("Other".into(), Rect::new(10, 60, 120, 36));
+        first.set_parent(Some(42));
+        second.set_parent(Some(42));
+        first.set_auto_exclusive(true);
+        second.set_auto_exclusive(true);
+
+        first.click();
+        assert!(first.is_default(), "the clicked member carries the emphasis");
+        second.click();
+        assert!(!first.is_default(), "the group has one emphasised member");
+        assert!(second.is_default());
+    }
+
+    #[test]
+    fn the_elide_property_round_trips() {
+        let mut button = make_button();
+        assert_eq!(button.get("elide"), Ok(CapabilityValue::String("right".into())));
+        button.set("elide", CapabilityValue::String("middle".into())).expect("writable");
+        assert_eq!(button.elide_mode(), TextElideMode::ElideMiddle);
+        assert_eq!(
+            button.set("elide", CapabilityValue::String("sideways".into())),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
+    }
+
+    // ── Menu attachment (R001, R003) ───────────────────────────────────
+
+    #[cfg(full_widgets)]
+    #[test]
+    fn an_attached_menu_opens_and_reports_the_activated_row() {
+        use crate::widget::menu_toolbar::menu_button::MenuItem;
+        use std::sync::Mutex;
+
+        let mut button = Button::new("File".into(), Rect::new(10, 20, 120, 36));
+        button.set_menu(vec![MenuItem::new(1, "Open"), MenuItem::new(2, "Save")]);
+        assert_eq!(button.menu_items().len(), 2);
+
+        let triggered = Arc::new(Mutex::new(0u64));
+        let sink = triggered.clone();
+        button.item_triggered.connect(move |id| {
+            *sink.lock().unwrap() = *id;
+        });
+
+        button.open_menu();
+        assert!(button.is_menu_open());
+        let panel = button.menu_rect();
+        let first_row = crate::widget::menu_toolbar::menu_button::menu_item_rect(panel, 0);
+        button.handle_event(&Event::MousePress {
+            pos: Point::new(first_row.x + 4, first_row.y + 4),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(*triggered.lock().unwrap(), 1);
+        assert!(!button.is_menu_open(), "activating a row closes the menu");
+    }
+
+    #[cfg(full_widgets)]
+    #[test]
+    fn the_menu_owns_the_pointer_while_it_is_open() {
+        use crate::widget::menu_toolbar::menu_button::MenuItem;
+
+        let mut button = Button::new("File".into(), Rect::new(10, 20, 120, 36));
+        button.set_menu(vec![MenuItem::new(1, "Open")]);
+        button.open_menu();
+        let panel = button.menu_rect();
+        assert!(
+            button.contains_point(Point::new(panel.x + 2, panel.y + 2)),
+            "a press on the popup must route to the button that owns it"
+        );
+
+        button.handle_event(&Event::KeyPress { key: key_codes::ESCAPE, modifiers: 0 });
+        assert!(!button.is_menu_open(), "Escape dismisses the attached menu");
+    }
+
+    #[cfg(full_widgets)]
+    #[test]
+    fn a_context_menu_request_anchors_the_attached_menu_at_the_pointer() {
+        use crate::widget::menu_toolbar::menu_button::MenuItem;
+
+        let mut button = Button::new("File".into(), Rect::new(0, 0, 100, 30));
+        assert!(
+            !Widget::context_menu_event(&mut button, Point::new(5, 5)),
+            "a button without a menu has nothing to show"
+        );
+        button.set_menu(vec![MenuItem::new(1, "Open")]);
+        assert!(Widget::context_menu_event(&mut button, Point::new(40, 50)));
+        assert!(button.is_menu_open());
+        assert!(button.menu_rect().contains_point(Point::new(41, 51)));
+    }
+
+    // ── Drag and drop (R003) ───────────────────────────────────────────
+
+    #[test]
+    fn a_drag_enabled_button_offers_its_caption() {
+        use crate::event::dnd::DragSource;
+
+        let mut button = make_button();
+        assert!(
+            DragSource::drag_payload(&button, Point::new(20, 30)).is_none(),
+            "dragging is opt-in"
+        );
+        button.set_drag_enabled(true);
+        let payload = DragSource::drag_payload(&button, Point::new(20, 30))
+            .expect("a draggable button carries its caption");
+        assert!(payload.is_type("text/plain"));
+        assert_eq!(payload.label, "Click");
+        assert_eq!(payload.item_id, "Click");
+    }
+
+    #[test]
+    fn a_drop_accepting_button_takes_the_dropped_caption() {
+        use crate::event::dnd::{DragPayload, DropEffect, DropTarget};
+
+        let mut button = make_button();
+        let payload = DragPayload::new("text/plain", "ignored").with_label("Dropped");
+        assert!(button.drop_target_mut().is_none(), "accepting drops is opt-in");
+        button.set_accepts_drops(true);
+        assert!(button.drop_target_mut().is_some());
+        assert!(DropTarget::can_accept(&button, &payload));
+        assert!(!DropTarget::can_accept(&button, &DragPayload::new("image/png", "x")));
+        assert_eq!(
+            DropTarget::on_drop(&mut button, &payload, Point::new(10, 20)),
+            DropEffect::Copy,
+            "text is copied, not consumed"
+        );
+        assert_eq!(button.text(), "Dropped");
     }
 }

@@ -9,6 +9,7 @@
 //! carets, selections and fold toggles. It owns no document state of its own.
 
 use super::editor::CodeEditor;
+use super::types::TextPosition;
 use crate::core::Point;
 use crate::widget::Widget;
 use alloc::string::String;
@@ -19,6 +20,12 @@ const MODIFIER_CONTROL: u32 = 2;
 const MODIFIER_SHIFT: u32 = 1;
 /// ALT modifier bit used by this platform layer.
 const MODIFIER_ALT: u32 = 4;
+/// META modifier bit used by this platform layer.
+///
+/// The bit the platform sets for `Command` on macOS and the Windows/Super key
+/// elsewhere. Without it `Cmd+C` was not a copy on macOS even though the context
+/// menu advertised it.
+const MODIFIER_META: u32 = 8;
 
 impl CodeEditor {
     // ── Input plumbing ──────────────────────────────────────────────────────
@@ -48,6 +55,21 @@ impl CodeEditor {
                 }
             }
         }
+        // Overwrite mode replaces the character after the caret instead of
+        // inserting before it. A newline is never overwritten, and a multi-character
+        // payload (paste, IME commit) keeps insert semantics.
+        if self.overwrite
+            && !self.has_selection()
+            && printable.chars().count() == 1
+            && self.char_at(self.cursor.head).is_some_and(|ch| ch != '\n')
+        {
+            let start = self.cursor.head;
+            let end = self.step_horizontal(start, 1);
+            let head = TextPosition::new(start.line, start.column + 1);
+            self.splice_range(start, end, &printable, head);
+            self.auto_trigger_completion();
+            return;
+        }
         self.insert(&printable);
         self.auto_trigger_completion();
     }
@@ -64,9 +86,12 @@ impl CodeEditor {
 
     /// Handles a key press. `modifiers` uses the platform modifier bitfield.
     pub fn handle_key_press(&mut self, key: u32, modifiers: u32) {
-        let ctrl = modifiers & MODIFIER_CONTROL != 0;
         let shift = modifiers & MODIFIER_SHIFT != 0;
         let alt = modifiers & MODIFIER_ALT != 0;
+        // The primary accelerator is Control on Windows/Linux and Command on
+        // macOS. Treating only Control as primary made every documented `Cmd+…`
+        // binding unreachable on macOS.
+        let ctrl = modifiers & (MODIFIER_CONTROL | MODIFIER_META) != 0;
 
         if self.context_menu.visible && self.handle_menu_key(key, ctrl).is_some() {
             return;
@@ -80,13 +105,17 @@ impl CodeEditor {
             // matched before the plain arrow arms or they become unreachable.
             37 if ctrl => self.move_word(-1, shift),
             39 if ctrl => self.move_word(1, shift),
-            // Multi-cursor carets.
-            38 if alt => {
+            // Multi-cursor carets: Control+Alt+Up/Down, the VS Code gesture.
+            38 if ctrl && alt => {
                 self.add_cursor_above();
             }
-            40 if alt => {
+            40 if ctrl && alt => {
                 self.add_cursor_below();
             }
+            // Moving the caret line is Alt+Up/Down, as in every mainstream editor.
+            // F5 used to carry this binding, which collided with the debugger key.
+            38 if alt => self.move_line(-1),
+            40 if alt => self.move_line(1),
             // Arrow keys and paging.
             37 => self.move_cursor_with_selection(0, -1, shift),
             39 => self.move_cursor_with_selection(0, 1, shift),
@@ -106,30 +135,31 @@ impl CodeEditor {
                     self.move_to_line_edge(1, shift);
                 }
             }
-            33 => {
-                let rows = self.visible_rows();
-                for _ in 0..rows {
-                    self.move_cursor_with_selection(-1, 0, shift);
-                }
-            }
-            34 => {
-                let rows = self.visible_rows();
-                for _ in 0..rows {
-                    self.move_cursor_with_selection(1, 0, shift);
-                }
-            }
+            // A page is one visual-row batch, not a loop of single-line moves.
+            33 => self.move_page(-1, shift),
+            34 => self.move_page(1, shift),
             // Editing.
             8 => {
-                if alt {
+                if ctrl || alt {
                     self.delete_word_backward();
                 } else {
                     self.backspace();
                 }
             }
             46 => self.delete_forward(),
+            // `Insert` toggles overwrite mode.
+            45 if !ctrl => {
+                self.toggle_overwrite_mode();
+            }
             13 => {
                 if self.find.visible {
                     self.find_next(shift);
+                } else if ctrl {
+                    if shift {
+                        self.insert_line_above();
+                    } else {
+                        self.insert_line_below();
+                    }
                 } else {
                     self.insert_newline();
                 }
@@ -169,17 +199,29 @@ impl CodeEditor {
                 self.base.request_redraw();
             }
             // Ctrl/Meta chords.
+            90 if ctrl && shift => {
+                let _ = self.redo();
+            }
             90 if ctrl => {
                 let _ = self.undo();
             }
+            89 if ctrl && shift => {
+                let _ = self.redo();
+            }
             89 if ctrl => {
                 let _ = self.redo();
+            }
+            // Find next/previous, the F3 convention (framework F-key range).
+            1122 => {
+                let _ = self.find_next(shift);
             }
             // Multi-caret and line commands (Zed / VS Code bindings).
             68 if ctrl && shift => self.duplicate_line(),
             68 if ctrl => {
                 self.select_next_occurrence();
             }
+            // Ctrl+L selects the caret's line.
+            76 if ctrl && !shift => self.select_line(self.cursor.head.line),
             76 if ctrl && shift => {
                 self.select_all_occurrences();
             }
@@ -188,6 +230,8 @@ impl CodeEditor {
             // the later arm swallows it (the two arms share a key and the first
             // match wins).
             74 if ctrl => self.join_lines(),
+            // Transpose the two characters around the caret.
+            84 if ctrl => self.transpose_characters(),
             65 if ctrl => self.select_all(),
             67 if ctrl => {
                 self.copy();
@@ -212,11 +256,6 @@ impl CodeEditor {
             93 if ctrl => self.unfold_all(),
             61 if ctrl => self.scroll_by(self.visible_rows() as isize),
             45 if ctrl => self.scroll_by(-(self.visible_rows() as isize)),
-            // Alt+Up / Alt+Down move the current line (Zed / VS Code bindings).
-            116 if alt => {
-                let direction = if shift { 1 } else { -1 };
-                self.move_line(direction);
-            }
             _ => {}
         }
     }
@@ -322,6 +361,7 @@ impl CodeEditor {
         self.base.set_mouse_pressed(true);
         self.mouse_selecting = true;
         self.last_pointer_position = Some(pos);
+        let shift = modifiers & MODIFIER_SHIFT != 0;
         if self.context_menu.visible {
             self.dismiss_completion();
             match self.hit_menu_row(pos) {
@@ -367,7 +407,17 @@ impl CodeEditor {
         // dragging from it is how a range of whole lines is chosen.
         if let Some(line) = self.hit_gutter_line(pos) {
             self.mouse_selecting = false;
+            self.gutter_dragging = true;
+            self.gutter_anchor = Some(line);
             self.select_line(line);
+            return;
+        }
+        // The scrollbar is a control, not a decoration: a press on its track moves
+        // the viewport to that fraction, and the following motion keeps scrolling.
+        if let Some(fraction) = self.scrollbar_fraction_at(pos) {
+            self.mouse_selecting = false;
+            self.scrollbar_dragging = true;
+            self.scroll_to_fraction(fraction);
             return;
         }
         // The minimap is a scroll target, like Zed's: a click anywhere in the strip
@@ -381,8 +431,24 @@ impl CodeEditor {
             return;
         }
         if let Some(position) = self.position_at_point(pos) {
-            if modifiers & MODIFIER_CONTROL != 0 {
+            // A third press at the same spot completes a triple-click and selects
+            // the line. The widget has no clock, so the double-click event marks
+            // the spot and the next press at that spot is the third.
+            let triple = self.double_click_at.take().is_some_and(|anchor| {
+                (anchor.x - pos.x).abs() <= 2 && (anchor.y - pos.y).abs() <= 2
+            });
+            if triple {
+                self.select_line(position.line);
+            } else if shift {
+                // Shift+click extends the selection from the existing anchor.
+                self.move_caret_to(position, true);
+            } else if modifiers & MODIFIER_CONTROL != 0 {
                 self.add_cursor_at(position);
+            } else if self.selection_contains(position) {
+                // A press inside the selection starts a drag, not a new caret.
+                self.mouse_selecting = false;
+                self.dragging_text = true;
+                self.drag_origin = Some(position);
             } else {
                 self.move_caret_to(position, false);
             }
@@ -393,6 +459,20 @@ impl CodeEditor {
         // Hover is tracked even when no button is down: it is what reveals the close
         // affordance on a tab and washes it as the pointer passes over.
         self.update_hovered_tab(pos);
+        if self.gutter_dragging {
+            self.last_pointer_position = Some(pos);
+            if let Some(line) = self.hit_gutter_line(pos) {
+                self.select_line_range(line);
+            }
+            return;
+        }
+        if self.scrollbar_dragging {
+            self.last_pointer_position = Some(pos);
+            if let Some(fraction) = self.scrollbar_fraction_at(pos) {
+                self.scroll_to_fraction(fraction);
+            }
+            return;
+        }
         if self.minimap_dragging {
             // A minimap drag keeps following the pointer after it leaves the strip,
             // clamped by `scroll_to_fraction`.
@@ -402,6 +482,10 @@ impl CodeEditor {
             let height = (bottom - top).max(1) as f32;
             let fraction = ((pos.y - top) as f32 / height).clamp(0.0, 1.0);
             self.scroll_to_fraction(fraction);
+            return;
+        }
+        if self.dragging_text {
+            self.last_pointer_position = Some(pos);
             return;
         }
         if !self.mouse_selecting {
@@ -419,8 +503,20 @@ impl CodeEditor {
     }
 
     pub(crate) fn pointer_release(&mut self) {
+        if self.dragging_text {
+            if let Some(pos) = self.last_pointer_position {
+                if let Some(target) = self.position_at_point(pos) {
+                    self.move_selection_to(target);
+                }
+            }
+        }
         self.mouse_selecting = false;
         self.minimap_dragging = false;
+        self.scrollbar_dragging = false;
+        self.gutter_dragging = false;
+        self.gutter_anchor = None;
+        self.dragging_text = false;
+        self.drag_origin = None;
         self.last_pointer_position = None;
         self.base.set_mouse_pressed(false);
     }
@@ -455,7 +551,9 @@ impl CodeEditor {
 
     fn hit_completion_row(&self, pos: Point) -> Option<usize> {
         let rect = self.completion_rect();
-        index_in_rows(pos, rect, self.completion.items.len())
+        let visible = self.completion_visible_rows();
+        let row = index_in_rows(pos, rect, visible)?;
+        Some(self.completion.scroll + row)
     }
 
     /// Where in the minimap strip `pos` is, as a fraction of the document.
@@ -500,12 +598,35 @@ impl CodeEditor {
         Some(line)
     }
 
+    /// Where in the scrollbar `pos` is, as a fraction of the document.
+    ///
+    /// `None` when the scrollbar is not drawn (the document fits) or the point is
+    /// outside it. The track is a real control: before this it was painted but a
+    /// click on it placed a caret behind it.
+    fn scrollbar_fraction_at(&self, pos: Point) -> Option<f32> {
+        let total = self.total_visual_rows();
+        let rows = self.visible_rows().max(1);
+        if total <= rows {
+            return None;
+        }
+        let width = self.scrollbar_width();
+        let rect = self.geometry();
+        let left = rect.x + rect.width as i32 - width - self.minimap_width();
+        let top = rect.y + self.text_origin_y();
+        let bottom = rect.y + rect.height as i32 - self.status_bar_height();
+        if pos.x < left || pos.x >= left + width || pos.y < top || pos.y >= bottom {
+            return None;
+        }
+        let height = (bottom - top).max(1) as f32;
+        Some(((pos.y - top) as f32 / height).clamp(0.0, 1.0))
+    }
+
     /// The line whose number is under `pos`, when the point is in the gutter.
     ///
     /// The gutter is not part of the text area (`position_at_point` rejects it), but
     /// it is a line-selection target in every editor a reader is used to: a press on
     /// the number selects the whole line, including its newline.
-    fn hit_gutter_line(&self, pos: Point) -> Option<usize> {
+    pub(crate) fn hit_gutter_line(&self, pos: Point) -> Option<usize> {
         let rect = self.geometry();
         let width = self.gutter_width();
         if pos.x < rect.x || pos.x >= rect.x + width {

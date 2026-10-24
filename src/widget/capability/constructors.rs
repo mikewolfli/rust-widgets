@@ -1296,6 +1296,41 @@ pub fn create_cupertino_segmented_control(geometry: Rect, text: &str) -> Box<dyn
 }
 
 #[cfg(full_widgets)]
+/// Creates a desktop (macOS) segmented picker with no segments.
+///
+/// The desktop sibling of [`create_cupertino_segmented_control`]: same concept, the desktop
+/// platform's metrics and one unified track instead of a pill.
+pub fn create_mac_segmented_control(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::macos::MacSegmentedControl::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a desktop (macOS) stepper at zero within `[0, 100]`, in steps of one.
+pub fn create_mac_stepper(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::macos::MacStepper::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a desktop (macOS) toolbar strip with no slots.
+pub fn create_mac_toolbar(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::macos::MacToolbar::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a desktop (macOS) source list with no sections.
+pub fn create_mac_source_list(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::macos::MacSourceList::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a desktop (macOS) window title bar.
+///
+/// `text` becomes the bar's title, which is the one label spelling the control answers.
+pub fn create_mac_window_chrome(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::macos::MacWindowChrome::new(geometry)))
+}
+
+#[cfg(full_widgets)]
 /// Creates a pull-to-refresh control in its idle state. `text` is applied as the
 /// control's label.
 pub fn create_refresh_control(geometry: Rect, text: &str) -> Box<dyn Widget> {

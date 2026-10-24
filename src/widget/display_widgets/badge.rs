@@ -21,7 +21,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, InteractionFade, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Severity level for a badge, determining its color scheme.
@@ -60,6 +60,9 @@ impl BadgeLevel {
 /// a 60 px disc in the 240x120 census cell and a 12 px one in a 24 px row.
 const DOT_RADIUS: u32 = 5;
 
+/// The count above which the badge shows a capped `"999+"` label by default.
+const DEFAULT_MAX_COUNT: u32 = 999;
+
 /// Renders as a filled circle or pill with an optional text overlay.
 /// Supports dot mode (colored dot with no text) and automatic hiding
 /// when count is 0 (unless overridden with custom text).
@@ -69,6 +72,16 @@ pub struct Badge {
     text: String,
     level: BadgeLevel,
     dot_mode: bool,
+    /// The count above which the label is capped; `0` means no cap.
+    max_count: u32,
+    /// The appear/disappear fade. Its hover driver is the badge's own opacity: `0.0` while
+    /// hidden, `1.0` while fully shown.
+    fade: InteractionFade,
+    /// The label last painted while visible, kept so a disappear fade has something to
+    /// paint after `should_draw` has already turned false.
+    last_label: String,
+    /// Whether the last painted visible state was the dot marker, for the same reason.
+    last_dot: bool,
 }
 
 impl Badge {
@@ -82,22 +95,45 @@ impl Badge {
             text: String::new(),
             level: BadgeLevel::Info,
             dot_mode: false,
+            max_count: DEFAULT_MAX_COUNT,
+            fade: InteractionFade::new(),
+            last_label: String::new(),
+            last_dot: false,
         }
     }
 
     /// Sets the notification count. A value of 0 hides the badge (unless dot mode is enabled
-    /// or custom text is set). Values above 999 are displayed as "999+".
+    /// or custom text is set). Values above [`Self::max_count`] are displayed as `"{max}+"`.
     pub fn set_count(&mut self, count: u32) {
         if self.count == count {
             return;
         }
+        self.remember_visible_state();
         self.count = count;
+        self.sync_fade();
         self.base.request_redraw();
     }
 
     /// Returns the current notification count.
     pub fn count(&self) -> u32 {
         self.count
+    }
+
+    /// The count above which the label is capped, or `0` when there is no cap.
+    pub fn max_count(&self) -> u32 {
+        self.max_count
+    }
+
+    /// Sets the count above which the label is capped. A cap of `0` means "no cap".
+    ///
+    /// The default is `999`, so a badge that never calls this keeps rendering `"999+"`
+    /// above a thousand items.
+    pub fn set_max_count(&mut self, max: u32) {
+        if self.max_count == max {
+            return;
+        }
+        self.max_count = max;
+        self.base.request_redraw();
     }
 
     /// Sets the display text shown inside the badge. When non-empty, this takes
@@ -108,7 +144,9 @@ impl Badge {
         if self.text == text {
             return;
         }
+        self.remember_visible_state();
         self.text = text;
+        self.sync_fade();
         self.base.request_redraw();
     }
 
@@ -137,7 +175,9 @@ impl Badge {
         if self.dot_mode == enabled {
             return;
         }
+        self.remember_visible_state();
         self.dot_mode = enabled;
+        self.sync_fade();
         self.base.request_redraw();
     }
 
@@ -156,8 +196,8 @@ impl Badge {
         if !self.text.is_empty() {
             return std::borrow::Cow::Borrowed(&self.text);
         }
-        if self.count > 999 {
-            std::borrow::Cow::Borrowed("999+")
+        if self.max_count != 0 && self.count > self.max_count {
+            std::borrow::Cow::Owned(format!("{}+", self.max_count))
         } else if self.count > 0 {
             std::borrow::Cow::Owned(self.count.to_string())
         } else {
@@ -173,8 +213,9 @@ impl Badge {
         if !self.text.is_empty() {
             return self.text.as_str();
         }
-        if self.count > 999 {
-            return "999+";
+        if self.max_count != 0 && self.count > self.max_count {
+            let _ = write!(out, "{}+", self.max_count);
+            return out.as_str();
         }
         if self.count > 0 {
             let _ = write!(out, "{}", self.count);
@@ -198,6 +239,46 @@ impl Badge {
         }
         self.count > 0
     }
+
+    /// The appear/disappear opacity, `0.0..=1.0`.
+    fn opacity(&self) -> f32 {
+        self.fade.hover.value().clamp(0.0, 1.0)
+    }
+
+    /// Saves the label and marker shape currently on screen, so a disappear fade can keep
+    /// painting them after [`Self::should_draw`] has turned false.
+    fn remember_visible_state(&mut self) {
+        if !self.should_draw() {
+            return;
+        }
+        self.last_dot = self.dot_mode;
+        if !self.dot_mode {
+            let mut buf = String::new();
+            self.last_label = self.display_text_into(&mut buf).to_string();
+        }
+    }
+
+    /// Retargets the appear/disappear fade from the current visibility.
+    ///
+    /// Follows the same pattern as the pointer-driven controls: the driver is re-aimed
+    /// rather than restarted, and a frame is requested only when the fade starts moving.
+    fn sync_fade(&mut self) {
+        if self.fade.sync(self.should_draw(), false) {
+            self.base.request_redraw();
+        }
+    }
+}
+
+/// Applies `opacity` to `color`'s own alpha, leaving the colour untouched at full opacity.
+///
+/// The early return at `1.0` is what keeps a settled badge byte-identical to the one this
+/// widget painted before the fade existed.
+fn faded(color: Color, opacity: f32) -> Color {
+    if opacity >= 1.0 {
+        return color;
+    }
+    let alpha = (color.a as f32 * opacity.clamp(0.0, 1.0)).round().clamp(0.0, 255.0);
+    color.with_alpha(alpha as u8)
 }
 
 impl Widget for Badge {
@@ -215,6 +296,18 @@ impl Widget for Badge {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(24, 24)
     }
+
+    // The pill's fill is what the appear/disappear fade paints, so a badge whose opacity
+    // is in flight owes frames. A settled badge reports no movement and costs nothing on
+    // the animation bus.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.fade.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.fade.is_animating()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -288,7 +381,10 @@ impl WidgetProperties for Badge {
 
 impl Draw for Badge {
     fn draw(&mut self, context: &mut RenderContext) {
-        if !self.should_draw() {
+        // A badge that has just been hidden still paints while its disappear fade is in
+        // flight; once the opacity reaches zero there is nothing left to draw.
+        let opacity = self.opacity();
+        if !self.should_draw() && opacity <= 0.0 {
             return;
         }
 
@@ -349,9 +445,17 @@ impl Draw for Badge {
         // The count reads against the pill, so its colour is derived per-branch below from the
         // fill it actually lands on. Rendered in place; see `display_text_into`.
         let mut count_text = String::new();
-        let text_str = self.display_text_into(&mut count_text);
+        let current_label = self.display_text_into(&mut count_text);
+        // While fading out, `should_draw` is already false and the computed label is empty;
+        // the label that was on screen is the one the fade must carry.
+        let text_str = if current_label.is_empty() && !self.should_draw() {
+            self.last_label.as_str()
+        } else {
+            current_label
+        };
+        let draw_dot = self.dot_mode || (!self.should_draw() && self.last_dot);
 
-        if self.dot_mode {
+        if draw_dot {
             // The dot is a **fixed-size** marker, not a fraction of the caller's rectangle:
             // `min(w, h) / 2` drew a 12 px dot in a 24 px census cell and a 60 px disc in a
             // 240x120 one, so the same badge was a different object in every layout. Material's
@@ -359,7 +463,7 @@ impl Draw for Badge {
             let dot_radius = DOT_RADIUS.min(rect.height.min(rect.width) / 2);
             let center =
                 Point::new(rect.x + (rect.width as i32) / 2, rect.y + (rect.height as i32) / 2);
-            context.fill_circle(center, dot_radius, bg_color);
+            context.fill_circle(center, dot_radius, faded(bg_color, opacity));
             return;
         }
 
@@ -401,7 +505,7 @@ impl Draw for Badge {
         let corner_radius = pill_rect.height / 2;
 
         // Draw pill background
-        context.fill_rounded_rect(pill_rect, corner_radius, bg_color);
+        context.fill_rounded_rect(pill_rect, corner_radius, faded(bg_color, opacity));
 
         // Draw the label centred **on the pill's own box**. `text_line(pill_rect, ..)` is
         // the pill's line box, so the glyph's top edge lands on the pill's middle line
@@ -409,7 +513,7 @@ impl Draw for Badge {
         // The label previously came from its own independent arithmetic, which happened
         // to be close (the pill's centre is y 60 and the label's box centre 59.5) but was
         // a coincidence of two separate constants rather than a fact about the pill.
-        let text_color = bg_color.contrast_color();
+        let text_color = faded(bg_color.contrast_color(), opacity);
         let line = context.text_line(pill_rect, &font);
         context.draw_text_fitted_cow(
             Rect::new(line.x, line.y, line.width.max(1), line.height.max(1)),
@@ -459,6 +563,84 @@ mod tests {
 
         badge.set_count(1000);
         assert_eq!(badge.display_text(), "999+");
+    }
+
+    /// The cap is a real state: it is readable, writable, and `0` means "no cap".
+    #[test]
+    fn badge_max_count_caps_the_label() {
+        let mut badge = Badge::new(Rect::new(0, 0, 40, 24));
+        assert_eq!(badge.max_count(), 999, "the default keeps the historical label");
+
+        badge.set_count(1000);
+        assert_eq!(badge.display_text(), "999+");
+
+        badge.set_max_count(9);
+        assert_eq!(badge.max_count(), 9);
+        assert_eq!(badge.display_text(), "9+");
+
+        badge.set_count(9);
+        assert_eq!(badge.display_text(), "9", "at the cap the plain count is shown");
+
+        badge.set_max_count(0);
+        badge.set_count(1000);
+        assert_eq!(badge.display_text(), "1000", "a cap of zero disables capping");
+    }
+
+    /// Showing and hiding the badge are transitions, not instant flips.
+    #[test]
+    fn badge_fades_in_when_visible_and_out_when_hidden() {
+        let mut badge = Badge::new(Rect::new(0, 0, 40, 24));
+        assert!(!Widget::is_animating(&badge), "a hidden badge rests and owes no frames");
+
+        badge.set_count(7);
+        assert!(Widget::is_animating(&badge), "showing the badge starts a fade");
+
+        let mut frames = 0;
+        while Widget::tick(&mut badge, 16) {
+            frames += 1;
+            assert!(frames < 500, "the fade must terminate");
+        }
+        assert_eq!(badge.fade.hover.value(), 1.0, "the badge arrives fully opaque");
+        assert!(!Widget::is_animating(&badge));
+
+        badge.set_count(0);
+        assert!(Widget::is_animating(&badge), "hiding the badge starts a fade");
+
+        let mut frames = 0;
+        while Widget::tick(&mut badge, 16) {
+            frames += 1;
+            assert!(frames < 500, "the fade must terminate");
+        }
+        assert_eq!(badge.fade.hover.value(), 0.0, "the badge returns to rest exactly");
+    }
+
+    /// The pill's alpha follows the fade, so a mid-transition badge is translucent on screen.
+    #[test]
+    fn the_pill_alpha_follows_the_fade() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut badge = Badge::new(crate::widget::census::CENSUS_RECT);
+        badge.set_text("Sample");
+
+        Widget::tick(&mut badge, 16);
+        let mid_fade = render_to_svg(&mut badge);
+        let pill_alpha = |svg: &str| -> f32 {
+            svg.split("<rect")
+                .find(|chunk| chunk.contains("rx="))
+                .and_then(|chunk| chunk.split("rgba(").nth(1))
+                .and_then(|rest| rest.split(',').nth(3))
+                .and_then(|alpha| alpha.split('"').next())
+                .and_then(|alpha| alpha.trim_end_matches(')').trim().parse::<f32>().ok())
+                .unwrap_or_else(|| panic!("the badge paints a pill with an rgba fill: {svg}"))
+        };
+        let mid_opacity = pill_alpha(&mid_fade);
+        assert!(
+            mid_opacity > 0.0 && mid_opacity < 1.0,
+            "a badge one frame into its fade must be translucent, got {mid_opacity}: {mid_fade}"
+        );
+
+        while Widget::tick(&mut badge, 16) {}
+        let settled = render_to_svg(&mut badge);
+        assert_eq!(pill_alpha(&settled), 1.0, "a settled badge paints an opaque pill: {settled}");
     }
 
     /// The severity must be reachable through the **property route**, not only through

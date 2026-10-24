@@ -18,7 +18,8 @@ use crate::event::{Event, EventHandler};
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_horizontal_alignment, expect_i64, horizontal_alignment_to_str,
+    expect_bool, expect_horizontal_alignment, expect_i64, expect_string,
+    horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -86,10 +87,109 @@ impl FontFieldGeometry {
 /// The widget does not enumerate installed fonts: the caller populates the list
 /// with [`FontComboBox::add_font`].
 ///
+/// Filters that narrow the font list to families matching a style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FontFilters(u8);
+
+impl FontFilters {
+    /// No filtering: every family is listed.
+    pub const NONE: Self = Self(0);
+    /// Families whose name marks them as monospaced.
+    pub const MONOSPACED: Self = Self(1);
+    /// Families that are scalable outlines (all fonts the crate ships are).
+    pub const SCALABLE: Self = Self(2);
+    /// Families that are proportional (not monospaced).
+    pub const PROPORTIONAL: Self = Self(4);
+
+    /// Whether every filter in `other` is enabled here.
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The union of two filter sets.
+    pub fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Whether a family name passes the monospaced heuristic.
+    ///
+    /// The crate does not carry per-family metadata, so a family is treated as monospaced
+    /// when its name says so — the convention every platform's font menu uses. A host with
+    /// real metrics can filter its own list before calling [`FontComboBox::add_font`].
+    fn is_monospaced(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        lower.contains("mono") || lower.contains("courier") || lower.contains("consolas")
+    }
+
+    /// Whether `name` is listed under this filter set.
+    pub fn matches(self, name: &str) -> bool {
+        if self == Self::NONE {
+            return true;
+        }
+        let mono = Self::is_monospaced(name);
+        if self.contains(Self::MONOSPACED) && !mono {
+            return false;
+        }
+        if self.contains(Self::PROPORTIONAL) && mono {
+            return false;
+        }
+        true
+    }
+
+    /// The published token list naming the enabled filters, in canonical order.
+    ///
+    /// An empty string means [`Self::NONE`], so a caller reading the property sees exactly
+    /// what it wrote without needing a second "is filtering" flag.
+    pub fn to_tokens(self) -> crate::compat::String {
+        let mut tokens: crate::compat::Vec<&str> = crate::compat::Vec::new();
+        if self.contains(Self::MONOSPACED) {
+            tokens.push("monospaced");
+        }
+        if self.contains(Self::SCALABLE) {
+            tokens.push("scalable");
+        }
+        if self.contains(Self::PROPORTIONAL) {
+            tokens.push("proportional");
+        }
+        tokens.join(",")
+    }
+
+    /// The filter set a comma-separated token list names.
+    ///
+    /// Unknown tokens are refused rather than ignored: a typo in a property editor should
+    /// report itself, not silently list every font.
+    pub fn from_tokens(text: &str) -> Option<Self> {
+        let mut filters = Self::NONE;
+        for token in text.split(',').map(str::trim).filter(|token| !token.is_empty()) {
+            let filter = match token {
+                "monospaced" => Self::MONOSPACED,
+                "scalable" => Self::SCALABLE,
+                "proportional" => Self::PROPORTIONAL,
+                _ => return None,
+            };
+            filters = filters.union(filter);
+        }
+        Some(filters)
+    }
+}
+
+/// A combo box whose entries are font family names.
 pub struct FontComboBox {
     base: BaseWidget,
     current_font: Font,
     fonts: Vec<String>,
+    /// The list after the style and writing-system filters, as family names.
+    visible_fonts: Vec<String>,
+    /// Style filters applied to the list.
+    font_filters: FontFilters,
+    /// A writing-system filter, matched against the family name when set.
+    writing_system_filter: Option<String>,
+    /// First painted popup row.
+    scroll_offset: usize,
+    /// Prefix typed since the last navigation, for first-letter selection.
+    type_ahead: String,
+    /// Optional sample text painted beside each family name in the popup.
+    sample_text: Option<String>,
     current_index: i32,
     editable: bool,
     /// In-progress typed text while the box is editable.
@@ -161,6 +261,12 @@ impl FontComboBox {
             base: BaseWidget::new(WidgetKind::FontComboBox, geometry, "FontComboBox"),
             current_font: default_font.clone(),
             fonts: Vec::new(),
+            visible_fonts: Vec::new(),
+            font_filters: FontFilters::NONE,
+            writing_system_filter: None,
+            scroll_offset: 0,
+            type_ahead: String::new(),
+            sample_text: None,
             current_index: -1,
             editable: false,
             edit_buffer: None,
@@ -323,12 +429,126 @@ impl FontComboBox {
         // The list's height is derived from this, so a popup that is open has to be re-laid-out.
         self.base.request_redraw();
     }
+
+    /// The style filters applied to the font list.
+    pub fn font_filters(&self) -> FontFilters {
+        self.font_filters
+    }
+
+    /// Applies style filters to the font list.
+    pub fn set_font_filters(&mut self, filters: FontFilters) {
+        if self.font_filters == filters {
+            return;
+        }
+        self.font_filters = filters;
+        self.refresh_visible_fonts();
+        self.base.request_redraw();
+    }
+
+    /// The writing-system filter, if one is set.
+    pub fn writing_system_filter(&self) -> Option<&str> {
+        self.writing_system_filter.as_deref()
+    }
+
+    /// Restricts the list to families whose name matches `filter`.
+    ///
+    /// The crate carries no per-family script metadata, so the match is against the name
+    /// (`"CJK"`, `"Arabic"`, …). A host with real coverage data filters its own list.
+    pub fn set_writing_system_filter(&mut self, filter: Option<String>) {
+        if self.writing_system_filter == filter {
+            return;
+        }
+        self.writing_system_filter = filter;
+        self.refresh_visible_fonts();
+        self.base.request_redraw();
+    }
+
+    /// The families currently listed, after filtering.
+    pub fn visible_fonts(&self) -> &[String] {
+        &self.visible_fonts
+    }
+
+    /// The sample text painted beside each family in the popup, if any.
+    pub fn sample_text(&self) -> Option<&str> {
+        self.sample_text.as_deref()
+    }
+
+    /// Sets the sample text painted beside each family in the popup.
+    ///
+    /// `None` paints only the family name, which is the historical frame. A sample is the
+    /// only way a font menu shows what a family looks like in more than its own name.
+    pub fn set_sample_text(&mut self, sample: Option<String>) {
+        if self.sample_text == sample {
+            return;
+        }
+        self.sample_text = sample;
+        self.base.request_redraw();
+    }
+
+    /// The first painted popup row.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Sets the first painted popup row, clamped to the rows that exist.
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        let rows = self.visible_fonts.len();
+        let page = self.page_size(rows);
+        let next = offset.min(rows.saturating_sub(page.min(rows)));
+        if self.scroll_offset == next {
+            return;
+        }
+        self.scroll_offset = next;
+        self.base.request_redraw();
+    }
+
+    /// Number of popup rows painted at once.
+    pub fn page_size(&self, rows: usize) -> usize {
+        (self.max_visible_items.max(1) as usize).min(rows.max(1))
+    }
+
+    /// Recomputes the filtered list from the filters and the source families.
+    fn refresh_visible_fonts(&mut self) {
+        let writing = self.writing_system_filter.as_ref().map(|filter| filter.to_lowercase());
+        self.visible_fonts = self
+            .fonts
+            .iter()
+            .filter(|name| self.font_filters.matches(name))
+            .filter(|name| {
+                writing
+                    .as_ref()
+                    .is_none_or(|filter| filter.is_empty() || name.to_lowercase().contains(filter))
+            })
+            .cloned()
+            .collect();
+        self.scroll_offset = 0;
+    }
+
+    /// The original index of a family name, if it is listed.
+    fn original_index_of(&self, name: &str) -> Option<usize> {
+        self.fonts.iter().position(|family| family == name)
+    }
+
+    /// The popup row a point falls on.
+    fn popup_row_at(&self, pos: Point) -> Option<usize> {
+        if !self.expanded || self.visible_fonts.is_empty() {
+            return None;
+        }
+        let band = self.field_band();
+        let popup_top = band.y + band.height as i32;
+        if pos.x < band.x || pos.x >= band.x + band.width as i32 || pos.y < popup_top {
+            return None;
+        }
+        let row = ((pos.y - popup_top) / 22) as usize + self.scroll_offset;
+        (row < self.visible_fonts.len()).then_some(row)
+    }
     /// Appends a family name to the end of the list and requests a redraw.
     ///
     /// Duplicates are not filtered: adding the same name twice yields two
     /// identical, independently selectable entries.
     pub fn add_font(&mut self, font_name: String) {
         self.fonts.push(font_name);
+        self.refresh_visible_fonts();
         self.base.request_redraw();
     }
     /// Replaces the family list with the host's installed families, or the families compiled
@@ -346,6 +566,7 @@ impl FontComboBox {
             .iter()
             .position(|candidate| candidate.eq_ignore_ascii_case(family))
             .map_or(-1, |index| index as i32);
+        self.refresh_visible_fonts();
         self.base.request_redraw();
         self.fonts.len()
     }
@@ -364,6 +585,7 @@ impl FontComboBox {
             } else if self.current_index > index {
                 self.current_index -= 1;
             }
+            self.refresh_visible_fonts();
             self.base.request_redraw();
         }
     }
@@ -372,6 +594,8 @@ impl FontComboBox {
     /// an entry had been selected.
     pub fn clear(&mut self) {
         self.fonts.clear();
+        self.visible_fonts.clear();
+        self.scroll_offset = 0;
         self.set_current_index(-1);
         self.base.request_redraw();
     }
@@ -498,6 +722,15 @@ impl WidgetProperties for FontComboBox {
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
             "max_visible_items" => Ok(CapabilityValue::Int(self.max_visible_items() as i64)),
+            "font_filters" => Ok(CapabilityValue::String(self.font_filters().to_tokens())),
+            "writing_system_filter" => match self.writing_system_filter() {
+                Some(filter) => Ok(CapabilityValue::String(filter.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
+            "sample_text" => match self.sample_text() {
+                Some(sample) => Ok(CapabilityValue::String(sample.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
             _ => base_property_get(self, name),
         }
     }
@@ -520,6 +753,29 @@ impl WidgetProperties for FontComboBox {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
             }
+            "font_filters" => {
+                let token = expect_string(value)?;
+                let filters =
+                    FontFilters::from_tokens(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_font_filters(filters);
+                Ok(())
+            }
+            "writing_system_filter" => {
+                let filter = match value {
+                    CapabilityValue::Null => None,
+                    other => Some(expect_string(other)?),
+                };
+                self.set_writing_system_filter(filter);
+                Ok(())
+            }
+            "sample_text" => {
+                let sample = match value {
+                    CapabilityValue::Null => None,
+                    other => Some(expect_string(other)?),
+                };
+                self.set_sample_text(sample);
+                Ok(())
+            }
             // Derived from the font list.
             "current_font_family" | "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -535,6 +791,9 @@ impl WidgetProperties for FontComboBox {
             "editable",
             "alignment",
             "max_visible_items",
+            "font_filters",
+            "writing_system_filter",
+            "sample_text",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -614,14 +873,80 @@ impl EventHandler for FontComboBox {
                     }
                 }
             }
+            // Keyboard navigation of the list: arrows move the selection, Page keys move a
+            // windowful, Home/End jump, Escape closes, and a printable key performs
+            // first-letter selection.
+            Event::KeyPress { key, .. } if !self.editable && !self.visible_fonts.is_empty() => {
+                let page = self.max_visible_items.max(1);
+                let count = self.visible_fonts.len() as i32;
+                match *key {
+                    38 => {
+                        let next = (self.current_index.max(0) - 1).max(0);
+                        self.set_current_index(next);
+                    }
+                    40 => {
+                        let next = (self.current_index + 1).min(count - 1);
+                        self.set_current_index(next);
+                    }
+                    33 => {
+                        let next = (self.current_index - page).max(0);
+                        self.set_current_index(next);
+                    }
+                    34 => {
+                        let next = (self.current_index + page).min(count - 1);
+                        self.set_current_index(next);
+                    }
+                    36 => self.set_current_index(0),
+                    35 => self.set_current_index(count - 1),
+                    27 => self.hide_popup(),
+                    32..=126 => {
+                        if let Some(ch) = char::from_u32(*key) {
+                            self.type_ahead.push(ch);
+                            let prefix = self.type_ahead.to_lowercase();
+                            let start = self.current_index.max(-1) as usize + 1;
+                            if let Some((offset, _)) = self
+                                .visible_fonts
+                                .iter()
+                                .enumerate()
+                                .skip(start)
+                                .find(|(_, name)| name.to_lowercase().starts_with(&prefix))
+                            {
+                                if let Some(original) =
+                                    self.original_index_of(&self.visible_fonts[offset])
+                                {
+                                    self.set_current_index(original as i32);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Event::MousePress { pos, button, .. } if button == &1 => {
                 // Arm only for a press on the control; a press outside must not leave the
                 // cycle-on-release latch armed.
-                self.base.set_pressed(self.geometry().contains_point(*pos));
-                if self.base.is_pressed() {
+                let inside =
+                    self.geometry().contains_point(*pos) || self.popup_row_at(*pos).is_some();
+                self.base.set_pressed(inside);
+                if !inside {
+                    // A press outside the field and its popup dismisses the list, the same
+                    // contract every other popup in the crate has.
+                    self.hide_popup();
+                } else if self.geometry().contains_point(*pos) {
                     // Show the dropdown list
                     self.show_popup();
                     self.base.clicked.emit();
+                } else if let Some(row) = self.popup_row_at(*pos) {
+                    // A press on a popup row commits that row directly; the row the user
+                    // pressed is the row they meant.
+                    if let Some(name) = self.visible_fonts.get(row) {
+                        if let Some(original) = self.original_index_of(name) {
+                            self.set_current_index(original as i32);
+                            self.activated.emit(original as i32);
+                        }
+                    }
+                    self.hide_popup();
+                    self.base.set_pressed(false);
                 }
             }
             Event::MouseRelease { pos, button }
@@ -634,11 +959,23 @@ impl EventHandler for FontComboBox {
                     && self.base.is_pressed() =>
             {
                 self.base.set_pressed(false);
-                // A release off the control cancels, matching `Button`/`Switch`.
+                // A release over a popup row has already been handled on the press; a
+                // release on the field cycles to the next family, matching the old gesture.
                 if self.geometry().contains_point(*pos) && !self.fonts.is_empty() {
                     let next = (self.current_index + 1) % self.fonts.len() as i32;
                     self.set_current_index(next);
                     self.activated.emit(next);
+                }
+            }
+            Event::Wheel { delta, modifiers } => {
+                if self.expanded && !self.visible_fonts.is_empty() {
+                    let scroll = crate::event::WheelScroll::from_event(*delta, *modifiers, 1);
+                    if scroll.lines_y != 0 {
+                        let offset = (self.scroll_offset as i32 + scroll.lines_y).max(0) as usize;
+                        self.set_scroll_offset(offset);
+                    }
+                } else {
+                    self.base.handle_event(event);
                 }
             }
             Event::MouseRelease { button: 1, .. } => {
@@ -767,10 +1104,15 @@ impl Draw for FontComboBox {
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
         // Draw popup list when expanded
-        if self.expanded && !self.fonts.is_empty() {
+        if self.expanded && !self.visible_fonts.is_empty() {
             let popup_item_height = 22i32;
-            let visible_count = self.fonts.len().min(self.max_visible_items as usize);
-            let popup_height = (visible_count as i32) * popup_item_height;
+            let page = self.page_size(self.visible_fonts.len());
+            let offset = self
+                .scroll_offset
+                .min(self.visible_fonts.len().saturating_sub(page.min(self.visible_fonts.len())));
+            let visible =
+                &self.visible_fonts[offset..(offset + page).min(self.visible_fonts.len())];
+            let popup_height = (visible.len() as i32) * popup_item_height;
             let popup_rect = Rect::new(g.x, g.y + g.height as i32, g.width, popup_height as u32);
             // The popup is a raised step out of the field, so it reads as a separate surface on
             // either appearance.
@@ -780,44 +1122,52 @@ impl Draw for FontComboBox {
             // The highlighted item is the control's selection, so it carries the theme's primary
             // rather than a fixed blue.
             let highlight = primary.blend(&field, 0.15);
-            let display_font = Font::default_ui();
-            for i in 0..visible_count {
-                let item_y = popup_rect.y + (i as i32) * popup_item_height;
+            let display_font_size = 14.0f32;
+            for (row, name) in visible.iter().enumerate() {
+                let item_y = popup_rect.y + (row as i32) * popup_item_height;
                 let item_rect =
                     Rect::new(popup_rect.x, item_y, popup_rect.width, popup_item_height as u32);
-                // One line box per row, shared by the highlighted and plain arms so the two
-                // cannot drift by half a line while the row also changes colour.
+                // Each row is drawn in its own family, which is the point of a font list:
+                // previewing every family in one default face told the user nothing.
+                let display_font = Font::simple(name.clone(), display_font_size);
                 let item_line = ctx.text_line(item_rect, &display_font);
-                // Fitted to the popup: a long family name used to paint past the popup's
-                // own edge.
                 let name_x = g.x + 4;
                 let name_width =
                     ((item_rect.x + item_rect.width as i32 - 4) - name_x).max(0) as u32;
-                if i as i32 == self.current_index {
+                let original = self.original_index_of(name);
+                if original == Some(self.current_index as usize) {
                     ctx.fill_rect(item_rect, highlight);
-                    if let Some(name) = self.fonts.get(i) {
-                        // The label contrasts with the highlight it sits on, so it stays legible
-                        // whatever the theme's primary is.
-                        ctx.draw_text_fitted_cow(
-                            Rect::new(
-                                name_x,
-                                item_line.y,
-                                name_width.max(1),
-                                item_line.height.max(1),
-                            ),
-                            name,
-                            &display_font,
-                            highlight.contrast_color(),
-                            HorizontalAlignment::Left,
-                        );
-                    }
-                } else if let Some(name) = self.fonts.get(i) {
+                    ctx.draw_text_fitted_cow(
+                        Rect::new(name_x, item_line.y, name_width.max(1), item_line.height.max(1)),
+                        name,
+                        &display_font,
+                        highlight.contrast_color(),
+                        HorizontalAlignment::Left,
+                    );
+                } else {
                     ctx.draw_text_fitted_cow(
                         Rect::new(name_x, item_line.y, name_width.max(1), item_line.height.max(1)),
                         name,
                         &display_font,
                         ink,
                         HorizontalAlignment::Left,
+                    );
+                }
+                if let Some(sample) = &self.sample_text {
+                    // The preview column uses the row's own family too, so a family that
+                    // shapes text differently from the default face is visible as such.
+                    let sample_box = Rect::new(
+                        name_x + (name_width as i32 / 2),
+                        item_line.y,
+                        (name_width as i32 / 2).max(1) as u32,
+                        item_line.height.max(1),
+                    );
+                    ctx.draw_text_fitted_cow(
+                        sample_box,
+                        sample,
+                        &display_font,
+                        ink.blend(&field, 0.35),
+                        HorizontalAlignment::Right,
                     );
                 }
             }
@@ -1143,5 +1493,87 @@ mod tests {
             2,
             "zero floors to one, which is a change"
         );
+    }
+
+    /// Style and writing-system filters narrow the visible font list.
+    #[test]
+    fn font_filters_narrow_the_list() {
+        let mut combo = FontComboBox::new(Rect::new(0, 0, 200, 28));
+        for family in ["Inter", "JetBrains Mono", "Courier New", "CJK Sans"] {
+            combo.add_font(family.to_string());
+        }
+        combo.set_font_filters(FontFilters::MONOSPACED);
+        assert_eq!(combo.font_filters(), FontFilters::MONOSPACED);
+        assert_eq!(combo.visible_fonts().len(), 2);
+        assert!(combo.visible_fonts().iter().all(|name| FontFilters::MONOSPACED.matches(name)));
+
+        combo.set_font_filters(FontFilters::NONE);
+        combo.set_writing_system_filter(Some("CJK".to_string()));
+        assert_eq!(combo.writing_system_filter(), Some("CJK"));
+        assert_eq!(combo.visible_fonts(), ["CJK Sans".to_string()].as_slice());
+
+        combo.set_sample_text(Some("Aa 123".to_string()));
+        assert_eq!(combo.sample_text(), Some("Aa 123"));
+        combo.set_sample_text(None);
+        assert_eq!(combo.sample_text(), None);
+    }
+
+    /// The filter tokens and the sample text round-trip through the property route.
+    #[test]
+    fn the_filter_properties_round_trip() {
+        let mut combo = FontComboBox::new(Rect::new(0, 0, 200, 28));
+        for family in ["Inter", "JetBrains Mono"] {
+            combo.add_font(family.to_string());
+        }
+        assert_eq!(
+            combo.get("font_filters").unwrap(),
+            CapabilityValue::String(String::new()),
+            "no filters is the empty token list"
+        );
+        assert_eq!(combo.get("writing_system_filter").unwrap(), CapabilityValue::Null);
+        assert_eq!(combo.get("sample_text").unwrap(), CapabilityValue::Null);
+
+        combo
+            .set("font_filters", CapabilityValue::String("monospaced,scalable".to_string()))
+            .unwrap();
+        assert!(combo.font_filters().contains(FontFilters::MONOSPACED));
+        assert!(combo.font_filters().contains(FontFilters::SCALABLE));
+        assert_eq!(
+            combo.get("font_filters").unwrap(),
+            CapabilityValue::String("monospaced,scalable".to_string())
+        );
+        assert_eq!(
+            combo.set("font_filters", CapabilityValue::String("heavy".to_string())),
+            Err(CapabilityAccessError::OutOfRange)
+        );
+
+        combo.set("writing_system_filter", CapabilityValue::String("CJK".to_string())).unwrap();
+        assert_eq!(combo.writing_system_filter(), Some("CJK"));
+        combo.set("writing_system_filter", CapabilityValue::Null).unwrap();
+        assert_eq!(combo.writing_system_filter(), None);
+
+        combo.set("sample_text", CapabilityValue::String("Aa".to_string())).unwrap();
+        assert_eq!(combo.get("sample_text").unwrap(), CapabilityValue::String("Aa".to_string()));
+    }
+
+    /// A capped popup scrolls, and a press outside dismisses it.
+    #[test]
+    fn the_popup_scrolls_and_dismisses_on_an_outside_press() {
+        let mut combo = FontComboBox::new(Rect::new(0, 0, 200, 28));
+        for index in 0..10 {
+            combo.add_font(format!("Family {index}"));
+        }
+        combo.set_max_visible_items(3);
+        combo.show_popup();
+        combo.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(combo.scroll_offset(), 1);
+        assert_eq!(combo.page_size(10), 3);
+
+        combo.handle_event(&Event::MousePress {
+            pos: Point::new(500, 500),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(!combo.expanded, "an outside press dismisses the popup");
     }
 }

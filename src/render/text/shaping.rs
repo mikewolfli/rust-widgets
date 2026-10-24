@@ -297,6 +297,33 @@ impl RustybuzzShaper {
     /// its `height` is the font's line box — the same box
     /// [`crate::render::text::line`]'s model reports.
     pub fn shape_face(&self, text: &str, font_size: f32, scale: f32) -> Option<ShapedGlyphRun> {
+        self.shape_face_with(text, font_size, scale, ligature_free_features())
+    }
+
+    /// Shape `text` with the face's standard ligatures enabled.
+    ///
+    /// This is the glyph-level form of [`Self::shape_face`]: a run of positioned glyph ids where
+    /// one glyph may cover several characters (`ffi` becomes the face's `ffi` ligature). It is
+    /// only useful to a renderer that paints glyph identities rather than cluster text; the
+    /// cluster model in [`crate::render::text::line`] keeps the ligature-free form because its
+    /// caret geometry assumes one cluster per drawn box.
+    pub fn shape_face_with_ligatures(
+        &self,
+        text: &str,
+        font_size: f32,
+        scale: f32,
+    ) -> Option<ShapedGlyphRun> {
+        self.shape_face_with(text, font_size, scale, &[])
+    }
+
+    /// Shapes one run with an explicit feature set.
+    fn shape_face_with(
+        &self,
+        text: &str,
+        font_size: f32,
+        scale: f32,
+        features: &[rustybuzz::Feature],
+    ) -> Option<ShapedGlyphRun> {
         // The name-keyed shaper cache: a label is measured and then drawn, and the same face is
         // shaped again across frames, so this must not re-read the table directory per call.
         super::font_assets::with_shaper_face(self.face, |parsed| {
@@ -307,7 +334,7 @@ impl RustybuzzShaper {
             let mut buffer = rustybuzz::UnicodeBuffer::new();
             buffer.push_str(text);
             buffer.guess_segment_properties();
-            let output = rustybuzz::shape(parsed, ligature_free_features(), buffer);
+            let output = rustybuzz::shape(parsed, features, buffer);
 
             let unit_px = font_size * scale / units_per_em;
             let mut glyph_ids = Vec::with_capacity(output.len());
@@ -329,6 +356,17 @@ impl RustybuzzShaper {
         })
         .flatten()
     }
+}
+
+/// The glyph run the software renderer paints when glyph-level text is enabled.
+///
+/// Face selection is the same one measurement uses ([`face_for_family`]), so enabling the
+/// glyph-level path never changes which face a named family resolves to. It returns `None` on a
+/// build with no face for `font.family()`, which is the caller's cue to fall back to the cluster
+/// renderer.
+pub(crate) fn glyph_run_for_family(text: &str, font: &Font, scale: f32) -> Option<ShapedGlyphRun> {
+    let face = face_for_family(font.family())?;
+    RustybuzzShaper::new(face)?.shape_face_with_ligatures(text, font.size(), scale)
 }
 
 impl TextShaper for RustybuzzShaper {

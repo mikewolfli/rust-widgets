@@ -19,7 +19,9 @@ use crate::widget::metrics::{
     expand_to_hit_area, focus_ring_color, role_font, FocusRing, FOCUS_RING_WIDTH,
 };
 use crate::widget::text_utils::elide_to_width;
-use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Image, Widget, WidgetKind};
+use crate::widget::{
+    BaseWidget, Draw, IconItemError, IconName, IconSource, Image, Widget, WidgetKind,
+};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 const TAB_HEIGHT: i32 = 24;
@@ -133,6 +135,36 @@ impl TabBarTab {
     }
 }
 
+/// How a tab title that does not fit its tab is handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TabElideMode {
+    /// Paint the full title even where it does not fit; the renderer clips it at the tab.
+    None,
+    /// Elide the title at the tab's trailing edge, the historical rendering.
+    #[default]
+    Right,
+}
+
+/// What becomes current after the current tab is removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectionBehaviorOnRemove {
+    /// Move to the previous tab, or the first when the removed tab was first.
+    #[default]
+    SelectPrevious,
+    /// Move to the next tab, or the last when the removed tab was last.
+    SelectNext,
+}
+
+/// The strip's visual variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TabBarStyle {
+    /// Ordinary tabs with an outlined current tab.
+    #[default]
+    Standard,
+    /// A connected segmented-control strip: the current tab is an accent pill.
+    Segmented,
+}
+
 /// Standalone tab bar widget that displays a row (or column) of tabs.
 pub struct TabBar {
     base: BaseWidget,
@@ -172,6 +204,24 @@ pub struct TabBar {
     /// other, because the side a strip is attached to is a layout decision rather than a reading one.
     /// Defaults to left-to-right, so a strip that never asks behaves exactly as it did.
     direction: crate::core::TextDirection,
+    /// The tab index the pointer is dragging over, while a reorder is in flight.
+    drag_target: Option<usize>,
+    /// Whether the strip paints scroll buttons when the tabs overflow.
+    scroll_buttons: bool,
+    /// How many tabs the scroll buttons have shifted the run.
+    scroll_offset: usize,
+    /// How a title that does not fit is handled.
+    elide_mode: TabElideMode,
+    /// Whether the strip hides itself when it has at most one tab.
+    auto_hide: bool,
+    /// Whether the tabs stretch to fill the whole strip.
+    expanding: bool,
+    /// What becomes current when the current tab is removed.
+    selection_behavior_on_remove: SelectionBehaviorOnRemove,
+    /// The strip's visual variant.
+    style_variant: TabBarStyle,
+    /// Emitted with the tab under the pointer, or `None` over empty strip space.
+    pub tab_bar_clicked: Signal1<Option<usize>>,
     /// Emitted when the current tab index changes.
     pub current_changed: Signal1<usize>,
     /// Emitted when a tab close is requested (closable tabs only).
@@ -212,6 +262,15 @@ impl TabBar {
             tab_max_width: TAB_MAX_WIDTH,
             measured_title_widths: Vec::new(),
             direction: crate::core::TextDirection::default(),
+            drag_target: None,
+            scroll_buttons: false,
+            scroll_offset: 0,
+            elide_mode: TabElideMode::Right,
+            auto_hide: false,
+            expanding: false,
+            selection_behavior_on_remove: SelectionBehaviorOnRemove::default(),
+            style_variant: TabBarStyle::Standard,
+            tab_bar_clicked: Signal1::new(),
             current_changed: Signal1::new(),
             tab_close_requested: Signal1::new(),
             tab_moved: Signal1::new(),
@@ -287,10 +346,13 @@ impl TabBar {
             Some(cur) if cur == index => {
                 if self.tabs.is_empty() {
                     self.current_index = None;
-                } else if cur >= self.tabs.len() {
-                    self.current_index = Some(self.tabs.len() - 1);
+                } else {
+                    let next = match self.selection_behavior_on_remove {
+                        SelectionBehaviorOnRemove::SelectPrevious => cur.saturating_sub(1),
+                        SelectionBehaviorOnRemove::SelectNext => cur.min(self.tabs.len() - 1),
+                    };
+                    self.current_index = Some(next);
                 }
-                // Otherwise stays the same (next tab slides into same position).
             }
             Some(cur) if cur > index => {
                 self.current_index = Some(cur - 1);
@@ -540,6 +602,154 @@ impl TabBar {
     // Tab dimensions
     // ---------------------------------------------------------------------------
 
+    /// The tab index the pointer is currently dragging over, while a reorder is in
+    /// flight.
+    pub fn drag_target(&self) -> Option<usize> {
+        self.drag_target
+    }
+
+    /// Whether a drag is in flight.
+    pub fn is_dragging(&self) -> bool {
+        self.dragging_from.is_some()
+    }
+
+    /// Whether the strip paints scroll buttons when its tabs overflow.
+    pub fn has_scroll_buttons(&self) -> bool {
+        self.scroll_buttons
+    }
+
+    /// Enables the overflow scroll buttons. Off by default, so a strip keeps its
+    /// historical shrink-to-fit behaviour.
+    pub fn set_scroll_buttons(&mut self, enabled: bool) {
+        if self.scroll_buttons == enabled {
+            return;
+        }
+        self.scroll_buttons = enabled;
+        if !enabled {
+            self.scroll_offset = 0;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether the tabs are wider than the strip at their minimum width.
+    pub fn is_overflowing(&self) -> bool {
+        let count = self.tabs.len();
+        if count == 0 {
+            return false;
+        }
+        let needed = count as u32 * self.tab_min_width
+            + (count.saturating_sub(1)) as u32 * TAB_SPACING as u32;
+        needed > self.base.geometry().width
+    }
+
+    /// The scroll buttons' boxes, when they are enabled and needed.
+    pub fn scroll_button_rects(&self) -> Option<(Rect, Rect)> {
+        if !self.scroll_buttons || !self.is_overflowing() {
+            return None;
+        }
+        let g = self.base.geometry();
+        let width = 16u32.min(g.width);
+        Some((
+            Rect::new(g.x, g.y, width, TAB_HEIGHT as u32),
+            Rect::new(g.x + g.width as i32 - width as i32, g.y, width, TAB_HEIGHT as u32),
+        ))
+    }
+
+    /// How many tabs the scroll buttons have shifted the run.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Shifts the visible run by `delta` tabs, clamped to the list.
+    pub fn scroll_by(&mut self, delta: i32) -> bool {
+        if !self.is_overflowing() {
+            return false;
+        }
+        let max = self.max_scroll_offset();
+        let next = (self.scroll_offset as i32 + delta).clamp(0, max as i32) as usize;
+        if next == self.scroll_offset {
+            return false;
+        }
+        self.scroll_offset = next;
+        self.base.request_redraw();
+        true
+    }
+
+    /// The largest scroll offset the strip allows.
+    fn max_scroll_offset(&self) -> usize {
+        let g = self.base.geometry();
+        let available = g.width.saturating_sub(32) as usize;
+        let tab = self.tab_min_width.max(1) as usize + TAB_SPACING as usize;
+        let visible = (available / tab).max(1);
+        self.tabs.len().saturating_sub(visible)
+    }
+
+    /// How a title that does not fit is handled.
+    pub fn elide_mode(&self) -> TabElideMode {
+        self.elide_mode
+    }
+
+    /// Sets the title elision mode; `Right` is the historical behaviour.
+    pub fn set_elide_mode(&mut self, mode: TabElideMode) {
+        if self.elide_mode == mode {
+            return;
+        }
+        self.elide_mode = mode;
+        self.base.request_redraw();
+    }
+
+    /// Whether the strip hides itself with at most one tab.
+    pub fn auto_hide(&self) -> bool {
+        self.auto_hide
+    }
+
+    /// Enables auto-hide. Off by default.
+    pub fn set_auto_hide(&mut self, enabled: bool) {
+        if self.auto_hide == enabled {
+            return;
+        }
+        self.auto_hide = enabled;
+        self.base.request_redraw();
+    }
+
+    /// Whether the tabs stretch to fill the strip.
+    pub fn expanding(&self) -> bool {
+        self.expanding
+    }
+
+    /// Enables expanding tabs. Off by default, so a tab keeps its natural width.
+    pub fn set_expanding(&mut self, enabled: bool) {
+        if self.expanding == enabled {
+            return;
+        }
+        self.expanding = enabled;
+        self.base.request_redraw();
+    }
+
+    /// What becomes current when the current tab is removed.
+    pub fn selection_behavior_on_remove(&self) -> SelectionBehaviorOnRemove {
+        self.selection_behavior_on_remove
+    }
+
+    /// Sets the post-removal selection rule.
+    pub fn set_selection_behavior_on_remove(&mut self, behavior: SelectionBehaviorOnRemove) {
+        self.selection_behavior_on_remove = behavior;
+    }
+
+    /// The strip's visual variant.
+    pub fn style_variant(&self) -> TabBarStyle {
+        self.style_variant
+    }
+
+    /// Sets the strip's visual variant; `Standard` is the historical rendering.
+    pub fn set_style_variant(&mut self, variant: TabBarStyle) {
+        if self.style_variant == variant {
+            return;
+        }
+        self.style_variant = variant;
+        self.base.request_redraw();
+    }
+
     /// Returns the minimum tab width.
     pub fn tab_min_width(&self) -> u32 {
         self.tab_min_width
@@ -623,7 +833,12 @@ impl TabBar {
         match self.tab_position {
             TabPosition::North | TabPosition::South => {
                 let tab_width = self.fitted_tab_width();
-                let offset = (tab_width as i32 + spacing) * index as i32;
+                let shift = if self.scroll_buttons && self.is_overflowing() {
+                    16 + self.scroll_offset as i32 * (self.tab_min_width as i32 + spacing)
+                } else {
+                    0
+                };
+                let offset = (tab_width as i32 + spacing) * index as i32 - shift;
                 let x =
                     if rtl { rect.right() - offset - tab_width as i32 } else { rect.x + offset };
                 // The last tab must end *inside* the strip. `fitted_tab_width` divides by the count
@@ -680,6 +895,9 @@ impl TabBar {
         let count = count as u32;
         let gaps = (TAB_SPACING as u32).saturating_mul(count.saturating_sub(1));
         let available = rect.width.saturating_sub(gaps).max(1);
+        if self.expanding {
+            return (available / count).max(1);
+        }
         let natural = self.compute_tab_width(0).max(self.tab_min_width).max(1);
         natural.min(available / count).max(1)
     }
@@ -709,6 +927,9 @@ impl TabBar {
         tab_rect: Rect,
         measure: &mut dyn FnMut(&str) -> u32,
     ) -> Cow<'a, str> {
+        if self.elide_mode == TabElideMode::None {
+            return Cow::Borrowed(&self.tabs[index].title);
+        }
         let has_icon = self.tabs[index].has_icon();
         let budget = Self::title_band_width(tab_rect, has_icon, self.closable);
         elide_to_width(&self.tabs[index].title, budget, measure)
@@ -753,6 +974,27 @@ impl TabBar {
     }
 
     /// Roughly measure text width (fallback if no RenderContext handy).
+    /// Moves the selection by `delta` tabs, skipping disabled tabs.
+    fn step_selection(&mut self, delta: i32) {
+        let count = self.tabs.len();
+        if count == 0 || delta == 0 {
+            return;
+        }
+        let start = match self.current_index {
+            Some(index) => index as i32,
+            None if delta > 0 => -1,
+            None => count as i32,
+        };
+        let mut index = start;
+        for _ in 0..count {
+            index = (index + delta).rem_euclid(count as i32);
+            if self.tabs[index as usize].enabled {
+                self.set_current_index(index as usize);
+                return;
+            }
+        }
+    }
+
     /// The index of the tab at the given point, or None.
     fn tab_at_position(&self, pos: Point) -> Option<usize> {
         for i in 0..self.tabs.len() {
@@ -885,8 +1127,16 @@ impl TabBar {
         // Background color.
         let bg = if !is_enabled {
             disabled_tab
+        } else if self.dragging_from == Some(index) {
+            // The dragged tab is carried, not resting: a tint states that it is the
+            // one that will move.
+            current_tab.blend(&chrome.current_tab.contrast_color(), 0.12)
         } else if is_current {
-            current_tab
+            if self.style_variant == TabBarStyle::Segmented {
+                current_tab.blend(&chrome.current_tab.contrast_color(), 0.22)
+            } else {
+                current_tab
+            }
         } else if is_hovered {
             hovered_tab
         } else {
@@ -1200,6 +1450,9 @@ impl EventHandler for TabBar {
         if !self.base.is_enabled() {
             return;
         }
+        if self.auto_hide && self.tabs.len() <= 1 {
+            return;
+        }
         match event {
             Event::MouseMove { pos } => {
                 let prev = self.hovered_index;
@@ -1207,8 +1460,29 @@ impl EventHandler for TabBar {
                 if prev != self.hovered_index {
                     self.base.request_redraw();
                 }
+                // Live reorder preview: the drop target follows the pointer, so the
+                // insertion line is where the release would land.
+                if self.dragging_from.is_some() {
+                    let target = self.tab_at_position(*pos);
+                    if target != self.drag_target {
+                        self.drag_target = target;
+                        self.base.request_redraw();
+                    }
+                }
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
+                // The scroll buttons sit over the strip's ends and take precedence.
+                if let Some((left, right)) = self.scroll_button_rects() {
+                    if left.contains_point(*pos) {
+                        self.scroll_by(-1);
+                        return;
+                    }
+                    if right.contains_point(*pos) {
+                        self.scroll_by(1);
+                        return;
+                    }
+                }
+                self.tab_bar_clicked.emit(self.tab_at_position(*pos));
                 // Check close button first.
                 if self.closable {
                     for i in 0..self.tabs.len() {
@@ -1238,11 +1512,38 @@ impl EventHandler for TabBar {
                 // Completing the move on release, and only on release, is what makes
                 // `movable` mean "drag to reorder" rather than "reorder on click".
                 if let Some(from) = self.dragging_from.take() {
-                    if let Some(to) = self.tab_at_position(*pos) {
+                    let target = self.tab_at_position(*pos);
+                    self.drag_target = None;
+                    if let Some(to) = target {
                         self.move_tab(from, to);
                     }
+                    self.base.request_redraw();
                 }
             }
+            Event::KeyPress { key, modifiers: _ } => match *key {
+                crate::event::key_codes::LEFT => {
+                    self.step_selection(-1);
+                }
+                crate::event::key_codes::RIGHT => {
+                    self.step_selection(1);
+                }
+                crate::event::key_codes::HOME => {
+                    if !self.tabs.is_empty() {
+                        self.set_current_index(0);
+                    }
+                }
+                crate::event::key_codes::END => {
+                    if !self.tabs.is_empty() {
+                        self.set_current_index(self.tabs.len() - 1);
+                    }
+                }
+                crate::event::key_codes::DELETE if self.closable => {
+                    if let Some(index) = self.current_index {
+                        self.tab_close_requested.emit(index);
+                    }
+                }
+                _ => {}
+            },
             #[cfg(feature = "touch")]
             Event::Tap { pos } => {
                 // Check close button first.
@@ -1274,6 +1575,9 @@ impl EventHandler for TabBar {
 // ---------------------------------------------------------------------------
 impl Draw for TabBar {
     fn draw(&mut self, context: &mut RenderContext) {
+        if self.auto_hide && self.tabs.len() <= 1 {
+            return;
+        }
         // Measure every label once, up front, for the whole strip. A tab's width depends
         // on its own label, so measuring while drawing would leave tab `n` laid out from
         // the estimate and tab `n+1` from a real metric — a strip whose later tabs are a
@@ -1289,6 +1593,26 @@ impl Draw for TabBar {
             if let Some(tr) = self.tab_rect(i) {
                 self.draw_tab(context, i, tr, &chrome, &font);
             }
+        }
+
+        // ── Live drag preview ──
+        if let (Some(from), Some(target)) = (self.dragging_from, self.drag_target) {
+            if let Some(rect) = self.tab_rect(target) {
+                let x = if target > from { rect.x + rect.width as i32 } else { rect.x };
+                context.draw_line(
+                    Point::new(x, rect.y),
+                    Point::new(x, rect.y + rect.height as i32),
+                    chrome.current_tab.contrast_color(),
+                );
+            }
+        }
+
+        // ── Overflow scroll buttons ──
+        if let Some((left, right)) = self.scroll_button_rects() {
+            let ink = chrome.text_color;
+            let side = left.width.min(left.height).min(12);
+            crate::widget::draw_icon_centered(context, left, side, ink, IconName::ChevronLeft);
+            crate::widget::draw_icon_centered(context, right, side, ink, IconName::ChevronRight);
         }
 
         // ── Keyboard focus ring ──
@@ -1962,5 +2286,126 @@ mod tests {
             "the hit floor must make the close button reachable beside its glyph"
         );
         assert_eq!(bar.current_index(), Some(1), "a close must not also select the tab");
+    }
+
+    /// Arrows move the selection, Delete requests a close, and clicks report their tab.
+    #[test]
+    fn the_keyboard_and_click_signal_are_wired() {
+        use crate::event::{key_codes, Event, EventHandler};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut bar = TabBar::new(Rect::new(0, 0, 300, 30));
+        bar.add_tab("One".to_string());
+        bar.add_tab("Two".to_string());
+        bar.add_tab("Three".to_string());
+        bar.set_current_index(0);
+        bar.set_closable(true);
+
+        let clicks = Arc::new(AtomicUsize::new(0));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&clicks);
+        let d = Arc::clone(&closes);
+        bar.tab_bar_clicked.connect(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        bar.tab_close_requested.connect(move |_| {
+            d.fetch_add(1, Ordering::SeqCst);
+        });
+
+        bar.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        assert_eq!(bar.current_index(), Some(1));
+        bar.handle_event(&Event::key_press(key_codes::END, 0));
+        assert_eq!(bar.current_index(), Some(2));
+        bar.handle_event(&Event::key_press(key_codes::LEFT, 0));
+        assert_eq!(bar.current_index(), Some(1));
+        bar.handle_event(&Event::key_press(key_codes::HOME, 0));
+        assert_eq!(bar.current_index(), Some(0));
+
+        bar.handle_event(&Event::key_press(key_codes::DELETE, 0));
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+
+        let rect = bar.tab_rect(1).expect("the tab has a box");
+        bar.handle_event(&Event::mouse_press(rect.x + 2, rect.y + 2, 1));
+        assert_eq!(clicks.load(Ordering::SeqCst), 1);
+    }
+
+    /// A drag reports its live target before the release commits the move.
+    #[test]
+    fn a_drag_reports_its_target_before_release() {
+        use crate::event::{Event, EventHandler};
+
+        let mut bar = TabBar::new(Rect::new(0, 0, 400, 30));
+        bar.add_tab("One".to_string());
+        bar.add_tab("Two".to_string());
+        bar.add_tab("Three".to_string());
+        bar.set_movable(true);
+
+        let first = bar.tab_rect(0).expect("tab 0 has a box");
+        let third = bar.tab_rect(2).expect("tab 2 has a box");
+        bar.handle_event(&Event::mouse_press(first.x + 2, first.y + 2, 1));
+        bar.handle_event(&Event::mouse_move(third.x + 2, third.y + 2));
+        assert_eq!(bar.drag_target(), Some(2), "the preview follows the pointer");
+        assert!(bar.is_dragging());
+        bar.handle_event(&Event::mouse_release(third.x + 2, third.y + 2, 1));
+        assert!(!bar.is_dragging());
+        assert_eq!(bar.drag_target(), None);
+        assert_eq!(bar.tab_text(2), Some("One"), "the release committed");
+    }
+
+    /// Scroll buttons are opt-in, appear only on overflow, and shift the run.
+    #[test]
+    fn scroll_buttons_shift_an_overflowing_strip() {
+        use crate::event::{Event, EventHandler};
+
+        let mut bar = TabBar::new(Rect::new(0, 0, 80, 30));
+        for index in 0..6 {
+            bar.add_tab(format!("Tab {index}"));
+        }
+        bar.set_tab_min_width(60);
+        assert!(bar.is_overflowing());
+        assert!(bar.scroll_button_rects().is_none(), "off by default");
+
+        bar.set_scroll_buttons(true);
+        let (_left, right) = bar.scroll_button_rects().expect("the buttons appear");
+        bar.handle_event(&Event::mouse_press(right.x + 2, right.y + 2, 1));
+        assert_eq!(bar.scroll_offset(), 1);
+        bar.handle_event(&Event::mouse_press(right.x + 2, right.y + 2, 1));
+        assert_eq!(bar.scroll_offset(), 2);
+        bar.set_scroll_buttons(false);
+        assert_eq!(bar.scroll_offset(), 0, "turning them off resets the run");
+    }
+
+    /// Expanding stretches the tabs; auto-hide hides a one-tab strip; the other
+    /// presentation options are opt-in.
+    #[test]
+    fn presentation_options_are_opt_in() {
+        use crate::event::{Event, EventHandler};
+
+        let mut bar = TabBar::new(Rect::new(0, 0, 300, 30));
+        bar.add_tab("One".to_string());
+        bar.add_tab("Two".to_string());
+        let natural = bar.tab_rect(0).expect("tab 0").width;
+        bar.set_expanding(true);
+        assert!(bar.tab_rect(0).expect("tab 0").width > natural, "expanding widens");
+        assert_eq!(bar.selection_behavior_on_remove(), SelectionBehaviorOnRemove::SelectPrevious);
+        bar.set_selection_behavior_on_remove(SelectionBehaviorOnRemove::SelectNext);
+        bar.set_current_index(0);
+        bar.remove_tab(0);
+        assert_eq!(bar.current_index(), Some(0), "SelectNext keeps the same slot");
+
+        assert_eq!(bar.elide_mode(), TabElideMode::Right);
+        bar.set_elide_mode(TabElideMode::None);
+        assert_eq!(bar.elide_mode(), TabElideMode::None);
+        assert_eq!(bar.style_variant(), TabBarStyle::Standard);
+        bar.set_style_variant(TabBarStyle::Segmented);
+        assert_eq!(bar.style_variant(), TabBarStyle::Segmented);
+
+        assert!(!bar.auto_hide());
+        bar.set_auto_hide(true);
+        assert!(bar.auto_hide());
+        // With one tab left, auto-hide ignores pointer input.
+        bar.handle_event(&Event::mouse_press(5, 5, 1));
+        assert_eq!(bar.current_index(), Some(0));
     }
 }

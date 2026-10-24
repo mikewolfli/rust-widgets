@@ -45,6 +45,22 @@ pub enum ToolButtonPopupMode {
     InstantPopup,
 }
 
+/// Which way the popup indicator arrow of a tool button points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolButtonArrowType {
+    /// A downward chevron, the historical indicator.
+    #[default]
+    Down,
+    /// An upward chevron.
+    Up,
+    /// A leftward chevron.
+    Left,
+    /// A rightward chevron.
+    Right,
+    /// No indicator; the whole button becomes the popup target.
+    None,
+}
+
 /// Tool button style.
 ///
 /// Selects which of the text and icon parts are painted, and how they are arranged when both are
@@ -113,6 +129,8 @@ pub struct ToolButton {
     checkable: bool,
     checked: bool,
     popup_mode: ToolButtonPopupMode,
+    /// Which direction the popup indicator points.
+    arrow_type: ToolButtonArrowType,
     button_style: ToolButtonStyle,
     auto_raise: bool,
     /// The rows of the menu this button owns. Empty means the button has no menu, and every
@@ -168,6 +186,7 @@ impl ToolButton {
             checkable: false,
             checked: false,
             popup_mode: ToolButtonPopupMode::DelayedPopup,
+            arrow_type: ToolButtonArrowType::Down,
             button_style: ToolButtonStyle::IconOnly,
             auto_raise: false,
             menu_items: Vec::new(),
@@ -374,6 +393,23 @@ impl ToolButton {
         self.base.request_redraw();
     }
 
+    /// Which way the popup indicator points.
+    pub fn arrow_type(&self) -> ToolButtonArrowType {
+        self.arrow_type
+    }
+
+    /// Sets the indicator's direction and requests a redraw.
+    ///
+    /// [`ToolButtonArrowType::None`] removes the indicator and gives its trailing strip back
+    /// to the label, which also makes the whole button the popup target.
+    pub fn set_arrow_type(&mut self, arrow: ToolButtonArrowType) {
+        if self.arrow_type == arrow {
+            return;
+        }
+        self.arrow_type = arrow;
+        self.base.request_redraw();
+    }
+
     /// Replaces the button's menu rows and requests a redraw.
     ///
     /// An empty list removes the menu: every popup mode then keeps the plain push-button
@@ -420,10 +456,11 @@ impl ToolButton {
 
     /// Whether this mode paints an indicator arrow and reserves room for it.
     fn popup_capable(&self) -> bool {
-        matches!(
-            self.popup_mode,
-            ToolButtonPopupMode::MenuButtonPopup | ToolButtonPopupMode::InstantPopup
-        )
+        self.arrow_type != ToolButtonArrowType::None
+            && matches!(
+                self.popup_mode,
+                ToolButtonPopupMode::MenuButtonPopup | ToolButtonPopupMode::InstantPopup
+            )
     }
 
     /// The trailing strip the indicator arrow occupies, or `None` when no arrow is drawn.
@@ -1116,12 +1153,18 @@ impl Draw for ToolButton {
             // bundled face, so the glyph drew as an 8x8 bitmap block), centred in the strip so it
             // reads on the button's middle line like the label.
             let side = dimensions::TOOL_BUTTON_POPUP_ARROW_RESERVE;
+            let chevron = match self.arrow_type {
+                ToolButtonArrowType::Down | ToolButtonArrowType::None => IconName::ChevronDown,
+                ToolButtonArrowType::Up => IconName::ChevronUp,
+                ToolButtonArrowType::Left => IconName::ChevronLeft,
+                ToolButtonArrowType::Right => IconName::ChevronRight,
+            };
             crate::widget::draw_icon_centered(
                 context,
                 arrow_box,
                 side.min(arrow_box.height),
                 fg,
-                IconName::ChevronDown,
+                chevron,
             );
         }
 
@@ -1151,7 +1194,7 @@ impl Draw for ToolButton {
 
 #[cfg(test)]
 mod tests {
-    use super::{ToolButton, ToolButtonPopupMode, ToolButtonStyle};
+    use super::{ToolButton, ToolButtonArrowType, ToolButtonPopupMode, ToolButtonStyle};
     use crate::core::{Color, Point, Rect, Size};
     use crate::event::Event;
     use crate::event::EventHandler;
@@ -1873,6 +1916,31 @@ mod tests {
             big_ink > base_ink,
             "a larger font must widen the painted label: {big_ink} vs {base_ink}"
         );
+    }
+
+    /// The indicator direction reaches the painter, and `None` frees its strip.
+    #[test]
+    fn the_popup_arrow_direction_is_configurable() {
+        let mut btn = ToolButton::new("More", rect());
+        btn.set_menu(two_rows());
+        btn.set_popup_mode(ToolButtonPopupMode::InstantPopup);
+        assert_eq!(btn.arrow_type(), ToolButtonArrowType::Down);
+        let down = btn.popup_arrow_rect().expect("the default indicator reserves a strip");
+        let down_svg = crate::widget::svg::render_to_svg(&mut btn);
+
+        btn.set_arrow_type(ToolButtonArrowType::Up);
+        let up_svg = crate::widget::svg::render_to_svg(&mut btn);
+        assert_ne!(down_svg, up_svg, "the direction must reach the painter");
+
+        btn.set_arrow_type(ToolButtonArrowType::None);
+        assert!(btn.popup_arrow_rect().is_none(), "no indicator, no strip");
+        let none_svg = crate::widget::svg::render_to_svg(&mut btn);
+        assert_ne!(up_svg, none_svg);
+        assert!(
+            btn.label_rect().is_some_and(|label| label.width > 0),
+            "the label keeps a box when the strip is gone"
+        );
+        let _ = down;
     }
 
     /// The smallest valid PNG: a 2x2 truecolour-with-alpha image whose first pixel is opaque red.

@@ -44,7 +44,7 @@ pub use carousel::{Carousel, WidgetAndDraw};
 #[cfg(widgets_unstripped)]
 pub use collapsible_pane::CollapsiblePane;
 #[cfg(widgets_unstripped)]
-pub use dockwidget::DockWidget;
+pub use dockwidget::{DockArea, DockWidget};
 pub use groupbox::GroupBox;
 #[cfg(full_widgets)]
 pub use layout_family::{

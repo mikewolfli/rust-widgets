@@ -32,6 +32,33 @@ pub trait PaintBackend {
     /// For a software backend this is what flushes any pending batched work;
     /// reading the surface before this point may see a partially drawn frame.
     fn end_frame(&mut self);
+    /// Reports `rect` as changed since the last present.
+    ///
+    /// A backend that can publish a region at a time implements this and
+    /// [`PaintBackend::present_damage`] together. The default is a no-op, so a backend that only
+    /// knows how to swap a whole frame stays correct: it simply publishes everything.
+    fn mark_damage(&mut self, _rect: Rect) {}
+    /// The damaged rectangles reported since the last present.
+    fn damage_regions(&self) -> &[(i32, i32, u32, u32)] {
+        &[]
+    }
+    /// Publishes only the reported damage.
+    ///
+    /// Returns `false` when the backend cannot publish a region (or nothing was reported), which
+    /// tells the caller to fall back to [`PaintBackend::end_frame`].
+    fn present_damage(&mut self) -> bool {
+        false
+    }
+    /// Drops every cached layer foreground held by the backend.
+    ///
+    /// Layer cache identities are caller-supplied, so a caller that reuses one for different
+    /// content must clear the cache. A backend with no layer cache ignores this.
+    fn clear_layer_cache(&mut self) {}
+    /// The number of cached layer foregrounds currently held (test observability).
+    #[cfg(test)]
+    fn cached_layer_count(&self) -> usize {
+        0
+    }
     /// Executes a single drawing command in the current frame.
     ///
     /// The command is applied in sequence, so ordering matters: a clip push
@@ -165,6 +192,15 @@ pub trait PaintBackend {
         SoftwareRenderConfig::default()
     }
 }
+// Test-only counter: paints that adopted an owned frame instead of copying one in. The saving is
+// the **absence** of a full-frame copy, which leaves no trace in the pixels, so the count is the
+// only way a regression test can observe the optimisation.
+#[cfg(test)]
+thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
+    static SEED_ADOPTIONS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
 /// Software implementation of the paint backend strategy.
 ///
 /// Rasterises commands into an in-memory [`SoftwareSurface`]. This is the
@@ -221,6 +257,51 @@ impl SoftwarePaintBackend {
         true
     }
 
+    /// Adopts `frame` as this backend's draw target instead of copying it in.
+    ///
+    /// # Why moving beats copying
+    ///
+    /// An incremental frame starts from the pixels the previous frame left and paints only the
+    /// damaged regions. Copying them in is a full-frame `memcpy` — 4 MB at 1280×800 — which costs
+    /// more than painting a control-sized damage region. When the caller owns the previous buffer
+    /// outright (the common case: it has already presented and dropped it), the buffer can simply
+    /// become the target.
+    ///
+    /// Returns `false` when `frame` is not the surface's size, which is the caller's cue to fall
+    /// back to [`Self::seed_from`].
+    pub fn seed_from_owned(&mut self, frame: crate::compat::Vec<u8>) -> bool {
+        if frame.len() != self.surface.buffer.back.len() {
+            return false;
+        }
+        self.surface.buffer.back = frame;
+        #[cfg(test)]
+        SEED_ADOPTIONS.with(|count| count.set(count.get() + 1));
+        true
+    }
+
+    /// Resets and returns the adoption counter.
+    ///
+    /// Test-only, and the observable the incremental-frame regression test asserts on: the saving
+    /// is the **absence** of a full-frame copy, and a copy leaves no other trace in the pixels.
+    #[cfg(all(test, widgets_unstripped))]
+    pub(crate) fn take_seed_adoptions() -> usize {
+        SEED_ADOPTIONS.with(|count| count.replace(0))
+    }
+
+    /// Drops every cached layer foreground held by this backend's surface.
+    ///
+    /// Cache identities are caller-supplied, so a caller that reuses an identity for different
+    /// content must clear the cache between uses. Resizing the surface also clears it.
+    pub fn clear_layer_cache(&mut self) {
+        self.surface.buffer.layer_cache.clear();
+    }
+
+    /// The number of cached layer foregrounds currently held.
+    #[cfg(test)]
+    pub(crate) fn cached_layer_count(&self) -> usize {
+        self.surface.buffer.layer_cache.len()
+    }
+
     /// Consumes the backend and returns the presented frame without copying it.
     ///
     /// # Why this is preferable to `frame_rgba().to_vec()`
@@ -239,6 +320,22 @@ impl PaintBackend for SoftwarePaintBackend {
     }
     fn end_frame(&mut self) {
         self.surface.end_frame();
+    }
+    fn mark_damage(&mut self, rect: Rect) {
+        self.surface.mark_damage(rect);
+    }
+    fn damage_regions(&self) -> &[(i32, i32, u32, u32)] {
+        self.surface.damage_regions()
+    }
+    fn present_damage(&mut self) -> bool {
+        self.surface.present_damage()
+    }
+    fn clear_layer_cache(&mut self) {
+        self.surface.buffer.layer_cache.clear();
+    }
+    #[cfg(test)]
+    fn cached_layer_count(&self) -> usize {
+        self.surface.buffer.layer_cache.len()
     }
     fn execute_command(&mut self, command: &RenderCommand) {
         route_command_to_surface(&mut self.surface, command);
@@ -375,6 +472,32 @@ fn take_gradient_owned_command_count() -> usize {
 /// through the surface alone. Both paths share this one function, so the command
 /// routing cannot drift between them.
 pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &RenderCommand) {
+    // A cache hit suppresses the enclosed commands, but their push/pop pairs still have to be
+    // counted so the matching `PopLayer` can be recognised. Only balancing commands are seen while
+    // suppressed; everything that would paint or change frame state is discarded.
+    if surface.buffer.suppress_depth > 0 {
+        match command {
+            RenderCommand::PushClip { .. }
+            | RenderCommand::PushLayer { .. }
+            | RenderCommand::PushLayerGroup { .. } => {
+                surface.buffer.suppress_depth += 1;
+                return;
+            }
+            RenderCommand::PopClip => {
+                surface.buffer.suppress_depth -= 1;
+                return;
+            }
+            RenderCommand::PopLayer => {
+                surface.buffer.suppress_depth -= 1;
+                if surface.buffer.suppress_depth > 0 {
+                    return;
+                }
+                // The outer cached layer's pop: fall through so `pop_layer` composites the cached
+                // foreground over the live backdrop.
+            }
+            _ => return,
+        }
+    }
     match command {
         RenderCommand::FillRect { rect, color } => surface.fill_rect(*rect, *color),
         #[cfg(feature = "3d")]
@@ -384,6 +507,8 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
             // item must keep its corners.
             surface.draw_path(&corners[..], true, *color, true, 0);
         }
+        #[cfg(feature = "3d")]
+        RenderCommand::FillQuadAA { corners, color } => surface.fill_quad_aa(*corners, *color),
         #[cfg(feature = "3d")]
         RenderCommand::StrokeQuad { corners, color, width } => {
             // Four connected edges, each drawn by the same line primitive a `DrawLineStroke`
@@ -452,6 +577,9 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
         }
         RenderCommand::PopClip => surface.pop_clip(),
         RenderCommand::PushLayer { bounds, effect } => push_layer(surface, *bounds, *effect),
+        RenderCommand::PushLayerGroup { bounds, effect, opacity, cache_key } => {
+            push_layer_group(surface, *bounds, *effect, *opacity, *cache_key)
+        }
         RenderCommand::PopLayer => pop_layer(surface),
         RenderCommand::DrawGradient { rect, gradient } => {
             surface.fill_rect_gradient(*rect, gradient);
@@ -513,21 +641,12 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
             box_blur_region(back, w, h, 0, 0, w, h, r);
         }
         RenderCommand::ClipPath { points } => {
-            // Approximate clip path: push bounding rect of points
-            if points.is_empty() {
-                return;
-            }
-            let min_x = points.iter().map(|p| p.x).min().unwrap();
-            let max_x = points.iter().map(|p| p.x).max().unwrap();
-            let min_y = points.iter().map(|p| p.y).min().unwrap();
-            let max_y = points.iter().map(|p| p.y).max().unwrap();
-            if min_x < max_x && min_y < max_y {
-                let cw = (max_x - min_x) as u32;
-                let ch = (max_y - min_y) as u32;
-                if cw > 0 && ch > 0 {
-                    surface.push_clip(min_x, min_y, cw, ch);
-                }
-            }
+            // Exact path clipping: the surface restricts drawing to the path's bounds and records a
+            // coverage mask plus the backdrop it covered. The mask is applied when the matching
+            // `PopClip` arrives, so every primitive between the two — geometry, glyphs, images,
+            // blurs — is clipped by the path rather than by its bounding box. A degenerate path
+            // pushes an empty region, which draws nothing instead of silently not clipping.
+            surface.push_path_clip(points);
         }
         RenderCommand::SetBlendMode { mode } => {
             // Frame state, like the clip stack: it applies to everything drawn until it changes.
@@ -613,25 +732,90 @@ fn push_layer(
     bounds: Rect,
     effect: Option<crate::render::core::command::LayerEffect>,
 ) {
+    begin_layer(surface, bounds, effect, 1.0, None);
+}
+
+/// Begins a layer with a subtree opacity and an optional replay cache.
+///
+/// See [`RenderCommand::PushLayerGroup`]: the opacity is applied to the layer's foreground as a
+/// whole, and the cache key is a caller assertion that the enclosed commands are unchanged.
+fn push_layer_group(
+    surface: &mut SoftwareSurface,
+    bounds: Rect,
+    effect: Option<crate::render::core::command::LayerEffect>,
+    opacity: f32,
+    cache_key: Option<u64>,
+) {
+    begin_layer(surface, bounds, effect, opacity, cache_key);
+}
+
+/// The shared implementation of both layer push forms.
+fn begin_layer(
+    surface: &mut SoftwareSurface,
+    bounds: Rect,
+    effect: Option<crate::render::core::command::LayerEffect>,
+    opacity: f32,
+    cache_key: Option<u64>,
+) {
+    let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
     surface.push_clip(bounds.x, bounds.y, bounds.width, bounds.height);
     let size = surface.size();
     let Some(rect) = clipped_region(surface.current_clip(), size) else {
         surface.buffer.layers.push(super::surface::LayerCapture {
             rect: (0, 0, 0, 0),
             effect,
-            backdrop: Vec::new(),
+            backdrop: crate::compat::Vec::new(),
+            isolated: false,
+            opacity,
+            cache_key,
+            cached_foreground: None,
         });
         return;
     };
-    let backdrop = match effect {
-        Some(_) => capture_region(surface.buffer.back_mut(), size.width as usize, rect),
-        None => Vec::new(),
+    // A plain layer with no effect and full opacity draws straight into the surface, so its pop
+    // has nothing to separate. Opacity or a cache key both need the foreground on its own.
+    let isolated = effect.is_some() || opacity < 1.0 || cache_key.is_some();
+    let cached_foreground = match cache_key {
+        Some(key) => surface
+            .buffer
+            .layer_cache
+            .iter()
+            .find(|(cached_key, entry)| {
+                *cached_key == key && entry.rect == rect && entry.opacity == opacity
+            })
+            .map(|(_, entry)| entry.foreground.clone()),
+        None => None,
     };
-    if effect.is_some() {
+    let backdrop = if isolated {
+        capture_region(surface.buffer.back_mut(), size.width as usize, rect)
+    } else {
+        crate::compat::Vec::new()
+    };
+    if isolated {
         clear_region(surface.buffer.back_mut(), size.width as usize, rect);
     }
-    surface.buffer.layers.push(super::surface::LayerCapture { rect, effect, backdrop });
+    if cached_foreground.is_some() {
+        // The caller asserted the enclosed commands are unchanged; discard them and reuse the
+        // previous frame's foreground.
+        surface.buffer.suppress_depth += 1;
+    }
+    surface.buffer.layers.push(super::surface::LayerCapture {
+        rect,
+        effect,
+        backdrop,
+        isolated,
+        opacity,
+        cache_key,
+        cached_foreground,
+    });
 }
+
+/// How many cached layer foregrounds a surface keeps.
+///
+/// A cache key is caller-defined and a screen has a bounded number of independently invalidated
+/// subtrees, so a small fixed ceiling is enough. When it is reached the oldest entry is dropped,
+/// which turns the next use of that key into a redraw rather than an unbounded memory growth.
+const LAYER_CACHE_CAPACITY: usize = 64;
 
 /// End the innermost layer, apply its effect to the captured backdrop, and composite the
 /// foreground over the result.
@@ -651,38 +835,87 @@ fn pop_layer(surface: &mut SoftwareSurface) {
         return;
     };
     surface.pop_clip();
-    let Some(effect) = layer.effect else {
+    if !layer.isolated {
         return;
-    };
+    }
     let (_, _, width, height) = layer.rect;
     if width == 0 || height == 0 {
         return;
     }
     let expected = width as usize * height as usize * 4;
+    let surface_width = surface.size().width as usize;
+    let was_cached = layer.cached_foreground.is_some();
+    let foreground = match layer.cached_foreground {
+        Some(foreground) if foreground.len() == expected => foreground,
+        _ => capture_region(surface.buffer.back_mut(), surface_width, layer.rect),
+    };
+    // Store the freshly drawn foreground for the next frame. A cached foreground is already in
+    // the cache, so storing it again would only churn the entry list.
+    if let Some(key) = layer.cache_key {
+        if !was_cached && foreground.len() == expected {
+            store_cached_layer(surface, key, layer.rect, layer.opacity, foreground.clone());
+        }
+    }
+    // A fully transparent subtree shows neither its foreground nor its backdrop effect, but the
+    // backdrop itself must come back: the layer cleared the region at push, and leaving it cleared
+    // would punch a transparent hole through everything behind the group.
+    if layer.opacity <= 0.0 {
+        if layer.backdrop.len() == expected {
+            restore_region(surface.buffer.back_mut(), surface_width, layer.rect, &layer.backdrop);
+        }
+        return;
+    }
     if layer.backdrop.len() != expected {
         return;
     }
     let mut backdrop = layer.backdrop;
-    // The same clamp `RenderCommand::Blur` applies: a radius beyond the kernel's useful reach
-    // only costs time, and the command's range is already a public, untrusted input.
-    let radius = effect.radius().min(100) as usize;
-    if radius > 0 {
-        box_blur_region(
-            &mut backdrop,
-            width as usize,
-            height as usize,
-            0,
-            0,
-            width as usize,
-            height as usize,
-            radius,
-        );
+    if let Some(effect) = layer.effect {
+        // The same clamp `RenderCommand::Blur` applies: a radius beyond the kernel's useful reach
+        // only costs time, and the command's range is already a public, untrusted input.
+        let radius = effect.radius().min(100) as usize;
+        if radius > 0 {
+            box_blur_region(
+                &mut backdrop,
+                width as usize,
+                height as usize,
+                0,
+                0,
+                width as usize,
+                height as usize,
+                radius,
+            );
+        }
+        if let Some((tint, weight)) = effect.tint() {
+            tint_region(&mut backdrop, tint, weight);
+        }
     }
-    if let Some((tint, weight)) = effect.tint() {
-        tint_region(&mut backdrop, tint, weight);
+    composite_foreground(
+        surface.buffer.back_mut(),
+        surface_width,
+        layer.rect,
+        &backdrop,
+        &foreground,
+        layer.opacity,
+    );
+}
+
+/// Inserts or replaces one cache entry, dropping the oldest when the cache is full.
+fn store_cached_layer(
+    surface: &mut SoftwareSurface,
+    key: u64,
+    rect: (i32, i32, u32, u32),
+    opacity: f32,
+    foreground: crate::compat::Vec<u8>,
+) {
+    let cache = &mut surface.buffer.layer_cache;
+    if let Some(slot) = cache.iter_mut().find(|(cached_key, _)| *cached_key == key) {
+        slot.1 = super::surface::CachedLayer { rect, opacity, foreground };
+        return;
     }
-    let surface_width = surface.size().width as usize;
-    composite_foreground(surface.buffer.back_mut(), surface_width, layer.rect, &backdrop);
+    if cache.len() >= LAYER_CACHE_CAPACITY {
+        cache.remove(0);
+    }
+    cache.push((key, super::surface::CachedLayer { rect, opacity, foreground }));
 }
 
 /// The part of `clip` that lies inside `size`, or `None` when there is no visible part.
@@ -702,7 +935,11 @@ fn clipped_region(clip: Option<(i32, i32, u32, u32)>, size: Size) -> Option<(i32
 }
 
 /// Copies a clipped region out of `back` into a tightly packed RGBA buffer.
-fn capture_region(back: &[u8], surface_width: usize, rect: (i32, i32, u32, u32)) -> Vec<u8> {
+fn capture_region(
+    back: &[u8],
+    surface_width: usize,
+    rect: (i32, i32, u32, u32),
+) -> crate::compat::Vec<u8> {
     let (x, y, width, height) = rect;
     let row_bytes = width as usize * 4;
     let mut out = vec![0u8; row_bytes * height as usize];
@@ -750,33 +987,35 @@ fn clear_region(back: &mut [u8], surface_width: usize, rect: (i32, i32, u32, u32
     }
 }
 
-/// Composites the layer's foreground (still in `back`) over `backdrop` and writes the result
-/// back into the same region.
+/// Composites a layer's foreground over `backdrop` and writes the result into the region.
 ///
-/// The foreground is copied out before the backdrop is written, because the two live in the
-/// same buffer: reading a pixel after its row was overwritten would composite the backdrop
-/// onto itself.
+/// The foreground is passed in rather than read back out of `back` so a cached foreground (from a
+/// previous frame) and a freshly drawn one go through exactly the same composition. `opacity`
+/// scales the foreground's own alpha, which is what makes a subtree fade as one unit: a child's
+/// antialiased edge and its semi-transparent background both keep their relative weights.
 fn composite_foreground(
     back: &mut [u8],
     surface_width: usize,
     rect: (i32, i32, u32, u32),
     backdrop: &[u8],
+    foreground: &[u8],
+    opacity: f32,
 ) {
-    let foreground = capture_region(back, surface_width, rect);
     restore_region(back, surface_width, rect, backdrop);
     let (x, y, width, height) = rect;
+    let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
     for row in 0..height as usize {
         for column in 0..width as usize {
             let index = (row * width as usize + column) * 4;
-            let color = Color::rgba(
-                foreground[index],
-                foreground[index + 1],
-                foreground[index + 2],
-                foreground[index + 3],
-            );
-            if color.a == 0 {
+            let Some(pixel) = foreground.get(index..index + 4) else { continue };
+            if pixel[3] == 0 {
                 continue;
             }
+            let alpha = (pixel[3] as f32 * opacity).round().clamp(0.0, 255.0) as u8;
+            if alpha == 0 {
+                continue;
+            }
+            let color = Color::rgba(pixel[0], pixel[1], pixel[2], alpha);
             blend_pixel_with_mode(
                 back,
                 surface_width as u32,
@@ -1959,5 +2198,174 @@ mod tests {
             red > 0 && blue > 0,
             "the seam must be a blend of both halves regardless of the 3d feature: {red}, {blue}"
         );
+    }
+
+    /// A layer group's opacity fades the whole subtree, not each primitive separately.
+    ///
+    /// The group paints an opaque red fill over a white backdrop at 50% opacity. Compositing the
+    /// subtree as one unit leaves the red channel at full strength (both colours agree there) and
+    /// mixes the green and blue channels halfway, which per-primitive blending could not do.
+    #[test]
+    fn a_layer_group_applies_its_opacity_to_the_subtree() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(4, 4), 1.0);
+        backend.begin_frame(Color::WHITE);
+        backend.execute_command(&RenderCommand::PushLayerGroup {
+            bounds: Rect::new(0, 0, 4, 4),
+            effect: None,
+            opacity: 0.5,
+            cache_key: None,
+        });
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 4, 4),
+            color: Color::RED,
+        });
+        backend.execute_command(&RenderCommand::PopLayer);
+        backend.end_frame();
+
+        let frame = backend.frame_rgba();
+        assert_eq!(
+            &frame[..4],
+            &[255, 127, 127, 255],
+            "the group is halfway between red and white"
+        );
+    }
+
+    /// A fully transparent layer must not clear its region.
+    ///
+    /// The layer isolates its foreground by clearing the backdrop at push. At zero opacity the
+    /// composite is a no-op, so the backdrop has to be restored — otherwise the group would be a
+    /// transparent hole through the surface.
+    #[test]
+    fn a_fully_transparent_layer_keeps_its_backdrop() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(4, 4), 1.0);
+        backend.begin_frame(Color::WHITE);
+        backend.execute_command(&RenderCommand::PushLayerGroup {
+            bounds: Rect::new(0, 0, 4, 4),
+            effect: None,
+            opacity: 0.0,
+            cache_key: None,
+        });
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 4, 4),
+            color: Color::RED,
+        });
+        backend.execute_command(&RenderCommand::PopLayer);
+        backend.end_frame();
+        assert_eq!(
+            &backend.frame_rgba()[..4],
+            &[255, 255, 255, 255],
+            "an invisible group must leave the backdrop exactly as it was"
+        );
+    }
+
+    /// A cache hit reuses the previous frame's foreground instead of replaying the subtree.
+    ///
+    /// Frame two draws a blue rectangle into the *same* cached group; the blue must not appear,
+    /// because the cache hit discards the enclosed commands. Frame three changes the key, which
+    /// is the documented way to say "the content changed", and the blue must appear.
+    #[test]
+    fn a_cached_layer_reuses_its_foreground_until_the_key_changes() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(4, 4), 1.0);
+        let group = |cache_key: u64| RenderCommand::PushLayerGroup {
+            bounds: Rect::new(0, 0, 4, 4),
+            effect: None,
+            opacity: 1.0,
+            cache_key: Some(cache_key),
+        };
+
+        backend.begin_frame(Color::WHITE);
+        backend.execute_command(&group(7));
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 4, 4),
+            color: Color::RED,
+        });
+        backend.execute_command(&RenderCommand::PopLayer);
+        backend.end_frame();
+        assert_eq!(backend.cached_layer_count(), 1, "the first frame fills the cache");
+
+        backend.begin_frame(Color::WHITE);
+        backend.execute_command(&group(7));
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 4, 4),
+            color: Color::BLUE,
+        });
+        backend.execute_command(&RenderCommand::PopLayer);
+        backend.end_frame();
+        assert_eq!(
+            &backend.frame_rgba()[..4],
+            &[255, 0, 0, 255],
+            "the cached red foreground must replace the suppressed blue fill"
+        );
+
+        backend.begin_frame(Color::WHITE);
+        backend.execute_command(&group(8));
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 4, 4),
+            color: Color::BLUE,
+        });
+        backend.execute_command(&RenderCommand::PopLayer);
+        backend.end_frame();
+        assert_eq!(
+            &backend.frame_rgba()[..4],
+            &[0, 0, 255, 255],
+            "a new key must redraw the subtree"
+        );
+    }
+
+    /// An opacity change invalidates a cache entry with the same key.
+    #[test]
+    fn changing_a_cached_layer_opacity_redraws_it() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(2, 2), 1.0);
+        let group = |opacity: f32| RenderCommand::PushLayerGroup {
+            bounds: Rect::new(0, 0, 2, 2),
+            effect: None,
+            opacity,
+            cache_key: Some(3),
+        };
+        backend.begin_frame(Color::WHITE);
+        backend.execute_command(&group(1.0));
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 2, 2),
+            color: Color::RED,
+        });
+        backend.execute_command(&RenderCommand::PopLayer);
+        backend.end_frame();
+
+        backend.begin_frame(Color::WHITE);
+        backend.execute_command(&group(0.5));
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 2, 2),
+            color: Color::BLUE,
+        });
+        backend.execute_command(&RenderCommand::PopLayer);
+        backend.end_frame();
+        assert_eq!(
+            &backend.frame_rgba()[..4],
+            &[127, 127, 255, 255],
+            "the new opacity must be applied to the newly drawn foreground"
+        );
+    }
+
+    /// Clearing the layer cache forces the next frame to redraw.
+    #[test]
+    fn clearing_the_layer_cache_forces_a_redraw() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(2, 2), 1.0);
+        let group = RenderCommand::PushLayerGroup {
+            bounds: Rect::new(0, 0, 2, 2),
+            effect: None,
+            opacity: 1.0,
+            cache_key: Some(11),
+        };
+        backend.begin_frame(Color::WHITE);
+        backend.execute_command(&group);
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 2, 2),
+            color: Color::RED,
+        });
+        backend.execute_command(&RenderCommand::PopLayer);
+        backend.end_frame();
+        assert_eq!(backend.cached_layer_count(), 1);
+        backend.clear_layer_cache();
+        assert_eq!(backend.cached_layer_count(), 0);
     }
 }

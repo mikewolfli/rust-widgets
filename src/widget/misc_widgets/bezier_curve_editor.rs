@@ -48,6 +48,8 @@ pub struct BezierCurveEditor {
     /// answers whether the *pointer is over the control*; only this answers which handle
     /// it is over, and the two are not the same fact.
     hovered_handle: Option<DragTarget>,
+    /// Whether the two handles are kept mirrored through the curve's midpoint.
+    symmetric_handles: bool,
     /// Emitted when the curve changes. Passes (control_point1, control_point2).
     pub curve_changed: Signal1<((f32, f32), (f32, f32))>,
 }
@@ -72,6 +74,7 @@ impl BezierCurveEditor {
             snap_to_grid: false,
             dragging: None,
             hovered_handle: None,
+            symmetric_handles: false,
             curve_changed: Signal1::new(),
         }
     }
@@ -82,10 +85,16 @@ impl BezierCurveEditor {
     }
 
     /// Sets the first control point with values clamped to 0.0–1.0.
+    ///
+    /// While [`Self::symmetric_handles`] is set, the second point is mirrored through the
+    /// curve's midpoint, so the curve keeps its S shape instead of bending towards one side.
     pub fn set_control_point1(&mut self, x: f32, y: f32) {
-        let old = self.control_point1;
+        let old = (self.control_point1, self.control_point2);
         self.control_point1 = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
-        if self.control_point1 != old {
+        if self.symmetric_handles {
+            self.control_point2 = (1.0 - self.control_point1.0, 1.0 - self.control_point1.1);
+        }
+        if (self.control_point1, self.control_point2) != old {
             self.emit_curve_changed();
             self.base.request_redraw();
         }
@@ -97,13 +106,40 @@ impl BezierCurveEditor {
     }
 
     /// Sets the second control point with values clamped to 0.0–1.0.
+    ///
+    /// While [`Self::symmetric_handles`] is set, the first point is mirrored through the
+    /// curve's midpoint.
     pub fn set_control_point2(&mut self, x: f32, y: f32) {
-        let old = self.control_point2;
+        let old = (self.control_point1, self.control_point2);
         self.control_point2 = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
-        if self.control_point2 != old {
+        if self.symmetric_handles {
+            self.control_point1 = (1.0 - self.control_point2.0, 1.0 - self.control_point2.1);
+        }
+        if (self.control_point1, self.control_point2) != old {
             self.emit_curve_changed();
             self.base.request_redraw();
         }
+    }
+
+    /// Enables or disables mirrored control handles.
+    ///
+    /// Symmetry is opt-in: an editor for an asymmetric easing curve must be able to place
+    /// the two handles independently, which is why the default leaves them free.
+    pub fn set_symmetric_handles(&mut self, symmetric: bool) {
+        if self.symmetric_handles == symmetric {
+            return;
+        }
+        self.symmetric_handles = symmetric;
+        if symmetric {
+            self.control_point2 = (1.0 - self.control_point1.0, 1.0 - self.control_point1.1);
+            self.emit_curve_changed();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the handles are kept mirrored.
+    pub fn symmetric_handles(&self) -> bool {
+        self.symmetric_handles
     }
 
     /// Sets whether the background grid is drawn.

@@ -22,6 +22,38 @@ use crate::widget::text_utils::elide_to_width;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// A segment's content: a caption and an optional icon name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CupertinoSegment {
+    /// The caption shown in the segment.
+    pub label: String,
+    /// An optional icon name, resolved as a bundled glyph when one matches.
+    pub icon: Option<String>,
+}
+
+impl CupertinoSegment {
+    /// A segment with a caption and no icon.
+    pub fn new(label: impl Into<String>) -> Self {
+        Self { label: label.into(), icon: None }
+    }
+
+    /// The same segment with an icon name attached.
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+}
+
+/// How the selected segment is painted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SegmentTint {
+    /// A white thumb on the grey track, which is the iOS 13+ appearance and the default.
+    #[default]
+    WhiteThumb,
+    /// The theme's accent colour, which is the older Material-flavoured appearance.
+    Accent,
+}
+
 /// iOS-style segmented control.
 ///
 /// Displays a pill-shaped container with horizontally arranged text segments.
@@ -46,6 +78,10 @@ pub struct CupertinoSegmentedControl {
     slide: PropertyDriver,
     /// The segment the current slide started from, so `slide`'s fraction has a left endpoint.
     slide_from: usize,
+    /// Per-segment icon names, parallel to `segments`.
+    segment_icons: Vec<Option<String>>,
+    /// How the selected segment is painted.
+    tint: SegmentTint,
     /// Emitted when the selected segment changes with the new index.
     pub value_changed: Signal1<usize>,
 }
@@ -65,6 +101,8 @@ impl CupertinoSegmentedControl {
             // At rest on segment 0: `slide == 1.0` means "arrived", not "just left".
             slide: PropertyDriver::at(1.0, MotionSlot::Normal),
             slide_from: 0,
+            segment_icons: Vec::new(),
+            tint: SegmentTint::WhiteThumb,
             value_changed: Signal1::new(),
         }
     }
@@ -72,6 +110,8 @@ impl CupertinoSegmentedControl {
     /// Sets the segment labels, replacing all existing segments.
     /// Resets selection to 0 if the new list is non-empty.
     pub fn set_segments(&mut self, segments: Vec<String>) {
+        self.segment_icons.clear();
+        self.segment_icons.resize(segments.len(), None);
         self.segments = segments;
         if self.selected_index >= self.segments.len().max(1) {
             self.selected_index = if self.segments.is_empty() {
@@ -84,6 +124,41 @@ impl CupertinoSegmentedControl {
         // segment it is on rather than animating out of the old set.
         self.slide_from = self.selected_index;
         self.slide.jump_to(1.0);
+        self.base.request_redraw();
+    }
+
+    /// Replaces the segments with caption + optional icon items.
+    pub fn set_segment_items(&mut self, segments: Vec<CupertinoSegment>) {
+        self.segments = segments.iter().map(|segment| segment.label.clone()).collect();
+        self.segment_icons = segments.into_iter().map(|segment| segment.icon).collect();
+        if self.selected_index >= self.segments.len().max(1) {
+            self.selected_index = if self.segments.is_empty() {
+                0
+            } else {
+                self.selected_index.min(self.segments.len() - 1)
+            };
+        }
+        self.slide_from = self.selected_index;
+        self.slide.jump_to(1.0);
+        self.base.request_redraw();
+    }
+
+    /// Returns the icon name of segment `index`.
+    pub fn segment_icon(&self, index: usize) -> Option<&str> {
+        self.segment_icons.get(index).and_then(|icon| icon.as_deref())
+    }
+
+    /// Returns how the selected segment is painted.
+    pub fn tint(&self) -> SegmentTint {
+        self.tint
+    }
+
+    /// Sets how the selected segment is painted.
+    pub fn set_tint(&mut self, tint: SegmentTint) {
+        if self.tint == tint {
+            return;
+        }
+        self.tint = tint;
         self.base.request_redraw();
     }
 
@@ -342,8 +417,14 @@ impl Draw for CupertinoSegmentedControl {
         // The accent marks the selection and is contrast-checked against the track so the
         // selected label stays legible on either appearance. A caller's explicit text colour
         // still wins.
-        let selected_bg = primary.contrast_color().blend(&primary, 0.30);
-        let highlight_color = style.text_color.unwrap_or(selected_bg);
+        let selected_bg = match self.tint {
+            SegmentTint::WhiteThumb => Color::WHITE,
+            SegmentTint::Accent => primary.contrast_color().blend(&primary, 0.30),
+        };
+        let highlight_color = match self.tint {
+            SegmentTint::WhiteThumb => selected_bg,
+            SegmentTint::Accent => style.text_color.unwrap_or(selected_bg),
+        };
         let indicator_color = if self.base.is_enabled() {
             highlight_color
         } else {
@@ -370,23 +451,9 @@ impl Draw for CupertinoSegmentedControl {
         let unselected = ink.blend(&track_color, 0.45);
         for (i, seg) in self.segments.iter().enumerate() {
             let seg_x = track_rect.x + (i as i32) * seg_w;
-            // A label wider than its segment is elided rather than painted over its
-            // neighbours. The shared primitive owns the budget and is measured with the
-            // renderer's own callback, so the fitting decision and the painted advance come
-            // from one metric; a label that fits is borrowed and keeps its old origin, which
-            // the fitted draw's own inset would have shifted.
-            let label = fitted_segment_label(seg, seg_w, &mut |text: &str| {
-                context.measure_text(text, &font).width
-            });
-            let metrics = context.measure_text(&label, &font);
-            let text_x = seg_x + (seg_w - metrics.width as i32) / 2;
-            // Centre the label in its segment. The origin is the glyph box's top edge, so the
-            // offset is half the *line box*; the old ascent/descent pair began the glyph box
-            // half a line below the segment's middle.
-            let text_y = track_rect.y + (track_rect.height as i32 - metrics.height as i32) / 2;
-            // The label must contrast with what it is painted on — the accent highlight for
-            // the selected segment, the track for the rest — so the two are chosen against
-            // their own backdrop instead of both assuming a light one.
+            // The label must contrast with what it is painted on — the selected thumb for the
+            // selected segment, the track for the rest — so the two are chosen against their
+            // own backdrop instead of both assuming a light one.
             let color = if !self.base.is_enabled() {
                 self.base.disabled_ink_on(unselected, track_color)
             } else if i == self.selected_index {
@@ -394,6 +461,37 @@ impl Draw for CupertinoSegmentedControl {
             } else {
                 unselected
             };
+            // A segment may carry an icon, drawn in the leading half of its own box and
+            // resolved through the same named-icon path every other control uses.
+            let mut text_origin = seg_x;
+            let mut text_width = seg_w;
+            if let Some(icon) = self.segment_icons.get(i).and_then(|icon| icon.as_deref()) {
+                let side = 14.min(track_rect.height.saturating_sub(8)).max(1);
+                let icon_rect = Rect::new(
+                    seg_x + 4,
+                    track_rect.y + (track_rect.height as i32 - side as i32) / 2,
+                    side,
+                    side,
+                );
+                if crate::widget::draw_icon_named(context, icon_rect, color, icon) {
+                    text_origin += side as i32 + 4;
+                    text_width = text_width.saturating_sub((side + 8) as i32);
+                }
+            }
+            // A label wider than its segment is elided rather than painted over its
+            // neighbours. The shared primitive owns the budget and is measured with the
+            // renderer's own callback, so the fitting decision and the painted advance come
+            // from one metric; a label that fits is borrowed and keeps its old origin, which
+            // the fitted draw's own inset would have shifted.
+            let label = fitted_segment_label(seg, text_width, &mut |text: &str| {
+                context.measure_text(text, &font).width
+            });
+            let metrics = context.measure_text(&label, &font);
+            let text_x = text_origin + (text_width - metrics.width as i32) / 2;
+            // Centre the label in its segment. The origin is the glyph box's top edge, so the
+            // offset is half the *line box*; the old ascent/descent pair began the glyph box
+            // half a line below the segment's middle.
+            let text_y = track_rect.y + (track_rect.height as i32 - metrics.height as i32) / 2;
             context.draw_text(
                 Point::new(text_x, text_y),
                 &label,
@@ -707,5 +805,26 @@ mod tests {
             fitted_segment_label("Day", 64, &mut measure),
             crate::compat::Cow::Borrowed("Day")
         ));
+    }
+
+    #[test]
+    fn the_selected_thumb_is_white_by_default_and_accent_on_request() {
+        let mut control = CupertinoSegmentedControl::new(Rect::new(0, 0, 300, 32));
+        control.set_segments(vec!["One".to_string(), "Two".to_string()]);
+        assert_eq!(control.tint(), SegmentTint::WhiteThumb);
+        control.set_tint(SegmentTint::Accent);
+        assert_eq!(control.tint(), SegmentTint::Accent);
+    }
+
+    #[test]
+    fn a_segment_can_carry_an_icon() {
+        let mut control = CupertinoSegmentedControl::new(Rect::new(0, 0, 300, 32));
+        control.set_segment_items(vec![
+            CupertinoSegment::new("Grid").with_icon("grid"),
+            CupertinoSegment::new("List"),
+        ]);
+        assert_eq!(control.segment_icon(0), Some("grid"));
+        assert_eq!(control.segment_icon(1), None);
+        assert_eq!(control.segments(), ["Grid".to_string(), "List".to_string()]);
     }
 }

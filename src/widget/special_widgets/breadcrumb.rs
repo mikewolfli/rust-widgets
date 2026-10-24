@@ -11,7 +11,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Single breadcrumb segment.
@@ -78,8 +78,16 @@ pub struct Breadcrumb {
     selected_index: Option<usize>,
     segment_padding: i32,
     separator_width: i32,
+    /// Whether the host wants the path in editable form.
+    editing: bool,
+    /// The text being edited while [`Self::editing`] is set.
+    edit_buffer: String,
     /// Emitted when a segment is activated. Payload is segment id.
     pub segment_activated: Signal1<String>,
+    /// Emitted with the segment id when a context menu is requested over one.
+    pub context_menu_requested: Signal1<String>,
+    /// Emitted with the typed path when an edit is committed.
+    pub path_edited: Signal1<String>,
 }
 
 impl Breadcrumb {
@@ -91,8 +99,95 @@ impl Breadcrumb {
             selected_index: None,
             segment_padding: 8,
             separator_width: 14,
+            editing: false,
+            edit_buffer: String::new(),
             segment_activated: Signal1::new(),
+            context_menu_requested: Signal1::new(),
+            path_edited: Signal1::new(),
         }
+    }
+
+    /// Starts or stops path editing.
+    ///
+    /// While editing, the trail is replaced by the editable text so the user can retype the
+    /// whole path. Committing emits `path_edited` with the typed string; the host owns the
+    /// parsing because only it knows the path separator convention for its own paths.
+    pub fn set_editing(&mut self, editing: bool) {
+        if self.editing == editing {
+            return;
+        }
+        self.editing = editing;
+        if editing {
+            self.edit_buffer = self
+                .segments
+                .iter()
+                .map(|segment| segment.label.as_str())
+                .collect::<Vec<_>>()
+                .join("/");
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the path is in editable form.
+    pub fn is_editing(&self) -> bool {
+        self.editing
+    }
+
+    /// Returns the text currently held by the path editor.
+    pub fn editing_text(&self) -> &str {
+        &self.edit_buffer
+    }
+
+    /// Commits the edited path, publishing it and leaving edit mode.
+    pub fn commit_path_edit(&mut self) {
+        if !self.editing {
+            return;
+        }
+        let text = self.edit_buffer.clone();
+        self.editing = false;
+        self.path_edited.emit(text);
+        self.base.request_redraw();
+    }
+
+    /// Cancels the edit, discarding the typed text.
+    pub fn cancel_path_edit(&mut self) {
+        if !self.editing {
+            return;
+        }
+        self.editing = false;
+        self.edit_buffer.clear();
+        self.base.request_redraw();
+    }
+
+    /// The display slots the trail renders: a segment index, or `None` for the collapsed
+    /// middle marker.
+    ///
+    /// When the whole path fits it is laid out one slot per segment. When it does not, the
+    /// first and last segments are kept and everything between them becomes one `…` marker —
+    /// the convention a file browser uses, and the only way to keep both the root and the
+    /// current location visible. The previous layout dropped every segment past the right
+    /// edge instead, so the *current* segment — the one that matters — disappeared first.
+    fn display_slots(&self) -> Vec<(Option<usize>, i32)> {
+        let band_width = self.band().width as i32;
+        let all: Vec<(Option<usize>, i32)> = self
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(index, segment)| {
+                (Some(index), self.segment_width(segment, self.segment_padding).max(1))
+            })
+            .collect();
+        let total: i32 = all.iter().map(|(_, width)| *width).sum::<i32>()
+            + self.separator_width * all.len().saturating_sub(1) as i32;
+        if total <= band_width || self.segments.len() <= 2 {
+            return all;
+        }
+        let font = effective_font(self.style());
+        let marker =
+            (estimate_text_width("…", font, 1.0) as i32 + self.segment_padding * 2).max(16);
+        let first = all.first().copied().unwrap_or((None, 0));
+        let last = all.last().copied().unwrap_or((None, 0));
+        vec![first, (None, marker), last]
     }
 
     /// Replaces full segment path.
@@ -210,24 +305,22 @@ impl Breadcrumb {
         }
         let band = self.band();
         let band_right = band.x + band.width as i32;
+        let slots = self.display_slots();
         let mut x = band.x;
 
-        for (i, segment) in self.segments.iter().enumerate() {
+        for (position, (slot, width)) in slots.iter().enumerate() {
             if x >= band_right {
                 break;
             }
-            let width = self.segment_width(segment, self.segment_padding).max(1);
-            if i == index {
-                let visible_width = width.min(band_right - x).max(0) as u32;
+            let visible_width = (*width).min(band_right - x).max(0) as u32;
+            if *slot == Some(index) {
                 if visible_width == 0 {
                     return None;
                 }
                 return Some(Rect::new(x, band.y, visible_width, band.height));
             }
             x += width;
-            // The separator belongs to the gap *between* segments, so it is reserved only when
-            // another segment follows — the rule the paint and the hit test now both use.
-            if i + 1 < self.segments.len() {
+            if position + 1 < slots.len() {
                 x += self.separator_width;
             }
         }
@@ -271,6 +364,18 @@ impl Widget for Breadcrumb {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 28)
+    }
+
+    /// Reports the segment under the pointer to the host's context menu.
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        let Some(index) = self.hit_index(pos) else {
+            return false;
+        };
+        let Some(segment) = self.segments.get(index) else {
+            return false;
+        };
+        self.context_menu_requested.emit(segment.id.clone());
+        true
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -379,6 +484,26 @@ impl EventHandler for Breadcrumb {
             return;
         }
 
+        if self.editing {
+            match event {
+                Event::TextInput { text } | Event::ImeCommit { text } => {
+                    self.edit_buffer.push_str(text);
+                    self.base.request_redraw();
+                }
+                Event::KeyPress { key, .. } => match *key {
+                    8 => {
+                        self.edit_buffer.pop();
+                        self.base.request_redraw();
+                    }
+                    13 => self.commit_path_edit(),
+                    27 => self.cancel_path_edit(),
+                    _ => {}
+                },
+                _ => {}
+            }
+            return;
+        }
+
         match event {
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.hit_index(*pos) {
@@ -391,12 +516,22 @@ impl EventHandler for Breadcrumb {
                     let _ = self.activate_selected();
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
+            Event::ContextMenu { pos } => {
+                // The host owns the menu; this signal tells it which segment was asked about.
+                if let Some(index) = self.hit_index(*pos) {
+                    if let Some(segment) = self.segments.get(index) {
+                        self.context_menu_requested.emit(segment.id.clone());
+                    }
+                }
+            }
+            Event::KeyPress { key, modifiers } => match *key {
                 37 => self.move_selection(-1),
                 39 => self.move_selection(1),
                 13 => {
                     let _ = self.activate_selected();
                 }
+                113 | 2 => self.set_editing(true),
+                27 if *modifiers == 0 => self.set_editing(false),
                 _ => { /* Other keys are not relevant */ }
             },
             _ => { /* Other events are not relevant */ }
@@ -455,7 +590,68 @@ impl Draw for Breadcrumb {
         context.fill_rect(band, background);
         context.draw_rect(band, border);
 
-        for (index, segment) in self.segments.iter().enumerate() {
+        if self.editing {
+            // The editor replaces the trail while it is open. The text is shown with the same
+            // fitted primitive the segments use, so a long path elides instead of escaping the
+            // control, and a caret marks the insertion point.
+            let font = effective_font(style);
+            let line = context.text_line(band, font);
+            let inner = Rect::new(
+                band.x + self.segment_padding,
+                line.y,
+                band.width.saturating_sub(self.segment_padding as u32 + 2),
+                line.height,
+            );
+            let fitted = context.draw_text_fitted_cow(
+                inner,
+                &self.edit_buffer,
+                font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
+            let caret_x = inner.x + context.measure_text(fitted.as_ref(), font).width as i32 + 1;
+            context.draw_line_stroke(
+                Point::new(caret_x, inner.y),
+                Point::new(caret_x, inner.y + inner.height as i32),
+                text_color,
+                1,
+            );
+            return;
+        }
+
+        for (position, (slot, width)) in self.display_slots().iter().enumerate() {
+            let Some(index) = *slot else {
+                // Collapsed middle: one marker standing in for the hidden segments.
+                let rect = Rect::new(
+                    {
+                        let mut x = band.x;
+                        for (earlier, (_, earlier_width)) in
+                            self.display_slots().iter().enumerate().take(position)
+                        {
+                            x += earlier_width;
+                            if earlier + 1 < self.display_slots().len() {
+                                x += self.separator_width;
+                            }
+                        }
+                        x
+                    },
+                    band.y,
+                    *width as u32,
+                    band.height,
+                );
+                let line = context.text_line(rect, effective_font(style));
+                context.draw_text_fitted_cow(
+                    Rect::new(rect.x, line.y, rect.width, line.height),
+                    "…",
+                    effective_font(style),
+                    separator_color,
+                    HorizontalAlignment::Center,
+                );
+                continue;
+            };
+            let Some(segment) = self.segments.get(index) else {
+                continue;
+            };
             let Some(segment_rect) = self.segment_rect_at(index) else {
                 continue;
             };
@@ -489,16 +685,24 @@ impl Draw for Breadcrumb {
             );
 
             // The separator sits in the gap after the segment, and only exists when another
-            // segment follows it inside the band.
+            // slot follows it inside the band. A vector chevron reads as a path separator at
+            // any text scale; the `>` glyph it replaces changed weight and baseline with the
+            // theme's font.
             let gap_x = segment_rect.x + segment_rect.width as i32;
-            let next = self.segments.get(index + 1);
-            if next.is_some() && gap_x + self.separator_width <= band.x + band.width as i32 {
-                context.draw_text(
-                    Point::new(gap_x + 3, line.y),
-                    ">",
-                    effective_font(style),
+            let has_next = position + 1 < self.display_slots().len();
+            if has_next && gap_x + self.separator_width <= band.x + band.width as i32 {
+                let side = 10u32.min(band.height.max(1));
+                let icon_rect = Rect::new(
+                    gap_x + (self.separator_width - side as i32) / 2,
+                    band.y + (band.height.saturating_sub(side) / 2) as i32,
+                    side,
+                    side,
+                );
+                crate::widget::draw_icon_at(
+                    context,
+                    icon_rect,
                     separator_color,
-                    HorizontalAlignment::Left,
+                    IconName::ChevronRight,
                 );
             }
         }
@@ -742,5 +946,51 @@ mod tests {
             next.x >= seg.x + seg.width as i32 + breadcrumb.separator_width,
             "the next segment must clear the first segment and its separator"
         );
+    }
+
+    #[test]
+    fn an_overflowing_path_keeps_both_ends_and_folds_the_middle() {
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 140, 28));
+        breadcrumb.set_segments(vec![
+            BreadcrumbSegment::new("root", "Root"),
+            BreadcrumbSegment::new("middle", "A long middle directory"),
+            BreadcrumbSegment::new("leaf", "Leaf"),
+        ]);
+        let slots = breadcrumb.display_slots();
+        assert_eq!(slots.len(), 3, "first, marker and last");
+        assert_eq!(slots[0].0, Some(0));
+        assert_eq!(slots[1].0, None, "the middle collapses to a marker");
+        assert_eq!(slots[2].0, Some(2));
+    }
+
+    #[test]
+    fn path_editing_commits_the_typed_text() {
+        use std::sync::{Arc, Mutex};
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 320, 28));
+        breadcrumb.set_segments(sample_segments());
+        let emitted = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&emitted);
+        breadcrumb.path_edited.connect(move |text| sink.lock().unwrap().push(text.to_string()));
+        breadcrumb.set_editing(true);
+        assert_eq!(breadcrumb.editing_text(), "Root/Project/src");
+        breadcrumb.handle_event(&Event::TextInput { text: "/x".to_string() });
+        breadcrumb.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert!(!breadcrumb.is_editing());
+        assert_eq!(*emitted.lock().unwrap(), vec!["Root/Project/src/x".to_string()]);
+    }
+
+    #[test]
+    fn a_context_menu_names_the_segment_under_the_pointer() {
+        use std::sync::{Arc, Mutex};
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 320, 28));
+        breadcrumb.set_segments(sample_segments());
+        let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&asked);
+        breadcrumb
+            .context_menu_requested
+            .connect(move |id| sink.lock().unwrap().push(id.to_string()));
+        let rect = breadcrumb.segment_rect_at(1).expect("the second segment is laid out");
+        assert!(breadcrumb.context_menu_event(Point::new(rect.x + 2, rect.y + 2)));
+        assert_eq!(*asked.lock().unwrap(), vec!["project".to_string()]);
     }
 }

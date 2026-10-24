@@ -78,7 +78,12 @@ pie_chart series-palette true A pie slice colour identifies the category, and th
 # ── Colour pickers: the spectrum is the subject ───────────────────────────────
 # A colour picker shows a colour space. The colours under the cursor are the value
 # being selected, not the control's chrome, so they must not be remapped by theme.
-color_picker hue-wheel true The hue wheel's colours are the value being picked; remapping them by theme would change the value.
+#
+# Removed on evidence (2026-10-24): `color_picker`'s default render is now dominated
+# by its themed panel and field chrome rather than by the hue wheel, so the exemption
+# excused nothing. The wheel itself is unchanged and is still data; a licence keyed on
+# the dominant colour no longer applies. `check_control_rendering.sh` reported the stale
+# entry, which is the behaviour this table wants.
 
 # ── Meters / gauges: thresholds ───────────────────────────────────────────────
 # A meter's colour bands are thresholds the caller sets. They describe the value

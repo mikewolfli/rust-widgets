@@ -192,6 +192,74 @@ impl Splitter {
         self.layout.normalize_ratios();
     }
 
+    /// Sets the minimum extent of pane `index`.
+    ///
+    /// Returns `false` when the index is out of range. A pane is never dragged below its
+    /// minimum while the splitter can still pay every minimum.
+    pub fn set_min_pane_size(&mut self, index: usize, minimum: u32) -> bool {
+        if !self.layout.set_min_size(index, minimum) {
+            return false;
+        }
+        self.place_panes();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The minimum extent of pane `index`.
+    pub fn min_pane_size(&self, index: usize) -> u32 {
+        self.layout.min_size(index)
+    }
+
+    /// Sets whether pane `index` may collapse to zero.
+    pub fn set_pane_collapsible(&mut self, index: usize, collapsible: bool) -> bool {
+        self.layout.set_collapsible(index, collapsible)
+    }
+
+    /// Whether pane `index` may collapse.
+    pub fn pane_collapsible(&self, index: usize) -> bool {
+        self.layout.collapsible(index)
+    }
+
+    /// Gives every pane an equal share.
+    ///
+    /// This is the double-click-a-divider action and the "reset layout" operation a host
+    /// may expose. It emits `pane_layout_changed` once and repaints.
+    pub fn equalize_panes(&mut self) {
+        let count = self.pane_count();
+        if count == 0 {
+            return;
+        }
+        let ratios: Vec<f32> = (0..count).map(|_| 1.0).collect();
+        let _ = self.layout.set_ratios(ratios);
+        self.layout.normalize_ratios();
+        if self.pane_layout_changed.slot_count() > 0 {
+            self.pane_layout_changed.emit(self.layout.ratios().to_vec());
+        }
+        self.place_panes();
+        self.base.request_redraw();
+    }
+
+    /// Serialises the pane layout (ratios, minimums and collapse flags).
+    pub fn save_state(&self) -> Vec<u8> {
+        self.layout.save_state()
+    }
+
+    /// Restores a state produced by [`Self::save_state`].
+    ///
+    /// Returns `false` for a malformed blob or a pane count that no longer matches,
+    /// leaving the current layout untouched.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if !self.layout.restore_state(state) {
+            return false;
+        }
+        if self.pane_layout_changed.slot_count() > 0 {
+            self.pane_layout_changed.emit(self.layout.ratios().to_vec());
+        }
+        self.place_panes();
+        self.base.request_redraw();
+        true
+    }
+
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
@@ -492,6 +560,19 @@ impl crate::event::EventHandler for Splitter {
             }
             crate::event::Event::MouseRelease { button, .. } if *button == 1 => {
                 self.end_handle_drag();
+            }
+            crate::event::Event::MouseDoubleClick { pos, button: 1 } => {
+                let coordinate = match self.orientation() {
+                    Orientation::Horizontal => pos.x,
+                    Orientation::Vertical => pos.y,
+                };
+                let on_divider = self
+                    .divider_centers()
+                    .iter()
+                    .any(|center| (coordinate - *center).abs() <= HANDLE_WIDTH as i32 / 2);
+                if on_divider {
+                    self.equalize_panes();
+                }
             }
             _ => {}
         }
@@ -934,5 +1015,36 @@ mod tests {
             (once - twice).abs() < f32::EPSILON,
             "a re-delivered move must be a no-op: {once} vs {twice}"
         );
+    }
+
+    /// Minimums and collapse flags delegate to the layout, a double-click on a divider
+    /// equalizes the panes, and a saved state round-trips.
+    #[test]
+    fn minimums_state_and_double_click_equalize_are_wired() {
+        let mut sp = two_pane_splitter();
+        assert!(sp.set_min_pane_size(0, 24));
+        assert_eq!(sp.min_pane_size(0), 24);
+        assert!(!sp.set_min_pane_size(9, 1));
+        assert!(sp.set_pane_collapsible(1, false));
+        assert!(!sp.pane_collapsible(1));
+
+        let state = sp.save_state();
+        let mut restored = two_pane_splitter();
+        assert!(restored.restore_state(&state));
+        assert_eq!(restored.min_pane_size(0), 24);
+        assert!(!restored.pane_collapsible(1));
+        assert!(!restored.restore_state(b"bad"));
+
+        sp.set_ratio(0, 3.0);
+        sp.equalize_panes();
+        assert!((sp.ratio(0).expect("ratio") - 0.5).abs() < 1e-6);
+
+        sp.set_ratio(0, 3.0);
+        let divider = divider_x(&sp);
+        sp.handle_event(&crate::event::Event::MouseDoubleClick {
+            pos: crate::core::Point::new(divider, 50),
+            button: 1,
+        });
+        assert!((sp.ratio(0).expect("ratio") - 0.5).abs() < 1e-6);
     }
 }

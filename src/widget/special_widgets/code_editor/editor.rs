@@ -28,24 +28,24 @@
 //! | `events` | Event routing: keys, IME, pointer, wheel |
 //! | `widget_impl` | The `Widget` and property contracts |
 
-use super::buffer::{join_lines, split_lines, EditorModel};
+use super::buffer::{join_lines, normalize_line_endings, split_lines, EditorModel};
 use super::grid::{LineGrid, RowLayout};
 use super::multicursor::{self, MultiCursor, OffsetEdit};
 use super::pairs::{self, PairAction};
-use super::range_command::TextRangeCommand;
+use super::range_command::{TextRangeCommand, TypingAccum, TypingCommand};
 use super::syntax::{BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter};
 use super::types::{
-    CodeEditorConfig, CompletionSource, CompletionState, ContextMenuState, Cursor, CursorGoal,
-    DiagnosticMarker, DocumentCompletions, DocumentScale, EditRejection, EditorBuffer, FindState,
-    FoldRegion, InlineDiagnostic, MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch,
-    SearchOptions, SyntaxPalette, TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine,
-    MAX_COMPLETIONS,
+    CaretStyle, CodeEditorConfig, CompletionSource, CompletionState, ContextMenuState, Cursor,
+    CursorGoal, DiagnosticMarker, DocumentCompletions, DocumentScale, DocumentWordIndex,
+    EditRejection, EditorBuffer, ExtraSelection, FindState, FoldRegion, InlineDiagnostic,
+    LineEnding, MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch, SearchOptions, SyntaxPalette,
+    TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine, MAX_COMPLETIONS,
 };
 use crate::compat::MiniVec;
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::signal::Signal1;
-use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack, ValueCommand};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -60,7 +60,6 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 // The widget's code is split into focused submodules. They are private and each
 // carries a complete `impl CodeEditor` block (or the whole trait impl it owns), so
@@ -100,48 +99,6 @@ impl CaretEdit {
     fn with_caret(mut self, index: usize) -> Self {
         self.caret_in_insert = Some(index);
         self
-    }
-}
-
-/// One undoable buffer switch, so undo can also walk back through tabs.
-struct TabSwitchCommand {
-    editor: SharedModel,
-    before: usize,
-    after: usize,
-}
-
-impl TabSwitchCommand {
-    fn next_id() -> CommandId {
-        static NEXT: AtomicU64 = AtomicU64::new(0x434F_4445);
-        CommandId(NEXT.fetch_add(1, Ordering::Relaxed))
-    }
-}
-
-impl UndoCommand for TabSwitchCommand {
-    fn id(&self) -> CommandId {
-        Self::next_id()
-    }
-
-    fn description(&self) -> CommandDescription {
-        CommandDescription {
-            text: "Switch tab".to_string(),
-            timestamp_ms: 0,
-            command_type: "code_editor_tab",
-        }
-    }
-
-    fn execute(&mut self) -> Result<(), String> {
-        if let Ok(mut model) = self.editor.try_borrow_mut() {
-            model.apply_tab_switch(self.after);
-        }
-        Ok(())
-    }
-
-    fn undo(&mut self) -> Result<(), String> {
-        if let Ok(mut model) = self.editor.try_borrow_mut() {
-            model.apply_tab_switch(self.before);
-        }
-        Ok(())
     }
 }
 
@@ -186,6 +143,25 @@ pub(crate) struct Preedit {
     pub(crate) text: String,
     /// Byte offset of the insertion point inside `text`.
     pub(crate) cursor: usize,
+}
+
+/// Cached line→visual-row table used by inline diagnostics under wrapping.
+///
+/// The key is the derived-layout generation; the value is `(line, first row)`
+/// pairs in ascending line order, which the marker mapping binary-searches.
+pub(crate) type DiagnosticRows = Option<(u64, Vec<(usize, usize)>)>;
+
+/// View state saved per open buffer, so switching tabs restores a buffer's own
+/// caret, selection, scroll position and folds instead of resetting them.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BufferViewState {
+    pub(crate) cursor: Cursor,
+    pub(crate) extra_cursors: Vec<Cursor>,
+    pub(crate) goal: CursorGoal,
+    pub(crate) scroll_line: usize,
+    pub(crate) scroll_column: usize,
+    pub(crate) scroll_visual_row: usize,
+    pub(crate) folds: Vec<FoldRegion>,
 }
 
 /// Self-contained, Zed-class code editor widget.
@@ -449,6 +425,66 @@ pub struct CodeEditor {
     /// [`crate::style::CursorBlink`] so this caret cannot drift from the one in a text field.
     pub(crate) caret_blink: crate::style::CursorBlink,
     undo_stack: UndoStack,
+    /// Undo history of every *inactive* buffer.
+    ///
+    /// `undo_stack` is the active buffer's history; on a switch the two are
+    /// swapped, so each document keeps its own undo timeline. Before this a
+    /// switch cleared the stack, which meant opening another file silently threw
+    /// away the history of the one just edited.
+    buffer_histories: Vec<UndoStack>,
+    /// Caret, scroll and fold state of every open buffer.
+    buffer_views: Vec<BufferViewState>,
+    /// The typing run the next keystroke may merge into, if any.
+    active_typing: Option<Rc<RefCell<TypingAccum>>>,
+    /// `true` while the editor considers itself focused.
+    ///
+    /// Starts `true` because an editor is constructed as an active insertion
+    /// point; a `FocusLost` event stops the caret blink without hiding it.
+    focused: bool,
+    /// The caret shape painted at the insertion point.
+    pub(crate) caret_style: CaretStyle,
+    /// Highlights owned by the host.
+    pub(crate) extra_selections: Vec<ExtraSelection>,
+    /// Lines bookmarked by the user.
+    pub(crate) bookmarks: Vec<usize>,
+    /// `true` when typing replaces the character after the caret.
+    pub(crate) overwrite: bool,
+    /// Grey text shown after the caret, supplied by a completion host.
+    pub(crate) inline_suggestion: Option<String>,
+    /// Progress of the popup fade-in, in `0.0..=1.0`.
+    pub(crate) popup_reveal: f32,
+    /// Strength of the bracket-pair fade, in `0.0..=1.0`.
+    pub(crate) bracket_flash: f32,
+    /// Progress of the fold reveal fade, in `0.0..=1.0`.
+    pub(crate) fold_reveal: f32,
+    /// Target first visual row for eased scrolling, when smoothing is enabled.
+    smooth_scroll_target: Option<usize>,
+    /// `true` while a press that began on the scrollbar is being dragged.
+    pub(crate) scrollbar_dragging: bool,
+    /// `true` while a press that began in the gutter is selecting whole lines.
+    pub(crate) gutter_dragging: bool,
+    /// Line the gutter drag started on.
+    pub(crate) gutter_anchor: Option<usize>,
+    /// Position of the most recent double-click, used to recognise a triple-click.
+    pub(crate) double_click_at: Option<Point>,
+    /// `true` when a press landed inside the selection, so a drag moves it.
+    pub(crate) dragging_text: bool,
+    /// Where a text drag started, in document coordinates.
+    pub(crate) drag_origin: Option<TextPosition>,
+    /// Cached word index for the built-in completion provider.
+    completion_index: Option<super::types::DocumentWordIndex>,
+    /// Generation counter for derived layout state (folds, wraps, text).
+    layout_generation: u64,
+    /// Cached line→row table used by inline diagnostics under wrapping.
+    diagnostic_rows: RefCell<DiagnosticRows>,
+    /// How many times the diagnostics row table has been rebuilt, for tests.
+    #[cfg(test)]
+    pub(crate) diagnostic_cache_builds: core::cell::Cell<u32>,
+    /// Region that changed since the last host frame, when it is smaller than the
+    /// whole widget (the caret blink).
+    damage: RefCell<Option<Rect>>,
+    /// Cached bracket-pair index for fold inference.
+    bracket_index: Option<(u64, Vec<(TextPosition, TextPosition)>)>,
     restoring_history: bool,
     /// Bytes retained by the most recent undo checkpoint.
     ///
@@ -566,6 +602,32 @@ impl CodeEditor {
             last_pointer_position: None,
             caret_blink: crate::style::CursorBlink::new(),
             undo_stack: UndoStack::new(),
+            buffer_histories: Vec::new(),
+            buffer_views: vec![BufferViewState::default()],
+            active_typing: None,
+            focused: true,
+            caret_style: CaretStyle::Line,
+            extra_selections: Vec::new(),
+            bookmarks: Vec::new(),
+            overwrite: false,
+            inline_suggestion: None,
+            popup_reveal: 1.0,
+            bracket_flash: 0.0,
+            fold_reveal: 1.0,
+            smooth_scroll_target: None,
+            scrollbar_dragging: false,
+            gutter_dragging: false,
+            gutter_anchor: None,
+            double_click_at: None,
+            dragging_text: false,
+            drag_origin: None,
+            completion_index: None,
+            layout_generation: 0,
+            diagnostic_rows: RefCell::new(None),
+            #[cfg(test)]
+            diagnostic_cache_builds: core::cell::Cell::new(0),
+            damage: RefCell::new(None),
+            bracket_index: None,
             restoring_history: false,
             last_checkpoint_bytes: 0,
             revision: 0,
@@ -614,20 +676,251 @@ impl CodeEditor {
         self.base.request_redraw();
     }
 
+    /// Returns `true` when the editor is treated as focused.
+    ///
+    /// A blurred editor keeps its caret visible but stops asking for frames; the
+    /// previous code animated the caret forever, so a window with ten editors kept
+    /// every one of them repainting.
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Records a focus change and starts or stops the caret blink accordingly.
+    ///
+    /// The caret stays **visible** when focus is lost: a hidden caret on a
+    /// blurred editor reads as a rendering failure rather than as "focus is
+    /// elsewhere". Only the animation stops.
+    pub fn set_focused(&mut self, focused: bool) {
+        if self.focused == focused {
+            return;
+        }
+        self.focused = focused;
+        if focused && self.is_editable() {
+            self.caret_blink.start();
+        } else {
+            self.caret_blink.stop();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the caret shape.
+    pub fn caret_style(&self) -> CaretStyle {
+        self.caret_style
+    }
+
+    /// Sets the caret shape.
+    pub fn set_caret_style(&mut self, style: CaretStyle) {
+        if self.caret_style == style {
+            return;
+        }
+        self.caret_style = style;
+        self.base.request_redraw();
+    }
+
+    /// Returns `true` when typing overwrites the character after the caret.
+    pub fn overwrite_mode(&self) -> bool {
+        self.overwrite
+    }
+
+    /// Sets overwrite mode.
+    pub fn set_overwrite_mode(&mut self, overwrite: bool) {
+        if self.overwrite == overwrite {
+            return;
+        }
+        self.overwrite = overwrite;
+        self.base.request_redraw();
+    }
+
+    /// Toggles between insert and overwrite mode, as the `Insert` key does.
+    pub fn toggle_overwrite_mode(&mut self) -> bool {
+        self.overwrite = !self.overwrite;
+        self.base.request_redraw();
+        self.overwrite
+    }
+
+    /// Returns the inline completion hint, if one is set.
+    pub fn inline_suggestion(&self) -> Option<&str> {
+        self.inline_suggestion.as_deref()
+    }
+
+    /// Sets the grey completion hint painted after the caret.
+    ///
+    /// The hint is never inserted into the document; accepting it is the host's
+    /// call (it can read this value and call [`CodeEditor::insert`]).
+    pub fn set_inline_suggestion(&mut self, suggestion: Option<String>) {
+        if self.inline_suggestion == suggestion {
+            return;
+        }
+        self.inline_suggestion = suggestion;
+        self.base.request_redraw();
+    }
+
+    /// Returns the host-owned highlight ranges.
+    pub fn extra_selections(&self) -> &[ExtraSelection] {
+        &self.extra_selections
+    }
+
+    /// Replaces the host-owned highlight ranges.
+    pub fn set_extra_selections(&mut self, selections: Vec<ExtraSelection>) {
+        if self.extra_selections == selections {
+            return;
+        }
+        self.extra_selections = selections;
+        self.base.request_redraw();
+    }
+
+    /// Adds one host-owned highlight range.
+    pub fn add_extra_selection(&mut self, selection: ExtraSelection) {
+        if selection.start >= selection.end {
+            return;
+        }
+        self.extra_selections.push(selection);
+        self.base.request_redraw();
+    }
+
+    /// Removes every host-owned highlight range.
+    pub fn clear_extra_selections(&mut self) {
+        if self.extra_selections.is_empty() {
+            return;
+        }
+        self.extra_selections.clear();
+        self.base.request_redraw();
+    }
+
+    /// Returns the bookmarked lines, ascending and deduplicated.
+    pub fn bookmarks(&self) -> &[usize] {
+        &self.bookmarks
+    }
+
+    /// Toggles a bookmark on `line`, clamped to the document.
+    pub fn toggle_bookmark(&mut self, line: usize) -> bool {
+        let line = line.min(self.line_count().saturating_sub(1));
+        let bookmarked = if let Some(index) = self.bookmarks.iter().position(|entry| *entry == line)
+        {
+            self.bookmarks.remove(index);
+            false
+        } else {
+            self.bookmarks.push(line);
+            self.bookmarks.sort_unstable();
+            true
+        };
+        self.base.request_redraw();
+        bookmarked
+    }
+
+    /// Moves the caret to the next bookmark after it, wrapping to the first.
+    pub fn goto_next_bookmark(&mut self) -> bool {
+        let Some(target) = self
+            .bookmarks
+            .iter()
+            .find(|line| **line > self.cursor.head.line)
+            .or_else(|| self.bookmarks.first())
+            .copied()
+        else {
+            return false;
+        };
+        self.move_caret_to(TextPosition::new(target, 0), false);
+        true
+    }
+
+    /// Returns whether `undo`/`redo` are allowed to run.
+    pub fn undo_redo_enabled(&self) -> bool {
+        self.config.undo_redo_enabled
+    }
+
+    /// Enables or disables `undo`/`redo` without discarding the history.
+    pub fn set_undo_redo_enabled(&mut self, enabled: bool) {
+        if self.config.undo_redo_enabled == enabled {
+            return;
+        }
+        self.config.undo_redo_enabled = enabled;
+    }
+
+    /// Sets the text drawn while the document is empty.
+    pub fn set_placeholder_text(&mut self, text: Option<String>) {
+        if self.config.placeholder_text == text {
+            return;
+        }
+        self.config.placeholder_text = text;
+        self.base.request_redraw();
+    }
+
     /// Advances the caret's blink by `delta_ms` and reports whether another frame is needed.
     ///
     /// The crate's `tick(delta_ms) -> bool` convention. The caret here was drawn at full strength
     /// unconditionally, so a host had no reason to keep scheduling frames and the caret read as a
     /// frozen marker rather than a live insertion point.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        if !self.is_editable() {
-            return false;
+        let mut running = false;
+        let mut caret_changed = false;
+        if self.is_editable() && self.focused {
+            let was_visible = self.caret_blink.is_visible();
+            running = self.caret_blink.tick(delta_ms);
+            caret_changed = was_visible != self.caret_blink.is_visible();
         }
-        let running = self.caret_blink.tick(delta_ms);
+        if self.config.fade_popups
+            && (self.completion.visible || self.context_menu.visible)
+            && self.popup_reveal < 1.0
+        {
+            self.popup_reveal = (self.popup_reveal + delta_ms as f32 / 120.0).min(1.0);
+            running = true;
+        }
+        if self.config.animate_brackets && self.bracket_flash > 0.0 {
+            self.bracket_flash = (self.bracket_flash - delta_ms as f32 / 180.0).max(0.0);
+            running = true;
+        }
+        if self.config.animate_folds && self.fold_reveal < 1.0 {
+            self.fold_reveal = (self.fold_reveal + delta_ms as f32 / 150.0).min(1.0);
+            running = true;
+        }
+        if self.smooth_scroll_target.is_some() {
+            running = true;
+            self.step_smooth_scroll();
+        }
+        if caret_changed {
+            self.mark_caret_damage();
+        }
         if running {
             self.base.request_redraw();
         }
         running
+    }
+
+    /// Records the caret's rectangle as the region that needs repainting.
+    fn mark_caret_damage(&mut self) {
+        let row = self.caret_visual_row();
+        let y = self.coordinate_map().row_y(row);
+        let x = self.caret_x(self.cursor.head);
+        *self.damage.borrow_mut() =
+            Some(Rect::new(x.saturating_sub(1), y, 4, self.line_height().ceil().max(1.0) as u32));
+    }
+
+    /// Takes the region that changed since the last call, if it is a partial one.
+    ///
+    /// A host may repaint only this rectangle after a blink tick instead of the
+    /// whole editor; an edit clears it so the next frame is full-width.
+    pub fn take_damage_rect(&mut self) -> Option<Rect> {
+        self.damage.borrow_mut().take()
+    }
+
+    /// Advances one step toward the pending eased scroll target.
+    fn step_smooth_scroll(&mut self) {
+        let Some(target) = self.smooth_scroll_target else { return };
+        let current = self.scroll_visual_row;
+        let step = 4usize;
+        let next = if target > current {
+            (current + step).min(target)
+        } else {
+            current.saturating_sub(step).max(target)
+        };
+        if next != current {
+            self.scroll_visual_row = next;
+            self.scroll_line = self.visual_row_to_line(next);
+            self.base.request_redraw();
+        }
+        if next == target {
+            self.smooth_scroll_target = None;
+        }
     }
 
     /// Whether the caret is in the visible half of its blink cycle.

@@ -92,6 +92,18 @@ impl CodeEditor {
         let mut matches = Vec::new();
         for (line_index, line) in model.lines.iter().enumerate() {
             let haystack: Vec<char> = line.chars().collect();
+            if options.use_regex {
+                for (start, end) in regex_matches(&haystack, &needle, options.case_sensitive) {
+                    if whole_word_ok(&haystack, start, end - start, options, language) {
+                        matches.push(SearchMatch {
+                            line: line_index,
+                            start_column: start,
+                            end_column: end,
+                        });
+                    }
+                }
+                continue;
+            }
             if haystack.len() < needle.len() {
                 continue;
             }
@@ -121,6 +133,15 @@ impl CodeEditor {
                     start += 1;
                 }
             }
+        }
+        drop(model);
+        if options.in_selection && !self.cursor.is_collapsed() {
+            let (start, end) = self.cursor.bounds();
+            matches.retain(|hit| {
+                let hit_start = TextPosition::new(hit.line, hit.start_column);
+                let hit_end = TextPosition::new(hit.line, hit.end_column);
+                hit_start >= start && hit_end <= end
+            });
         }
         matches
     }
@@ -197,6 +218,18 @@ impl CodeEditor {
             return;
         }
         let haystack: Vec<char> = text.chars().collect();
+        if options.use_regex {
+            for (start, end) in regex_matches(&haystack, &needle, options.case_sensitive) {
+                if whole_word_ok(&haystack, start, end - start, options, self.config.language) {
+                    out.push(SearchMatch {
+                        line: line_index,
+                        start_column: start,
+                        end_column: end,
+                    });
+                }
+            }
+            return;
+        }
         if haystack.len() < needle.len() {
             return;
         }
@@ -233,6 +266,21 @@ impl CodeEditor {
         } else {
             self.find.current.min(self.find.matches.len() - 1)
         };
+        // Anchor a fresh hit list to the caret: the first "next" must go to the
+        // nearest hit after the insertion point, not back to the top of the file.
+        // Re-querying used to leave `current` at 0, so the first navigation jumped
+        // to the document start regardless of where the reader was working.
+        self.find.current = self.anchor_match_index();
+    }
+
+    /// Index of the first hit at or after the caret, or 0 when there is none.
+    fn anchor_match_index(&self) -> usize {
+        let caret = self.cursor.head;
+        self.find
+            .matches
+            .iter()
+            .position(|hit| TextPosition::new(hit.line, hit.start_column) >= caret)
+            .unwrap_or(0)
     }
 
     /// Advances to the next hit (or the previous one), wrapping around.
@@ -241,12 +289,19 @@ impl CodeEditor {
             return false;
         }
         let count = self.find.matches.len();
-        self.find.current = if backwards {
-            (self.find.current + count - 1) % count
+        if backwards {
+            self.find.wrapped = self.find.current == 0;
+            self.find.current = (self.find.current + count - 1) % count;
         } else {
-            (self.find.current + 1) % count
-        };
+            self.find.wrapped = self.find.current + 1 >= count;
+            self.find.current = (self.find.current + 1) % count;
+        }
         self.reveal_current_match()
+    }
+
+    /// Whether the last find navigation wrapped past a document edge.
+    pub fn find_wrapped(&self) -> bool {
+        self.find.wrapped
     }
 
     /// Reveals and selects the active hit.
@@ -479,7 +534,10 @@ impl CodeEditor {
         }
         // Reuse `find_all_with` with whole-word, case-sensitive matching without
         // disturbing the user's own find-bar policy.
-        self.find_all_with(&selected, SearchOptions { case_sensitive: true, whole_word: true })
+        self.find_all_with(
+            &selected,
+            SearchOptions { case_sensitive: true, whole_word: true, ..SearchOptions::default() },
+        )
     }
 
     /// Refreshes [`Self::occurrence_cache`] if the selection or text changed.
@@ -498,4 +556,303 @@ impl CodeEditor {
         let matches = self.occurrences_of_selection();
         self.occurrence_cache = Some(OccurrenceCache { bounds, revision: self.revision, matches });
     }
+}
+
+// ── Regular-expression subset ──────────────────────────────────────────────
+//
+// A code search needs anchors, classes and a few quantifiers, not the full
+// regular-expression language, so the editor carries this small matcher rather
+// than a dependency. Every construct it understands is documented on
+// `SearchOptions::use_regex`; anything else is matched literally.
+
+#[derive(Debug, Clone)]
+enum RegexAtom {
+    Literal(char),
+    Any,
+    Class { negated: bool, ranges: Vec<(char, char)> },
+    Digit,
+    Word,
+    Space,
+    WordBoundary,
+    LineStart,
+    LineEnd,
+}
+
+#[derive(Debug, Clone)]
+struct RegexStep {
+    atom: RegexAtom,
+    min: usize,
+    max: Option<usize>,
+}
+
+/// Returns every non-overlapping match of `pattern` in `haystack`.
+pub(crate) fn regex_matches(
+    haystack: &[char],
+    pattern: &[char],
+    case_sensitive: bool,
+) -> Vec<(usize, usize)> {
+    let alternatives = parse_alternatives(pattern);
+    if alternatives.iter().all(|steps| steps.is_empty()) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut index = 0usize;
+    while index <= haystack.len() {
+        let mut matched = None;
+        for steps in &alternatives {
+            if let Some(end) = match_steps(steps, haystack, index, index, 0, case_sensitive) {
+                if end > index {
+                    matched = Some(end);
+                    break;
+                }
+            }
+        }
+        match matched {
+            Some(end) => {
+                out.push((index, end));
+                index = end;
+            }
+            None => index += 1,
+        }
+    }
+    out
+}
+
+fn parse_alternatives(pattern: &[char]) -> Vec<Vec<RegexStep>> {
+    let mut alternatives: Vec<Vec<RegexStep>> = vec![Vec::new()];
+    let mut index = 0usize;
+    while index < pattern.len() {
+        let ch = pattern[index];
+        if ch == '|' {
+            alternatives.push(Vec::new());
+            index += 1;
+            continue;
+        }
+        let atom = match ch {
+            '\\' => {
+                index += 1;
+                match pattern.get(index).copied() {
+                    Some('d') => Some(RegexAtom::Digit),
+                    Some('w') => Some(RegexAtom::Word),
+                    Some('s') => Some(RegexAtom::Space),
+                    Some('b') => Some(RegexAtom::WordBoundary),
+                    Some(other) => Some(RegexAtom::Literal(other)),
+                    None => None,
+                }
+            }
+            '.' => Some(RegexAtom::Any),
+            '^' => Some(RegexAtom::LineStart),
+            '$' => Some(RegexAtom::LineEnd),
+            '[' => {
+                let (atom, next) = parse_class(pattern, index);
+                index = next.saturating_sub(1);
+                Some(atom)
+            }
+            other => Some(RegexAtom::Literal(other)),
+        };
+        index += 1;
+        if let Some(atom) = atom {
+            let (min, max, next) = parse_quantifier(pattern, index);
+            index = next;
+            if let Some(steps) = alternatives.last_mut() {
+                steps.push(RegexStep { atom, min, max });
+            }
+        }
+    }
+    alternatives
+}
+
+fn parse_class(pattern: &[char], open: usize) -> (RegexAtom, usize) {
+    let mut index = open + 1;
+    let negated = pattern.get(index) == Some(&'^');
+    if negated {
+        index += 1;
+    }
+    let mut ranges: Vec<(char, char)> = Vec::new();
+    let mut first = true;
+    while index < pattern.len() {
+        let ch = pattern[index];
+        if ch == ']' && !first {
+            return (RegexAtom::Class { negated, ranges }, index + 1);
+        }
+        first = false;
+        let low = if ch == '\\' {
+            index += 1;
+            match pattern.get(index).copied() {
+                Some('d') => {
+                    ranges.push(('0', '9'));
+                    index += 1;
+                    continue;
+                }
+                Some('w') => {
+                    ranges.push(('a', 'z'));
+                    ranges.push(('A', 'Z'));
+                    ranges.push(('0', '9'));
+                    ranges.push(('_', '_'));
+                    index += 1;
+                    continue;
+                }
+                Some('s') => {
+                    ranges.push((' ', ' '));
+                    ranges.push(('\t', '\t'));
+                    index += 1;
+                    continue;
+                }
+                Some(other) => other,
+                None => break,
+            }
+        } else {
+            ch
+        };
+        index += 1;
+        if pattern.get(index) == Some(&'-') && pattern.get(index + 1) != Some(&']') {
+            index += 1;
+            let high = pattern.get(index).copied().unwrap_or(low);
+            index += 1;
+            ranges.push((low, high));
+        } else {
+            ranges.push((low, low));
+        }
+    }
+    (RegexAtom::Class { negated, ranges }, index)
+}
+
+fn parse_quantifier(pattern: &[char], index: usize) -> (usize, Option<usize>, usize) {
+    match pattern.get(index) {
+        Some('*') => (0, None, index + 1),
+        Some('+') => (1, None, index + 1),
+        Some('?') => (0, Some(1), index + 1),
+        Some('{') => {
+            let mut end = index + 1;
+            while end < pattern.len() && pattern[end] != '}' {
+                end += 1;
+            }
+            if end >= pattern.len() {
+                return (1, Some(1), index);
+            }
+            let body: String = pattern[index + 1..end].iter().collect();
+            let mut parts = body.split(',');
+            let min = parts.next().and_then(|part| part.trim().parse::<usize>().ok());
+            let max = parts.next().and_then(|part| part.trim().parse::<usize>().ok());
+            match min {
+                Some(min) => (min, max.or(Some(min)), end + 1),
+                None => (1, Some(1), index),
+            }
+        }
+        _ => (1, Some(1), index),
+    }
+}
+
+fn match_steps(
+    steps: &[RegexStep],
+    text: &[char],
+    position: usize,
+    start: usize,
+    depth: usize,
+    case_sensitive: bool,
+) -> Option<usize> {
+    // A pathological pattern must not recurse without bound.
+    if depth > 256 {
+        return None;
+    }
+    let Some(step) = steps.first() else { return Some(position) };
+    let rest = &steps[1..];
+    match &step.atom {
+        RegexAtom::LineStart => {
+            if position == start {
+                match_steps(rest, text, position, start, depth + 1, case_sensitive)
+            } else {
+                None
+            }
+        }
+        RegexAtom::LineEnd => {
+            if position == text.len() {
+                match_steps(rest, text, position, start, depth + 1, case_sensitive)
+            } else {
+                None
+            }
+        }
+        RegexAtom::WordBoundary => {
+            if is_word_boundary(text, position) {
+                match_steps(rest, text, position, start, depth + 1, case_sensitive)
+            } else {
+                None
+            }
+        }
+        _ => {
+            let limit = step.max.unwrap_or(text.len() + 1);
+            let mut positions = alloc::vec![position];
+            let mut current = position;
+            while positions.len() - 1 < limit {
+                match match_atom(&step.atom, text, current, case_sensitive) {
+                    Some(next) if next > current => {
+                        positions.push(next);
+                        current = next;
+                    }
+                    _ => break,
+                }
+            }
+            if positions.len() - 1 < step.min {
+                return None;
+            }
+            let mut take = positions.len() - 1;
+            loop {
+                if let Some(end) =
+                    match_steps(rest, text, positions[take], start, depth + 1, case_sensitive)
+                {
+                    return Some(end);
+                }
+                if take == step.min {
+                    return None;
+                }
+                take -= 1;
+            }
+        }
+    }
+}
+
+fn match_atom(
+    atom: &RegexAtom,
+    text: &[char],
+    position: usize,
+    case_sensitive: bool,
+) -> Option<usize> {
+    let ch = *text.get(position)?;
+    let matched = match atom {
+        RegexAtom::Literal(want) => chars_eq(*want, ch, case_sensitive),
+        RegexAtom::Any => true,
+        RegexAtom::Digit => ch.is_ascii_digit(),
+        RegexAtom::Word => ch.is_alphanumeric() || ch == '_',
+        RegexAtom::Space => ch.is_whitespace(),
+        RegexAtom::Class { negated, ranges } => {
+            let inside = ranges.iter().any(|(low, high)| {
+                let ch = if case_sensitive { ch } else { ch.to_ascii_lowercase() };
+                let low = if case_sensitive { *low } else { low.to_ascii_lowercase() };
+                let high = if case_sensitive { *high } else { high.to_ascii_lowercase() };
+                ch >= low && ch <= high
+            });
+            inside != *negated
+        }
+        RegexAtom::WordBoundary | RegexAtom::LineStart | RegexAtom::LineEnd => false,
+    };
+    if matched {
+        Some(position + 1)
+    } else {
+        None
+    }
+}
+
+fn chars_eq(left: char, right: char, case_sensitive: bool) -> bool {
+    if case_sensitive {
+        left == right
+    } else {
+        left.to_lowercase().eq(right.to_lowercase())
+    }
+}
+
+fn is_word_boundary(text: &[char], position: usize) -> bool {
+    let before = position.checked_sub(1).and_then(|index| text.get(index)).copied();
+    let after = text.get(position).copied();
+    let is_word = |ch: Option<char>| ch.is_some_and(|ch| ch.is_alphanumeric() || ch == '_');
+    is_word(before) != is_word(after)
 }

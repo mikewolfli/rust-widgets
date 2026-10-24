@@ -149,6 +149,14 @@ pub struct ChartWidget {
     /// It rests at `1.0`: a chart is shown at its values the moment it is built, so it must not
     /// animate a seeded series into place on first paint.
     reveal: PropertyDriver,
+    /// Whether the legend strip is drawn.
+    show_legend: bool,
+    /// Whether the hover read-out is painted.
+    show_tooltip: bool,
+    /// Names shown in the legend; shorter or longer than the series list is tolerated.
+    series_names: Vec<String>,
+    /// A horizontal zoom window over the category axis, or `None` for the full axis.
+    zoom_x: Option<(f64, f64)>,
     /// Emitted when a data point is clicked.
     pub data_point_clicked: Signal1<usize>,
     /// Emitted when pointer hover enters a data point bucket.
@@ -173,6 +181,10 @@ impl ChartWidget {
             hovered_index: None,
             // At rest grown: a chart is shown at its values the moment it is built.
             reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
+            show_legend: false,
+            show_tooltip: false,
+            series_names: Vec::new(),
+            zoom_x: None,
             data_point_clicked: Signal1::new(),
             data_point_hovered: Signal1::new(),
             data_point_unhovered: Signal1::new(),
@@ -253,6 +265,68 @@ impl ChartWidget {
     pub fn set_labels(&mut self, labels: Vec<String>) {
         self.labels = labels;
         self.base.request_redraw();
+    }
+
+    /// Sets the names shown in the legend, one per series.
+    pub fn set_series_names(&mut self, names: Vec<String>) {
+        if self.series_names == names {
+            return;
+        }
+        self.series_names = names;
+        self.base.request_redraw();
+    }
+
+    /// Returns the legend names.
+    pub fn series_names(&self) -> &[String] {
+        &self.series_names
+    }
+
+    /// Shows or hides the legend.
+    pub fn set_show_legend(&mut self, show: bool) {
+        if self.show_legend == show {
+            return;
+        }
+        self.show_legend = show;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the legend is shown.
+    pub fn show_legend(&self) -> bool {
+        self.show_legend
+    }
+
+    /// Enables the hover read-out.
+    pub fn set_show_tooltip(&mut self, show: bool) {
+        if self.show_tooltip == show {
+            return;
+        }
+        self.show_tooltip = show;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the hover read-out is enabled.
+    pub fn show_tooltip(&self) -> bool {
+        self.show_tooltip
+    }
+
+    /// The zoom window over the category axis, or `None` when the full axis is shown.
+    pub fn zoom_range(&self) -> Option<(f64, f64)> {
+        self.zoom_x
+    }
+
+    /// Sets a zoom window over the category axis.
+    pub fn set_zoom_range(&mut self, range: Option<(f64, f64)>) {
+        let range = range.map(|(low, high)| if low <= high { (low, high) } else { (high, low) });
+        if self.zoom_x == range {
+            return;
+        }
+        self.zoom_x = range;
+        self.base.request_redraw();
+    }
+
+    /// Restores the full category axis.
+    pub fn reset_zoom(&mut self) {
+        self.set_zoom_range(None);
     }
 
     /// Drops a hover index that the new data no longer has a point for.
@@ -574,6 +648,64 @@ impl Draw for ChartWidget {
             ChartType::Candlestick => self.draw_candlestick_chart(context, rect),
             ChartType::BoxPlot => self.draw_box_plot_chart(context, rect),
         }
+
+        // ── Legend ──
+        //
+        // Opt-in, so a chart that never asked for it keeps its previous pixels. Rows are drawn
+        // top-down from the panel's top-right corner and a swatch carries the series colour, which
+        // is the only way a multi-series chart identifies which line is which.
+        if self.show_legend && self.series.len() > 1 {
+            let font = effective_font(style);
+            let line_height = context.measure_text("M", font).height.max(1) as i32 + 4;
+            let mut y = rect.y + 8;
+            for index in 0..self.series.len() {
+                let name = self
+                    .series_names
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Series {}", index + 1));
+                let text_width = context.measure_text(&name, font).width as i32;
+                let swatch_x = rect.x + rect.width as i32 - text_width - 26;
+                if swatch_x < rect.x {
+                    break;
+                }
+                context.fill_rect(Rect::new(swatch_x, y + 2, 10, 10), Self::series_color(index));
+                context.draw_text(
+                    Point::new(swatch_x + 14, y),
+                    &name,
+                    font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+                y += line_height;
+                if y + line_height > rect.y + rect.height as i32 {
+                    break;
+                }
+            }
+        }
+
+        // ── Hover read-out ──
+        if self.show_tooltip {
+            if let Some(index) = self.hovered_index {
+                let value = self.hovered_value();
+                if let Some(value) = value {
+                    let text = match self.labels.get(index) {
+                        Some(label) => format!("{label}: {}", format_axis_value(value)),
+                        None => format_axis_value(value),
+                    };
+                    let font = effective_font(style);
+                    let metrics = context.measure_text(&text, font);
+                    let width = metrics.width as i32 + 8;
+                    let height = metrics.height.max(1) as i32 + 6;
+                    let x = (rect.x + 12).min(rect.x + rect.width as i32 - width).max(rect.x);
+                    let y = (rect.y + 8).clamp(rect.y, rect.y + rect.height as i32 - height);
+                    let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
+                    context.fill_rect(box_rect, surface);
+                    context.draw_rect(box_rect, border);
+                    context.draw_text_line(box_rect, &text, font, ink, HorizontalAlignment::Center);
+                }
+            }
+        }
     }
 }
 
@@ -695,6 +827,64 @@ fn format_axis_value(value: f64) -> String {
     }
 }
 
+/// Round tick values covering `min..=max`.
+///
+/// The step is a nice number (1, 2, 2.5 or 5 times a power of ten) chosen so about `target`
+/// intervals fit the range, which is the rule every chart axis uses. The first tick is the
+/// smallest multiple of the step at or above `min`, so the labels keep their short decimal
+/// spellings instead of inheriting the raw range's floating-point noise.
+fn nice_ticks(min: f64, max: f64, target: usize) -> Vec<f64> {
+    if !min.is_finite() || !max.is_finite() || max <= min {
+        return Vec::new();
+    }
+    let raw = (max - min) / target.max(1) as f64;
+    let magnitude = 10f64.powf(raw.log10().floor());
+    let normalized = raw / magnitude;
+    let step = if normalized <= 1.0 {
+        1.0
+    } else if normalized <= 2.0 {
+        2.0
+    } else if normalized <= 2.5 {
+        2.5
+    } else if normalized <= 5.0 {
+        5.0
+    } else {
+        10.0
+    } * magnitude;
+    let first = (min / step).ceil() * step;
+    let mut values = Vec::new();
+    let mut value = first;
+    while value <= max + step * 1e-9 {
+        values.push(value);
+        value += step;
+        if values.len() > 64 {
+            break;
+        }
+    }
+    values
+}
+
+/// Converts an HSL colour to RGB.
+///
+/// Used only to extend the series palette past its declared six colours: a hue rotation keeps
+/// a seventh series distinguishable, where cycling the palette would repeat the first colour.
+fn hsl_to_rgb(hue_degrees: f32, saturation: f32, lightness: f32) -> Color {
+    let h = (hue_degrees.rem_euclid(360.0)) / 60.0;
+    let c = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = lightness - c / 2.0;
+    let channel = |value: f32| ((value + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    Color { r: channel(r1), g: channel(g1), b: channel(b1), a: 255 }
+}
+
 /// Draws a label under `x`, truncated to a fixed budget so a long label cannot
 /// run into its neighbour. The truncation marker is part of the visible text, so
 /// it is counted in the budget rather than appended past it.
@@ -714,8 +904,15 @@ fn draw_truncated_label(
     if label.is_empty() {
         return;
     }
-    let text = if label.chars().count() > BUDGET {
-        let kept: String = label.chars().take(BUDGET - 2).collect();
+    // The budget follows the room the label actually has rather than a fixed six characters:
+    // the old constant cut `Category` to `Categ..` even in a wide slot, and a CJK label of six
+    // glyphs is twice as wide as six Latin ones. The measured `M` advance is the ruler both the
+    // painter and this budget share.
+    let char_width = context.measure_text("M", font).width.max(1) as i32;
+    let available = (right_bound - x - 4).max(char_width * 4);
+    let budget = ((available / char_width) as usize).clamp(4, 32).max(BUDGET.min(6));
+    let text = if label.chars().count() > budget {
+        let kept: String = label.chars().take(budget.saturating_sub(2)).collect();
         Cow::Owned(format!("{kept}.."))
     } else {
         Cow::Borrowed(label)
@@ -786,7 +983,13 @@ impl ChartWidget {
 
     /// The colour of series `index`, cycling through [`Self::PALETTE`].
     fn series_color(index: usize) -> crate::core::Color {
-        Self::PALETTE[index % Self::PALETTE.len()]
+        if index < Self::PALETTE.len() {
+            return Self::PALETTE[index];
+        }
+        // Past the palette, derive the colour from a golden-angle rotation of the hue circle:
+        // adjacent series stay distinguishable instead of repeating the first six colours.
+        let hue = ((index - Self::PALETTE.len()) as f32 * 137.508) % 360.0;
+        hsl_to_rgb(hue, 0.62, 0.50)
     }
 
     /// The value range the shared-axis styles plot against.
@@ -840,9 +1043,15 @@ impl ChartWidget {
         let font = role_font(self.style(), 10.0);
         let label_height = context.measure_text("M", &font).height.max(1) as i32;
 
-        for step in 0..TICKS {
-            let fraction = step as f64 / (TICKS - 1) as f64;
-            let value = min + (max - min) * fraction;
+        // Ticks land on round numbers rather than on equal fractions of the range: a label of
+        // `0.30000000000000004` is a value no reader asked for. `nice_ticks` answers the values
+        // and the count it chose, so a narrow range does not produce four labels that all round
+        // to the same text.
+        let ticks = nice_ticks(min, max, TICKS as usize);
+        for value in ticks {
+            if value < min - f64::EPSILON || value > max + f64::EPSILON {
+                continue;
+            }
             let y = area.y_for(value, min, max);
             // The axis line and its ticks are one hairline; the gridline runs from the axis to
             // the right edge of the plot so a bar can be read against it.
@@ -1002,29 +1211,21 @@ impl ChartWidget {
             })
             .collect();
 
-        // Fill with columns rather than a polygon: the render context has no
-        // filled-polygon primitive, and a one-pixel column per x is exactly the
-        // area under the piecewise-linear curve. The vertical extent is taken from
-        // the segment the column falls in, so the fill tracks the line instead of
-        // stair-stepping at each point.
-        for column in points.windows(2) {
-            let (from, to) = (column[0], column[1]);
-            let span = (to.x - from.x).max(1);
-            for step in 0..=span {
-                let x = from.x + step;
-                let ratio = step as f64 / span as f64;
-                let y = (from.y as f64 + (to.y as f64 - from.y as f64) * ratio) as i32;
-                context.fill_rect(
-                    Rect {
-                        x,
-                        y,
-                        width: 1,
-                        height: area.baseline_y.saturating_sub(y).max(1) as u32,
-                    },
-                    color,
-                );
-            }
+        // Fill as one closed polygon: the area under a piecewise-linear curve is a polygon, so
+        // one filled path replaces a one-pixel column per x. The old loop allocated no geometry
+        // but issued one fill command per pixel — up to the plot's full width, every frame.
+        let mut polygon = points.clone();
+        let baseline_y = area.baseline_y;
+        for point in points.iter().rev() {
+            polygon.push(Point::new(point.x, baseline_y));
         }
+        context.execute_command(crate::render::RenderCommand::DrawPath {
+            points: polygon,
+            closed: true,
+            color,
+            filled: true,
+            width: 0,
+        });
         for pair in points.windows(2) {
             context.draw_line_stroke(pair[0], pair[1], color, 2);
         }
@@ -1358,15 +1559,26 @@ impl ChartWidget {
             let mid_angle = start_angle + slice_angle / 2.0;
             let end_angle = start_angle + slice_angle;
             let color = Self::series_color(i);
-            // Segment count scales with the arc length so a thin wedge is not drawn
-            // with more spokes than its angle needs.
-            let segments = ((radius as f64 * slice_angle * 0.4).ceil() as i32).clamp(1, 120);
-            for s in 0..segments {
-                let t = start_angle + slice_angle * (s as f64 + 0.5) / segments as f64;
-                let ex = cx + (radius as f64 * t.cos()) as i32;
-                let ey = cy + (radius as f64 * t.sin()) as i32;
-                context.draw_line(Point { x: cx, y: cy }, Point { x: ex, y: ey }, color);
+            // A filled wedge: one closed path per sector instead of a fan of radial strokes.
+            // The stroke version left a pie that looked like spokes; a polygon is the shape the
+            // form actually draws.
+            let segments = ((radius as f64 * slice_angle * 0.5).ceil() as i32).clamp(3, 180);
+            let mut wedge = Vec::with_capacity(segments as usize + 2);
+            wedge.push(Point { x: cx, y: cy });
+            for step in 0..=segments {
+                let t = start_angle + slice_angle * (step as f64 / segments as f64);
+                wedge.push(Point {
+                    x: cx + (radius as f64 * t.cos()) as i32,
+                    y: cy + (radius as f64 * t.sin()) as i32,
+                });
             }
+            context.execute_command(crate::render::RenderCommand::DrawPath {
+                points: wedge,
+                closed: true,
+                color,
+                filled: true,
+                width: 0,
+            });
             if let Some(label) = self.labels.get(i) {
                 let label_radius = radius.saturating_add(14) as f64;
                 let lx = cx + (label_radius * mid_angle.cos()) as i32;
@@ -1477,6 +1689,25 @@ impl EventHandler for ChartWidget {
             }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
+            }
+            Event::Wheel { delta, .. } => {
+                // Zoom the category axis around the pointer's bucket. A plot with one point has
+                // no axis to zoom.
+                let points = self.data().len() as f64;
+                if points < 2.0 || delta.y == 0 {
+                    return;
+                }
+                let (low, high) = self.zoom_x.unwrap_or((0.0, points));
+                let span = (high - low).max(f64::EPSILON);
+                let anchor = self
+                    .hovered_index
+                    .map_or((low + high) / 2.0, |index| low + span * (index as f64 / points));
+                let factor = if delta.y > 0 { 1.25 } else { 0.8 };
+                let new_low = (anchor - (anchor - low) * factor).max(0.0);
+                let new_high = (anchor + (high - anchor) * factor).min(points);
+                if new_high - new_low > 0.5 {
+                    self.set_zoom_range(Some((new_low, new_high)));
+                }
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -1911,5 +2142,35 @@ mod tests {
         assert!(svg.starts_with("<svg"));
         assert!(!svg.contains("NaN"), "no NaN may reach the rendered geometry: {svg}");
         assert!(!svg.contains("inf"), "no infinity may reach the rendered geometry");
+    }
+
+    #[test]
+    fn legend_and_tooltip_are_opt_in_and_paint() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 240, 160));
+        chart.set_series(vec![vec![1.0, 2.0], vec![3.0, 1.0]]);
+        chart.set_series_names(vec!["first".to_string(), "second".to_string()]);
+        let without = crate::widget::svg::render_to_svg(&mut chart);
+        chart.set_show_legend(true);
+        let with = crate::widget::svg::render_to_svg(&mut chart);
+        assert_ne!(without, with, "the legend adds visible text");
+        chart.set_show_tooltip(true);
+        chart.handle_event(&Event::MouseMove { pos: Point::new(60, 80) });
+        assert!(chart.hovered_index().is_some());
+    }
+
+    #[test]
+    fn the_palette_extends_past_its_declared_six_colours() {
+        let first = ChartWidget::series_color(6);
+        assert_ne!(first, ChartWidget::series_color(0));
+        assert_ne!(first, ChartWidget::series_color(7));
+    }
+
+    #[test]
+    fn axis_ticks_land_on_round_numbers() {
+        let ticks = nice_ticks(0.0, 100.0, 4);
+        assert!(ticks.len() >= 3);
+        assert!(ticks.iter().all(|value| (value - value.round()).abs() < 1e-9));
+        let narrow = nice_ticks(0.0, 1.0, 4);
+        assert!(narrow.windows(2).all(|pair| pair[1] > pair[0]));
     }
 }

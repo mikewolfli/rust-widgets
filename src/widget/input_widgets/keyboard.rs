@@ -35,13 +35,53 @@ const SHIFT_CODE: u32 = 16;
 /// that they emit nothing, and they are drawn as special keys for that reason.
 const NO_KEY: u32 = 0;
 
+/// The Caps Lock key's code, used when a layout carries a Caps key.
+#[allow(dead_code)]
+const CAPS_LOCK_CODE: u32 = 20;
+
+/// Height of the suggestion bar painted over the first key row.
+const SUGGESTION_BAR_HEIGHT: u32 = 28;
+
+/// The character a key code denotes, when it denotes one at all.
+fn code_char(code: u32) -> Option<char> {
+    match code {
+        // Letter codes are ASCII uppercase.
+        65..=90 => char::from_u32(code),
+        32 => Some(' '),
+        _ => char::from_u32(code).filter(|ch| ch.is_ascii_graphic()),
+    }
+}
+
+/// Composes a dead key with a base letter, when the pair has a precomposed form.
+fn compose_accent(dead: char, base: char) -> Option<char> {
+    let lower = base.to_ascii_lowercase();
+    let composed = match (dead, lower) {
+        ('`', 'a') => 'à',
+        ('`', 'e') => 'è',
+        ('`', 'i') => 'ì',
+        ('`', 'o') => 'ò',
+        ('`', 'u') => 'ù',
+        ('^', 'a') => 'â',
+        ('^', 'e') => 'ê',
+        ('^', 'i') => 'î',
+        ('^', 'o') => 'ô',
+        ('^', 'u') => 'û',
+        _ => return None,
+    };
+    Some(if base.is_uppercase() { composed.to_ascii_uppercase() } else { composed })
+}
+
 /// Layout variants for the on-screen keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardLayout {
     /// Standard QWERTY letter layout (default).
     Qwerty,
+    /// QWERTZ letter layout, used in German-speaking regions.
+    Qwertz,
     /// Numeric/symbol layout.
     Numeric,
+    /// Emoji grid. Each key commits its glyph through [`Keyboard::text_committed`].
+    Emoji,
 }
 
 /// Virtual keyboard key definition.
@@ -92,6 +132,33 @@ pub struct Keyboard {
     pub backspace_pressed: GenericSignal,
     /// Signal emitted when Space (key code 32) is pressed.
     pub space_pressed: GenericSignal,
+    /// Text committed by a key that does not map to a key code (an emoji), by a dead-key
+    /// composition, or by accepting a suggestion.
+    pub text_committed: Signal1<String>,
+    /// Whether Caps Lock is on. Shift and Caps Lock combine by exclusive-or.
+    caps_lock: bool,
+    /// A pending dead key (an accent) that composes with the next letter.
+    dead_key: Option<char>,
+    /// The key held down, for auto-repeat and long-press accents.
+    held_key: Option<(usize, usize)>,
+    /// Milliseconds the held key has been down.
+    repeat_elapsed: u32,
+    /// The open long-press accent popup: the key and its variants.
+    accent_popup: Option<(usize, usize, Vec<char>)>,
+    /// Remaining press-flash weight, in `0..=1`, animated by [`Keyboard::tick`].
+    press_progress: f32,
+    /// Whether a pressed key scales down and trails a ripple ring.
+    ///
+    /// Off by default: the press flash above is the whole of the resting contract, so a board
+    /// that never asks for motion paints exactly the frame it always did (and the reference
+    /// snapshots stay byte-identical). Turned on, the key under the finger shrinks by at most
+    /// two pixels and a ring expands out of it as the flash decays — the touch-keyboard
+    /// affordance that a brightness change alone does not give.
+    press_animation: bool,
+    /// Suggestion-bar entries, shown above the keys when non-empty.
+    suggestions: Vec<String>,
+    /// Keys crossed while the pointer is held, for swipe input.
+    swipe_text: String,
 }
 
 impl Keyboard {
@@ -111,6 +178,16 @@ impl Keyboard {
             enter_pressed: GenericSignal::new(),
             backspace_pressed: GenericSignal::new(),
             space_pressed: GenericSignal::new(),
+            text_committed: Signal1::new(),
+            caps_lock: false,
+            dead_key: None,
+            held_key: None,
+            repeat_elapsed: 0,
+            accent_popup: None,
+            press_progress: 0.0,
+            press_animation: false,
+            suggestions: Vec::new(),
+            swipe_text: String::new(),
         };
         kbd.build_qwerty_layout();
         kbd
@@ -121,7 +198,9 @@ impl Keyboard {
         self.layout = layout;
         match layout {
             KeyboardLayout::Qwerty => self.build_qwerty_layout(),
+            KeyboardLayout::Qwertz => self.build_qwertz_layout(),
             KeyboardLayout::Numeric => self.build_numeric_layout(),
+            KeyboardLayout::Emoji => self.build_emoji_layout(),
         }
         self.base.request_redraw();
     }
@@ -172,6 +251,30 @@ impl Keyboard {
         None
     }
 
+    /// The accent popup's rectangle, derived the same way the paint derives it.
+    pub fn accent_popup_rect(&self) -> Option<Rect> {
+        let (row, col, variants) = self.accent_popup.as_ref()?;
+        let rect = self.geometry();
+        if self.keys.is_empty() {
+            return None;
+        }
+        let row_height = rect.height as f32 / self.keys.len() as f32;
+        let row_width = rect.width as f32;
+        let total_ratio: f32 =
+            self.keys[*row].iter().map(|key| key.width_ratio).sum::<f32>().max(0.001);
+        let mut key_x = rect.x as f32;
+        for key in self.keys[*row].iter().take(*col) {
+            key_x += row_width * key.width_ratio / total_ratio;
+        }
+        let cell_width = 26i32;
+        let popup_width = cell_width * variants.len() as i32;
+        let popup_y = (rect.y + *row as i32 * row_height as i32 - 30)
+            .max(rect.y)
+            .min(rect.y + rect.height as i32 - 30);
+        let popup_x = (key_x as i32).min(rect.x + rect.width as i32 - popup_width).max(rect.x);
+        Some(Rect::new(popup_x, popup_y, popup_width.max(1) as u32, 28))
+    }
+
     /// Toggle the shift state between uppercase and lowercase.
     pub fn toggle_shift(&mut self) {
         self.shift = !self.shift;
@@ -195,6 +298,202 @@ impl Keyboard {
     /// Return whether lowercase mode is enabled.
     pub fn lowercase(&self) -> bool {
         self.lowercase
+    }
+
+    /// Whether Caps Lock is on.
+    pub fn caps_lock(&self) -> bool {
+        self.caps_lock
+    }
+
+    /// Sets Caps Lock. It combines with Shift by exclusive-or, so either one produces
+    /// uppercase letters and both cancel.
+    pub fn set_caps_lock(&mut self, caps_lock: bool) {
+        if self.caps_lock == caps_lock {
+            return;
+        }
+        self.caps_lock = caps_lock;
+        self.base.request_redraw();
+    }
+
+    /// The pending dead key, if one is armed.
+    pub fn dead_key(&self) -> Option<char> {
+        self.dead_key
+    }
+
+    /// Arms a dead key; the next letter commits the composed character.
+    ///
+    /// A dead key with no composition leaves the accent followed by the letter, which is
+    /// what every platform does when the pair has no precomposed form.
+    pub fn set_dead_key(&mut self, dead_key: Option<char>) {
+        if self.dead_key == dead_key {
+            return;
+        }
+        self.dead_key = dead_key;
+        self.base.request_redraw();
+    }
+
+    /// Whether the pressed-key scale/ripple animation is enabled.
+    pub fn press_animation(&self) -> bool {
+        self.press_animation
+    }
+
+    /// Enables or disables the pressed-key scale/ripple animation.
+    ///
+    /// The feature is opt-in so the default board keeps its static press flash.
+    pub fn set_press_animation(&mut self, enabled: bool) {
+        if self.press_animation == enabled {
+            return;
+        }
+        self.press_animation = enabled;
+        self.base.request_redraw();
+    }
+
+    /// The rectangle a key is painted in, including the opt-in press scale.
+    ///
+    /// The inset is derived from [`Self::press_progress`], so the key grows back to its full
+    /// rectangle as the flash decays rather than snapping at release. A key that is not the
+    /// pressed one, or a board with the animation off, keeps its exact resting rectangle.
+    fn painted_key_rect(&self, key_rect: Rect, at: (usize, usize)) -> Rect {
+        if !self.press_animation || self.pressed_key != Some(at) || self.press_progress <= 0.0 {
+            return key_rect;
+        }
+        let inset = (2.0 * self.press_progress).round() as u32;
+        let width = key_rect.width.saturating_sub(inset * 2).max(1);
+        let height = key_rect.height.saturating_sub(inset * 2).max(1);
+        Rect::new(key_rect.x + inset as i32, key_rect.y + inset as i32, width, height)
+    }
+
+    /// Commits text that did not come from a key code (an emoji, a dead-key composition or
+    /// an accepted suggestion) through [`Self::text_committed`].
+    pub fn commit_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if !text.is_empty() {
+            self.text_committed.emit(text);
+        }
+    }
+
+    /// The suggestion-bar entries.
+    pub fn suggestions(&self) -> &[String] {
+        &self.suggestions
+    }
+
+    /// Replaces the suggestion-bar entries. An empty list hides the bar.
+    pub fn set_suggestions(&mut self, suggestions: Vec<String>) {
+        if self.suggestions == suggestions {
+            return;
+        }
+        self.suggestions = suggestions;
+        self.base.request_redraw();
+    }
+
+    /// Accepts suggestion `index` and commits its text.
+    pub fn commit_suggestion(&mut self, index: usize) -> bool {
+        let Some(text) = self.suggestions.get(index).cloned() else {
+            return false;
+        };
+        self.text_committed.emit(text);
+        true
+    }
+
+    /// The accent variants offered for a letter key (long-press candidates).
+    ///
+    /// Keys without a precomposed accent family return an empty list and therefore show no
+    /// popup. The set is deliberately small and explicit: it is the Latin accents a touch
+    /// keyboard actually offers, not a Unicode combining-mark generator.
+    pub fn accent_variants(key_code: u32) -> Vec<char> {
+        let Some(base) = char::from_u32(key_code).map(|ch| ch.to_ascii_lowercase()) else {
+            return Vec::new();
+        };
+        let variants: &[char] = match base {
+            'a' => &['à', 'á', 'â', 'ä', 'å', 'ã'],
+            'e' => &['è', 'é', 'ê', 'ë', 'ē'],
+            'i' => &['ì', 'í', 'î', 'ï', 'ī'],
+            'o' => &['ò', 'ó', 'ô', 'ö', 'õ', 'ø'],
+            'u' => &['ù', 'ú', 'û', 'ü', 'ū'],
+            'c' => &['ç', 'ć', 'č'],
+            'n' => &['ñ', 'ń'],
+            's' => &['ś', 'š', 'ß'],
+            'y' => &['ý', 'ÿ'],
+            _ => &[],
+        };
+        variants.to_vec()
+    }
+
+    /// The open accent popup, if any: the key's position and its variants.
+    pub fn accent_popup(&self) -> Option<((usize, usize), &[char])> {
+        self.accent_popup.as_ref().map(|(row, col, variants)| ((*row, *col), variants.as_slice()))
+    }
+
+    /// Opens the accent popup for a key, when that key has variants.
+    pub fn show_accents(&mut self, row: usize, col: usize) -> bool {
+        let Some(key) = self.keys.get(row).and_then(|keys| keys.get(col)) else {
+            return false;
+        };
+        let variants = Self::accent_variants(key.key_code);
+        if variants.is_empty() {
+            return false;
+        }
+        self.accent_popup = Some((row, col, variants));
+        self.base.request_redraw();
+        true
+    }
+
+    /// Commits variant `index` from the open accent popup.
+    pub fn commit_accent(&mut self, index: usize) -> bool {
+        let Some((_, _, variants)) = self.accent_popup.as_ref() else {
+            return false;
+        };
+        let Some(character) = variants.get(index).copied() else {
+            return false;
+        };
+        let uppercase = self.shift ^ self.caps_lock;
+        let text =
+            if uppercase { character.to_uppercase().to_string() } else { character.to_string() };
+        self.accent_popup = None;
+        self.text_committed.emit(text);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Advances held-key repeat, the long-press timer and the press flash.
+    ///
+    /// Returns whether another frame is due. A held key repeats after the platform's
+    /// initial delay; the same hold opens the accent popup when the key has variants.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        let mut due = false;
+        if self.press_progress > 0.0 {
+            self.press_progress = (self.press_progress - delta_ms as f32 / 140.0).max(0.0);
+            due = true;
+            self.base.request_redraw();
+        }
+        if let Some((row, col)) = self.held_key {
+            self.repeat_elapsed = self.repeat_elapsed.saturating_add(delta_ms);
+            due = true;
+            if self.accent_popup.is_none() && self.repeat_elapsed >= 500 {
+                self.show_accents(row, col);
+            }
+            if self.repeat_elapsed >= 450 {
+                let mut remaining = self.repeat_elapsed - 450;
+                while remaining >= 90 {
+                    remaining -= 90;
+                    if let Some(key) = self.keys.get(row).and_then(|keys| keys.get(col)) {
+                        let key_code = key.key_code;
+                        self.emit_key_signals(key_code);
+                    }
+                }
+                self.repeat_elapsed = 450 + remaining;
+            }
+        }
+        due
+    }
+
+    /// Stops repeat and long-press tracking for the held key.
+    pub fn release_key(&mut self) {
+        self.held_key = None;
+        self.repeat_elapsed = 0;
+        self.accent_popup = None;
+        self.pressed_key = None;
+        self.base.request_redraw();
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
@@ -240,11 +539,60 @@ impl Keyboard {
             ],
             // Row 3: 123?, Space (width 4), Enter
             vec![
-                KeyDefinition { label: "123".into(), key_code: 0, width_ratio: 1.5 },
+                KeyDefinition { label: "123".into(), key_code: 0, width_ratio: 1.2 },
                 KeyDefinition { label: "Space".into(), key_code: 32, width_ratio: 4.0 },
                 KeyDefinition { label: "Enter".into(), key_code: 13, width_ratio: 1.5 },
             ],
         ];
+    }
+
+    /// Builds the QWERTZ letter layout: QWERTY with the `Y` and `Z` keys exchanged.
+    fn build_qwertz_layout(&mut self) {
+        self.build_qwerty_layout();
+        for row in &mut self.keys {
+            for key in row {
+                match key.label.as_str() {
+                    "y" => {
+                        key.label = "z".into();
+                        key.key_code = 90;
+                    }
+                    "z" => {
+                        key.label = "y".into();
+                        key.key_code = 89;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Builds an emoji grid. Emoji have no key code, so their text is committed through
+    /// [`Keyboard::text_committed`] and the key code they carry is the no-key sentinel.
+    fn build_emoji_layout(&mut self) {
+        let glyphs = [
+            "😀", "😄", "😉", "😍", "😎", "🤔", "😢", "😡", "👍", "👎", "👏", "🙏", "💪", "👋",
+            "🤝", "✌", "❤", "💔", "✨", "🔥", "🎉", "🎁", "☀", "🌙", "🍎", "🍕", "☕", "🍺", "⚽",
+            "🎵", "📷", "💡",
+        ];
+        self.keys = glyphs
+            .chunks(8)
+            .map(|chunk| {
+                chunk
+                    .iter()
+                    .map(|glyph| KeyDefinition {
+                        label: (*glyph).into(),
+                        key_code: NO_KEY,
+                        width_ratio: 1.0,
+                    })
+                    .collect()
+            })
+            .collect();
+        self.keys.push(vec![
+            KeyDefinition { label: "ABC".into(), key_code: NO_KEY, width_ratio: 1.5 },
+            KeyDefinition { label: "Space".into(), key_code: 32, width_ratio: 4.0 },
+            KeyDefinition { label: "Bksp".into(), key_code: 8, width_ratio: 1.5 },
+            KeyDefinition { label: "Enter".into(), key_code: 13, width_ratio: 1.5 },
+        ]);
     }
 
     fn build_numeric_layout(&mut self) {
@@ -301,6 +649,75 @@ impl Keyboard {
         }
     }
 
+    /// Activates the key at `at`: layout switches, modifiers, dead keys, emoji and ordinary
+    /// characters all go through this one entry point.
+    ///
+    /// A virtual keyboard's key means more than its key code: `Caps` and `123` carry the
+    /// no-key sentinel, and an emoji has no code at all. Routing every activation through one
+    /// function is what keeps a press, a touch and auto-repeat from each re-deciding them.
+    fn activate_key(&mut self, at: (usize, usize)) {
+        let Some(key) = self.keys.get(at.0).and_then(|row| row.get(at.1)) else {
+            return;
+        };
+        let code = key.key_code;
+        let label = key.label.clone();
+        match label.as_str() {
+            "Shift" => {
+                self.toggle_shift();
+                return;
+            }
+            "Caps" => {
+                self.set_caps_lock(!self.caps_lock);
+                return;
+            }
+            "123" => {
+                self.set_layout(KeyboardLayout::Numeric);
+                return;
+            }
+            "ABC" => {
+                self.set_layout(KeyboardLayout::Qwerty);
+                return;
+            }
+            _ => {}
+        }
+        if code == NO_KEY {
+            // An emoji, or any other glyph the layout carries as text.
+            self.text_committed.emit(label);
+            self.base.clicked.emit();
+            return;
+        }
+        // Dead keys: an accent key arms the composition instead of committing itself.
+        if code == 96 || code == 94 {
+            self.set_dead_key(code_char(code));
+            return;
+        }
+        if let Some(dead) = self.dead_key.take() {
+            if let Some(base) = code_char(code) {
+                let composed = compose_accent(dead, base).unwrap_or(base);
+                let uppercase = self.shift ^ self.caps_lock;
+                let text = if uppercase {
+                    composed.to_uppercase().to_string()
+                } else {
+                    composed.to_string()
+                };
+                self.text_committed.emit(text);
+                self.key_pressed.emit((code, 0));
+                self.base.clicked.emit();
+                return;
+            }
+        }
+        self.emit_key_signals(code);
+        if (65..=90).contains(&code) || code == 32 {
+            if let Some(base) = code_char(code) {
+                let uppercase = self.shift ^ self.caps_lock;
+                let text =
+                    if uppercase { base.to_uppercase().to_string() } else { base.to_string() };
+                self.text_committed.emit(text);
+            }
+        }
+        self.base.clicked.emit();
+    }
+
     /// Get the display label for a key, respecting shift/lowercase state.
     ///
     /// Borrowed when the label is already in the case the state asks for (the default
@@ -308,9 +725,9 @@ impl Keyboard {
     /// actually has to change case is rebuilt. The draw calls this once per key per
     /// frame, and the owned `String` it used to return meant one allocation per key.
     fn key_display_label<'k>(&self, key: &'k KeyDefinition) -> Cow<'k, str> {
-        // Only letter keys are affected by shift.
+        // Only letter keys are affected by shift and Caps Lock.
         if (65..=90).contains(&key.key_code) {
-            if self.shift || !self.lowercase {
+            if self.shift ^ self.caps_lock || !self.lowercase {
                 if key.label.chars().all(|ch| !ch.is_lowercase()) {
                     Cow::Borrowed(key.label.as_str())
                 } else {
@@ -344,6 +761,11 @@ impl Widget for Keyboard {
             crate::widget::metrics::dimensions::KEYBOARD_DEFAULT_WIDTH,
             crate::widget::metrics::dimensions::KEYBOARD_DEFAULT_HEIGHT,
         )
+    }
+
+    /// A held key and a fading press flash both owe frames.
+    fn is_animating(&self) -> bool {
+        self.held_key.is_some() || self.press_progress > 0.0
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -387,11 +809,14 @@ impl WidgetProperties for Keyboard {
             "layout" => {
                 let token = match self.layout() {
                     KeyboardLayout::Qwerty => "qwerty",
+                    KeyboardLayout::Qwertz => "qwertz",
                     KeyboardLayout::Numeric => "numeric",
+                    KeyboardLayout::Emoji => "emoji",
                 };
                 Ok(CapabilityValue::String(token.to_string()))
             }
             "lowercase" => Ok(CapabilityValue::Bool(self.lowercase())),
+            "press_animation" => Ok(CapabilityValue::Bool(self.press_animation())),
             _ => base_property_get(self, name),
         }
     }
@@ -402,7 +827,9 @@ impl WidgetProperties for Keyboard {
                 let token = expect_string(value)?;
                 let layout = match token.as_str() {
                     "qwerty" => KeyboardLayout::Qwerty,
+                    "qwertz" => KeyboardLayout::Qwertz,
                     "numeric" => KeyboardLayout::Numeric,
+                    "emoji" => KeyboardLayout::Emoji,
                     _ => return Err(CapabilityAccessError::TypeMismatch),
                 };
                 self.set_layout(layout);
@@ -412,13 +839,17 @@ impl WidgetProperties for Keyboard {
                 self.set_lowercase(expect_bool(value)?);
                 Ok(())
             }
+            "press_animation" => {
+                self.set_press_animation(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `KEYBOARD_PROPERTIES`.
-        property_names_of!["layout", "lowercase", BASE_PROPERTY_NAMES]
+        property_names_of!["layout", "lowercase", "press_animation", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `keyboard` publishes.
@@ -450,59 +881,94 @@ impl EventHandler for Keyboard {
             // Only handle MousePress (modern variant) to avoid double-trigger
             // with MouseDown (legacy variant).
             Event::MousePress { pos, .. } => {
+                // The suggestion bar sits above the key grid and is hit-tested first.
+                if !self.suggestions.is_empty() {
+                    let rect = self.geometry();
+                    if pos.y >= rect.y && pos.y < rect.y + SUGGESTION_BAR_HEIGHT as i32 {
+                        let cell_width =
+                            (rect.width as f32 / self.suggestions.len() as f32).max(1.0);
+                        let index = (((pos.x - rect.x) as f32) / cell_width) as usize;
+                        self.commit_suggestion(index);
+                        return;
+                    }
+                }
+                // An open accent popup takes the press before the key under it.
+                if self.accent_popup.is_some() {
+                    let variants = self
+                        .accent_popup
+                        .as_ref()
+                        .map(|(_, _, variants)| variants.len())
+                        .unwrap_or(0);
+                    if let Some(popup) = self.accent_popup_rect() {
+                        if popup.contains_point(*pos) && variants > 0 {
+                            let cell = (popup.width as i32 / variants as i32).max(1);
+                            let index =
+                                (((pos.x - popup.x) / cell).max(0) as usize).min(variants - 1);
+                            self.commit_accent(index);
+                            return;
+                        }
+                    }
+                    self.accent_popup = None;
+                }
                 let hit = self.key_at_position(*pos);
-                let key_code = hit.and_then(|(r, c)| {
-                    self.keys.get(r).and_then(|row| row.get(c)).map(|k| k.key_code)
-                });
-                if let Some(code) = key_code {
+                if let Some(at) = hit {
                     // The latch is what the draw path reads, so the key the user pressed is the
                     // key that lights up. Set from the **hit test**, the same function the click
                     // itself uses, so the highlight and the action can never name different keys.
-                    if let Some(at) = hit {
-                        self.pressed_key = Some(at);
-                        self.base.request_redraw();
+                    self.pressed_key = Some(at);
+                    self.held_key = Some(at);
+                    self.repeat_elapsed = 0;
+                    self.press_progress = 1.0;
+                    self.swipe_text.clear();
+                    self.activate_key(at);
+                    self.base.request_redraw();
+                }
+            }
+            // Crossing keys while held builds a swipe word; a release commits it as text.
+            Event::MouseMove { pos } => {
+                if let Some(held) = self.held_key {
+                    if let Some(at) = self.key_at_position(*pos) {
+                        if at != held {
+                            self.pressed_key = Some(at);
+                            if let Some(key) = self.keys.get(at.0).and_then(|row| row.get(at.1)) {
+                                if key.key_code != NO_KEY && key.key_code != 8 && key.key_code != 13
+                                {
+                                    self.swipe_text.push_str(&key.label);
+                                }
+                            }
+                            self.base.request_redraw();
+                        }
                     }
-                    if code == 16 {
-                        self.toggle_shift();
-                    } else {
-                        self.emit_key_signals(code);
-                    }
-                    self.base.clicked.emit();
                 }
             }
             // The press ends when the pointer goes up, wherever it went up: the key was activated
             // on the press (that is this control's contract), so the confirmation is released with
             // the pointer rather than being latched until the next press.
             Event::MouseRelease { .. } => {
-                if self.pressed_key.take().is_some() {
-                    self.base.request_redraw();
+                if self.swipe_text.chars().count() > 1 {
+                    let text = std::mem::take(&mut self.swipe_text);
+                    self.text_committed.emit(text);
                 }
+                self.swipe_text.clear();
+                self.release_key();
+            }
+            Event::MouseLeave { .. } => {
+                self.swipe_text.clear();
+                self.release_key();
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
-                let hit = self.key_at_position(*pos);
-                let key_code = hit.and_then(|(r, c)| {
-                    self.keys.get(r).and_then(|row| row.get(c)).map(|k| k.key_code)
-                });
-                if let Some(code) = key_code {
-                    if let Some(at) = hit {
-                        self.pressed_key = Some(at);
-                        self.base.request_redraw();
-                    }
-                    if code == 16 {
-                        self.toggle_shift();
-                    } else {
-                        self.emit_key_signals(code);
-                    }
-                    self.base.clicked.emit();
-                }
-            }
-            #[cfg(feature = "touch")]
-            Event::TouchEnd { .. } => {
-                if self.pressed_key.take().is_some() {
+                if let Some(at) = self.key_at_position(*pos) {
+                    self.pressed_key = Some(at);
+                    self.held_key = Some(at);
+                    self.repeat_elapsed = 0;
+                    self.press_progress = 1.0;
+                    self.activate_key(at);
                     self.base.request_redraw();
                 }
             }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => self.release_key(),
             Event::KeyPress { key, modifiers: _ } => {
                 match *key {
                     8 => {
@@ -615,7 +1081,8 @@ impl Draw for Keyboard {
         let key_bg = board.blend(&ink, 0.10);
         let key_border = board.blend(&muted, 0.45);
         let special_bg = board.blend(&ink, 0.20);
-        let shift_bg = if self.shift { primary.blend(&board, 0.45) } else { special_bg };
+        let shift_bg =
+            if self.shift ^ self.caps_lock { primary.blend(&board, 0.45) } else { special_bg };
         // A key's label must contrast with the key it sits on, which is now a theme colour rather
         // than a fixed light grey.
         let text_color = ink;
@@ -628,11 +1095,14 @@ impl Draw for Keyboard {
             let mut cursor_x = rect.x as f32;
             for (col_idx, key) in row_keys.iter().enumerate() {
                 let key_w = row_width * key.width_ratio / total_ratio;
-                let key_rect = Rect::from_f32(
-                    cursor_x,
-                    rect.y as f32 + row_idx as f32 * row_height,
-                    key_w,
-                    row_height,
+                let key_rect = self.painted_key_rect(
+                    Rect::from_f32(
+                        cursor_x,
+                        rect.y as f32 + row_idx as f32 * row_height,
+                        key_w,
+                        row_height,
+                    ),
+                    (row_idx, col_idx),
                 );
 
                 // Choose key background.
@@ -656,7 +1126,9 @@ impl Draw for Keyboard {
                 // is visible under the finger that is covering the key. `pressed_key` names the key
                 // by position because two keys in different rows can share a key code.
                 let kbg = if self.pressed_key == Some((row_idx, col_idx)) {
-                    kbg.blend(&ink, 0.25)
+                    // The flash decays after release, so the key eases out of its pressed look
+                    // rather than snapping back on the next unrelated frame.
+                    kbg.blend(&ink, 0.25 * self.press_progress.max(0.35))
                 } else {
                     kbg
                 };
@@ -665,6 +1137,20 @@ impl Draw for Keyboard {
                 context.fill_rect(key_rect, kbg);
                 // Draw key border.
                 context.draw_rect(key_rect, key_border);
+                // The opt-in ripple: a ring expanding out of the scaled key as its flash decays.
+                if self.press_animation
+                    && self.pressed_key == Some((row_idx, col_idx))
+                    && self.press_progress > 0.0
+                {
+                    let spread = ((1.0 - self.press_progress) * 4.0).round() as i32;
+                    let ripple = Rect::new(
+                        key_rect.x - spread,
+                        key_rect.y - spread,
+                        key_rect.width + (spread * 2) as u32,
+                        key_rect.height + (spread * 2) as u32,
+                    );
+                    context.draw_rect(ripple, key_border.blend(&ink, 0.35 * self.press_progress));
+                }
 
                 // Draw label centered in the key.
                 let label = self.key_display_label(key);
@@ -695,7 +1181,7 @@ impl Draw for Keyboard {
                     // share of the 30 px row's remaining height. `draw_text_line` is the entry
                     // point that does both halves, and it is the one the doc-comment above
                     // already promised.
-                    let key_text = if key.key_code == 16 && self.shift {
+                    let key_text = if key.key_code == 16 && (self.shift ^ self.caps_lock) {
                         shift_bg.contrast_color()
                     } else {
                         text_color
@@ -710,6 +1196,73 @@ impl Draw for Keyboard {
                 }
 
                 cursor_x += key_w;
+            }
+        }
+
+        // ── Suggestion bar ──
+        // Painted over the first key row when the caller supplied candidates. The strip is
+        // opt-in: an empty list paints exactly the board it always did.
+        if !self.suggestions.is_empty() {
+            let strip =
+                Rect::new(rect.x, rect.y, rect.width, SUGGESTION_BAR_HEIGHT.min(rect.height));
+            context.fill_rect(strip, board.blend(&ink, 0.18));
+            let mut cell_x = strip.x;
+            let cell_width = (strip.width as f32 / self.suggestions.len() as f32).max(1.0) as u32;
+            let line = context.text_line(strip, font);
+            for suggestion in &self.suggestions {
+                context.draw_text_fitted_cow(
+                    Rect::new(cell_x + 4, line.y, cell_width.saturating_sub(8), line.height),
+                    suggestion,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Center,
+                );
+                cell_x += cell_width as i32;
+            }
+        }
+
+        // ── Long-press accent popup ──
+        // A row of candidate glyphs above the held key, each cell a target for
+        // [`Keyboard::commit_accent`].
+        if let Some((row, col, variants)) = &self.accent_popup {
+            let total_ratio: f32 = self
+                .keys
+                .get(*row)
+                .map(|keys| keys.iter().map(|k| k.width_ratio).sum())
+                .unwrap_or(1.0);
+            let mut key_x = rect.x as f32;
+            if let Some(keys) = self.keys.get(*row) {
+                for (index, key) in keys.iter().enumerate() {
+                    let key_w = row_width * key.width_ratio / total_ratio;
+                    if index == *col {
+                        break;
+                    }
+                    key_x += key_w;
+                }
+            }
+            let cell_width = 26i32;
+            let popup_width = cell_width * variants.len() as i32;
+            let popup_y = (rect.y + *row as i32 * row_height as i32 - 30)
+                .max(rect.y)
+                .min(rect.y + rect.height as i32 - 30);
+            let popup_x = (key_x as i32).min(rect.x + rect.width as i32 - popup_width).max(rect.x);
+            let popup = Rect::new(popup_x, popup_y, popup_width as u32, 28);
+            context.fill_rect(popup, board.blend(&ink, 0.25));
+            context.draw_rect(popup, key_border);
+            let line = context.text_line(popup, font);
+            for (index, variant) in variants.iter().enumerate() {
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        popup_x + index as i32 * cell_width,
+                        line.y,
+                        cell_width as u32,
+                        line.height,
+                    ),
+                    &variant.to_string(),
+                    font,
+                    text_color,
+                    HorizontalAlignment::Center,
+                );
             }
         }
     }
@@ -1069,5 +1622,114 @@ mod tests {
         let hint = kbd.size_hint();
         assert_eq!(hint.width, 320);
         assert_eq!(hint.height, 160);
+    }
+
+    /// The scale/ripple animation is opt-in and only ever moves the pressed key.
+    #[test]
+    fn a_press_animation_scales_the_pressed_key_only() {
+        let mut kbd = Keyboard::new(Rect::new(0, 0, 320, 160));
+        let key = Rect::new(10, 10, 30, 40);
+        kbd.pressed_key = Some((0, 2));
+        kbd.press_progress = 1.0;
+
+        assert!(!kbd.press_animation());
+        assert_eq!(kbd.painted_key_rect(key, (0, 2)), key, "off by default");
+
+        kbd.set_press_animation(true);
+        assert!(kbd.press_animation());
+        assert_eq!(
+            kbd.painted_key_rect(key, (0, 2)),
+            Rect::new(12, 12, 26, 36),
+            "a pressed key is inset while its flash is at full weight"
+        );
+        assert_eq!(
+            kbd.painted_key_rect(key, (0, 3)),
+            key,
+            "a neighbouring key keeps its resting rectangle"
+        );
+
+        kbd.press_progress = 0.0;
+        assert_eq!(
+            kbd.painted_key_rect(key, (0, 2)),
+            key,
+            "the key grows back to its full rectangle once the flash has decayed"
+        );
+    }
+
+    /// A held key repeats and opens its long-press accent popup.
+    #[test]
+    fn a_held_key_repeats_and_opens_the_accent_popup() {
+        use std::sync::{Arc, Mutex};
+
+        let mut kbd = Keyboard::new(Rect::new(0, 0, 320, 160));
+        let presses = Arc::new(Mutex::new(Vec::<u32>::new()));
+        let observed = presses.clone();
+        kbd.key_pressed.connect(move |args| {
+            let (code, _) = *args;
+            observed.lock().unwrap().push(code);
+        });
+
+        // Row 1, column 0 is the `a` key (row height 40, so its centre is y = 60).
+        kbd.handle_event(&Event::MousePress { pos: Point::new(17, 60), button: 1, modifiers: 0 });
+        assert_eq!(presses.lock().unwrap().len(), 1, "the press itself fires once");
+
+        assert!(kbd.tick(600), "a held key owes another frame");
+        assert!(
+            presses.lock().unwrap().len() >= 2,
+            "the held key must auto-repeat after the initial delay"
+        );
+        let popup = kbd.accent_popup().expect("a held letter offers its accents");
+        assert!(popup.1.contains(&'á'));
+    }
+
+    /// Crossing keys while held commits the crossed text on release.
+    #[test]
+    fn swiping_across_keys_commits_the_crossed_text() {
+        use std::sync::{Arc, Mutex};
+
+        let mut kbd = Keyboard::new(Rect::new(0, 0, 320, 160));
+        let committed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let observed = committed.clone();
+        kbd.text_committed.connect(move |text| observed.lock().unwrap().push(text.to_string()));
+
+        // q (row 0, col 0), then w (col 1), then e (col 2); keys are ~32 px wide.
+        kbd.handle_event(&Event::MousePress { pos: Point::new(16, 20), button: 1, modifiers: 0 });
+        kbd.handle_event(&Event::MouseMove { pos: Point::new(48, 20) });
+        kbd.handle_event(&Event::MouseMove { pos: Point::new(80, 20) });
+        kbd.handle_event(&Event::MouseRelease { pos: Point::new(80, 20), button: 1 });
+
+        assert_eq!(committed.lock().unwrap().last().map(String::as_str), Some("we"));
+    }
+
+    /// The suggestion strip commits the entry under the press.
+    #[test]
+    fn a_pressed_suggestion_is_committed() {
+        use std::sync::{Arc, Mutex};
+
+        let mut kbd = Keyboard::new(Rect::new(0, 0, 320, 160));
+        kbd.set_suggestions(vec!["one".to_string(), "two".to_string()]);
+        let committed = Arc::new(Mutex::new(String::new()));
+        let observed = committed.clone();
+        kbd.text_committed.connect(move |text| *observed.lock().unwrap() = text.to_string());
+
+        // The second cell of the strip that overlays the first key row.
+        kbd.handle_event(&Event::MousePress { pos: Point::new(200, 6), button: 1, modifiers: 0 });
+        assert_eq!(*committed.lock().unwrap(), "two");
+    }
+
+    /// The emoji layout commits glyphs that carry no key code.
+    #[test]
+    fn the_emoji_layout_commits_its_glyph() {
+        use std::sync::{Arc, Mutex};
+
+        let mut kbd = Keyboard::new(Rect::new(0, 0, 320, 160));
+        kbd.set_layout(KeyboardLayout::Emoji);
+        let committed = Arc::new(Mutex::new(String::new()));
+        let observed = committed.clone();
+        kbd.text_committed.connect(move |text| *observed.lock().unwrap() = text.to_string());
+
+        // Five rows over 160 px, eight keys over 320 px: the first cell is 40 x 32.
+        kbd.handle_event(&Event::MousePress { pos: Point::new(20, 16), button: 1, modifiers: 0 });
+        assert_eq!(*committed.lock().unwrap(), "😀");
     }
 }

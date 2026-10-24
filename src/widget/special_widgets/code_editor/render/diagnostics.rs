@@ -43,7 +43,9 @@ impl CodeEditor {
         let columns = self.text_columns().max(1);
         for (_, marker) in inline {
             let line = marker.line;
-            if !visible.contains(&line) {
+            // `visible` is in paint order (top to bottom), so membership is a
+            // binary search rather than a scan of every painted row per marker.
+            if visible.binary_search(&line).is_err() {
                 continue;
             }
             let text = self.line_text(line).unwrap_or_default();

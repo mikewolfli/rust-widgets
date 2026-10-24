@@ -4,11 +4,16 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" rx="4" ry="4" fill="rgba(30,30,33,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(73,73,75,1.00)" stroke-width="1" />
-  <rect x="8" y="8" width="192" height="68" fill="rgba(255,64,64,1.00)" />
+  <defs><linearGradient id=\"g1\" x1=\"8\" y1=\"8\" x2=\"200\" y2=\"8\"><stop offset=\"0.000\" stop-color=\"#ffffff\" stop-opacity=\"1.000\"/><stop offset=\"1.000\" stop-color=\"#ff0000\" stop-opacity=\"1.000\"/></linearGradient></defs>
+  <rect x="8" y="8" width="192" height="68" fill="url(#g1)" />
+  <defs><linearGradient id=\"g2\" x1=\"8\" y1=\"8\" x2=\"8\" y2=\"76\"><stop offset=\"0.000\" stop-color=\"#000000\" stop-opacity=\"0.000\"/><stop offset=\"1.000\" stop-color=\"#000000\" stop-opacity=\"1.000\"/></linearGradient></defs>
+  <rect x="8" y="8" width="192" height="68" fill="url(#g2)" />
   <rect x="8" y="8" width="192" height="68" fill="none" stroke="rgba(108,108,110,1.00)" stroke-width="1" />
-  <rect x="206" y="8" width="12" height="68" fill="rgba(50,50,52,1.00)" />
+  <defs><linearGradient id=\"g3\" x1=\"206\" y1=\"8\" x2=\"218\" y2=\"8\"><stop offset=\"0.000\" stop-color=\"#ff0000\" stop-opacity=\"1.000\"/><stop offset=\"0.167\" stop-color=\"#fffc00\" stop-opacity=\"1.000\"/><stop offset=\"0.333\" stop-color=\"#00ff00\" stop-opacity=\"1.000\"/><stop offset=\"0.500\" stop-color=\"#00fffc\" stop-opacity=\"1.000\"/><stop offset=\"0.667\" stop-color=\"#0000ff\" stop-opacity=\"1.000\"/><stop offset=\"0.833\" stop-color=\"#fc00ff\" stop-opacity=\"1.000\"/><stop offset=\"1.000\" stop-color=\"#ff0000\" stop-opacity=\"1.000\"/></linearGradient></defs>
+  <rect x="206" y="8" width="12" height="68" fill="url(#g3)" />
   <rect x="206" y="8" width="12" height="68" fill="none" stroke="rgba(98,98,100,1.00)" stroke-width="1" />
-  <rect x="222" y="8" width="10" height="68" fill="rgba(50,50,52,1.00)" />
+  <defs><linearGradient id=\"g4\" x1=\"222\" y1=\"8\" x2=\"232\" y2=\"8\"><stop offset=\"0.000\" stop-color=\"#ff0000\" stop-opacity=\"0.000\"/><stop offset=\"1.000\" stop-color=\"#ff0000\" stop-opacity=\"1.000\"/></linearGradient></defs>
+  <rect x="222" y="8" width="10" height="68" fill="url(#g4)" />
   <rect x="222" y="8" width="10" height="68" fill="none" stroke="rgba(89,89,91,1.00)" stroke-width="1" />
   <rect x="8" y="98" width="18" height="18" fill="rgba(244,67,54,1.00)" />
   <rect x="8" y="98" width="18" height="18" fill="none" stroke="rgba(0,0,0,0.35)" stroke-width="1" />

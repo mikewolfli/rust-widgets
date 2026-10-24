@@ -45,6 +45,19 @@ pub struct Snackbar {
     /// (it is what `is_visible` and `dismiss` answer with); this says how far the transition got.
     reveal: PopupReveal,
     progress: Option<f32>,
+    /// How long the bar stays up after `show`, in milliseconds. Zero means it stays until
+    /// dismissed.
+    duration_ms: u32,
+    /// Milliseconds elapsed since the bar was shown.
+    elapsed_ms: u32,
+    /// Whether progress is drawn as an indeterminate sweep rather than a fraction.
+    indeterminate: bool,
+    /// The indeterminate sweep's phase, in `0.0..=1.0`.
+    indeterminate_phase: f32,
+    /// Whether additional `show` calls queue behind the visible message.
+    queueing: bool,
+    /// Messages waiting behind the visible one.
+    queue: Vec<(String, Option<String>)>,
     /// Emitted when action is triggered.
     pub action_triggered: Signal1<String>,
     /// Emitted when snackbar is dismissed.
@@ -61,6 +74,12 @@ impl Snackbar {
             visible: false,
             reveal: PopupReveal::new(false),
             progress: None,
+            duration_ms: 0,
+            elapsed_ms: 0,
+            indeterminate: false,
+            indeterminate_phase: 0.0,
+            queueing: false,
+            queue: Vec::new(),
             action_triggered: Signal1::new(),
             dismissed: Signal1::new(),
         }
@@ -78,9 +97,15 @@ impl Snackbar {
 
     /// Shows snackbar without action.
     pub fn show(&mut self, message: impl Into<String>) {
-        self.message = message.into();
+        let message = message.into();
+        if self.visible && self.queueing {
+            self.queue.push((message, None));
+            return;
+        }
+        self.message = message;
         self.action_label = None;
         self.visible = true;
+        self.elapsed_ms = 0;
         self.reveal.set_open(true);
         self.base.request_redraw();
     }
@@ -91,11 +116,72 @@ impl Snackbar {
         message: impl Into<String>,
         action_label: impl Into<String>,
     ) {
-        self.message = message.into();
-        self.action_label = Some(action_label.into());
+        let message = message.into();
+        let action = action_label.into();
+        if self.visible && self.queueing {
+            self.queue.push((message, Some(action)));
+            return;
+        }
+        self.message = message;
+        self.action_label = Some(action);
         self.visible = true;
+        self.elapsed_ms = 0;
         self.reveal.set_open(true);
         self.base.request_redraw();
+    }
+
+    /// Sets how long the bar stays visible after it is shown.
+    ///
+    /// Zero (the default) keeps the previous behaviour: the bar waits for `dismiss` or an
+    /// action. A non-zero duration makes it retire itself, which is what a status message
+    /// wants — it is information, not a prompt, and should not require a click to clear.
+    pub fn set_duration(&mut self, duration_ms: u32) {
+        if self.duration_ms == duration_ms {
+            return;
+        }
+        self.duration_ms = duration_ms;
+        self.elapsed_ms = 0;
+        self.base.request_redraw();
+    }
+
+    /// Returns the auto-dismiss duration in milliseconds, or zero when it never retires.
+    pub fn duration(&self) -> u32 {
+        self.duration_ms
+    }
+
+    /// Enables or disables queueing of messages shown while another is visible.
+    pub fn set_queueing(&mut self, queueing: bool) {
+        if self.queueing == queueing {
+            return;
+        }
+        self.queueing = queueing;
+        if !queueing {
+            self.queue.clear();
+        }
+    }
+
+    /// Returns whether messages queue behind the visible one.
+    pub fn is_queueing(&self) -> bool {
+        self.queueing
+    }
+
+    /// Returns the number of messages waiting.
+    pub fn queued_count(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Draws the progress rule as an indeterminate sweep.
+    pub fn set_indeterminate(&mut self, indeterminate: bool) {
+        if self.indeterminate == indeterminate {
+            return;
+        }
+        self.indeterminate = indeterminate;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether progress is indeterminate.
+    pub fn is_indeterminate(&self) -> bool {
+        self.indeterminate
     }
 
     /// Dismisses snackbar.
@@ -106,6 +192,14 @@ impl Snackbar {
             // message re-opens from wherever the exit had got to rather than from the bottom.
             self.reveal.set_open(false);
             self.dismissed.emit(());
+            if let Some((message, action)) = self.queue.first().cloned() {
+                self.queue.remove(0);
+                self.message = message;
+                self.action_label = action;
+                self.visible = true;
+                self.elapsed_ms = 0;
+                self.reveal.set_open(true);
+            }
             self.base.request_redraw();
         }
     }
@@ -186,11 +280,28 @@ impl Widget for Snackbar {
     /// Forwarded to the trait so the animation bus drives it: `tick_animations` sweeps every
     /// mounted control, so a bar that kept its tick inherent is one the host cannot advance.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        self.reveal.tick(delta_ms)
+        let mut moving = self.reveal.tick(delta_ms);
+        if self.visible {
+            if self.duration_ms > 0 {
+                self.elapsed_ms = self.elapsed_ms.saturating_add(delta_ms);
+                if self.elapsed_ms >= self.duration_ms {
+                    self.dismiss();
+                    return true;
+                }
+            }
+            if self.indeterminate && self.progress.is_some() {
+                self.indeterminate_phase =
+                    (self.indeterminate_phase + delta_ms as f32 / 1200.0) % 1.0;
+                self.base.request_redraw();
+                moving = true;
+            }
+        }
+        moving
     }
 
     fn is_animating(&self) -> bool {
         self.reveal.is_animating()
+            || (self.visible && self.indeterminate && self.progress.is_some())
     }
 
     impl_widget_property_hooks!();
@@ -468,12 +579,29 @@ impl Draw for Snackbar {
                 SNACKBAR_PROGRESS_HEIGHT,
             );
             context.fill_rect(progress_bar, track);
-            let fill = (progress_bar.width as f32 * progress).round() as u32;
-            if fill > 0 {
+            if self.indeterminate {
+                // A moving window roughly a third of the track wide, wrapping at the end. The
+                // phase is advanced by `tick`, so the indicator moves without any value to set.
+                let window = (progress_bar.width as f32 * 0.35).max(8.0);
+                let travel = progress_bar.width as f32 - window;
+                let x = progress_bar.x as f32 + travel.max(0.0) * self.indeterminate_phase;
                 context.fill_rect(
-                    Rect::new(progress_bar.x, progress_bar.y, fill, progress_bar.height),
+                    Rect::new(
+                        x.round() as i32,
+                        progress_bar.y,
+                        window.round().max(1.0) as u32,
+                        progress_bar.height,
+                    ),
                     progress_fill,
                 );
+            } else {
+                let fill = (progress_bar.width as f32 * progress).round() as u32;
+                if fill > 0 {
+                    context.fill_rect(
+                        Rect::new(progress_bar.x, progress_bar.y, fill, progress_bar.height),
+                        progress_fill,
+                    );
+                }
             }
         }
         // Popped on the same path it was pushed, so the reveal cannot leak a clip onto whatever

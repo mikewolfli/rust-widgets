@@ -16,6 +16,16 @@ use crate::widget::metrics::{effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// Where a toast stack anchors its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToastAnchor {
+    /// Bottom-left, the default.
+    #[default]
+    BottomLeft,
+    /// Top-right, the placement a notification banner uses.
+    TopRight,
+}
+
 /// Toast stack with keyboard/mouse activation and dismiss.
 pub struct ToastStack {
     base: BaseWidget,
@@ -32,10 +42,27 @@ pub struct ToastStack {
     /// bookkeeping to retire them. One driver, re-aimed on every `push`, says the same thing: the
     /// newest row rises, the rest sit still.
     reveal: PopupReveal,
+    /// The exit reveal of a row being dismissed. Dismissal is deferred until this settles, so a
+    /// toast leaves the same way it arrives instead of vanishing between frames.
+    exit: PopupReveal,
+    /// The index of the row playing its exit animation.
+    closing: Option<usize>,
+    /// Whether `dismiss_selected` animates the row out before removing it.
+    ///
+    /// Off by default: a caller that removes a toast expects the item to be gone, and the
+    /// caller that asked for motion opts in with [`ToastStack::set_animate_exit`].
+    animate_exit: bool,
+    anchor: ToastAnchor,
+    /// How many of the oldest rows are scrolled out of view.
+    scroll_offset: usize,
+    /// Whether rows paint a translucent (vibrant) fill.
+    translucent: bool,
     /// Emitted when toast is activated.
     pub toast_activated: Signal1<String>,
     /// Emitted when toast is dismissed.
     pub toast_dismissed: Signal1<String>,
+    /// Emitted with the toast id when its action button is pressed.
+    pub toast_action: Signal1<String>,
 }
 
 impl ToastStack {
@@ -47,9 +74,85 @@ impl ToastStack {
             selected_index: None,
             row_height: 30,
             reveal: PopupReveal::new(true),
+            exit: PopupReveal::new(true),
+            closing: None,
+            animate_exit: false,
+            anchor: ToastAnchor::BottomLeft,
+            scroll_offset: 0,
+            translucent: false,
             toast_activated: Signal1::new(),
             toast_dismissed: Signal1::new(),
+            toast_action: Signal1::new(),
         }
+    }
+
+    /// Enables the animated exit.
+    pub fn set_animate_exit(&mut self, animate: bool) {
+        if self.animate_exit == animate {
+            return;
+        }
+        self.animate_exit = animate;
+        if !animate {
+            self.flush_pending_dismissal();
+        }
+    }
+
+    /// Returns whether dismissal animates.
+    pub fn animate_exit(&self) -> bool {
+        self.animate_exit
+    }
+
+    /// Sets where the stack anchors its rows.
+    pub fn set_anchor(&mut self, anchor: ToastAnchor) {
+        if self.anchor == anchor {
+            return;
+        }
+        self.anchor = anchor;
+        self.base.request_redraw();
+    }
+
+    /// Returns the stack's anchor.
+    pub fn anchor(&self) -> ToastAnchor {
+        self.anchor
+    }
+
+    /// Makes the rows translucent, so the window shows through them.
+    ///
+    /// A rendering layer without backdrop blur can only approximate vibrancy with alpha; that
+    /// is what this opt-in flag does, and it is why the opaque default is unchanged.
+    pub fn set_translucent(&mut self, translucent: bool) {
+        if self.translucent == translucent {
+            return;
+        }
+        self.translucent = translucent;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether rows are translucent.
+    pub fn is_translucent(&self) -> bool {
+        self.translucent
+    }
+
+    /// The number of oldest rows scrolled out of view.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Sets how many oldest rows are scrolled out of view.
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        let max = self.toasts.len().saturating_sub(self.visible_row_count());
+        let offset = offset.min(max);
+        if self.scroll_offset == offset {
+            return;
+        }
+        self.scroll_offset = offset;
+        self.base.request_redraw();
+    }
+
+    /// The number of rows the band can show at once.
+    fn visible_row_count(&self) -> usize {
+        let capacity = self.geometry().height as usize / self.row_height.max(1) as usize;
+        capacity.max(1)
     }
 
     /// Returns toast items.
@@ -107,24 +210,48 @@ impl ToastStack {
     }
 
     /// Dismisses selected toast.
+    ///
+    /// The row is not removed on this frame: it starts its exit animation, and [`Widget::tick`]
+    /// finishes the removal once the reveal has settled. A caller that wants the row gone at once
+    /// can call [`Self::flush_pending_dismissal`] after the animation, or push a new toast — the
+    /// removal is the same code either way.
     pub fn dismiss_selected(&mut self) -> bool {
         let Some(index) = self.selected_index else {
+            return false;
+        };
+        if index >= self.toasts.len() || self.closing.is_some() {
+            return false;
+        }
+        if !self.animate_exit {
+            // The immediate path is the historical contract: the row is gone on this call.
+            self.closing = Some(index);
+            return self.flush_pending_dismissal();
+        }
+        self.closing = Some(index);
+        self.exit.jump_to(true);
+        self.exit.set_open(false);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes the row whose exit animation is in flight, if any.
+    pub fn flush_pending_dismissal(&mut self) -> bool {
+        let Some(index) = self.closing.take() else {
             return false;
         };
         if index >= self.toasts.len() {
             return false;
         }
-
         let id = self.toasts[index].id.clone();
         self.toasts.remove(index);
         self.toast_dismissed.emit(id);
-
         if self.toasts.is_empty() {
             self.selected_index = None;
         } else if index >= self.toasts.len() {
             self.selected_index = Some(self.toasts.len() - 1);
         }
-
+        let max = self.toasts.len().saturating_sub(self.visible_row_count());
+        self.scroll_offset = self.scroll_offset.min(max);
         self.base.request_layout();
         self.base.request_redraw();
         true
@@ -147,13 +274,18 @@ impl ToastStack {
     fn stack_band(&self) -> Rect {
         let rows = (self.toasts.len() as u32).max(1);
         let height = rows.saturating_mul(self.row_height);
-        ControlMetrics::bottom_band(self.geometry(), height)
+        match self.anchor {
+            ToastAnchor::BottomLeft => ControlMetrics::bottom_band(self.geometry(), height),
+            ToastAnchor::TopRight => {
+                let rect = self.geometry();
+                let width = rect.width;
+                let height = height.min(rect.height);
+                Rect::new(rect.x, rect.y, width, height)
+            }
+        }
     }
 
     fn row_at(&self, pos: Point) -> Option<usize> {
-        if self.toasts.is_empty() {
-            return None;
-        }
         let band = self.stack_band();
         if pos.x < band.x
             || pos.x >= band.x + band.width as i32
@@ -171,6 +303,20 @@ impl ToastStack {
             }
         }
         None
+    }
+
+    /// The rectangle a toast row is painted at.
+    fn row_rect(&self, index: usize) -> Rect {
+        let band = self.stack_band();
+        let bottom = band.y + band.height as i32;
+        let visual_order = self.toasts.len().saturating_sub(1 + index);
+        let y = bottom - ((visual_order + 1) as i32 * self.row_height as i32);
+        Rect::new(
+            band.x + 4,
+            y + 2,
+            band.width.saturating_sub(8),
+            self.row_height.saturating_sub(4),
+        )
     }
 }
 
@@ -192,11 +338,19 @@ impl Widget for ToastStack {
 
     /// Advances the newest toast's rise-in; `true` while it still owes frames.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        self.reveal.tick(delta_ms)
+        let mut moving = self.reveal.tick(delta_ms);
+        if self.closing.is_some() {
+            moving |= self.exit.tick(delta_ms);
+            if !self.exit.is_animating() {
+                self.flush_pending_dismissal();
+                return true;
+            }
+        }
+        moving
     }
 
     fn is_animating(&self) -> bool {
-        self.reveal.is_animating()
+        self.reveal.is_animating() || self.exit.is_animating()
     }
 
     impl_draw_bridge!();
@@ -313,8 +467,27 @@ impl EventHandler for ToastStack {
         match event {
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.row_at(*pos) {
+                    // An action button occupies the trailing band of a row, so a press there
+                    // runs the action instead of merely activating the toast.
+                    let has_action =
+                        self.toasts.get(index).is_some_and(|item| item.action_label.is_some());
+                    if has_action {
+                        let row = self.row_rect(index);
+                        if pos.x >= row.x + row.width as i32 - 72 {
+                            let id = self.toasts[index].id.clone();
+                            self.toast_action.emit(id);
+                            return;
+                        }
+                    }
                     let _ = self.select_index(index);
                     let _ = self.activate_selected();
+                }
+            }
+            Event::Wheel { delta, .. } => {
+                if delta.y != 0 {
+                    let step = if delta.y > 0 { 1isize } else { -1 };
+                    let next = (self.scroll_offset as isize + step).max(0) as usize;
+                    self.set_scroll_offset(next);
                 }
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
@@ -397,6 +570,9 @@ impl Draw for ToastStack {
         // Bottom-up: the newest toast is the lowest row, which is the end the stack grows from.
         let bottom = band.y + band.height as i32;
         for (index, item) in self.toasts.iter().enumerate() {
+            if index < self.scroll_offset {
+                continue;
+            }
             let visual_order = self.toasts.len() - 1 - index;
             let y = bottom - ((visual_order + 1) as i32 * self.row_height as i32);
             if y < band.y {
@@ -422,6 +598,10 @@ impl Draw for ToastStack {
                 // proportionally further than a short one rather than a fixed number of pixels.
                 let offset = (self.row_height as f32 * (1.0 - self.reveal.value())) as i32;
                 Rect::new(row.x, row.y + offset, row.width, row.height)
+            } else if self.closing == Some(index) {
+                // Falls back out of its seat along the same path it arrived on.
+                let offset = (self.row_height as f32 * (1.0 - self.exit.value())) as i32;
+                Rect::new(row.x, row.y + offset, row.width, row.height)
             } else {
                 row
             };
@@ -430,6 +610,7 @@ impl Draw for ToastStack {
             } else {
                 row_background
             };
+            let bg = if self.translucent { bg.with_alpha(220) } else { bg };
             context.fill_rect(row, bg);
             context.draw_rect(row, row_border);
 
@@ -451,6 +632,18 @@ impl Draw for ToastStack {
                 text_color,
                 HorizontalAlignment::Left,
             );
+            if let Some(label) = item.action_label.as_deref() {
+                // The action sits in the trailing band the hit test reserves, right-aligned so
+                // its label ends where the row's padding does.
+                let action = Rect::new(row.x + row.width as i32 - 72, row.y, 68, row.height);
+                context.draw_text_line_cow(
+                    action,
+                    label,
+                    effective_font(style),
+                    text_color,
+                    HorizontalAlignment::Right,
+                );
+            }
         }
     }
 }

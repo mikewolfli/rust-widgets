@@ -28,12 +28,48 @@ pub enum LineOrientation {
     Vertical,
 }
 
+/// The shading style of a divider line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineStyle {
+    /// A single solid line, the historical rendering and the default.
+    #[default]
+    Plain,
+    /// Two adjacent 1 px lines: a dark leading edge over a light trailing one, so the
+    /// region reads as pressed in.
+    Sunken,
+    /// Two adjacent 1 px lines: a light leading edge over a dark trailing one, so the
+    /// region reads as raised.
+    Raised,
+}
+
+impl LineStyle {
+    /// The token this style is published as.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Sunken => "sunken",
+            Self::Raised => "raised",
+        }
+    }
+
+    /// Parses a published token. `None` for a spelling this control does not publish.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "plain" => Some(Self::Plain),
+            "sunken" => Some(Self::Sunken),
+            "raised" => Some(Self::Raised),
+            _ => None,
+        }
+    }
+}
+
 /// A simple horizontal or vertical divider line widget.
 pub struct Line {
     base: BaseWidget,
     orientation: LineOrientation,
     thickness: u32,
     color: Option<Color>,
+    style: LineStyle,
 }
 
 impl Line {
@@ -46,6 +82,7 @@ impl Line {
             orientation,
             thickness: 2,
             color: None,
+            style: LineStyle::Plain,
         }
     }
 
@@ -92,9 +129,58 @@ impl Line {
         self.base.request_redraw();
     }
 
+    /// The line's shading style.
+    ///
+    /// Note that this is the control's own style, not the resolved theme style — the latter
+    /// remains available through [`Widget::style`].
+    pub fn line_style(&self) -> LineStyle {
+        self.style
+    }
+
+    /// Sets the shading style. [`LineStyle::Plain`] is the default and paints one line.
+    pub fn set_line_style(&mut self, style: LineStyle) {
+        if self.style == style {
+            return;
+        }
+        self.style = style;
+        self.base.request_redraw();
+    }
+
     /// The colour the painter uses: the explicit override, then the style's border, then a literal.
     fn line_color(&self) -> Color {
-        self.color.or_else(|| self.style().border_color).unwrap_or(Color::rgb(180, 180, 180))
+        self.color.or_else(|| Widget::style(self).border_color).unwrap_or(Color::rgb(180, 180, 180))
+    }
+
+    /// Paints the two-line [`LineStyle::Sunken`] / [`LineStyle::Raised`] treatment.
+    ///
+    /// The two 1 px bands are centred in the control's rectangle. `sunken` decides which
+    /// edge is dark and which is light; the two styles are the same pair in the other order.
+    fn draw_shaded(&self, context: &mut RenderContext, rect: Rect, vertical: bool, sunken: bool) {
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let base = self.line_color();
+        let highlight = base.blend(&Color::WHITE, 0.45);
+        let shadow = base.blend(&Color::BLACK, 0.35);
+        let (first, second) = if sunken { (shadow, highlight) } else { (highlight, shadow) };
+
+        let extent = if vertical { rect.width } else { rect.height };
+        if extent < 2 {
+            // A one-pixel-thick control has no room for two rows; paint the leading edge so
+            // the style still has visible ink rather than silently drawing nothing twice.
+            draw_line(context, rect, vertical, 1, first);
+            return;
+        }
+
+        if vertical {
+            let middle = rect.x + rect.width as i32 / 2;
+            draw_line(context, Rect::new(middle - 1, rect.y, 1, rect.height), true, 1, first);
+            draw_line(context, Rect::new(middle, rect.y, 1, rect.height), true, 1, second);
+        } else {
+            let middle = rect.y + rect.height as i32 / 2;
+            draw_line(context, Rect::new(rect.x, middle - 1, rect.width, 1), false, 1, first);
+            draw_line(context, Rect::new(rect.x, middle, rect.width, 1), false, 1, second);
+        }
     }
 }
 
@@ -210,7 +296,13 @@ impl Draw for Line {
         // then a default gray. One derivation, shared with the `color` property.
         let line_color = self.line_color();
 
-        draw_line(context, rect, is_vertical, self.thickness, line_color);
+        match self.style {
+            LineStyle::Plain => {
+                draw_line(context, rect, is_vertical, self.thickness, line_color);
+            }
+            LineStyle::Sunken => self.draw_shaded(context, rect, is_vertical, true),
+            LineStyle::Raised => self.draw_shaded(context, rect, is_vertical, false),
+        }
     }
 }
 
@@ -332,5 +424,58 @@ mod tests {
         let mut line = Line::new(LineOrientation::Horizontal, Rect::new(0, 0, 200, 4));
         // Handle event without panicking.
         line.handle_event(&Event::KeyDown((37, 0)));
+    }
+
+    /// The style is a real state with published tokens, and `Plain` stays the default.
+    #[test]
+    fn line_style_tokens_round_trip() {
+        assert_eq!(LineStyle::default(), LineStyle::Plain);
+        assert_eq!(LineStyle::from_token("plain"), Some(LineStyle::Plain));
+        assert_eq!(LineStyle::from_token("sunken"), Some(LineStyle::Sunken));
+        assert_eq!(LineStyle::from_token("raised"), Some(LineStyle::Raised));
+        assert_eq!(LineStyle::from_token("chartreuse"), None);
+        assert_eq!(LineStyle::Sunken.token(), "sunken");
+
+        let mut line = Line::new(LineOrientation::Horizontal, Rect::new(0, 0, 200, 4));
+        assert_eq!(line.line_style(), LineStyle::Plain);
+        line.set_line_style(LineStyle::Raised);
+        assert_eq!(line.line_style(), LineStyle::Raised);
+        line.set_line_style(LineStyle::Sunken);
+        assert_eq!(line.line_style(), LineStyle::Sunken);
+    }
+
+    /// Sunken/Raised paint two adjacent strokes instead of one, and swap their edges.
+    #[test]
+    fn sunken_and_raised_paint_a_double_line() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut line = Line::new(LineOrientation::Horizontal, Rect::new(0, 0, 200, 6));
+
+        let plain = crate::widget::svg::render_to_svg(&mut line);
+        assert_eq!(plain.matches("<line").count(), 1, "Plain paints one line: {plain}");
+
+        line.set_line_style(LineStyle::Sunken);
+        let sunken = crate::widget::svg::render_to_svg(&mut line);
+        assert_eq!(sunken.matches("<line").count(), 2, "Sunken paints two lines: {sunken}");
+
+        line.set_line_style(LineStyle::Raised);
+        let raised = crate::widget::svg::render_to_svg(&mut line);
+        assert_eq!(raised.matches("<line").count(), 2, "Raised paints two lines: {raised}");
+        assert_ne!(sunken, raised, "the two styles swap the highlight and shadow edges");
+    }
+
+    /// A vertical sunken line shades along its width, not its length.
+    #[test]
+    fn a_vertical_shaded_line_stays_inside_its_rectangle() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut line = Line::new(LineOrientation::Vertical, Rect::new(0, 0, 6, 120));
+        line.set_line_style(LineStyle::Sunken);
+        let svg = crate::widget::svg::render_to_svg(&mut line);
+        assert_eq!(svg.matches("<line").count(), 2, "two edges: {svg}");
+        for x in [2, 3] {
+            assert!(
+                svg.contains(&format!("x1=\"{x}\"")) && svg.contains(&format!("x2=\"{x}\"")),
+                "the two edges are adjacent columns at x={x}: {svg}"
+            );
+        }
     }
 }

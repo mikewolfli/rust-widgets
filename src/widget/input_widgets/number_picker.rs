@@ -49,6 +49,26 @@ pub struct NumberPicker {
     wrap: bool,
     /// Text appended to the displayed number, e.g. `" kg"`.
     suffix: String,
+    /// Text prepended to the displayed number, e.g. `"$"`.
+    prefix: String,
+    /// How many decimal places the stored integer is displayed with.
+    ///
+    /// The value stays an `i64` scaled by `10^decimals`, which keeps the grid, the
+    /// wrapping arithmetic and the signal payload exact. Displaying `1234` with two
+    /// decimals yields `12.34`.
+    decimals: u8,
+    /// The value that shows `special_value_text` instead of a number.
+    special_value: Option<i64>,
+    /// The text shown for [`Self::special_value`].
+    special_value_text: Option<String>,
+    /// Digits typed since the last commit, shown in place of the selected row.
+    entry_buffer: String,
+    /// Whether the user is currently typing a value.
+    entering: bool,
+    /// Sub-row visual offset, in rows, used to settle a drag animation.
+    settle_offset: f32,
+    /// Whether a settle animation is running.
+    settling: bool,
     row_height: u32,
     /// Drag/flick state: the y coordinate the current drag started at.
     drag_origin_y: Option<i32>,
@@ -71,6 +91,14 @@ impl NumberPicker {
             step: 1,
             wrap: false,
             suffix: String::new(),
+            prefix: String::new(),
+            decimals: 0,
+            special_value: None,
+            special_value_text: None,
+            entry_buffer: String::new(),
+            entering: false,
+            settle_offset: 0.0,
+            settling: false,
             row_height: DEFAULT_ROW_HEIGHT,
             drag_origin_y: None,
             drag_origin_value: 0,
@@ -163,6 +191,118 @@ impl NumberPicker {
         &self.suffix
     }
 
+    /// Returns the prefix shown before the number.
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    /// Sets the prefix shown before the number.
+    ///
+    /// Display only, like the suffix: the stored value is unchanged.
+    pub fn set_prefix(&mut self, prefix: impl Into<String>) {
+        let prefix = prefix.into();
+        if self.prefix == prefix {
+            return;
+        }
+        self.prefix = prefix;
+        self.base.request_redraw();
+    }
+
+    /// How many decimal places the value is displayed with.
+    pub fn decimals(&self) -> u8 {
+        self.decimals
+    }
+
+    /// Sets how many decimal places the value is displayed with.
+    ///
+    /// The value is interpreted as `10^decimals` units of the displayed number, so a
+    /// picker holding `1234` with two decimals reads `12.34`. Values above nine
+    /// decimals are clamped: the display scale would overflow the integer type.
+    pub fn set_decimals(&mut self, decimals: u8) {
+        let decimals = decimals.min(9);
+        if self.decimals == decimals {
+            return;
+        }
+        self.decimals = decimals;
+        self.base.request_redraw();
+    }
+
+    /// The value that shows a text label instead of a number.
+    pub fn special_value(&self) -> Option<i64> {
+        self.special_value
+    }
+
+    /// Makes `value` display `text` instead of its number.
+    ///
+    /// This is the "auto" or "mixed" position every platform's picker has: a
+    /// magnitude that has no meaningful number reads as a word.
+    pub fn set_special_value(&mut self, value: Option<i64>, text: Option<String>) {
+        let text = text.filter(|text| !text.is_empty());
+        if self.special_value == value && self.special_value_text == text {
+            return;
+        }
+        self.special_value = value;
+        self.special_value_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The label shown for one value, including prefix, decimals, suffix and special text.
+    pub fn display_text(&self, value: i64) -> String {
+        if self.special_value == Some(value) {
+            if let Some(text) = &self.special_value_text {
+                return text.clone();
+            }
+        }
+        let mut out = String::new();
+        out.push_str(&self.prefix);
+        if self.decimals == 0 {
+            out.push_str(&value.to_string());
+        } else {
+            let negative = value < 0;
+            let magnitude = value.unsigned_abs();
+            let divisor = 10u64.pow(self.decimals as u32);
+            let whole = magnitude / divisor;
+            let fraction = magnitude % divisor;
+            if negative {
+                out.push('-');
+            }
+            out.push_str(&whole.to_string());
+            out.push('.');
+            let fraction_text = fraction.to_string();
+            for _ in fraction_text.len()..self.decimals as usize {
+                out.push('0');
+            }
+            out.push_str(&fraction_text);
+        }
+        out.push_str(&self.suffix);
+        out
+    }
+
+    /// Whether a settle animation is still running.
+    pub fn is_settling(&self) -> bool {
+        self.settling
+    }
+
+    /// Advances the settle animation by `delta_ms`. Returns whether another frame is due.
+    ///
+    /// The drag snaps to a row on release; this eases the sub-row remainder away so the wheel
+    /// finishes with a decelerating nudge instead of a one-frame jump.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.settling {
+            return false;
+        }
+        let frames = (delta_ms as f32 / 16.0).max(1.0);
+        let decay = 0.78f32.powf(frames);
+        self.settle_offset *= decay;
+        if self.settle_offset.abs() < 0.01 {
+            self.settle_offset = 0.0;
+            self.settling = false;
+        } else {
+            self.base.request_redraw();
+        }
+        self.settling
+    }
+
     /// Sets the suffix shown after the number. Display only: it is not part of the
     /// value, so a caller parsing the control's text never sees it.
     pub fn set_suffix(&mut self, suffix: impl Into<String>) {
@@ -233,6 +373,27 @@ impl NumberPicker {
         (self.maximum as i128 - self.minimum as i128) / self.step as i128
     }
 
+    /// Parses the typed buffer into a value on the control's grid.
+    ///
+    /// With `decimals == 0` the buffer is an integer. With decimals the buffer is a decimal
+    /// number scaled by `10^decimals`, and the result is snapped into the range like any other
+    /// write. A buffer that is not a number (a lone `-`, for example) commits nothing.
+    fn parse_entry(&self) -> Option<i64> {
+        if self.decimals == 0 {
+            return self.entry_buffer.trim().parse::<i64>().ok().map(|value| self.snap(value));
+        }
+        let parsed = self.entry_buffer.trim().parse::<f64>().ok()?;
+        if !parsed.is_finite() {
+            return None;
+        }
+        let scale = 10f64.powi(self.decimals as i32);
+        let scaled = (parsed * scale).round();
+        if !scaled.is_finite() || scaled < i64::MIN as f64 || scaled > i64::MAX as f64 {
+            return None;
+        }
+        Some(self.snap(scaled as i64))
+    }
+
     /// Clamps `value` into the range and rounds it to the nearest grid point.
     ///
     /// Rounding is done from `minimum` so the grid always contains the bounds
@@ -293,6 +454,11 @@ impl Widget for NumberPicker {
 
     fn size_hint(&self) -> Size {
         Size::new(80, self.row_height * 3)
+    }
+
+    /// A settling wheel owes frames until it comes to rest.
+    fn is_animating(&self) -> bool {
+        self.settling
     }
 
     impl_draw_bridge!();
@@ -433,6 +599,11 @@ impl EventHandler for NumberPicker {
                 if let Some(origin_y) = self.drag_origin_y {
                     let anchor = Point::new(pos.x, origin_y);
                     let rows = self.row_offset_at(*pos) - self.row_offset_at(anchor);
+                    // The raw pointer travel in rows, kept as a fraction so the reel can follow
+                    // the finger between two rows and settle onto the nearest one on release.
+                    let raw = -(pos.y - origin_y) as f32 / self.row_height.max(1) as f32;
+                    self.settle_offset = raw - raw.round();
+                    self.settling = false;
                     // Computed from the drag origin every time, never accumulated,
                     // so returning the pointer to where the drag began restores the
                     // original value exactly. Guarding this behind `rows != 0` was
@@ -455,6 +626,12 @@ impl EventHandler for NumberPicker {
             }
             Event::MouseRelease { .. } => {
                 self.drag_origin_y = None;
+                if self.settle_offset.abs() > 0.01 {
+                    self.settling = true;
+                    self.base.request_redraw();
+                } else {
+                    self.settle_offset = 0.0;
+                }
             }
             // A press whose release lands outside the widget never reaches the arm
             // above: the runtime's hit-test returns `None` for a point outside every
@@ -463,6 +640,7 @@ impl EventHandler for NumberPicker {
             // value — the picker scrolled with no button held.
             Event::MouseLeave { .. } if self.drag_origin_y.is_some() => {
                 self.drag_origin_y = None;
+                self.settling = self.settle_offset.abs() > 0.01;
             }
             // A click on the upper half steps down, the lower half steps up —
             // matching the direction a drag would take.
@@ -472,6 +650,39 @@ impl EventHandler for NumberPicker {
                 let _ = self.scroll_rows_visual(rows);
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
+                // Typed value entry: digits, a sign and a decimal point build a buffer, Enter
+                // commits it and Escape abandons it. Before this arm the picker was
+                // scroll-only, so a large jump took dozens of notches.
+                48..=57 | 45 | 46 if self.entering || matches!(*key, 48..=57 | 45) => {
+                    if let Some(ch) = char::from_u32(*key) {
+                        if !self.entering {
+                            self.entering = true;
+                            self.entry_buffer.clear();
+                        }
+                        self.entry_buffer.push(ch);
+                        self.base.request_redraw();
+                    }
+                }
+                8 if self.entering => {
+                    self.entry_buffer.pop();
+                    if self.entry_buffer.is_empty() {
+                        self.entering = false;
+                    }
+                    self.base.request_redraw();
+                }
+                13 | 10 if self.entering => {
+                    if let Some(value) = self.parse_entry() {
+                        self.set_value(value);
+                    }
+                    self.entering = false;
+                    self.entry_buffer.clear();
+                    self.base.request_redraw();
+                }
+                27 if self.entering => {
+                    self.entering = false;
+                    self.entry_buffer.clear();
+                    self.base.request_redraw();
+                }
                 // Up / Right.
                 38 | 39 => {
                     let _ = self.scroll_rows(1);
@@ -567,9 +778,12 @@ impl Draw for NumberPicker {
         // assertion measures, so it is what the loop must test too.
         let text_h = context.measure_text("M", font).height as i32;
         let frame_bottom = rect.y + rect.height as i32;
+        // A settling drag shifts the whole reel by the sub-row remainder, which is what
+        // turns the release from a one-frame snap into a short decelerating finish.
+        let settle = (self.settle_offset * row_h as f32).round() as i32;
         let mut label = String::new();
         for offset in -visible..=visible {
-            let row_center = centre + (offset as i32) * row_h as i32;
+            let row_center = centre + (offset as i32) * row_h as i32 + settle;
             let text_top = row_center - text_h / 2;
             if text_top < rect.y || text_top + text_h > frame_bottom {
                 continue;
@@ -593,9 +807,14 @@ impl Draw for NumberPicker {
             // One buffer reused across the rows: `to_string`/`format!` per row per frame
             // was a fresh allocation for a label a `write!` renders in place.
             label.clear();
-            let _ = write!(label, "{value}");
-            if !faded {
-                label.push_str(&self.suffix);
+            if !faded && self.entering {
+                // While a value is typed, the centre row shows the entry buffer verbatim so
+                // the user can see the digits they are building, including a bare sign.
+                label.push_str(&self.entry_buffer);
+            } else if !faded {
+                label = self.display_text(value);
+            } else {
+                let _ = write!(label, "{value}");
             }
             // The row's centre is where the glyph *box* centres, not where its top edge goes:
             // the renderer paints downward from the origin, so using `row_center` directly put
@@ -953,5 +1172,59 @@ mod tests {
 
         assert_eq!(picker.value_at_offset(-1), Some(1));
         assert_eq!(picker.value_at_offset(-3), None);
+    }
+
+    /// Prefix, decimals and a special-value label are display properties.
+    #[test]
+    fn prefix_decimals_and_special_text_shape_the_label() {
+        let mut picker = picker();
+        picker.set_range(0, 10_000);
+        picker.set_prefix("$");
+        picker.set_suffix(" kg");
+        picker.set_decimals(2);
+        picker.set_value(1234);
+        assert_eq!(picker.display_text(1234), "$12.34 kg");
+        assert_eq!(picker.display_text(-1234), "$-12.34 kg");
+
+        picker.set_special_value(Some(1234), Some("auto".to_string()));
+        assert_eq!(picker.display_text(1234), "auto");
+        assert_eq!(picker.special_value(), Some(1234));
+    }
+
+    /// Typed digits build a value; Enter commits and Escape abandons it.
+    #[test]
+    fn a_typed_value_is_parsed_on_commit() {
+        let mut picker = picker();
+        picker.set_range(0, 1_000);
+        for key in [49u32, 50, 51] {
+            picker.handle_event(&Event::KeyPress { key, modifiers: 0 });
+        }
+        assert_eq!(picker.value(), 0, "the value changes only on commit");
+        picker.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(picker.value(), 123);
+
+        picker.handle_event(&Event::KeyPress { key: 57, modifiers: 0 });
+        picker.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert_eq!(picker.value(), 123, "Escape abandons the entry");
+    }
+
+    /// A released drag settles instead of jumping on the next frame.
+    #[test]
+    fn a_released_drag_settles_with_a_decaying_offset() {
+        let mut picker = picker();
+        let rect = picker.geometry();
+        let start = Point::new(rect.x + 4, rect.y + rect.height as i32 / 2);
+        picker.handle_event(&Event::MousePress { pos: start, button: 1, modifiers: 0 });
+        picker.handle_event(&Event::MouseMove {
+            pos: Point::new(start.x, start.y - picker.row_height() as i32 - 6),
+        });
+        picker.handle_event(&Event::MouseRelease { pos: start, button: 1 });
+        assert!(picker.is_settling());
+        assert!(picker.tick(16));
+        let mut frames = 0;
+        while picker.tick(16) && frames < 200 {
+            frames += 1;
+        }
+        assert!(!picker.is_settling(), "the settle must terminate");
     }
 }

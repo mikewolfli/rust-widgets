@@ -20,6 +20,26 @@ use crate::{impl_widget_property_hooks, property_names_of};
 
 use super::data_source::IncrementalTableDataSource;
 
+/// Paint hook for a virtual table cell.
+///
+/// The table itself only knows how to draw text. A host that wants a checkbox column, a
+/// progress bar or rich text installs a delegate, which owns a cell's ink when `paint`
+/// returns `true`; returning `false` keeps the table's own text rendering.
+pub trait VirtualCellDelegate: Send + Sync {
+    /// Paints `cell`, returning whether the delegate took over the cell.
+    fn paint(
+        &self,
+        context: &mut RenderContext,
+        cell: Rect,
+        row: usize,
+        column: usize,
+        text: Option<&str>,
+    ) -> bool {
+        let _ = (context, cell, row, column, text);
+        false
+    }
+}
+
 /// Lightweight virtual table with pull-based window fetch.
 pub struct VirtualTable {
     base: BaseWidget,
@@ -51,6 +71,16 @@ pub struct VirtualTable {
     hovered_row: Option<usize>,
     /// Emitted when visible window changes `(row_start,row_len,col_start,col_len)`.
     pub visible_window_changed: Signal1<(usize, usize, usize, usize)>,
+    /// The selected absolute `(row, column)`, if any.
+    selected_cell: Option<(usize, usize)>,
+    /// Whether a column-title row is painted above the first data row.
+    show_header: bool,
+    /// Whether a vertical scroll-bar thumb is painted.
+    show_scrollbar: bool,
+    /// Emitted when the selected cell changes.
+    pub selection_changed: Signal1<Option<(usize, usize)>>,
+    /// Optional per-cell painter.
+    delegate: Option<Arc<dyn VirtualCellDelegate>>,
 }
 
 impl VirtualTable {
@@ -72,6 +102,11 @@ impl VirtualTable {
             data_is_observable: false,
             hovered_row: None,
             visible_window_changed: Signal1::new(),
+            selected_cell: None,
+            show_header: false,
+            show_scrollbar: false,
+            selection_changed: Signal1::new(),
+            delegate: None,
         }
     }
 
@@ -346,7 +381,7 @@ impl VirtualTable {
         let stride_y = self.row_height as i32;
         Rect::new(
             origin.x + INSET + column as i32 * stride_x,
-            origin.y + INSET + row as i32 * stride_y,
+            origin.y + INSET + self.header_offset() + row as i32 * stride_y,
             // The cell is 2 px smaller than its stride on each axis, so the grid lines are the
             // surface showing through rather than strokes that would double up where cells meet.
             self.column_width.saturating_sub(2),
@@ -354,6 +389,88 @@ impl VirtualTable {
         )
     }
 
+    /// The vertical room the column-title row takes, when it is enabled.
+    fn header_offset(&self) -> i32 {
+        if self.show_header {
+            self.row_height as i32
+        } else {
+            0
+        }
+    }
+
+    /// The selected absolute cell.
+    pub fn selected_cell(&self) -> Option<(usize, usize)> {
+        self.selected_cell
+    }
+
+    /// Selects an absolute cell. Out-of-range cells are ignored.
+    pub fn select_cell(&mut self, row: usize, column: usize) -> bool {
+        if row >= self.row_count() || column >= self.column_count() {
+            return false;
+        }
+        if self.selected_cell == Some((row, column)) {
+            return true;
+        }
+        self.selected_cell = Some((row, column));
+        self.selection_changed.emit(self.selected_cell);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Clears the selection.
+    pub fn clear_selection(&mut self) {
+        if self.selected_cell.take().is_some() {
+            self.selection_changed.emit(None);
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether the column-title row is painted.
+    pub fn show_header(&self) -> bool {
+        self.show_header
+    }
+
+    /// Enables or disables the column-title row.
+    pub fn set_show_header(&mut self, show: bool) {
+        if self.show_header == show {
+            return;
+        }
+        self.show_header = show;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Whether the vertical scroll-bar thumb is painted.
+    pub fn show_scrollbar(&self) -> bool {
+        self.show_scrollbar
+    }
+
+    /// Installs a per-cell painter, replacing any previous delegate.
+    pub fn set_delegate(&mut self, delegate: Arc<dyn VirtualCellDelegate>) {
+        self.delegate = Some(delegate);
+        self.base.request_redraw();
+    }
+
+    /// Removes the per-cell painter.
+    pub fn clear_delegate(&mut self) {
+        if self.delegate.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a delegate is installed.
+    pub fn has_delegate(&self) -> bool {
+        self.delegate.is_some()
+    }
+
+    /// Enables or disables the vertical scroll-bar thumb.
+    pub fn set_show_scrollbar(&mut self, show: bool) {
+        if self.show_scrollbar == show {
+            return;
+        }
+        self.show_scrollbar = show;
+        self.base.request_redraw();
+    }
     /// How many rows and columns fit inside `rect`.
     ///
     /// The counts the draw loop uses, and the ones a hit test would need, so neither derives
@@ -363,7 +480,7 @@ impl VirtualTable {
     fn visible_grid(&self, rect: Rect) -> (usize, usize) {
         const INSET: i32 = 2;
         let usable_w = (rect.width as i32 - INSET * 2).max(0) as u32;
-        let usable_h = (rect.height as i32 - INSET * 2).max(0) as u32;
+        let usable_h = (rect.height as i32 - INSET * 2 - self.header_offset()).max(0) as u32;
         let columns = (usable_w / self.column_width.max(1)).max(1) as usize;
         let rows = (usable_h / self.row_height.max(1)).max(1) as usize;
         (rows, columns)
@@ -569,6 +686,13 @@ impl EventHandler for VirtualTable {
         }
 
         match event {
+            Event::MousePress { pos, button: 1, .. } => {
+                if let Some((row, column)) = self.cell_at(*pos) {
+                    self.select_cell(row, column);
+                } else {
+                    self.clear_selection();
+                }
+            }
             Event::MouseMove { pos, .. } => {
                 // Hover is the absolute row under the pointer, from the same `cell_at`
                 // derivation `cell_rect` paints through, so a highlight cannot land on a
@@ -597,6 +721,19 @@ impl EventHandler for VirtualTable {
                 39 => self.set_scroll_column(self.scroll_column.saturating_add(1)),
                 38 => self.set_scroll_row(self.scroll_row.saturating_sub(1)),
                 40 => self.set_scroll_row(self.scroll_row.saturating_add(1)),
+                crate::event::key_codes::PAGE_UP => {
+                    let page = self.visible_grid(self.geometry()).0.max(1);
+                    self.set_scroll_row(self.scroll_row.saturating_sub(page));
+                }
+                crate::event::key_codes::PAGE_DOWN => {
+                    let page = self.visible_grid(self.geometry()).0.max(1);
+                    let last = self.row_count().saturating_sub(1);
+                    self.set_scroll_row(self.scroll_row.saturating_add(page).min(last));
+                }
+                crate::event::key_codes::HOME => self.set_scroll_row(0),
+                crate::event::key_codes::END => {
+                    self.set_scroll_row(self.row_count().saturating_sub(1))
+                }
                 _ => { /* Other keys are not relevant */ }
             },
             _ => { /* Other events are not relevant */ }
@@ -673,6 +810,38 @@ impl Draw for VirtualTable {
         );
         context.draw_rect(rect, border);
 
+        if self.show_header {
+            if let Some(source) = self.data_source.as_ref() {
+                let font = effective_font(self.style());
+                let (rows, columns) = self.visible_grid(rect);
+                let _ = rows;
+                for column in 0..columns {
+                    let global = self.scroll_column + column;
+                    if global >= self.column_count() {
+                        break;
+                    }
+                    let band = Rect::new(
+                        rect.x + 2 + column as i32 * self.column_width as i32,
+                        rect.y + 2,
+                        self.column_width.saturating_sub(2),
+                        self.row_height.saturating_sub(2),
+                    );
+                    context.fill_rect(band, surface.blend(&ink, 0.08));
+                    let name = source
+                        .column_name(global)
+                        .unwrap_or_else(|| std::format!("Column {}", global + 1));
+                    let name = crate::widget::text_utils::elide_end(&name, 20);
+                    context.draw_text_fitted_cow(
+                        context.text_line(band, font),
+                        &name,
+                        font,
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
+        }
+
         // Read the shared cached window (D09-VIEW-03): a cache hit hands back the existing `Arc`
         // rather than deep-cloning every row, column and `String` on every redraw. All the geometry
         // the layout needs is computed *before* the window borrow is taken, and the shared handle is
@@ -729,15 +898,27 @@ impl Draw for VirtualTable {
         for (row_index, row) in visible.enumerate() {
             for (column_index, cell) in row.enumerate() {
                 let cell_rect = self.cell_rect(rect, row_index, column_index);
+                if self.selected_cell
+                    == Some((self.scroll_row + row_index, self.scroll_column + column_index))
+                {
+                    context.fill_rect(cell_rect, surface.blend(&accent, 0.30));
+                }
                 context.draw_rect(cell_rect, cell_border);
-                if let Some(value) = cell {
+                let absolute = (self.scroll_row + row_index, self.scroll_column + column_index);
+                let painted_by_delegate = match self.delegate.as_ref() {
+                    Some(delegate) => {
+                        delegate.paint(context, cell_rect, absolute.0, absolute.1, cell.as_deref())
+                    }
+                    None => false,
+                };
+                if let Some(value) = cell.as_ref().filter(|_| !painted_by_delegate) {
                     // The cell is the band. `y + row_height / 2` as a `draw_text` origin placed
                     // the glyph box's *top* edge on the cell's middle line, so the value drew half
                     // a line low; `text_line` derives the centred box. Fitting keeps a wide value
                     // from spilling into the next column.
                     context.draw_text_fitted_cow(
                         context.text_line(cell_rect, effective_font(self.style())),
-                        value,
+                        value.as_str(),
                         effective_font(self.style()),
                         ink,
                         HorizontalAlignment::Left,
@@ -745,16 +926,37 @@ impl Draw for VirtualTable {
                 }
             }
         }
+
+        if self.show_scrollbar {
+            let total_rows = self.row_count().max(1);
+            let (rows, _) = self.visible_grid(rect);
+            let visible_rows = rows.max(1).min(total_rows);
+            let track = rect.height.saturating_sub(4).max(1);
+            let thumb = ((track as u64 * visible_rows as u64) / total_rows as u64)
+                .max(24)
+                .min(track as u64) as u32;
+            let max_scroll = total_rows.saturating_sub(visible_rows);
+            let travel = track.saturating_sub(thumb);
+            let offset = if max_scroll == 0 {
+                0
+            } else {
+                (travel as u64 * self.scroll_row.min(max_scroll) as u64 / max_scroll as u64) as u32
+            };
+            context.fill_rect(
+                Rect::new(rect.x + rect.width as i32 - 6, rect.y + 2 + offset as i32, 4, thumb),
+                accent.with_alpha(120),
+            );
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Gated exactly as the one test that uses it: the test is `device_profile + desktop`,
-    // so on `mobile`/`tablet` an ungated import here is an unused-import warning.
+    // The tests below export SVG on every profile this module is built for, so the import is
+    // unconditional: gating it on `desktop` made the tablet profile compile the tests without
+    // the function they call.
     use crate::signal::GenericSignal;
-    #[cfg(all(device_profile, feature = "desktop"))]
     use crate::widget::svg::render_to_svg;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1477,5 +1679,64 @@ mod tests {
             pos: crate::core::Point::new(cell.x + 5, cell.y + 5),
         });
         assert_eq!(table.hovered_row, Some(5));
+    }
+
+    /// Cell selection, the header row, page keys and the scroll-bar thumb are wired.
+    #[test]
+    fn selection_header_paging_and_scrollbar_are_wired() {
+        use crate::event::types::EventHandler;
+        let mut table = VirtualTable::new(Rect::new(0, 0, 320, 200));
+        table.set_data_source(Arc::new(StaticSource));
+        let cell = table.cell_rect(Rect::new(0, 0, 320, 200), 1, 1);
+        table.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(cell.x + 2, cell.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(table.selected_cell().is_some());
+        table.set_show_header(true);
+        assert!(table.show_header());
+        table.set_show_scrollbar(true);
+        assert!(table.show_scrollbar());
+        table.handle_event(&Event::KeyPress {
+            key: crate::event::key_codes::PAGE_DOWN,
+            modifiers: 0,
+        });
+        assert!(table.scroll_row() > 0, "PageDown advances one viewport");
+        let _ = render_to_svg(&mut table);
+    }
+
+    /// A delegate can take over a cell's ink, and the table reports that it is installed.
+    #[test]
+    fn a_cell_delegate_can_paint_a_cell() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingDelegate {
+            painted: AtomicUsize,
+        }
+        impl VirtualCellDelegate for CountingDelegate {
+            fn paint(
+                &self,
+                context: &mut RenderContext,
+                cell: Rect,
+                _row: usize,
+                _column: usize,
+                _text: Option<&str>,
+            ) -> bool {
+                context.fill_rect(cell, Color::PRIMARY);
+                self.painted.fetch_add(1, Ordering::Relaxed);
+                true
+            }
+        }
+
+        let delegate = Arc::new(CountingDelegate { painted: AtomicUsize::new(0) });
+        let mut table = VirtualTable::new(Rect::new(0, 0, 240, 120));
+        table.set_data_source(Arc::new(StaticSource));
+        table.set_delegate(delegate.clone());
+        assert!(table.has_delegate());
+        let _ = render_to_svg(&mut table);
+        assert!(delegate.painted.load(Ordering::Relaxed) > 0, "the delegate owned the cells");
+        table.clear_delegate();
+        assert!(!table.has_delegate());
     }
 }

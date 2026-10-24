@@ -6,7 +6,7 @@
 use crate::core::Point;
 use crate::event::{Event, TouchId};
 
-use super::{distance, GestureRecognizer};
+use super::{distance, GestureKind, GestureRecognizer, GestureState};
 
 /// Tracks two touch points and emits `Pinch` when the distance between
 /// them changes significantly.
@@ -18,7 +18,7 @@ pub struct PinchTouch {
     pub id: TouchId,
 }
 
-/// Recognizes a two-finger pinch gesture and emits `Event::Pinch { scale }`.
+/// Recognizes a two-finger pinch gesture and emits `Event::Pinch { scale, center }`.
 ///
 /// Tracks two touch points and computes a scale factor relative to the
 /// initial distance between them. Only emits when the scale change exceeds 5%.
@@ -85,7 +85,7 @@ impl GestureRecognizer for PinchGesture {
                             // distance as the new baseline would make every later move
                             // divide by zero, so keep the last usable baseline.
                             if current <= 0.0 {
-                                return Some(Event::Pinch { scale: 0.0 });
+                                return Some(Event::Pinch { scale: 0.0, center: self.center() });
                             }
                             let scale = current / initial;
                             if !scale.is_finite() {
@@ -95,7 +95,7 @@ impl GestureRecognizer for PinchGesture {
                             // Only emit if scale differs significantly
                             if (scale - 1.0).abs() > 0.05 {
                                 self.initial_distance = Some(current); // Update baseline
-                                return Some(Event::Pinch { scale });
+                                return Some(Event::Pinch { scale, center: self.center() });
                             }
                         }
                     }
@@ -116,6 +116,49 @@ impl GestureRecognizer for PinchGesture {
     fn reset(&mut self) {
         self.touches.clear();
         self.initial_distance = None;
+    }
+
+    fn kind(&self) -> GestureKind {
+        GestureKind::Pinch
+    }
+
+    fn status(&self) -> GestureState {
+        if self.touches.len() == 2 {
+            GestureState::Maybe
+        } else {
+            GestureState::Finished
+        }
+    }
+
+    fn partial(&self) -> Option<Event> {
+        // A pinch is describable before it is committed: report the scale against the current
+        // baseline and the centre of the two touches. Returning `None` with fewer than two
+        // contacts is the honest answer — there is no midpoint to name.
+        if self.touches.len() != 2 {
+            return None;
+        }
+        let current = distance(self.touches[0].pos, self.touches[1].pos);
+        let scale = match self.initial_distance {
+            Some(initial) if initial > 0.0 => current / initial,
+            _ => 1.0,
+        };
+        Some(Event::Pinch { scale, center: self.center() })
+    }
+}
+
+impl PinchGesture {
+    /// The midpoint between the two tracked touches.
+    ///
+    /// The origin when fewer than two contacts are tracked: there is no midpoint, and the
+    /// recogniser only emits a pinch with two contacts, so this is the defensive answer rather
+    /// than a value a consumer can observe on a real gesture.
+    pub fn center(&self) -> Point {
+        match self.touches.as_slice() {
+            [first, second, ..] => {
+                Point::new((first.pos.x + second.pos.x) / 2, (first.pos.y + second.pos.y) / 2)
+            }
+            _ => Point::new(0, 0),
+        }
     }
 }
 
@@ -146,7 +189,7 @@ mod tests {
         let produced =
             gesture.process(&Event::TouchMove { pos: Point::new(20, 0), touch_id: 2 }, 20);
         match produced {
-            Some(Event::Pinch { scale }) => assert!(
+            Some(Event::Pinch { scale, .. }) => assert!(
                 scale > 1.0,
                 "separating after a coincident start must zoom in, got scale {scale}"
             ),
@@ -171,7 +214,7 @@ mod tests {
         let collapsed =
             gesture.process(&Event::TouchMove { pos: Point::new(0, 0), touch_id: 2 }, 10);
         match collapsed {
-            Some(Event::Pinch { scale }) => assert_eq!(scale, 0.0),
+            Some(Event::Pinch { scale, .. }) => assert_eq!(scale, 0.0),
             other => panic!("collapsing fingers must emit a zero scale, got {other:?}"),
         }
 
@@ -179,10 +222,53 @@ mod tests {
         let produced =
             gesture.process(&Event::TouchMove { pos: Point::new(20, 0), touch_id: 2 }, 20);
         match produced {
-            Some(Event::Pinch { scale }) => {
+            Some(Event::Pinch { scale, .. }) => {
                 assert!(scale > 1.0, "separating after a collapse must zoom in, got scale {scale}")
             }
             other => panic!("a collapse must not poison later separation, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod pinch_center_tests {
+    use super::*;
+
+    /// The emitted pinch carries the midpoint of the two touches, which is the anchor a
+    /// consumer zooms around.
+    #[test]
+    fn the_emitted_event_carries_the_touch_midpoint() {
+        let mut gesture = PinchGesture::new();
+        gesture.process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0);
+        gesture.process(&Event::TouchBegin { pos: Point::new(10, 0), touch_id: 2 }, 0);
+        let produced =
+            gesture.process(&Event::TouchMove { pos: Point::new(30, 0), touch_id: 2 }, 1);
+        match produced {
+            Some(Event::Pinch { center, .. }) => {
+                assert_eq!(center, Point::new(15, 0), "the midpoint moved with the second finger")
+            }
+            other => panic!("expected a pinch, got {other:?}"),
+        }
+    }
+
+    /// A pinch in progress is previewable before it crosses the commit threshold.
+    #[test]
+    fn a_partial_preview_is_available_before_commit() {
+        let mut gesture = PinchGesture::new();
+        assert!(gesture.partial().is_none(), "no contacts, no midpoint");
+        gesture.process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0);
+        gesture.process(&Event::TouchBegin { pos: Point::new(10, 0), touch_id: 2 }, 0);
+        // Below the 5% emit threshold: `process` stays silent.
+        assert!(gesture
+            .process(&Event::TouchMove { pos: Point::new(10, 0), touch_id: 2 }, 1)
+            .is_none());
+        match gesture.partial() {
+            Some(Event::Pinch { scale, center }) => {
+                assert_eq!(scale, 1.0, "the baseline is unchanged");
+                assert_eq!(center, Point::new(5, 0));
+            }
+            other => panic!("expected a preview, got {other:?}"),
+        }
+        assert_eq!(gesture.status(), GestureState::Maybe);
     }
 }

@@ -11,6 +11,7 @@
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -50,7 +51,13 @@ const SPIN_SLOW_MULTIPLE: u32 = 5;
 /// line segments approximating a circular arc.
 pub struct ProgressCircle {
     base: BaseWidget,
-    value: f32,
+    /// The determinate value, driven rather than assigned directly.
+    ///
+    /// [`ProgressCircle::set_value`] aims the driver, [`ProgressCircle::tick`] advances it, and
+    /// `draw` paints [`PropertyDriver::value`]. The published value ([`ProgressCircle::value`])
+    /// is the driver's target, so a caller immediately reads back what it wrote while the ring
+    /// travels toward it over the theme's motion token.
+    value_animation: PropertyDriver,
     indeterminate: bool,
     track_color: Color,
     /// True when the caller assigned a track colour explicitly.
@@ -89,7 +96,10 @@ impl ProgressCircle {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ProgressCircle, geometry, "ProgressCircle"),
-            value: 0.0,
+            // Born at rest, so a freshly built ring paints no arc and does not animate away from
+            // its own state on the first frame. A caller that wants a value aims the driver with
+            // `set_value`.
+            value_animation: PropertyDriver::at(0.0, MotionSlot::Normal),
             indeterminate: false,
             track_color: Color::rgba(220, 220, 220, 200),
             track_color_is_explicit: false,
@@ -103,18 +113,29 @@ impl ProgressCircle {
     }
 
     /// Returns the current progress value (0.0 to 1.0).
+    ///
+    /// This is the value the control has been **aimed** at. The arc paints the driver's current
+    /// value, which approaches this one while the tween is running; see
+    /// [`ProgressCircle::tick`].
     pub fn value(&self) -> f32 {
-        self.value
+        self.value_animation.target()
     }
 
     /// Sets the progress value. Clamped to 0.0..=1.0.
+    ///
+    /// The value is reached by an animated tween driven by [`ProgressCircle::tick`]. A
+    /// same-value write is a no-op, so progress controls that are written every frame do not
+    /// restart the movement. When the environment asks for reduced motion the driver jumps
+    /// straight to the target instead.
     pub fn set_value(&mut self, value: f32) {
         let clamped = value.clamp(0.0, 1.0);
-        // A same-value write is a no-op; progress controls are written every animation frame.
-        if self.value == clamped {
+        if self.value_animation.target() == clamped {
             return;
         }
-        self.value = clamped;
+        self.value_animation.set_target(clamped);
+        if crate::style::environment::environment().prefers_reduced_motion() {
+            self.value_animation.jump_to(clamped);
+        }
         self.request_frame_repaint(None);
     }
 
@@ -203,22 +224,30 @@ impl ProgressCircle {
         self.sweep * 2.0 * core::f32::consts::PI
     }
 
-    /// Advances the indeterminate sweep by `delta_ms` and reports whether another frame is owed.
+    /// Advances the indeterminate sweep, or the determinate value tween, by `delta_ms`.
     ///
-    /// Only the indeterminate state animates: a determinate ring is a still picture that is
-    /// redrawn when its value changes, so it must not keep the frame bus alive (\u00a73.2's
-    /// "no animation, no repaint").
+    /// An indeterminate ring turns and always owes another frame. A determinate ring owes
+    /// frames only while its value is still travelling; once it settles it is a still picture
+    /// and this returns `false`, which is \u00a73.2's "no animation, no repaint". The landing frame
+    /// is still repainted, because that is the frame that shows the exact target value.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        if !self.indeterminate {
-            return false;
+        if self.indeterminate {
+            let period = self.spin_period_ms();
+            // Wrapped rather than clamped: the sweep is a revolution, so `1.0` is `0.0` and the
+            // fraction is kept in `0.0..1.0` so a long-running app cannot drift into a large value
+            // and lose float precision on the angle.
+            self.sweep = (self.sweep + delta_ms as f32 / period as f32).fract();
+            self.request_frame_repaint(Some(self.damage_bounds()));
+            return true;
         }
-        let period = self.spin_period_ms();
-        // Wrapped rather than clamped: the sweep is a revolution, so `1.0` is `0.0` and the
-        // fraction is kept in `0.0..1.0` so a long-running app cannot drift into a large value
-        // and lose float precision on the angle.
-        self.sweep = (self.sweep + delta_ms as f32 / period as f32).fract();
-        self.request_frame_repaint(Some(self.damage_bounds()));
-        true
+        let was_moving = self.value_animation.is_moving();
+        let moving = self.value_animation.tick(delta_ms);
+        // The tick that lands on the target reports `false`, but it also writes the final value,
+        // so it is still a frame that must be painted.
+        if was_moving {
+            self.request_frame_repaint(Some(self.damage_bounds()));
+        }
+        moving
     }
 
     /// The duration of one full revolution, priced by the theme.
@@ -333,14 +362,14 @@ impl Widget for ProgressCircle {
         Size::new(diameter, diameter)
     }
 
-    /// One frame of the indeterminate sweep. The frame bus calls this; nothing else does.
+    /// One frame of the indeterminate sweep or the determinate value tween.
     fn tick(&mut self, delta_ms: u32) -> bool {
         ProgressCircle::tick(self, delta_ms)
     }
 
-    /// Only the indeterminate ring owes frames; a determinate one is a still picture.
+    /// The ring owes frames while spinning or while its value is still travelling.
     fn is_animating(&self) -> bool {
-        self.indeterminate
+        self.indeterminate || self.value_animation.is_moving()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -501,7 +530,13 @@ impl Draw for ProgressCircle {
                 prog_color,
                 stroke_w.max(1),
             );
-        } else if self.value > 0.0 {
+        } else {
+            // The arc paints the driver's current value, not its target: that difference is the
+            // tween. After the driver settles the two are equal, so a still ring is unchanged.
+            let value = self.value_animation.value();
+            if value <= 0.0 {
+                return;
+            }
             // In determinate mode, draw the progress arc from 12 o'clock
             // -PI/2 (12 o'clock) to -PI/2 + 2*PI*value
             let start_angle = -std::f32::consts::FRAC_PI_2;
@@ -511,7 +546,7 @@ impl Draw for ProgressCircle {
             // size on a small ring and a large one.
             let gap_radians = TRACK_GAP / radius.max(1.0);
             let start_angle = start_angle + gap_radians;
-            let end_angle = -std::f32::consts::FRAC_PI_2 + 2.0 * std::f32::consts::PI * self.value;
+            let end_angle = -std::f32::consts::FRAC_PI_2 + 2.0 * std::f32::consts::PI * value;
             // The arc must never run backwards or past its own start when the value is small
             // enough that the gap would swallow it; a zero-or-negative sweep is nothing to draw.
             if end_angle <= start_angle {
@@ -618,6 +653,7 @@ mod tests {
     fn progress_circle_svg_output_determinate() {
         let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
         pc.set_value(0.75);
+        settle(&mut pc);
 
         let svg = crate::widget::svg::render_to_svg(&mut pc);
         assert!(svg.starts_with("<svg"));
@@ -640,6 +676,15 @@ mod tests {
         // Should not panic
         let svg = crate::widget::svg::render_to_svg(&mut pc);
         assert!(svg.starts_with("<svg"));
+    }
+
+    /// Advances the determinate tween until it settles, so a geometry assertion sees the target.
+    fn settle(circle: &mut ProgressCircle) {
+        let mut frames = 0;
+        while circle.tick(16) {
+            frames += 1;
+            assert!(frames < 1_000, "a value tween must terminate rather than tick forever");
+        }
     }
 
     /// Every arc segment in the stream, as `(x1, y1, x2, y2)`.
@@ -673,6 +718,7 @@ mod tests {
     fn progress_circle_ignores_a_value_too_small_to_sweep_a_pixel() {
         let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
         pc.set_value(0.001);
+        settle(&mut pc);
 
         let svg = crate::widget::svg::render_to_svg(&mut pc);
         let segments = arc_segments(&svg);
@@ -691,6 +737,7 @@ mod tests {
     fn progress_circle_draws_an_arc_that_sweeps_whole_pixels() {
         let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
         pc.set_value(0.25);
+        settle(&mut pc);
 
         let svg = crate::widget::svg::render_to_svg(&mut pc);
         let segments = arc_segments(&svg);
@@ -734,18 +781,70 @@ mod tests {
         assert_ne!(second, third, "nor frame two and frame three");
     }
 
+    /// A determinate value travels over frames and settles exactly on its target.
+    #[test]
+    fn a_determinate_value_tweens_before_reaching_its_target() {
+        let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
+        pc.set_value(1.0);
+        assert_eq!(pc.value(), 1.0, "the published value is the value the caller wrote");
+        assert!(pc.is_animating(), "a new target puts the driver in flight");
+        assert!(pc.value_animation.value() < 1.0, "the painted value starts behind the target");
+
+        assert!(pc.tick(16), "the tween owes another frame");
+        let mid = pc.value_animation.value();
+        assert!(mid > 0.0 && mid < 1.0, "the arc is painted mid-travel: {mid}");
+
+        settle(&mut pc);
+        assert!((pc.value_animation.value() - 1.0).abs() < f32::EPSILON);
+        assert!(!pc.is_animating(), "a settled ring owes no frames");
+    }
+
+    /// Reduced motion reaches the target without a tween.
+    #[test]
+    fn reduced_motion_jumps_straight_to_the_target() {
+        struct Reduced;
+        impl crate::style::environment::EnvironmentProvider for Reduced {
+            fn motion_preference(&self) -> crate::style::MotionPreference {
+                crate::style::MotionPreference::ReduceMotion
+            }
+        }
+
+        let previous =
+            crate::style::environment::install_environment(crate::compat::Box::new(Reduced));
+        let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
+        pc.set_value(0.75);
+
+        assert_eq!(
+            pc.value_animation.value(),
+            0.75,
+            "reduced motion must reach the end state, not skip it"
+        );
+        assert!(!pc.is_animating(), "and there is nothing left to animate");
+
+        match previous {
+            Some(previous) => {
+                crate::style::environment::install_environment(previous);
+            }
+            None => {
+                crate::style::environment::uninstall_environment();
+            }
+        }
+    }
+
     /// A determinate ring is a still picture: it owes no frames, and telling it so is a no-op.
     ///
     /// \u00a73.2 in one assertion: an animation that is not running must not keep the frame bus
-    /// alive, or every idle progress ring repaints the whole window forever.
+    /// alive, or every idle progress ring repaints the whole window forever. The tween means the
+    /// ring does owe frames *while the value is travelling*; this pins the settled state.
     #[test]
-    fn a_determinate_ring_owes_no_frames() {
+    fn a_settled_determinate_ring_owes_no_frames() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
         let _theme_guard = crate::style::theme_test_guard();
         let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
         pc.set_value(0.5);
-        assert!(!pc.tick(100), "a determinate ring must not request another frame");
+        settle(&mut pc);
+        assert!(!pc.tick(100), "a settled determinate ring must not request another frame");
         let before = crate::widget::svg::render_to_svg(&mut pc);
         assert!(!pc.tick(100), "and still not after being asked twice");
         assert_eq!(before, crate::widget::svg::render_to_svg(&mut pc), "its picture is unchanged");
@@ -769,6 +868,7 @@ mod tests {
     fn the_smallest_visible_arc_starts_after_a_track_gap() {
         let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
         pc.set_value(0.25);
+        settle(&mut pc);
         let svg = crate::widget::svg::render_to_svg(&mut pc);
         let segments = arc_segments(&svg);
         assert!(!segments.is_empty(), "a quarter ring is a visible arc: {svg}");

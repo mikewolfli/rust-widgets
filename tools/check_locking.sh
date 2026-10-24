@@ -50,6 +50,17 @@
 #                   There is no second lock over anything, and after the first initialisation the
 #                   read path does not block. Exempted by name rather than by loosening the pattern,
 #                   so any *other* lock appearing in this file is still a finding.
+#   capability.rs — `WidgetFactory::shared()`: a `OnceLock<WidgetFactory>` over a table that is
+#                   immutable once built (`register` needs `&mut self`). One initialisation, then
+#                   lock-free reads of `&'static`; it guards no widget *state*, which is why it is
+#                   not a finding. The widget handle's read/write paths must not build their own
+#                   table, and this is the singleton they share instead.
+#   display_widgets/emoji_picker.rs, display_widgets/font_preview.rs,
+#   input_widgets/masked_edit.rs, view_widgets/query_builder.rs
+#                   `OnceLock<Font>` caches for fixed, never-changing chrome faces. `Font` owns a
+#                   heap `String`, so the face cannot be a `const`; each cell is initialised once and
+#                   then only read. Same reasoning as `metrics.rs` (the default font), and the same
+#                   guarantee: no second lock and no widget state behind it.
 #
 # Usage: tools/check_locking.sh
 set -euo pipefail
@@ -77,6 +88,11 @@ SCAN_ROOT = "src/widget"
 EXEMPT_FILES = {
     "src/widget/display_widgets/icon_data_set.rs",
     "src/widget/metrics.rs",
+    "src/widget/capability.rs",
+    "src/widget/display_widgets/emoji_picker.rs",
+    "src/widget/display_widgets/font_preview.rs",
+    "src/widget/input_widgets/masked_edit.rs",
+    "src/widget/view_widgets/query_builder.rs",
 }
 # Only *blocking* primitives are a finding. `Atomic*` is deliberately not matched:
 # a monotonic id counter (`static NEXT_ID: AtomicU64`) is lock-free — it cannot

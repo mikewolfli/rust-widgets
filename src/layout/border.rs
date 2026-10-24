@@ -31,7 +31,7 @@
 //! layout the caller asked for. Controls that need a larger target belong in the center
 //! region, or inside a nested layout that owns that policy.
 
-use super::{Layout, LayoutContext};
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 
@@ -100,7 +100,7 @@ struct TrackAllocation {
 }
 
 /// Fixed-edge plus elastic-center layout manager.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct BorderLayout {
     spacing: u32,
     margin: u32,
@@ -305,7 +305,48 @@ impl BorderLayout {
         None
     }
 
-    fn arrange(
+    /// The hint-aware path. A fixed edge whose extent is `0` is treated as **auto**: its
+    /// extent becomes the largest preferred extent among the children in that region.
+    ///
+    /// The previous behaviour required every edge extent to be stated in advance, which is
+    /// exactly the workaround the hint channel exists to remove. A region that still has
+    /// explicit extents is untouched, so every existing layout is unchanged.
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+        let mut resolved = self.clone();
+        let pref_of = |id: ObjectId| {
+            ChildInfo::find(children, id).map(|info| info.hints.width.pref).unwrap_or(0)
+        };
+        let pref_height_of = |id: ObjectId| {
+            ChildInfo::find(children, id).map(|info| info.hints.height.pref).unwrap_or(0)
+        };
+        let fill = |items: &mut Vec<BorderItem>, horizontal: bool| {
+            let wanted = items
+                .iter()
+                .filter(|item| item.extent == 0)
+                .map(|item| {
+                    if horizontal {
+                        pref_of(item.widget_id)
+                    } else {
+                        pref_height_of(item.widget_id)
+                    }
+                })
+                .max()
+                .unwrap_or(0);
+            if wanted > 0 {
+                for item in items.iter_mut().filter(|item| item.extent == 0) {
+                    item.extent = wanted;
+                }
+            }
+        };
+        fill(&mut resolved.north, false);
+        fill(&mut resolved.south, false);
+        fill(&mut resolved.west, true);
+        fill(&mut resolved.east, true);
+        let insets = resolved.insets(1.0);
+        resolved.arrange_tracks(rect, resolved.spacing, insets, 1.0, out);
+    }
+
+    fn arrange_tracks(
         &self,
         rect: Rect,
         spacing: u32,
@@ -513,7 +554,13 @@ impl Layout for BorderLayout {
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
-        self.arrange(rect, self.spacing, self.insets(1.0), 1.0, widgets);
+        self.arrange_tracks(rect, self.spacing, self.insets(1.0), 1.0, widgets);
+    }
+
+    /// The hint-aware path: an edge whose recorded extent is `0` takes the largest
+    /// preferred extent among the children in that region.
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+        BorderLayout::arrange(self, rect, children, out);
     }
 
     fn update_with_context(
@@ -527,7 +574,7 @@ impl Layout for BorderLayout {
         let scale = context.layout_scale.max(context.font_scale);
         let spacing = (self.spacing as f32 * scale).round() as u32;
         let insets = self.insets(scale);
-        self.arrange(rect, spacing, insets, scale, widgets);
+        self.arrange_tracks(rect, spacing, insets, scale, widgets);
     }
 }
 
@@ -542,6 +589,25 @@ mod tests {
             out.insert(id, geometry);
         });
         out
+    }
+
+    /// An edge with no recorded extent takes the largest preferred extent of its
+    /// children, so a caller no longer has to state every track in advance.
+    #[test]
+    fn an_auto_edge_takes_its_childrens_preferred_extent() {
+        let mut layout = BorderLayout::new(0, 0);
+        layout.add(BorderRegion::North, 1, 0);
+        layout.add(BorderRegion::Center, 2, 0);
+        let children = vec![
+            ChildInfo::new(1, super::super::Hints::fixed(80, 40)),
+            ChildInfo::new(2, super::super::Hints::fixed(10, 10)),
+        ];
+        let mut rects = HashMap::new();
+        layout.arrange(Rect::new(0, 0, 200, 100), &children, &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        assert_eq!(rects.get(&1).map(|r| r.height), Some(40));
+        assert_eq!(rects.get(&2).map(|r| r.y), Some(40));
     }
 
     #[test]

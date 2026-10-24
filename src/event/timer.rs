@@ -17,6 +17,57 @@ struct TimerEntry {
     interval: Duration,
     repeating: bool,
     next_fire: Instant,
+    /// How late this timer is allowed to fire, so a coarse timer can be coalesced with
+    /// neighbours instead of waking the loop for each one.
+    tolerance: Duration,
+}
+
+impl TimerEntry {
+    /// The moment at which this timer may fire: its deadline plus its tolerance.
+    ///
+    /// Both the due check and the worker's wake calculation read this one expression; two
+    /// spellings of "when does it fire" is what would let the worker park past a coarse
+    /// timer's actual deadline.
+    fn fire_at(&self) -> Instant {
+        // `next_fire` was validated against the clock's ceiling when the timer started, and the
+        // tolerance is tens of milliseconds, so the addition cannot overflow in practice.
+        self.next_fire + self.tolerance
+    }
+}
+
+/// How precisely a timer must fire.
+///
+/// # Why tolerance is a timer property
+///
+/// A progress-bar repaint and a caret blink tolerate tens of milliseconds of lateness; a
+/// countdown or a metronome does not. Delivering both at the clock's resolution makes an idle
+/// application wake once per coarse timer, which is the difference between a laptop that naps
+/// and one that does not. A tolerance of zero is the precise behaviour every existing caller
+/// already got, so this is opt-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TimerPrecision {
+    /// Fire as soon as the deadline passes. The default, and what `start_timer` uses.
+    #[default]
+    Precise,
+    /// Fire within 50 ms of the deadline, allowing the scheduler to batch wake-ups.
+    Coarse,
+}
+
+impl TimerPrecision {
+    /// The tolerated lateness in milliseconds.
+    pub const fn tolerance_ms(self) -> u64 {
+        match self {
+            Self::Precise => 0,
+            // A multiple of the conventional 16 ms frame: a coarse timer can be serviced on a
+            // frame boundary without being late enough to be visible.
+            Self::Coarse => 50,
+        }
+    }
+
+    /// The tolerance as a `Duration`.
+    pub fn tolerance(self) -> Duration {
+        Duration::from_millis(self.tolerance_ms())
+    }
 }
 
 /// Computes `Instant::now() + interval`, returning `Err` instead of panicking when the
@@ -103,7 +154,7 @@ impl TimerShared {
     /// Called with the state lock held. `None` means "no timer to wait for", which is
     /// what makes the worker block indefinitely instead of polling.
     fn nearest_deadline(state: &TimerState) -> Option<Instant> {
-        state.timers.values().map(|entry| entry.next_fire).min()
+        state.timers.values().map(|entry| entry.fire_at()).min()
     }
 }
 
@@ -169,7 +220,7 @@ impl TimerManager {
                     keys.extend(guard.timers.keys().copied());
                     for key in keys.iter().copied() {
                         if let Some(entry) = guard.timers.get_mut(&key) {
-                            if now >= entry.next_fire {
+                            if now >= entry.fire_at() {
                                 due_events.push(key);
                                 if entry.repeating {
                                     // Use Instant::now() + interval to avoid cumulative drift.
@@ -261,6 +312,10 @@ impl TimerManager {
     fn notify_worker(&self) {}
 
     /// Start or replace a timer for `(target, id)`.
+    ///
+    /// The timer fires as soon as its deadline passes ([`TimerPrecision::Precise`]). Use
+    /// [`Self::start_timer_with_precision`] for a timer that tolerates being serviced slightly
+    /// late.
     pub fn start_timer(
         &self,
         target: ObjectId,
@@ -268,11 +323,33 @@ impl TimerManager {
         interval: Duration,
         repeating: bool,
     ) -> Result<(), String> {
+        self.start_timer_with_precision(target, id, interval, repeating, TimerPrecision::Precise)
+    }
+
+    /// Start or replace a timer with an explicit wake-up precision.
+    ///
+    /// A [`TimerPrecision::Coarse`] timer may fire up to its tolerance late, which lets the
+    /// worker wake once for several timers whose deadlines are close together instead of once
+    /// per deadline. Its interval still restarts from the actual fire time, so a coarse timer
+    /// does not accumulate drift beyond one tolerance per firing.
+    pub fn start_timer_with_precision(
+        &self,
+        target: ObjectId,
+        id: u32,
+        interval: Duration,
+        repeating: bool,
+        precision: TimerPrecision,
+    ) -> Result<(), String> {
         if interval.is_zero() {
             return Err("timer interval must be > 0".to_string());
         }
 
-        let entry = TimerEntry { interval, repeating, next_fire: next_fire_deadline(interval)? };
+        let entry = TimerEntry {
+            interval,
+            repeating,
+            next_fire: next_fire_deadline(interval)?,
+            tolerance: precision.tolerance(),
+        };
         self.lock_timers().timers.insert((target, id), entry);
         // The worker may be parked indefinitely (no timers) or until an older deadline;
         // an added timer can be nearer than that, so it must be woken to recompute.
@@ -338,7 +415,7 @@ impl TimerManager {
             // Iterate the timer map directly instead of first copying every key into a second
             // `Vec`. Only the due set has to outlive the lock, so one buffer is enough.
             for (key, entry) in guard.timers.iter_mut() {
-                if now >= entry.next_fire {
+                if now >= entry.fire_at() {
                     due_events.push(*key);
                     if entry.repeating {
                         // Reset based on current time to avoid cumulative drift.
@@ -658,5 +735,24 @@ mod mini_tests {
         }
 
         assert!(found, "mini pump should have posted the due timer event");
+    }
+
+    /// A coarse timer tolerates lateness while a precise one does not, and the tolerance
+    /// participates in the wake calculation rather than only in the due check.
+    #[test]
+    fn timer_precision_expresses_tolerated_lateness() {
+        assert_eq!(TimerPrecision::Precise.tolerance_ms(), 0);
+        assert_eq!(TimerPrecision::Precise.tolerance(), Duration::ZERO);
+        assert!(TimerPrecision::Coarse.tolerance_ms() > 0);
+        assert_eq!(TimerPrecision::default(), TimerPrecision::Precise);
+
+        let deadline = Instant::now() + Duration::from_millis(10);
+        let entry = TimerEntry {
+            interval: Duration::from_millis(10),
+            repeating: false,
+            next_fire: deadline,
+            tolerance: TimerPrecision::Coarse.tolerance(),
+        };
+        assert_eq!(entry.fire_at(), deadline + TimerPrecision::Coarse.tolerance());
     }
 }

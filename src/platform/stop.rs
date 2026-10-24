@@ -117,11 +117,22 @@ pub fn take() -> bool {
 #[cfg(not(alloc_frugal))]
 pub(crate) fn honour_request_on_loop_thread() {
     LOOP_TICKED.store(true, Ordering::SeqCst);
-    if take() {
-        // The return value is not inspected: this *is* the thread that a `false` would be
-        // telling the caller about, and the backends answer `true` here. Reading it would add a
-        // branch that cannot be taken.
-        let _ = crate::platform::get_platform().quit();
+    if !is_requested() {
+        return;
+    }
+    // # Why the request is taken *after* the backend agrees to stop
+    //
+    // Taking first and stopping second loses the request whenever the backend refuses — and a
+    // backend refuses for a reason that has nothing to do with the request being unwanted: a
+    // toolkit's stop call is main-thread-only, so a frame driven on any other thread answers
+    // `false`. The loop that *can* honour it is still ticking somewhere, so the flag has to stay
+    // readable for it. Measured: a helper loop ticking frames on a worker thread swallowed the
+    // stop a platform test had just recorded, and that test then waited out its ten-second join.
+    //
+    // Peeking rather than polling also keeps the common case free: with no request recorded this
+    // is one atomic load, which is what the still-frame guarantee costs per frame.
+    if crate::platform::get_platform().quit() {
+        let _ = take();
     }
 }
 

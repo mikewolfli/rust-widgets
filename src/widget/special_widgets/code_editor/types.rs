@@ -618,6 +618,77 @@ pub struct SearchOptions {
     pub case_sensitive: bool,
     /// Match whole words only.
     pub whole_word: bool,
+    /// Interpret the query as a regular expression.
+    ///
+    /// The built-in matcher supports literals, `.`, character classes
+    /// (`[abc]`, `[^abc]`, ranges), the `*`, `+`, `?` and `{n,m}` quantifiers,
+    /// alternation with `|`, the anchors `^` and `$`, and the escapes
+    /// `\d`, `\w`, `\s` and `\b`. This is intentionally the subset a code
+    /// search needs; a host that needs the full language installs its own
+    /// highlighter/provider rather than the editor growing a second engine.
+    pub use_regex: bool,
+    /// Restrict matches to the current selection.
+    pub in_selection: bool,
+}
+
+/// The line terminator a document was loaded with.
+///
+/// The model normally stores `\n` only, so every edit and every column count has
+/// one representation. The terminator the file used is remembered separately and
+/// reported by [`super::editor::CodeEditor::line_ending`], which lets a host save
+/// the document back in its original form without making every internal operation
+/// carry the difference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineEnding {
+    /// Lines end with a single `\n`.
+    #[default]
+    Lf,
+    /// Lines ended with `\r\n` when the document was loaded.
+    Crlf,
+}
+
+impl LineEnding {
+    /// Returns the terminator as a string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::Crlf => "\r\n",
+        }
+    }
+}
+
+/// How the insertion point is painted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaretStyle {
+    /// A thin vertical bar, the default in most editors.
+    #[default]
+    Line,
+    /// A filled block covering the character cell.
+    Block,
+    /// A horizontal bar under the character cell.
+    Underline,
+}
+
+/// A caller-owned highlight range drawn behind the text.
+///
+/// Unlike the selection and the search hits, these ranges are not owned by the
+/// editor: a host uses them for breakpoint lines, staged-diff bands, or remote
+/// collaborator cursors, which the widget cannot derive from its own state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtraSelection {
+    /// Inclusive start position.
+    pub start: TextPosition,
+    /// Exclusive end position.
+    pub end: TextPosition,
+    /// Fill colour of the band.
+    pub color: crate::core::Color,
+}
+
+impl ExtraSelection {
+    /// Creates a highlight range.
+    pub fn new(start: TextPosition, end: TextPosition, color: crate::core::Color) -> Self {
+        Self { start, end, color }
+    }
 }
 
 /// A search hit expressed as a line plus character range.
@@ -669,6 +740,12 @@ pub struct FindState {
     pub current: usize,
     /// `true` when focus sits in the replacement field.
     pub focus_replace: bool,
+    /// `true` when the last navigation wrapped past the document edge.
+    ///
+    /// A wrap is a real navigation event the reader has to be told about:
+    /// jumping from the last hit back to the first without a notice reads as a
+    /// scroll fault. The flag is cleared by the next non-wrapping navigation.
+    pub wrapped: bool,
 }
 
 impl FindState {
@@ -723,6 +800,15 @@ impl CompletionItem {
 pub trait CompletionSource {
     /// Returns candidate rows for `prefix` within `text`, capped at `limit`.
     fn completions(&self, text: &str, prefix: &str, limit: usize) -> Vec<CompletionItem>;
+
+    /// Returns `true` when this provider is the built-in document index.
+    ///
+    /// The editor can then answer from its revision-keyed word index instead of
+    /// materialising the whole document for every trigger. A custom provider keeps
+    /// receiving the text.
+    fn document_indexed(&self) -> bool {
+        false
+    }
 }
 
 /// Default provider: distinct identifiers already present in the document.
@@ -730,18 +816,34 @@ pub trait CompletionSource {
 pub struct DocumentCompletions;
 
 impl CompletionSource for DocumentCompletions {
+    fn document_indexed(&self) -> bool {
+        true
+    }
+
     fn completions(&self, text: &str, prefix: &str, limit: usize) -> Vec<CompletionItem> {
-        let limit = limit.max(1);
-        if prefix.is_empty() {
-            return Vec::new();
-        }
-        let mut seen: Vec<&str> = Vec::new();
+        DocumentWordIndex::build(text, 0).completions(prefix, limit)
+    }
+}
+
+/// A distinct-word index over a document snapshot.
+///
+/// The built-in completion provider used to walk the whole text on every
+/// trigger, which made completion cost proportional to the file on every
+/// keystroke. The index is built once per revision and queried directly; the
+/// editor owns the cache and rebuilds it when the revision moves.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DocumentWordIndex {
+    revision: u64,
+    words: Vec<String>,
+}
+
+impl DocumentWordIndex {
+    /// Builds an index of the distinct identifiers in `text` at `revision`.
+    pub fn build(text: &str, revision: u64) -> Self {
+        let mut words: Vec<String> = Vec::new();
         let mut cursor = 0usize;
         while cursor < text.len() {
-            let ch = match text[cursor..].chars().next() {
-                Some(ch) => ch,
-                None => break,
-            };
+            let Some(ch) = text[cursor..].chars().next() else { break };
             if ch.is_alphanumeric() || ch == '_' {
                 let start = cursor;
                 let mut end = cursor + ch.len_utf8();
@@ -754,19 +856,76 @@ impl CompletionSource for DocumentCompletions {
                     }
                 }
                 let word = &text[start..end];
-                if word != prefix && word.starts_with(prefix) && !seen.contains(&word) {
-                    seen.push(word);
-                    if seen.len() >= limit {
-                        break;
-                    }
+                if !words.iter().any(|existing| existing == word) {
+                    words.push(word.to_string());
                 }
                 cursor = end;
             } else {
                 cursor += ch.len_utf8();
             }
         }
-        seen.into_iter().map(CompletionItem::new).collect()
+        Self { revision, words }
     }
+
+    /// Returns the revision this index was built from.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Returns the number of indexed words.
+    pub fn len(&self) -> usize {
+        self.words.len()
+    }
+
+    /// Returns `true` when the index holds no words.
+    pub fn is_empty(&self) -> bool {
+        self.words.is_empty()
+    }
+
+    /// Returns candidates for `prefix`, ranked by match quality.
+    ///
+    /// A prefix match ranks above a subsequence match, and within each class the
+    /// shorter (more specific) word ranks first. This is the fuzzy behaviour a
+    /// completer needs: typing `fbn` still finds `foo_bar_name`, but `foo` is
+    /// offered before it.
+    pub fn completions(&self, prefix: &str, limit: usize) -> Vec<CompletionItem> {
+        if prefix.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let lowered = prefix.to_lowercase();
+        let mut ranked: Vec<(u8, usize, &String)> = Vec::new();
+        for word in &self.words {
+            if word == prefix {
+                continue;
+            }
+            let lowered_word = word.to_lowercase();
+            let rank = if lowered_word.starts_with(&lowered) {
+                0u8
+            } else if is_subsequence(&lowered, &lowered_word) {
+                1u8
+            } else {
+                continue;
+            };
+            ranked.push((rank, word.len(), word));
+        }
+        ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(b.2)));
+        ranked
+            .into_iter()
+            .take(limit)
+            .map(|(_, _, word)| CompletionItem::new(word.clone()))
+            .collect()
+    }
+}
+
+/// Returns `true` when every character of `needle` appears in `haystack` in order.
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut chars = haystack.chars();
+    for wanted in needle.chars() {
+        if !chars.by_ref().any(|candidate| candidate == wanted) {
+            return false;
+        }
+    }
+    true
 }
 
 /// A transient completion popup.
@@ -780,6 +939,8 @@ pub struct CompletionState {
     pub selected: usize,
     /// Character column where the replaced prefix starts.
     pub anchor_column: usize,
+    /// First visible row of a popup taller than its configured cap.
+    pub scroll: usize,
 }
 
 impl CompletionState {
@@ -911,6 +1072,42 @@ pub struct CodeEditorConfig {
     pub line_advance: f32,
     /// Multiplier from `font_size` to row height when `line_advance` is `0.0`.
     pub line_height_ratio: f32,
+    /// Ease the viewport toward the caret instead of jumping.
+    ///
+    /// Off by default so the default viewport behaviour is byte-for-byte the
+    /// existing one; a host that drives frames through `tick` turns it on.
+    pub smooth_scroll: bool,
+    /// Fade the completion popup and context menu in.
+    ///
+    /// Off by default: the popups appear fully opaque in the default profile.
+    pub fade_popups: bool,
+    /// Maximum completion rows before the popup scrolls.
+    ///
+    /// `0` keeps the popup sized to the candidate list, which is the default
+    /// and the previous behaviour. A positive value caps the height and turns
+    /// wheel/paging inside the popup into scrolling.
+    pub max_visible_completions: usize,
+    /// Placeholder drawn while the document is empty.
+    pub placeholder_text: Option<String>,
+    /// Draw a `{ … N lines }` summary on a folded region's first row.
+    ///
+    /// Off by default so a folded document paints exactly what it did before.
+    pub show_fold_summary: bool,
+    /// Allow `undo`/`redo` to run. When off, history is still recorded so a host
+    /// can re-enable the commands without losing the session.
+    pub undo_redo_enabled: bool,
+    /// Draw a small marker in the gutter for bookmarked lines.
+    pub show_bookmarks: bool,
+    /// Animate the bracket-pair highlight (a short fade after it moves).
+    pub animate_brackets: bool,
+    /// Draw gutter chevrons as vector strokes instead of `v`/`>` glyphs.
+    pub vector_gutter_marks: bool,
+    /// Draw severity marks as circles instead of 5 px squares.
+    pub round_severity_dots: bool,
+    /// Paint the caret line's number in the accent colour.
+    pub accent_active_line_number: bool,
+    /// Fade a newly folded or unfolded region in over ~150 ms.
+    pub animate_folds: bool,
 }
 
 impl Default for CodeEditorConfig {
@@ -937,6 +1134,18 @@ impl Default for CodeEditorConfig {
             space_advance: 7.0,
             line_advance: 0.0,
             line_height_ratio: DEFAULT_LINE_HEIGHT_RATIO,
+            smooth_scroll: false,
+            fade_popups: false,
+            max_visible_completions: 0,
+            placeholder_text: None,
+            show_fold_summary: false,
+            undo_redo_enabled: true,
+            show_bookmarks: true,
+            animate_brackets: false,
+            vector_gutter_marks: false,
+            round_severity_dots: false,
+            accent_active_line_number: false,
+            animate_folds: false,
         }
     }
 }
@@ -1077,6 +1286,78 @@ impl CodeEditorConfig {
         self
     }
 
+    /// Enables eased viewport scrolling.
+    pub fn smooth_scroll(mut self, smooth: bool) -> Self {
+        self.smooth_scroll = smooth;
+        self
+    }
+
+    /// Enables the popup fade-in.
+    pub fn fade_popups(mut self, fade: bool) -> Self {
+        self.fade_popups = fade;
+        self
+    }
+
+    /// Caps the completion popup at `rows` rows (`0` = no cap).
+    pub fn max_visible_completions(mut self, rows: usize) -> Self {
+        self.max_visible_completions = rows;
+        self
+    }
+
+    /// Sets the text drawn in an empty document.
+    pub fn placeholder_text(mut self, text: impl Into<String>) -> Self {
+        self.placeholder_text = Some(text.into());
+        self
+    }
+
+    /// Draws a line-count summary on folded regions.
+    pub fn show_fold_summary(mut self, show: bool) -> Self {
+        self.show_fold_summary = show;
+        self
+    }
+
+    /// Enables or disables the undo/redo commands.
+    pub fn undo_redo_enabled(mut self, enabled: bool) -> Self {
+        self.undo_redo_enabled = enabled;
+        self
+    }
+
+    /// Shows or hides bookmark markers in the gutter.
+    pub fn show_bookmarks(mut self, show: bool) -> Self {
+        self.show_bookmarks = show;
+        self
+    }
+
+    /// Enables the bracket-pair fade animation.
+    pub fn animate_brackets(mut self, animate: bool) -> Self {
+        self.animate_brackets = animate;
+        self
+    }
+
+    /// Draws gutter chevrons as vector strokes.
+    pub fn vector_gutter_marks(mut self, vector: bool) -> Self {
+        self.vector_gutter_marks = vector;
+        self
+    }
+
+    /// Draws severity marks as circles.
+    pub fn round_severity_dots(mut self, round: bool) -> Self {
+        self.round_severity_dots = round;
+        self
+    }
+
+    /// Paints the active line number in the accent colour.
+    pub fn accent_active_line_number(mut self, accent: bool) -> Self {
+        self.accent_active_line_number = accent;
+        self
+    }
+
+    /// Enables the fold reveal fade.
+    pub fn animate_folds(mut self, animate: bool) -> Self {
+        self.animate_folds = animate;
+        self
+    }
+
     /// The row height this configuration describes, in logical pixels.
     ///
     /// One definition of the derivation, so the widget, the hit-test and a
@@ -1113,6 +1394,9 @@ impl CodeEditorConfig {
         }
         if self.column_ruler > 10_000 {
             return Err("column_ruler must be at most 10000");
+        }
+        if self.max_visible_completions > 200 {
+            return Err("max_visible_completions must be at most 200");
         }
         Ok(())
     }

@@ -672,6 +672,37 @@ impl EventHandler for DateRangePicker {
                 }
                 return;
             }
+            Event::KeyPress { key, modifiers } => {
+                // Month navigation from the keyboard: PageUp/PageDown step the visible
+                // month, and Ctrl+Left/Right do the same for a keyboard user coming from a
+                // text-field convention. Neither arm existed, so the grid could only be
+                // navigated with the pointer.
+                let pressed = crate::shortcut::Key::from_key_code(*key);
+                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                match pressed {
+                    Some(crate::shortcut::Key::PageUp) => {
+                        self.previous_month();
+                        return;
+                    }
+                    Some(crate::shortcut::Key::PageDown) => {
+                        self.next_month();
+                        return;
+                    }
+                    Some(crate::shortcut::Key::Left)
+                        if modifiers.contains(crate::shortcut::Modifiers::CTRL) =>
+                    {
+                        self.previous_month();
+                        return;
+                    }
+                    Some(crate::shortcut::Key::Right)
+                        if modifiers.contains(crate::shortcut::Modifiers::CTRL) =>
+                    {
+                        self.next_month();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         }
 

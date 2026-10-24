@@ -18,6 +18,41 @@ use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// How a [`Spinner`] draws its rotation.
+///
+/// [`Arc`](Self::Arc) is the original single sweeping arc and stays the default, so an
+/// untouched spinner emits the same pixels it always did. [`Spokes`](Self::Spokes) draws a ring
+/// of short radial bars whose opacity fades around the circle, in the style of a macOS busy
+/// indicator. Both reuse the same [`Spinner::angle`] phase, so switching styles changes the ink
+/// rather than the animation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpinnerStyle {
+    /// One sweeping arc segment; the default.
+    #[default]
+    Arc,
+    /// Twelve short radial bars with a fading tail, rotated by the spinner's phase.
+    Spokes,
+}
+
+impl SpinnerStyle {
+    /// The token this style is published as.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Arc => "arc",
+            Self::Spokes => "spokes",
+        }
+    }
+
+    /// Parses a published token. `None` for a spelling this control does not publish.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "arc" => Some(Self::Arc),
+            "spokes" => Some(Self::Spokes),
+            _ => None,
+        }
+    }
+}
+
 /// Spinner widget for indicating loading/processing state.
 ///
 /// Draws a circular track (gray ring) and a colored arc segment that
@@ -40,6 +75,8 @@ pub struct Spinner {
     size_ratio: f32,
     /// Speed multiplier (default 1.0).
     speed: f32,
+    /// The drawn shape: one sweeping arc or a ring of fading spokes.
+    style: SpinnerStyle,
 }
 
 impl Spinner {
@@ -54,6 +91,7 @@ impl Spinner {
             thickness: 4,
             size_ratio: 0.8,
             speed: 1.0,
+            style: SpinnerStyle::default(),
         }
     }
 
@@ -122,6 +160,27 @@ impl Spinner {
         self.speed
     }
 
+    /// Returns the drawn spinner style.
+    ///
+    /// This is the control's own shape selector. It shadows [`Widget::style`] for concrete
+    /// calls, so a caller that needs the resolved [`crate::style::WidgetStyle`] record uses a
+    /// fully qualified `Widget::style(&spinner)` call.
+    pub fn spinner_style(&self) -> SpinnerStyle {
+        self.style
+    }
+
+    /// Selects the drawn spinner style and repaints.
+    ///
+    /// Both styles read the same [`Spinner::angle`], so switching mid-spin changes the ink
+    /// without resetting the phase.
+    pub fn set_spinner_style(&mut self, style: SpinnerStyle) {
+        if self.style == style {
+            return;
+        }
+        self.style = style;
+        self.base.request_redraw();
+    }
+
     /// Advance the spinner angle. Call this each frame to animate.
     ///
     /// `delta_ms` is the elapsed time in milliseconds since the last frame.
@@ -184,6 +243,39 @@ impl Spinner {
         let raw_radius = disc.width as f32 / 2.0 * self.size_ratio;
         let radius = (raw_radius - self.thickness as f32 / 2.0 - 1.0).max(1.0);
         Some((center, radius as u32))
+    }
+
+    /// Paints the macOS-style spokes: twelve short radial bars around the centre.
+    ///
+    /// The bars start at 12 o'clock and are spaced evenly around the circle. Their alpha rises
+    /// around the ring, so one end is solid and the tail fades, which is what gives the shape
+    /// its sense of direction. `self.angle` rotates the whole ring, so the spokes animate on
+    /// exactly the same phase and tick as the arc.
+    fn draw_spokes(
+        &self,
+        context: &mut RenderContext,
+        center: Point,
+        radius: u32,
+        color: Color,
+        stroke_w: u32,
+    ) {
+        const SPOKE_COUNT: u32 = 12;
+        // The bars are short: they occupy the outer half of the ring rather than spanning it.
+        let inner = radius as f32 * 0.55;
+        let outer = radius as f32 * 0.95;
+        let phase = self.angle.to_radians() - core::f32::consts::FRAC_PI_2;
+        let base_alpha = color.a as f32 / 255.0;
+        for index in 0..SPOKE_COUNT {
+            let theta = phase + index as f32 / SPOKE_COUNT as f32 * core::f32::consts::TAU;
+            let (sin, cos) = theta.sin_cos();
+            let from =
+                Point::from_f32(center.x as f32 + cos * inner, center.y as f32 + sin * inner);
+            let to = Point::from_f32(center.x as f32 + cos * outer, center.y as f32 + sin * outer);
+            // `index == 0` is the faintest spoke and the last is the head, so the opacity
+            // gradient reads as motion in the direction the phase advances.
+            let alpha = base_alpha * (index as f32 + 1.0) / SPOKE_COUNT as f32;
+            context.draw_line_stroke(from, to, color.with_alpha_f32(alpha), stroke_w);
+        }
     }
 }
 
@@ -305,34 +397,45 @@ impl Draw for Spinner {
         let is_enabled = self.base.is_enabled();
         let stroke_w = self.thickness.max(1);
 
-        // Resolve colors from style or use defaults.
-        let style = self.style();
-        let track_color = style.text_color.unwrap_or_else(|| Color::rgba(220, 220, 220, 200));
-        let arc_color = style.background_color.unwrap_or(Color::PRIMARY);
+        // Resolve colors from the widget style or use defaults. The spinner's own shape
+        // selector is `self.style`, so the resolved style record is read from the base.
+        let widget_style = self.base.style();
+        let track_color =
+            widget_style.text_color.unwrap_or_else(|| Color::rgba(220, 220, 220, 200));
+        let arc_color = widget_style.background_color.unwrap_or(Color::PRIMARY);
 
         // Resolve effective colors based on enabled state.
         let effective_track =
             if is_enabled { track_color } else { Color::rgba(200, 200, 200, 100) };
         let effective_arc = if is_enabled { arc_color } else { Color::DISABLED_FOREGROUND };
 
-        // Draw the track (full circle stroke).
-        context.draw_circle_stroke(center, radius, effective_track, stroke_w);
+        match self.style {
+            SpinnerStyle::Arc => {
+                // Draw the track (full circle stroke).
+                context.draw_circle_stroke(center, radius, effective_track, stroke_w);
 
-        // Draw the spinning arc segment (~135 degrees sweep).
-        // Convert angle from degrees to radians; start at -90° (12 o'clock) offset.
-        let arc_sweep = 2.4; // ~135 degrees in radians
-        let start_angle = self.angle.to_radians() - core::f32::consts::FRAC_PI_2;
-        let end_angle = start_angle + arc_sweep;
+                // Draw the spinning arc segment (~135 degrees sweep).
+                // Convert angle from degrees to radians; start at -90° (12 o'clock) offset.
+                let arc_sweep = 2.4; // ~135 degrees in radians
+                let start_angle = self.angle.to_radians() - core::f32::consts::FRAC_PI_2;
+                let end_angle = start_angle + arc_sweep;
 
-        crate::render::draw_arc_segments(
-            context,
-            center,
-            radius as f32,
-            start_angle,
-            end_angle,
-            effective_arc,
-            stroke_w,
-        );
+                crate::render::draw_arc_segments(
+                    context,
+                    center,
+                    radius as f32,
+                    start_angle,
+                    end_angle,
+                    effective_arc,
+                    stroke_w,
+                );
+            }
+            SpinnerStyle::Spokes => {
+                // The spoke ring is its own mark: it has no separate track, which is what makes
+                // the fading tail the whole indication of rotation.
+                self.draw_spokes(context, center, radius, effective_arc, stroke_w);
+            }
+        }
     }
 }
 
@@ -468,10 +571,50 @@ mod tests {
     #[test]
     fn spinner_style_roundtrip() {
         let mut sp = Spinner::new(Rect::new(0, 0, 48, 48));
-        assert_eq!(*sp.style(), WidgetStyle::default());
+        // The spinner's own `style` selects the shape; the resolved widget-style record is
+        // reached through the `Widget` contract with a fully qualified call.
+        assert_eq!(*Widget::style(&sp), WidgetStyle::default());
         let custom = WidgetStyle::default().with_background(Color::rgb(0, 150, 255));
-        sp.set_style(custom.clone());
-        assert_eq!(*sp.style(), custom);
+        Widget::set_style(&mut sp, custom.clone());
+        assert_eq!(*Widget::style(&sp), custom);
+    }
+
+    /// The default shape is the original arc, so existing snapshots are unchanged.
+    #[test]
+    fn the_default_spinner_style_is_the_arc() {
+        let sp = Spinner::new(Rect::new(0, 0, 48, 48));
+        assert_eq!(sp.spinner_style(), SpinnerStyle::Arc);
+
+        let mut sp = Spinner::new(crate::widget::census::CENSUS_RECT);
+        let svg = crate::widget::svg::render_to_svg(&mut sp);
+        assert!(svg.contains("<circle"), "an arc spinner still paints its track: {svg}");
+    }
+
+    /// The two published spellings parse, and an unknown one is refused.
+    #[test]
+    fn spinner_style_tokens_round_trip() {
+        for style in [SpinnerStyle::Arc, SpinnerStyle::Spokes] {
+            assert_eq!(SpinnerStyle::from_token(style.token()), Some(style));
+        }
+        assert_eq!(SpinnerStyle::Arc.token(), "arc");
+        assert_eq!(SpinnerStyle::Spokes.token(), "spokes");
+        assert_eq!(SpinnerStyle::from_token("chasing"), None);
+    }
+
+    /// The spokes are twelve radial bars and they turn with the spinner's own phase.
+    #[test]
+    fn spokes_paint_twelve_bars_that_follow_the_animation_phase() {
+        let mut sp = Spinner::new(Rect::new(0, 0, 48, 48));
+        sp.set_spinner_style(SpinnerStyle::Spokes);
+
+        let first = crate::widget::svg::render_to_svg(&mut sp);
+        assert_eq!(first.matches("<line").count(), 12, "twelve spokes: {first}");
+        assert!(!first.contains("<circle"), "the spoke ring draws no separate track: {first}");
+
+        sp.tick(100);
+        let second = crate::widget::svg::render_to_svg(&mut sp);
+        assert_eq!(second.matches("<line").count(), 12);
+        assert_ne!(first, second, "the spokes must rotate on the same tick that advances the arc");
     }
 
     #[test]

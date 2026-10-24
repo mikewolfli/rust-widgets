@@ -6,7 +6,7 @@
 use crate::core::Point;
 use crate::event::{Event, TouchId};
 
-use super::{distance, point_delta, GestureRecognizer, SWIPE_MIN_DISTANCE, SWIPE_MIN_VELOCITY};
+use super::{distance, point_delta, tuning, GestureKind, GestureRecognizer};
 
 // ────────────────────────────────────────────
 // SwipeGesture
@@ -30,6 +30,10 @@ impl SwipeGesture {
 }
 
 impl GestureRecognizer for SwipeGesture {
+    fn kind(&self) -> GestureKind {
+        GestureKind::Swipe
+    }
+
     fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
         match event {
             Event::TouchBegin { pos, touch_id } => {
@@ -56,7 +60,7 @@ impl GestureRecognizer for SwipeGesture {
                 let total_dist = distance(start, *pos);
 
                 // Must exceed minimum distance
-                if total_dist < SWIPE_MIN_DISTANCE {
+                if total_dist < tuning().swipe_min_distance {
                     self.reset();
                     return None;
                 }
@@ -68,7 +72,7 @@ impl GestureRecognizer for SwipeGesture {
                 // field both of them populate.
                 let velocity = if dt > 0 { total_dist / dt as f32 * 1000.0 } else { 0.0 };
 
-                if velocity >= SWIPE_MIN_VELOCITY {
+                if velocity >= tuning().swipe_min_velocity {
                     let result = Event::Swipe { start, end: *pos, velocity };
                     self.reset();
                     return Some(result);
@@ -95,16 +99,18 @@ crate::impl_default_via_new!(SwipeGesture);
 // TwoFingerSwipeGesture
 // ────────────────────────────────────────────
 
-/// Two-finger swipe recognizer.
+/// Multi-finger swipe recognizer.
 ///
-/// Detects when two fingers move together in the same direction
-/// (e.g., page navigation on a touchpad).
+/// Detects when two (or, with [`TwoFingerSwipeGesture::with_fingers`], three or more) fingers
+/// move together in the same direction (e.g., page navigation on a touchpad).
 ///
-/// Tracks the centroid (average position) of both fingers and
-/// emits on release if centroid displacement exceeds threshold.
+/// Tracks the centroid (average position) of the contacts and emits on release if the centroid
+/// displacement exceeds threshold. Two fingers emit [`Event::TwoFingerSwipe`]; a larger count
+/// emits [`Event::MultiFingerSwipe`] so the meanings cannot be confused.
 ///
 /// ## Output event
 /// - [`Event::TwoFingerSwipe { centroid_start, centroid_end, velocity }`]
+/// - [`Event::MultiFingerSwipe { fingers, .. }`] for three or more contacts
 #[derive(Debug)]
 pub struct TwoFingerSwipeGesture {
     touches: Vec<(Point, TouchId)>,
@@ -119,15 +125,33 @@ pub struct TwoFingerSwipeGesture {
     /// Final (release) positions of lifted touches, in lift order.
     ///
     /// These — not the last move or the landing point — define the end centroid
-    /// once both fingers are up, so a release with no `TouchMove` still measures
+    /// once every finger is up, so a release with no `TouchMove` still measures
     /// the travel the fingers actually made.
     touch_ends: Vec<Point>,
+    /// How many contacts the gesture needs. `2` for the conventional two-finger swipe; a host
+    /// that wants a three-finger navigation gesture constructs one with
+    /// [`Self::with_fingers`].
+    fingers: usize,
 }
 
 impl TwoFingerSwipeGesture {
     /// Creates a recognizer tracking no fingers and no centroid baseline.
     pub fn new() -> Self {
-        Self { touches: Vec::new(), baseline: None, touch_ends: Vec::new() }
+        Self { touches: Vec::new(), baseline: None, touch_ends: Vec::new(), fingers: 2 }
+    }
+
+    /// Creates a recognizer that requires `fingers` contacts (clamped to at least 2).
+    ///
+    /// A count above 2 emits [`Event::MultiFingerSwipe`] instead of
+    /// [`Event::TwoFingerSwipe`], so an existing two-finger consumer cannot mistake a
+    /// three-finger gesture for its own.
+    pub fn with_fingers(fingers: usize) -> Self {
+        Self { fingers: fingers.max(2), ..Self::new() }
+    }
+
+    /// How many contacts this recognizer requires.
+    pub fn fingers(&self) -> usize {
+        self.fingers
     }
 
     fn compute_centroid(touches: &[(Point, TouchId)]) -> Option<Point> {
@@ -149,15 +173,19 @@ impl TwoFingerSwipeGesture {
 }
 
 impl GestureRecognizer for TwoFingerSwipeGesture {
+    fn kind(&self) -> GestureKind {
+        GestureKind::TwoFingerSwipe
+    }
+
     fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
         match event {
             Event::TouchBegin { pos, touch_id } => {
-                if self.touches.len() >= 2 {
+                if self.touches.len() >= self.fingers {
                     return None;
                 }
                 self.touches.push((*pos, *touch_id));
-                // Start tracking centroid when second finger arrives
-                if self.touches.len() == 2 {
+                // Start tracking the centroid only once every required finger is down.
+                if self.touches.len() == self.fingers {
                     // One write, so the baseline point and its timestamp cannot drift apart.
                     if let Some(centroid) = Self::compute_centroid(&self.touches) {
                         self.baseline = Some((now_ms, centroid));
@@ -196,14 +224,25 @@ impl GestureRecognizer for TwoFingerSwipeGesture {
                         // Logical pixels per second, matching `Event::TwoFingerSwipe`'s
                         // documented unit and the other swipe recognisers.
                         let velocity = dist / elapsed * 1000.0;
-                        if dist >= super::SWIPE_MIN_DISTANCE
-                            && velocity >= super::SWIPE_MIN_VELOCITY
+                        if dist >= tuning().swipe_min_distance
+                            && velocity >= tuning().swipe_min_velocity
                         {
-                            Some(Event::TwoFingerSwipe {
-                                centroid_start: start,
-                                centroid_end: end,
-                                velocity,
-                            })
+                            // A two-finger gesture keeps the established variant; 3+ fingers
+                            // get their own so the two meanings cannot be confused.
+                            if self.fingers == 2 {
+                                Some(Event::TwoFingerSwipe {
+                                    centroid_start: start,
+                                    centroid_end: end,
+                                    velocity,
+                                })
+                            } else {
+                                Some(Event::MultiFingerSwipe {
+                                    fingers: u8::try_from(self.fingers).unwrap_or(u8::MAX),
+                                    centroid_start: start,
+                                    centroid_end: end,
+                                    velocity,
+                                })
+                            }
                         } else {
                             None
                         }
@@ -232,22 +271,14 @@ crate::impl_default_via_new!(TwoFingerSwipeGesture);
 // FlingGesture
 // ────────────────────────────────────────────
 
-/// Minimum speed (px/s) for a flick to be recognised as a fling.
-///
-/// Same unit as [`SWIPE_MIN_VELOCITY`](super::SWIPE_MIN_VELOCITY) and the public
-/// event fields: logical pixels per second. It is lower than the swipe threshold
-/// because a fling is allowed to cover a shorter distance.
-const FLING_MIN_VELOCITY: f32 = 300.0;
-/// Minimum travel (px) for a fling, which is shorter than a swipe's requirement.
-const FLING_MIN_DISTANCE: f32 = 15.0;
 /// Length of the trailing sample window (ms) used to estimate fling velocity.
 const VELOCITY_WINDOW_MS: u64 = 100;
 
 /// Velocity-based fling/flick recognizer.
 ///
 /// Detects a short, fast finger flick intended to trigger inertial
-/// scrolling. A fling requires **both** a minimum travel ([`FLING_MIN_DISTANCE`])
-/// and a valid trailing velocity ([`FLING_MIN_VELOCITY`], in px/s), so a slow
+/// scrolling. A fling requires **both** a minimum travel and a valid trailing
+/// velocity (both read from [`super::GestureTuning`], in px and px/s), so a slow
 /// long drag — even one that covers plenty of distance — is not reported as a
 /// flick, and a release after a stationary hold has no velocity to report.
 ///
@@ -298,6 +329,10 @@ impl FlingGesture {
 }
 
 impl GestureRecognizer for FlingGesture {
+    fn kind(&self) -> GestureKind {
+        GestureKind::Fling
+    }
+
     fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
         match event {
             Event::TouchBegin { pos, touch_id } if self.start_pos.is_none() => {
@@ -340,7 +375,9 @@ impl GestureRecognizer for FlingGesture {
                 // A fling needs *both* enough travel and a valid trailing velocity:
                 // a slow long drag (or a hold-then-release) must not masquerade as a
                 // high-speed flick just because it covered the distance.
-                if total_distance >= FLING_MIN_DISTANCE && speed >= FLING_MIN_VELOCITY {
+                let tuning = tuning();
+                if total_distance >= tuning.fling_min_distance && speed >= tuning.fling_min_velocity
+                {
                     Some(Event::Fling {
                         pos: *pos,
                         velocity: velocity.unwrap_or(Point::new(0, 0)),
@@ -603,5 +640,51 @@ mod tests {
             }
             other => panic!("reversed release order must still produce a swipe, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod multi_finger_tests {
+    use super::*;
+
+    /// Three contacts are tracked to their own event, while two keep the established one.
+    #[test]
+    fn three_fingers_emit_the_multi_finger_variant() {
+        let mut gesture = TwoFingerSwipeGesture::with_fingers(3);
+        assert_eq!(gesture.fingers(), 3);
+        for (index, (x, y)) in [(0, 0), (0, 10), (0, 20)].iter().enumerate() {
+            assert!(gesture
+                .process(
+                    &Event::TouchBegin { pos: Point::new(*x, *y), touch_id: index as u64 + 1 },
+                    0,
+                )
+                .is_none());
+        }
+        // All three lift 200 px to the right, 100 ms later.
+        let mut produced = None;
+        for (index, y) in [0, 10, 20].iter().enumerate() {
+            produced = gesture.process(
+                &Event::TouchEnd { pos: Point::new(200, *y), touch_id: index as u64 + 1 },
+                100,
+            );
+        }
+        match produced {
+            Some(Event::MultiFingerSwipe { fingers, centroid_start, centroid_end, velocity }) => {
+                assert_eq!(fingers, 3);
+                assert_eq!(centroid_start, Point::new(0, 10));
+                assert_eq!(centroid_end, Point::new(200, 10));
+                assert!(velocity >= 500.0, "200 px in 100 ms is 2000 px/s, got {velocity}");
+            }
+            other => panic!("three fingers must emit a multi-finger swipe, got {other:?}"),
+        }
+    }
+
+    /// A count below two is clamped, so a misconfigured recogniser cannot behave like a
+    /// one-finger gesture that the two-finger event name contradicts.
+    #[test]
+    fn the_finger_count_is_clamped_to_at_least_two() {
+        assert_eq!(TwoFingerSwipeGesture::with_fingers(0).fingers(), 2);
+        assert_eq!(TwoFingerSwipeGesture::with_fingers(1).fingers(), 2);
+        assert_eq!(TwoFingerSwipeGesture::with_fingers(4).fingers(), 4);
     }
 }

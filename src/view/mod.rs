@@ -119,6 +119,7 @@ mod helpers;
 mod identity;
 mod node;
 mod reactive;
+mod row_signal;
 
 pub use apply::{
     apply, apply_with_icon_resolver, apply_with_reserved_overlay_and_icon_resolver, ApplyReport,
@@ -129,7 +130,8 @@ pub use diff::{diff, DiffReport, Patch};
 pub use engine::{Context, View, ViewEngine};
 pub use identity::TreeIndex;
 pub use node::{Host, Node};
-pub use reactive::ReactiveHost;
+pub use reactive::{reactive_pump_event, ReactiveHost, REACTIVE_PUMP_EVENT};
+pub use row_signal::{RowChange, RowSignal};
 
 pub(crate) use helpers::{is_generated_wire_prop, is_transparent_node, mounted_slots};
 // The prefix itself has exactly one consumer: the designer's test asserting that

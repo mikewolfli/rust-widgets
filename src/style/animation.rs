@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+use super::animation_group::AnimationGroup;
 use crate::compat::{Box, Duration, HashMap, Instant, String, Vec};
 use crate::core::Color;
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 /// The timing curve applied to an animation's raw progress.
 ///
 /// [`EasingFunction::apply`] maps a normalized input `t` in `0.0..=1.0` to an
@@ -36,6 +37,65 @@ pub enum EasingFunction {
     BackIn,
     /// Overshoots past the target before settling back. Overshoots above `1.0`.
     BackOut,
+    /// A cubic Bézier timing function defined by two control points, the same four-parameter
+    /// form a stylesheet spells `cubic-bezier(x1, y1, x2, y2)`.
+    ///
+    /// # Why this exists next to the named curves
+    ///
+    /// The named variants are a fixed family: every one of them is a single formula, so a theme
+    /// or a host could choose from ten shapes and nothing else. The two control points cover the
+    /// whole custom-curve space with **one** variant, which is what the CSS timing-function
+    /// syntax already standardised and what an imported design token set expresses. Adding a
+    /// variant per named curve instead would grow the enum without adding reach.
+    ///
+    /// `x1` and `x2` are clamped to `0.0..=1.0` by [`EasingFunction::cubic_bezier`], because a
+    /// control point outside that range would make the curve non-monotonic in time and the solver
+    /// could not name a single output for an input. `y1` and `y2` are deliberately unbounded:
+    /// values outside `0.0..=1.0` are how an overshooting curve is written.
+    CubicBezier {
+        /// X coordinate of the first control point, in `0.0..=1.0`.
+        x1: f32,
+        /// Y coordinate of the first control point, unclamped.
+        y1: f32,
+        /// X coordinate of the second control point, in `0.0..=1.0`.
+        x2: f32,
+        /// Y coordinate of the second control point, unclamped.
+        y2: f32,
+    },
+}
+
+impl EasingFunction {
+    /// Builds a [`EasingFunction::CubicBezier`] with the control points' X coordinates clamped
+    /// to the valid `0.0..=1.0` range.
+    ///
+    /// Use this rather than the variant directly when the four numbers come from untrusted
+    /// input (a design token, a stylesheet): it is the constructor that enforces the one
+    /// invariant the solver relies on.
+    pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
+        Self::CubicBezier { x1: x1.clamp(0.0, 1.0), y1, x2: x2.clamp(0.0, 1.0), y2 }
+    }
+
+    /// Parses the CSS spelling `cubic-bezier(x1, y1, x2, y2)`.
+    ///
+    /// Returns `None` for any other text, so a caller can fall back to the named curves instead
+    /// of silently treating unknown text as linear. Whitespace around the numbers is accepted,
+    /// as the CSS grammar allows.
+    pub fn parse_cubic_bezier(text: &str) -> Option<Self> {
+        let inner = text.trim().strip_prefix("cubic-bezier(")?.strip_suffix(')')?;
+        let mut values = [0.0f32; 4];
+        let mut count = 0usize;
+        for part in inner.split(',') {
+            if count == values.len() {
+                return None;
+            }
+            values[count] = part.trim().parse().ok()?;
+            count += 1;
+        }
+        if count != values.len() {
+            return None;
+        }
+        Some(Self::cubic_bezier(values[0], values[1], values[2], values[3]))
+    }
 }
 impl EasingFunction {
     /// Maps normalized progress `t` through this curve.
@@ -101,8 +161,44 @@ impl EasingFunction {
                 const C3: f32 = C1 + 1.0;
                 1.0 + C3 * (t - 1.0).powi(3) + C1 * (t - 1.0).powi(2)
             }
+            Self::CubicBezier { x1, y1, x2, y2 } => cubic_bezier_at(*x1, *y1, *x2, *y2, t),
         }
     }
+}
+
+/// Evaluates the Y of a cubic Bézier with `(0,0)` and `(1,1)` endpoints.
+///
+/// `x(u)` is monotonic when both X control points are in `0.0..=1.0`, which
+/// [`EasingFunction::cubic_bezier`] guarantees. The solver therefore bisects `u` until
+/// `x(u) == x` to within `1e-6`: 32 iterations always suffice for `f32` precision, and the
+/// loop is bounded, so a caller cannot hang on a degenerate curve.
+fn cubic_bezier_at(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let sample = |u: f32| {
+        let one_minus = 1.0 - u;
+        3.0 * one_minus * one_minus * u * x1 + 3.0 * one_minus * u * u * x2 + u * u * u
+    };
+    let (mut low, mut high) = (0.0f32, 1.0f32);
+    let mut u = x;
+    for _ in 0..32 {
+        let sampled = sample(u);
+        if (sampled - x).abs() <= 1e-6 {
+            break;
+        }
+        if sampled < x {
+            low = u;
+        } else {
+            high = u;
+        }
+        u = (low + high) * 0.5;
+    }
+    let one_minus = 1.0 - u;
+    3.0 * one_minus * one_minus * u * y1 + 3.0 * one_minus * u * u * y2 + u * u * u
 }
 /// Which family of shapes a state transition follows.
 ///
@@ -2160,6 +2256,193 @@ impl PropertyDriver {
     }
 }
 
+// ────────────────────────────────────────────
+// Frame clock
+// ────────────────────────────────────────────
+
+/// The longest delta a frame clock will report.
+///
+/// A host that slept (a laptop lid, a suspended process) comes back with a timestamp gap of
+/// seconds. Advancing an animation by that whole gap makes it jump straight past its end, so a
+/// frame is capped at a quarter second: long enough that a genuinely slow frame is followed at
+/// its real pace, short enough that a resume cannot skip an animation's visible half.
+pub const MAX_FRAME_DELTA_MS: u32 = 250;
+
+/// What one frame did, so a host can decide whether to schedule another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameStep {
+    /// Milliseconds advanced on this frame. Zero on the first frame (there is no previous
+    /// timestamp to measure from) and when the timestamp did not move.
+    pub delta_ms: u32,
+    /// How many animations are still running after the step.
+    pub active: usize,
+    /// A monotonic counter of frames this clock has seen, starting at 1 for the first frame.
+    pub frame_index: u64,
+    /// How many named groups finished during this step and were removed.
+    pub groups_completed: usize,
+}
+
+impl FrameStep {
+    /// Whether any animation still needs frames.
+    pub fn is_running(self) -> bool {
+        self.active > 0
+    }
+}
+
+/// A frame-driven clock: one [`AnimationDriver`] plus the named [`AnimationGroup`]s that ride on
+/// it, advanced by the host's animation-frame callbacks rather than by wall-clock reads.
+///
+/// # Why one clock rather than a driver per control
+///
+/// A driver advanced by `advance()` reads `Instant::now()` per animation, so two controls that
+/// were started on the same frame can land on different elapsed times depending on when their
+/// own `advance` ran. The clock measures **one** delta per frame and hands that exact value to
+/// every animation, which is what makes a coordinated transition (a sheet and its scrim, a row
+/// and its disclosure arrow) move in step. It also gives a group one place to advance, which is
+/// the consumer [`AnimationGroup`](crate::style::animation_group::AnimationGroup) documented
+/// itself as lacking.
+///
+/// The first frame reports a zero delta: a clock cannot know how long the frame *before* the
+/// first one took, and inventing a nominal 16 ms would make an animation's first tick depend on
+/// a guess.
+#[derive(Default)]
+pub struct AnimationClock {
+    driver: AnimationDriver,
+    groups: Vec<AnimationGroup>,
+    last_timestamp_ms: Option<u64>,
+    frame_index: u64,
+}
+
+impl AnimationClock {
+    /// Creates an empty clock with no animations and no groups.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replaces the clock's driver, for a host that owns an already-populated one.
+    pub fn with_driver(driver: AnimationDriver) -> Self {
+        Self { driver, ..Self::default() }
+    }
+
+    /// The driver every animation in this clock lives in.
+    pub fn driver(&self) -> &AnimationDriver {
+        &self.driver
+    }
+
+    /// Mutable access to the driver, for adding or removing animations.
+    pub fn driver_mut(&mut self) -> &mut AnimationDriver {
+        &mut self.driver
+    }
+
+    /// Takes ownership of `group` and returns its index, which is stable until the group
+    /// completes and is removed.
+    pub fn add_group(&mut self, group: AnimationGroup) -> usize {
+        self.groups.push(group);
+        self.groups.len() - 1
+    }
+
+    /// The group at `index`, or `None` once it has completed and been removed.
+    pub fn group(&self, index: usize) -> Option<&AnimationGroup> {
+        self.groups.get(index)
+    }
+
+    /// How many groups are still running.
+    pub fn group_count(&self) -> usize {
+        self.groups.len()
+    }
+
+    /// How many frames this clock has advanced.
+    pub fn frame_index(&self) -> u64 {
+        self.frame_index
+    }
+
+    /// Whether anything the clock owns still needs frames.
+    pub fn is_running(&self) -> bool {
+        !self.driver.is_empty() || !self.groups.is_empty()
+    }
+
+    /// Advances by an explicit delta, for a host that measures frames itself.
+    pub fn advance_delta(&mut self, delta_ms: u32) -> FrameStep {
+        self.frame_index = self.frame_index.wrapping_add(1);
+        let delta_ms = delta_ms.min(MAX_FRAME_DELTA_MS);
+        let active = if delta_ms == 0 {
+            self.driver.len()
+        } else {
+            self.driver.advance_by(Duration::from_millis(u64::from(delta_ms)))
+        };
+        // A group that has just become complete is removed, so `is_running` describes work left
+        // rather than every group ever registered.
+        let mut completed = 0usize;
+        let driver = &mut self.driver;
+        self.groups.retain_mut(|group| {
+            group.advance(driver);
+            let done = group.is_completed(driver);
+            if done {
+                completed += 1;
+            }
+            !done
+        });
+        FrameStep { delta_ms, active, frame_index: self.frame_index, groups_completed: completed }
+    }
+
+    /// Advances to a frame timestamp in milliseconds, measuring the delta from the previous
+    /// frame. The first frame has no previous timestamp and therefore advances by zero.
+    pub fn advance_frame(&mut self, timestamp_ms: u64) -> FrameStep {
+        let delta_ms = match self.last_timestamp_ms {
+            Some(previous) => {
+                u32::try_from(timestamp_ms.saturating_sub(previous)).unwrap_or(u32::MAX)
+            }
+            None => 0,
+        };
+        self.last_timestamp_ms = Some(timestamp_ms);
+        self.advance_delta(delta_ms)
+    }
+}
+
+thread_local! {
+    /// The process's default clock for hosts that have no reason to own one.
+    ///
+    /// Thread-local because an [`AnimationDriver`](crate::style::animation::AnimationDriver) holds
+    /// `FnMut` callbacks that may capture UI-thread state; the clock therefore belongs to the
+    /// thread that owns the controls, exactly as the widget registry does. A host that installs
+    /// [`crate::event::EventLoop::drive_default_animation_clock`] reaches this instance from the
+    /// loop thread, which is the same thread in every supported profile.
+    static DEFAULT_CLOCK: core::cell::RefCell<Option<AnimationClock>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+/// Runs `f` against the thread's default clock, creating it on first use.
+///
+/// The closure gets the clock itself, so a control can add its animation without a handle to a
+/// shared object. Nested calls panic on the `RefCell` borrow, matching the crate's other scoped
+/// thread-local accessors: a callback invoked from inside the closure must not re-enter it.
+pub fn with_default_animation_clock<R>(f: impl FnOnce(&mut AnimationClock) -> R) -> R {
+    DEFAULT_CLOCK.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let clock = slot.get_or_insert_with(AnimationClock::new);
+        f(clock)
+    })
+}
+
+/// Drops the thread's default clock and every animation in it.
+///
+/// This is the teardown half of [`with_default_animation_clock`]: a host that replaces its scene
+/// calls it so the previous scene's callbacks are not retained.
+pub fn reset_default_animation_clock() {
+    DEFAULT_CLOCK.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+/// Advances the thread's default clock by an explicit frame delta.
+///
+/// This is the function an event loop's frame driver calls; see
+/// [`crate::event::EventLoop::drive_default_animation_clock`]. It creates the clock if no
+/// animation has been added yet, so installing the driver costs nothing until something animates.
+pub fn advance_default_animation_clock(delta_ms: u32) -> FrameStep {
+    with_default_animation_clock(|clock| clock.advance_delta(delta_ms))
+}
+
 #[cfg(test)]
 mod property_driver_tests {
     use super::{MotionCurve, MotionSlot, PropertyDriver, SpringPreset, Transition};
@@ -3134,5 +3417,149 @@ mod tests {
         assert!(!AnimationFillMode::Backwards.fills_forwards());
         assert!(!AnimationFillMode::None.fills_backwards());
         assert!(!AnimationFillMode::None.fills_forwards());
+    }
+}
+
+#[cfg(test)]
+mod cubic_bezier_tests {
+    use super::*;
+
+    /// The endpoints are exact: every curve starts at 0 and ends at 1, which is what makes a
+    /// transition arrive at its declared target instead of near it.
+    #[test]
+    fn the_curve_hits_both_endpoints() {
+        let curve = EasingFunction::cubic_bezier(0.25, 0.1, 0.25, 1.0);
+        assert_eq!(curve.apply(0.0), 0.0);
+        assert_eq!(curve.apply(1.0), 1.0);
+        assert_eq!(curve.apply(-3.0), 0.0, "input is clamped, not extrapolated");
+        assert_eq!(curve.apply(4.0), 1.0);
+    }
+
+    /// `cubic-bezier(0.25, 0.1, 0.25, 1)` is CSS's `ease`, so it must reproduce the shape the
+    /// named curve describes: ahead of linear at the midpoint.
+    #[test]
+    fn css_ease_matches_the_named_shape() {
+        let curve = EasingFunction::cubic_bezier(0.25, 0.1, 0.25, 1.0);
+        let midway = curve.apply(0.5);
+        assert!((0.7..0.85).contains(&midway), "ease leads linear at 0.5, got {midway}");
+        assert!(curve.apply(0.25) < curve.apply(0.5));
+        assert!(curve.apply(0.5) < curve.apply(0.75));
+    }
+
+    /// The parser accepts the stylesheet spelling and refuses everything else rather than
+    /// guessing — an unparsed curve must be a caller's decision, not a silent linear fallback.
+    #[test]
+    fn the_css_spelling_parses_and_other_text_does_not() {
+        assert_eq!(
+            EasingFunction::parse_cubic_bezier(" cubic-bezier( 0.42, 0.0, 0.58, 1.0 ) "),
+            Some(EasingFunction::cubic_bezier(0.42, 0.0, 0.58, 1.0))
+        );
+        assert_eq!(EasingFunction::parse_cubic_bezier("ease-in"), None);
+        assert_eq!(EasingFunction::parse_cubic_bezier("cubic-bezier(0.1, 0.2, 0.3)"), None);
+        assert_eq!(EasingFunction::parse_cubic_bezier("cubic-bezier(0.1, 0.2, nope, 1)"), None);
+    }
+
+    /// X control points are clamped into the solvable range; Y is not, because overshoot is
+    /// expressed by a Y outside `0..=1`.
+    #[test]
+    fn only_the_x_coordinates_are_clamped() {
+        // X control points outside `0..=1` would make the curve non-monotonic in time, so the
+        // constructor clamps them. Y is unbounded because overshoot is how a spring-like curve
+        // is written.
+        let curve = EasingFunction::cubic_bezier(-1.0, 3.0, 2.0, 3.0);
+        assert_eq!(curve, EasingFunction::CubicBezier { x1: 0.0, y1: 3.0, x2: 1.0, y2: 3.0 });
+        assert!(curve.apply(0.5) > 1.0, "an overshooting Y reaches above the target");
+    }
+}
+
+#[cfg(test)]
+mod animation_clock_tests {
+    use super::*;
+    use crate::compat::Rc;
+    use crate::style::animation_group::AnimationGroup;
+    use core::cell::RefCell;
+    use core::time::Duration;
+
+    /// The clock measures one delta per timestamp, and the first frame has no delta to measure.
+    #[test]
+    fn the_first_frame_is_a_zero_delta_and_later_frames_measure_the_gap() {
+        let mut clock = AnimationClock::new();
+        assert_eq!(clock.advance_frame(1_000).delta_ms, 0, "no previous frame to measure from");
+        let second = clock.advance_frame(1_016);
+        assert_eq!(second.delta_ms, 16);
+        assert_eq!(second.frame_index, 2);
+        // A timestamp that did not move (or went backwards) cannot advance time.
+        assert_eq!(clock.advance_frame(1_016).delta_ms, 0);
+        assert_eq!(clock.advance_frame(900).delta_ms, 0);
+    }
+
+    /// A resume after a long stall is capped, so an animation cannot skip its visible half.
+    #[test]
+    fn a_stalled_frame_is_capped() {
+        let mut clock = AnimationClock::new();
+        clock.advance_frame(0);
+        assert_eq!(clock.advance_frame(60_000).delta_ms, MAX_FRAME_DELTA_MS);
+    }
+
+    /// The clock advances its driver by exactly the measured delta, so a host's frame pacing
+    /// (not wall-clock time) decides how far an animation has travelled.
+    #[test]
+    fn the_driver_advances_by_the_measured_delta() {
+        let mut clock = AnimationClock::new();
+        let progress = Rc::new(RefCell::new(0.0f32));
+        let seen = Rc::clone(&progress);
+        clock.driver_mut().add(AnimationConfig::new(Duration::from_millis(200)), move |value| {
+            *seen.borrow_mut() = value
+        });
+        clock.advance_frame(0);
+        // Two 50 ms frames carry a 200 ms linear animation a quarter of the way in *time* but a
+        // half in progress only after the second's 100 ms total: assert the total, not a guess.
+        clock.advance_frame(50);
+        clock.advance_frame(100);
+        let reached = *progress.borrow();
+        assert!(
+            (reached - 0.5).abs() < 0.01,
+            "100 of 200 ms should be half the progress, got {reached}"
+        );
+        let finished = clock.advance_frame(300);
+        assert_eq!(finished.active, 0, "the animation completed and was removed");
+        assert!(!clock.is_running());
+    }
+
+    /// A named group is a consumer of the clock: its sequential half runs and the group is
+    /// removed once complete, which is the wiring the group documented itself as lacking.
+    #[test]
+    fn a_group_runs_to_completion_and_leaves_the_clock() {
+        let mut clock = AnimationClock::new();
+        let mut group = AnimationGroup::new("sequential");
+        group.add_sequential(AnimationConfig::new(Duration::from_millis(50)));
+        group.add_sequential(AnimationConfig::new(Duration::from_millis(50)));
+        clock.add_group(group);
+        assert_eq!(clock.group_count(), 1);
+
+        let mut completed = 0usize;
+        let mut now = 0u64;
+        for _ in 0..10 {
+            now += 16;
+            completed += clock.advance_frame(now).groups_completed;
+        }
+        assert_eq!(completed, 1, "the group must be reported complete exactly once");
+        assert_eq!(clock.group_count(), 0, "and removed rather than retained");
+        assert!(!clock.is_running());
+    }
+
+    /// The thread-local default clock is the instance a loop frame driver reaches.
+    #[test]
+    fn the_default_clock_is_thread_local_and_advances_by_delta() {
+        reset_default_animation_clock();
+        with_default_animation_clock(|clock| {
+            clock.driver_mut().add(AnimationConfig::new(Duration::from_millis(40)), |_| {});
+        });
+        let step = advance_default_animation_clock(20);
+        assert_eq!(step.delta_ms, 20);
+        assert_eq!(step.active, 1);
+        assert!(with_default_animation_clock(|clock| clock.is_running()));
+        reset_default_animation_clock();
+        assert!(!with_default_animation_clock(|clock| clock.is_running()));
     }
 }

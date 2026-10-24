@@ -4,6 +4,7 @@
 //! Single-line text edit widget.
 use crate::compat::{Box, Rc, RefCell, String, ToString};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
 #[cfg(test)]
 use crate::event::FocusReason;
 use crate::event::{Event, EventHandler};
@@ -32,6 +33,13 @@ const LINE_EDIT_CARET_ROOM: u32 = 10;
 const LINE_EDIT_MIN_WIDTH: u32 = 80;
 /// Height of a text field.
 const LINE_EDIT_HEIGHT: u32 = 24;
+/// How long a click counts toward a multi-click streak, in milliseconds.
+///
+/// Matches the platform convention for double- and triple-click detection: two presses
+/// inside this window are one gesture, and a third makes it a line selection.
+const MULTI_CLICK_WINDOW_MS: u32 = 400;
+/// Width of the opt-in clear button, in logical pixels.
+const CLEAR_BUTTON_SIZE: u32 = 16;
 use crate::widget::text_utils::{byte_index_of_char, floor_char_boundary};
 use crate::widget::widget_trait::InputMethodQuery;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -68,14 +76,20 @@ pub struct LineEdit {
     /// Borrowed from [`crate::style::CursorBlink`] rather than reimplemented, so this field's caret
     /// keeps the tempo and phase logic of every other caret in the crate.
     cursor_blink: crate::style::CursorBlink,
-    /// The grammar this field enforces as text arrives, or `None` for a free-form field.
+    /// The rule this field enforces as text arrives, or `None` for a free-form field.
     ///
-    /// See [`InputValidator`]: the filter and the validity rule share the field's single
-    /// insertion path, so a `phone_input` / `email_input` can never hold a value its own
-    /// grammar rejects through typing, pasting or a programmatic write.
-    validator: Option<InputValidator>,
-    /// Whether the current text satisfies [`Self::validator`]. True for a field without one.
-    valid: bool,
+    /// # Why this is a boxed trait object
+    ///
+    /// A host that owns a domain type — an order code, a range, a product identifier — has a
+    /// rule the library cannot enumerate. The field therefore holds the extension point itself
+    /// rather than a closed enum, and the two shipped grammars implement the same trait. See
+    /// [`Validator`].
+    validator: Option<Box<dyn Validator>>,
+    /// The current three-way outcome, recomputed whenever the value or the rule changes.
+    ///
+    /// Cached rather than derived on every read so a form that asks `is_valid()` while it
+    /// builds a frame does not re-run the rule per call.
+    validation_state: ValidationState,
     /// The message for the current invalid value, or `""` when it is valid.
     validation_message: &'static str,
     /// Whether the current `error` decoration was written by the validator.
@@ -129,6 +143,39 @@ pub struct LineEdit {
     /// the host decides which items apply (a read-only field, for example, offers copy
     /// only) and supplies the menu itself.
     pub context_menu_requested: Signal1<Point>,
+    /// Emitted when the selected range changes.
+    ///
+    /// Carries no payload because the range is read back through
+    /// [`Self::selection_range`], which is also what a keyboard or pointer extension updates.
+    pub selection_changed: GenericSignal,
+    /// Emitted with the new caret byte offset whenever it moves.
+    pub cursor_position_changed: Signal1<usize>,
+    /// Whether the value has been edited since the last programmatic [`Self::set_text`].
+    ///
+    /// A form can use this to warn about unsaved changes without comparing snapshots.
+    modified: bool,
+    /// Whether a clear button is painted at the trailing edge when the field holds text.
+    ///
+    /// Opt-in because it is a visible change to every field that turns it on; the default
+    /// keeps a plain field byte for byte.
+    clear_button_enabled: bool,
+    /// Whether [`EchoMode::Password`] reveals the value while the field is focused.
+    ///
+    /// The canonical echo enum is shared with the platform layer, so the fourth echo mode is
+    /// expressed as a field-level modifier instead of a new enum variant that every backend
+    /// would have to learn.
+    password_echo_on_edit: bool,
+    /// Horizontal scroll offset in logical pixels, for a value wider than the field.
+    ///
+    /// Zero unless the caret or the pointer has driven the value past the field's trailing
+    /// edge, so a value that fits paints exactly where it always did.
+    scroll_x: i32,
+    /// Clock accumulated from [`Self::tick`], used to measure click streaks.
+    clock_ms: u32,
+    /// Number of presses in the current multi-click streak.
+    press_streak: u8,
+    /// Clock reading of the most recent press, in milliseconds.
+    last_press_ms: u32,
 }
 /// Text echo mode for a line edit.
 ///
@@ -150,6 +197,19 @@ pub use crate::platform::EchoMode;
 /// Defined in [`input_validator`](super::input_validator) and re-exported here so
 /// `lineedit::InputValidator` keeps naming it: the field is what carries the grammar.
 pub use super::input_validator::InputValidator;
+/// The three-way outcome of validating the field's value.
+pub use super::input_validator::ValidationState;
+/// The rule a field consults while its value changes.
+pub use super::input_validator::Validator;
+
+/// The published token naming a [`ValidationState`].
+fn validation_state_token(state: ValidationState) -> &'static str {
+    match state {
+        ValidationState::Invalid => "invalid",
+        ValidationState::Intermediate => "intermediate",
+        ValidationState::Acceptable => "acceptable",
+    }
+}
 
 /// The [`EchoMode`] a published token names, or `None` for an unknown token.
 fn echo_mode_from_token(token: &str) -> Option<EchoMode> {
@@ -174,7 +234,7 @@ impl LineEdit {
             selection_start: None,
             read_only: false,
             validator: None,
-            valid: true,
+            validation_state: ValidationState::Acceptable,
             validation_message: "",
             validation_error_active: false,
             undo_stack: UndoStack::new(),
@@ -190,6 +250,15 @@ impl LineEdit {
             editing_finished: GenericSignal::new(),
             return_pressed: GenericSignal::new(),
             context_menu_requested: Signal1::new(),
+            selection_changed: GenericSignal::new(),
+            cursor_position_changed: Signal1::new(),
+            modified: false,
+            clear_button_enabled: false,
+            password_echo_on_edit: false,
+            scroll_x: 0,
+            clock_ms: 0,
+            press_streak: 0,
+            last_press_ms: 0,
         }
     }
     /// Returns current text.
@@ -197,17 +266,26 @@ impl LineEdit {
         &self.text
     }
 
-    /// The grammar this field enforces, or `None` for a free-form field.
-    pub fn validator(&self) -> Option<InputValidator> {
-        self.validator
+    /// The rule this field enforces, or `None` for a free-form field.
+    pub fn validator(&self) -> Option<&dyn Validator> {
+        self.validator.as_deref()
     }
 
-    /// Sets the grammar, revalidating the current value.
+    /// Installs a host rule, replacing any current one, and revalidates the value.
     ///
-    /// The `phone_input` / `email_input` constructors are the usual callers; a host that wants
-    /// one control to switch grammars can use it directly.
-    pub fn set_validator(&mut self, validator: Option<InputValidator>) {
-        if self.validator == validator {
+    /// This is the extension point for a domain rule the library cannot enumerate. A built-in
+    /// grammar assigned through [`Self::set_validator`] still works: both paths store the rule
+    /// in the same box, so the field consults exactly one validator at a time.
+    pub fn set_dyn_validator(&mut self, validator: Option<Box<dyn Validator>>) {
+        // A built-in assigned twice is the one case that can be recognised without downcasting,
+        // so re-applying it does not revalidate and repaint for nothing.
+        let unchanged = match (self.validator.as_deref(), validator.as_deref()) {
+            (Some(current), Some(next)) => {
+                current.builtin().is_some() && current.builtin() == next.builtin()
+            }
+            _ => false,
+        };
+        if unchanged {
             return;
         }
         self.validator = validator;
@@ -215,45 +293,94 @@ impl LineEdit {
         self.base.request_redraw();
     }
 
-    /// Whether the current value satisfies the field's grammar (true without a validator).
-    pub fn is_valid(&self) -> bool {
-        self.valid
+    /// Sets the built-in grammar, revalidating the current value.
+    ///
+    /// The `phone_input` / `email_input` constructors are the usual callers; a host that wants
+    /// one control to switch grammars can use it directly.
+    pub fn set_validator(&mut self, validator: Option<InputValidator>) {
+        match (self.validator.as_deref(), validator) {
+            (None, None) => return,
+            (Some(current), Some(next)) if current.builtin() == Some(next) => return,
+            _ => {}
+        }
+        self.validator = validator.map(|rule| Box::new(rule) as Box<dyn Validator>);
+        self.revalidate();
+        self.base.request_redraw();
     }
 
-    /// The message for the current invalid value, or `""` when it is valid.
+    /// Whether the current value satisfies the field's rule (true without a validator).
+    pub fn is_valid(&self) -> bool {
+        self.validation_state.is_acceptable()
+    }
+
+    /// The three-way outcome for the current value.
+    ///
+    /// `Intermediate` is not a failure: it is a value the user is still assembling, and a form
+    /// can keep its submit affordance disabled without accusing the user. `Acceptable` is the
+    /// state a field without a validator always reports.
+    pub fn validation_state(&self) -> ValidationState {
+        self.validation_state
+    }
+
+    /// The message for the current non-acceptable value, or `""` when it is acceptable.
     pub fn validation_message(&self) -> &'static str {
         self.validation_message
     }
 
+    /// Applies the validator's own repair to the current value.
+    ///
+    /// Returns whether the value changed. The repair runs through [`Self::set_text`], so it is
+    /// undoable and emits `text_changed` like any other programmatic write. A rule with no
+    /// repair, or a value already in its nearest form, returns `false`.
+    pub fn fixup(&mut self) -> bool {
+        let Some(validator) = self.validator.as_deref() else {
+            return false;
+        };
+        let Some(repaired) = validator.fixup(&self.text) else {
+            return false;
+        };
+        if repaired == self.text {
+            return false;
+        }
+        self.set_text(repaired);
+        true
+    }
+
     /// Recomputes validity and mirrors it into the `error` decoration.
+    ///
+    /// Only a **definite** refusal is painted as an error. An intermediate value is one the
+    /// user is still typing, and painting it red turns every entry into an accusation — the
+    /// three-way state exists precisely so the two cases can be told apart.
     ///
     /// Only a message the validator wrote is cleared here: a caller's own refusal text must
     /// survive a value that happens to satisfy the grammar.
     fn revalidate(&mut self) {
-        let Some(validator) = self.validator else {
-            self.valid = true;
-            self.validation_message = "";
-            return;
+        // The rule is consulted in two short borrows and its answers copied out, so the
+        // decoration writes below never overlap the borrow of `self.validator`.
+        let state = match self.validator.as_deref() {
+            Some(validator) => validator.state(&self.text),
+            None => ValidationState::Acceptable,
         };
-        let (valid, message) = validator.check(&self.text);
-        self.valid = valid;
+        let message = match self.validator.as_deref() {
+            Some(validator) if !state.is_acceptable() => validator.message(),
+            _ => "",
+        };
+        self.validation_state = state;
         self.validation_message = message;
-        if valid {
-            if self.validation_error_active {
-                self.validation_error_active = false;
-                if !self.decorations.error.is_empty() {
-                    let mut next = self.decorations.clone();
-                    next.error.clear();
-                    self.set_decorations(next);
-                }
+        if state.is_invalid() {
+            if self.decorations.error.as_str() != message {
+                let mut next = self.decorations.clone();
+                next.error = message.to_string();
+                self.set_decorations(next);
             }
-        } else if self.decorations.error.as_str() != message {
-            let mut next = self.decorations.clone();
-            next.error = message.to_string();
-            self.set_decorations(next);
             self.validation_error_active = true;
-        } else {
-            self.validation_error_active = true;
+        } else if self.validation_error_active {
+            self.validation_error_active = false;
+            if !self.decorations.error.is_empty() {
+                let mut next = self.decorations.clone();
+                next.error.clear();
+                self.set_decorations(next);
+            }
         }
     }
 
@@ -305,6 +432,10 @@ impl LineEdit {
     /// a host schedules the next frame only for a field that is actually blinking. A blurred field
     /// or a read-only one returns `false` immediately — a steady caret has no next frame.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
+        // The clock runs even while blurred: the click streak it measures begins with the press
+        // that focuses the field, and a stopped clock would make every first click look like a
+        // continuation of the previous one.
+        self.clock_ms = self.clock_ms.wrapping_add(delta_ms);
         if !self.focused || self.read_only {
             return false;
         }
@@ -321,7 +452,7 @@ impl LineEdit {
         // represent must not enter the model from a programmatic write either. Surrounding
         // whitespace is trimmed here (not on a keystroke, where a space is a separator the
         // user is typing *between* groups).
-        let text = match self.validator {
+        let text = match self.validator.as_deref() {
             Some(validator) => validator.filter(&text).trim().to_string(),
             None => text,
         };
@@ -344,6 +475,8 @@ impl LineEdit {
         if self.text == text {
             return;
         }
+        let before_cursor = self.cursor_position;
+        let before_selection = self.selection_start;
         self.text = text;
         self.revalidate();
         if !self.restoring_history {
@@ -359,6 +492,11 @@ impl LineEdit {
         }
         self.cursor_position = self.text.len();
         self.selection_start = None;
+        // A programmatic write is the "saved" state by definition; the user-edit paths set the
+        // flag again after they call through here.
+        self.modified = false;
+        self.ensure_caret_visible();
+        self.notify_caret_change(before_cursor, before_selection);
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
     }
@@ -393,11 +531,16 @@ impl LineEdit {
 
     fn restore_history_text(&mut self) {
         let text = self.history_target.borrow().clone();
+        let before_cursor = self.cursor_position;
+        let before_selection = self.selection_start;
         self.restoring_history = true;
         self.text = text;
         self.cursor_position = self.text.len();
         self.selection_start = None;
         self.restoring_history = false;
+        self.modified = true;
+        self.ensure_caret_visible();
+        self.notify_caret_change(before_cursor, before_selection);
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
     }
@@ -476,6 +619,262 @@ impl LineEdit {
             self.selection_start = Some(floor_char_boundary(&self.text, start.min(len)));
         }
     }
+    /// Returns whether the value has been edited since the last programmatic write.
+    ///
+    /// Typing, pasting, cutting and deleting set this flag; [`Self::set_text`] clears it, so a
+    /// host can implement a "discard unsaved changes" prompt without holding its own snapshot.
+    pub fn is_modified(&self) -> bool {
+        self.modified
+    }
+
+    /// Sets the modified flag, for a host that has just saved the value.
+    pub fn set_modified(&mut self, modified: bool) {
+        if self.modified == modified {
+            return;
+        }
+        self.modified = modified;
+    }
+
+    /// Whether a clear button is painted at the trailing edge of the field.
+    pub fn clear_button_enabled(&self) -> bool {
+        self.clear_button_enabled
+    }
+
+    /// Enables or disables the trailing clear button.
+    ///
+    /// The button appears only while the field holds text, and a press on it clears the value
+    /// through the ordinary edit path (undoable, announced through `text_changed`). Off by
+    /// default, because it changes the pixels of a field that turns it on.
+    pub fn set_clear_button_enabled(&mut self, enabled: bool) {
+        if self.clear_button_enabled == enabled {
+            return;
+        }
+        self.clear_button_enabled = enabled;
+        self.base.request_redraw();
+    }
+
+    /// Whether the value is revealed while the field is focused in password mode.
+    pub fn password_echo_on_edit(&self) -> bool {
+        self.password_echo_on_edit
+    }
+
+    /// Reveals the value while the field is focused in [`EchoMode::Password`].
+    ///
+    /// This is the fourth echo mode a text field needs: the value is masked while the user is
+    /// away, and readable while they are typing it. It only affects [`EchoMode::Password`];
+    /// [`EchoMode::NoEcho`] never paints the value at all.
+    pub fn set_password_echo_on_edit(&mut self, enabled: bool) {
+        if self.password_echo_on_edit == enabled {
+            return;
+        }
+        self.password_echo_on_edit = enabled;
+        self.base.request_redraw();
+    }
+
+    /// The horizontal scroll offset applied to the value, in logical pixels.
+    pub fn scroll_x(&self) -> i32 {
+        self.scroll_x
+    }
+
+    /// Sets the horizontal scroll offset, clamped to the value's own width.
+    ///
+    /// A value that fits the field always reports zero, so the common case never scrolls.
+    pub fn set_scroll_x(&mut self, offset: i32) {
+        let max = self.max_scroll_x();
+        let offset = offset.clamp(0, max);
+        if self.scroll_x == offset {
+            return;
+        }
+        self.scroll_x = offset;
+        self.base.request_redraw();
+    }
+
+    /// Whether the field paints the plain value rather than its mask.
+    ///
+    /// Password echo on edit reveals only while the field owns focus; every other mode is
+    /// unaffected.
+    fn reveals_value(&self) -> bool {
+        self.echo_mode == EchoMode::Password && self.password_echo_on_edit && self.focused
+    }
+
+    /// Reports a caret/selection change to the host when either actually moved.
+    ///
+    /// Centralised so every path that moves the caret — keyboard, pointer, IME, programmatic
+    /// writes — has the same notification timing.
+    fn notify_caret_change(&self, before_cursor: usize, before_selection: Option<usize>) {
+        if self.cursor_position != before_cursor {
+            self.cursor_position_changed.emit(self.cursor_position);
+        }
+        if self.selection_start != before_selection {
+            self.selection_changed.emit();
+        }
+    }
+
+    /// Returns whether a press at `pos` lands on the clear button's hit area.
+    fn clear_button_hit(&self, pos: Point) -> bool {
+        if !self.clear_button_enabled || self.text.is_empty() || self.read_only {
+            return false;
+        }
+        self.clear_button_rect().contains_point(pos)
+    }
+
+    /// The clear button's box, in the field's trailing content corner.
+    fn clear_button_rect(&self) -> Rect {
+        let field = self.field_rect();
+        let padding = dimensions::TEXT_FIELD_PADDING_H as i32;
+        let size = CLEAR_BUTTON_SIZE as i32;
+        Rect::new(
+            (field.x + field.width as i32 - padding - size).max(field.x),
+            field.y + ((field.height as i32 - size) / 2).max(0),
+            size as u32,
+            size as u32,
+        )
+    }
+
+    /// The widest offset the value can scroll, in pixels.
+    ///
+    /// Derived from the same measurement the paint uses, so a value that fits reports zero and
+    /// [`Self::set_scroll_x`] cannot park the value in empty space.
+    fn max_scroll_x(&self) -> i32 {
+        if self.text.is_empty() {
+            return 0;
+        }
+        let font = effective_font(self.base.style());
+        let (_, width) = self.value_box_geometry();
+        let advance = estimate_text_width(&self.text, font, 1.0) as i32;
+        (advance + LINE_EDIT_CARET_ROOM as i32 - width).max(0)
+    }
+
+    /// The value box's left edge and width, measured without a paint context.
+    fn value_box_geometry(&self) -> (i32, i32) {
+        let field = self.field_rect();
+        let font = effective_font(self.base.style());
+        let padding = dimensions::TEXT_FIELD_PADDING_H as i32;
+        let gap = DECORATION_GAP as i32;
+        let inner_left = field.x + padding;
+        let inner_right = field.x + field.width as i32 - padding;
+        let prefix_width = if self.decorations.prefix.is_empty() {
+            0
+        } else {
+            estimate_text_width(&self.decorations.prefix, font, 1.0) as i32
+        };
+        let suffix_width = if self.decorations.suffix.is_empty() {
+            0
+        } else {
+            estimate_text_width(&self.decorations.suffix, font, 1.0) as i32
+        };
+        let left = if prefix_width > 0 { inner_left + prefix_width + gap } else { inner_left };
+        let clear_room = if self.clear_button_enabled { CLEAR_BUTTON_SIZE as i32 + gap } else { 0 };
+        let right = if suffix_width > 0 {
+            inner_right - suffix_width - gap - clear_room
+        } else {
+            inner_right - clear_room
+        };
+        (left, (right - left).max(0))
+    }
+
+    /// Scrolls the value so the caret is inside the visible box.
+    ///
+    /// Called after every edit and caret move. A value narrower than the field keeps `scroll_x`
+    /// at zero, which is what preserves the existing pixels for every non-overflowing value.
+    fn ensure_caret_visible(&mut self) {
+        if self.text.is_empty() {
+            self.scroll_x = 0;
+            return;
+        }
+        let font = effective_font(self.base.style());
+        let (_, width) = self.value_box_geometry();
+        let caret = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
+        let caret_advance = estimate_text_width(&self.text[..caret], font, 1.0) as i32;
+        let caret_room = LINE_EDIT_CARET_ROOM as i32;
+        // Reveal the caret with one caret of slack before the trailing edge, which is the same
+        // slack `size_hint` reserves so the marker never sits on the border.
+        if caret_advance - self.scroll_x > width - caret_room {
+            self.scroll_x = (caret_advance - width + caret_room).max(0);
+        } else if caret_advance < self.scroll_x {
+            self.scroll_x = caret_advance;
+        }
+        self.scroll_x = self.scroll_x.clamp(0, self.max_scroll_x());
+    }
+
+    /// The byte range of the word around `index`, for a double-click selection.
+    ///
+    /// A word is a run of characters that are not whitespace; a press on whitespace selects the
+    /// run itself (which is what makes a double-click on a gap select the gap rather than
+    /// silently doing nothing).
+    fn word_range_at(&self, index: usize) -> (usize, usize) {
+        let index = floor_char_boundary(&self.text, index.min(self.text.len()));
+        // The character the press landed on; at the end of the value the class is taken from the
+        // character before it, so a double-click on the trailing edge selects the last word.
+        let sampled = self.text[index..]
+            .chars()
+            .next()
+            .or_else(|| self.text[..index].chars().next_back())
+            .unwrap_or(' ');
+        let same_class = |ch: char| ch.is_whitespace() == sampled.is_whitespace();
+        let mut start = index;
+        for (i, ch) in self.text[..index].char_indices().rev() {
+            if !same_class(ch) {
+                break;
+            }
+            start = i;
+        }
+        let mut end = index;
+        for (i, ch) in self.text[index..].char_indices() {
+            if !same_class(ch) {
+                break;
+            }
+            end = index + i + ch.len_utf8();
+        }
+        // A press on the boundary between two words selects the word, not the empty run.
+        if start == end {
+            if let Some((i, ch)) = self.text[..index].char_indices().next_back() {
+                return (i, i + ch.len_utf8());
+            }
+        }
+        (start, end)
+    }
+
+    /// The byte offset of the start of the word before `from`.
+    fn previous_word_boundary(&self, from: usize) -> usize {
+        let mut offset = floor_char_boundary(&self.text, from.min(self.text.len()));
+        while offset > 0 {
+            let (index, ch) = self.text[..offset].char_indices().next_back().unwrap_or((0, ' '));
+            if !ch.is_whitespace() {
+                break;
+            }
+            offset = index;
+        }
+        while offset > 0 {
+            let (index, ch) = self.text[..offset].char_indices().next_back().unwrap_or((0, ' '));
+            if ch.is_whitespace() {
+                break;
+            }
+            offset = index;
+        }
+        offset
+    }
+
+    /// The byte offset of the start of the word after `from`.
+    fn next_word_boundary(&self, from: usize) -> usize {
+        let mut offset = floor_char_boundary(&self.text, from.min(self.text.len()));
+        while offset < self.text.len() {
+            let ch = self.text[offset..].chars().next().unwrap_or(' ');
+            if !ch.is_whitespace() {
+                break;
+            }
+            offset += ch.len_utf8();
+        }
+        while offset < self.text.len() {
+            let ch = self.text[offset..].chars().next().unwrap_or(' ');
+            if ch.is_whitespace() {
+                break;
+            }
+            offset += ch.len_utf8();
+        }
+        offset
+    }
+
     /// Returns echo mode.
     pub fn echo_mode(&self) -> EchoMode {
         self.echo_mode
@@ -502,8 +901,12 @@ impl LineEdit {
         if self.cursor_position == position && self.selection_start.is_none() {
             return;
         }
+        let before_cursor = self.cursor_position;
+        let before_selection = self.selection_start;
         self.cursor_position = position;
         self.selection_start = None;
+        self.ensure_caret_visible();
+        self.notify_caret_change(before_cursor, before_selection);
         self.base.request_redraw();
     }
     /// Returns selection start position.
@@ -546,12 +949,21 @@ impl LineEdit {
     }
     /// Selects all text.
     pub fn select_all(&mut self) {
+        let before_cursor = self.cursor_position;
+        let before_selection = self.selection_start;
         self.selection_start = Some(0);
         self.cursor_position = self.text.len();
+        self.notify_caret_change(before_cursor, before_selection);
+        self.base.request_redraw();
     }
     /// Clears selection.
     pub fn clear_selection(&mut self) {
+        if self.selection_start.is_none() {
+            return;
+        }
         self.selection_start = None;
+        self.selection_changed.emit();
+        self.base.request_redraw();
     }
 
     /// Selects `target` (a byte offset) honouring the modifier keys held at the time.
@@ -580,6 +992,8 @@ impl LineEdit {
     /// offset computed from a pixel can never put the caret inside a character.
     pub fn select_with_modifiers(&mut self, target: usize, modifiers: crate::shortcut::Modifiers) {
         let target = floor_char_boundary(&self.text, target.min(self.text.len()));
+        let before_cursor = self.cursor_position;
+        let before_selection = self.selection_start;
         if modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
             // Adopt the caret as the anchor only when this extension is the *first* one; a
             // gesture already in flight keeps the anchor it started with.
@@ -592,6 +1006,8 @@ impl LineEdit {
             self.cursor_position = target;
         }
         self.normalize_selection();
+        self.ensure_caret_visible();
+        self.notify_caret_change(before_cursor, before_selection);
         self.base.request_redraw();
     }
 
@@ -611,6 +1027,8 @@ impl LineEdit {
     /// value shorter than the field.
     pub fn press_at(&mut self, index: usize, modifiers: crate::shortcut::Modifiers) {
         let index = floor_char_boundary(&self.text, index.min(self.text.len()));
+        let before_cursor = self.cursor_position;
+        let before_selection = self.selection_start;
         let shift = modifiers.contains(crate::shortcut::Modifiers::SHIFT);
         if !shift {
             // A press with no Shift **starts** a gesture, so it re-anchors where it landed.
@@ -628,6 +1046,8 @@ impl LineEdit {
             self.cursor_position = index;
         }
         self.dragging_selection = true;
+        self.ensure_caret_visible();
+        self.notify_caret_change(before_cursor, before_selection);
         // Deliberately **not** passed through `normalize_selection`.
         //
         // A press that lands exactly on the caret produces a zero-width anchor/caret pair, and
@@ -647,8 +1067,12 @@ impl LineEdit {
         if !self.dragging_selection {
             return;
         }
+        let before_cursor = self.cursor_position;
+        let before_selection = self.selection_start;
         self.cursor_position = floor_char_boundary(&self.text, index.min(self.text.len()));
         self.normalize_selection();
+        self.ensure_caret_visible();
+        self.notify_caret_change(before_cursor, before_selection);
         self.base.request_redraw();
     }
 
@@ -733,7 +1157,7 @@ impl LineEdit {
         // The pointer's distance from the value's origin, clamped to the value's own box so a
         // press on the field's padding (or past the end of a short value) reads as "the
         // nearest end" rather than as a negative index.
-        let dx = (x - layout.value.x).clamp(0, layout.value.width as i32) as f32;
+        let dx = (x - layout.value.x + self.scroll_x).clamp(0, layout.value.width as i32) as f32;
         let advance = context.shape_text(&self.text, font).advance().max(1.0);
         let chars = self.text.chars().count().max(1) as f32;
         // `saturating_sub` is the whole point: this is a **boundary** count (a caret sits
@@ -777,7 +1201,7 @@ impl LineEdit {
         // The grammar filters what may enter the model, before the caret/selection math so the
         // insertion length is the filtered one. A plain field pays nothing here.
         let filtered;
-        let effective_text = match self.validator {
+        let effective_text = match self.validator.as_deref() {
             Some(validator) => {
                 filtered = validator.filter(effective_text);
                 filtered.as_str()
@@ -799,9 +1223,11 @@ impl LineEdit {
         }
         self.selection_start = None;
         self.set_text(new_text);
+        self.modified = true;
         // `set_text` may have clamped the value to `max_length`, which can move the caret it
         // recomputed; snap it back onto a boundary inside whatever the field now holds.
         self.clamp_caret();
+        self.ensure_caret_visible();
     }
 
     /// Inserts text at the caret.
@@ -908,6 +1334,7 @@ impl LineEdit {
             self.cursor_position = start;
             self.selection_start = None;
             self.set_text(new_text);
+            self.modified = true;
         } else if self.cursor_position > 0 {
             // Delete the character before the caret, from its own start to the caret.
             let caret = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
@@ -917,6 +1344,7 @@ impl LineEdit {
             new_text.replace_range(previous..caret, "");
             self.cursor_position = previous;
             self.set_text(new_text);
+            self.modified = true;
         }
     }
     /// Deletes selected text or the character after the caret.
@@ -935,6 +1363,7 @@ impl LineEdit {
             let mut new_text = self.text.clone();
             new_text.replace_range(caret..next, "");
             self.set_text(new_text);
+            self.modified = true;
         }
     }
     /// Returns whether the line edit is read-only.
@@ -1224,8 +1653,9 @@ impl LineEdit {
         let value_origin = crate::render::fitted_origin(value_box, value_advance, value_align);
         let caret_byte = floor_char_boundary(self.text.as_str(), self.cursor_position);
         let prefix_advance = estimate_text_width(&self.text[..caret_byte], font, 1.0) as i32;
-        let caret_x =
-            (value_origin.x + prefix_advance).min(value_left + value_width as i32).max(value_left);
+        let caret_x = (value_origin.x + prefix_advance - self.scroll_x)
+            .min(value_left + value_width as i32)
+            .max(value_left);
 
         // The caret spans the field's content band, inset so it does not touch the border — the
         // same two-pixel inset `draw` uses.
@@ -1265,6 +1695,19 @@ impl Widget for LineEdit {
     fn context_menu_event(&mut self, pos: Point) -> bool {
         self.context_menu_requested.emit(pos);
         true
+    }
+
+    /// A selected value is the field's drag payload.
+    ///
+    /// The payload uses the `text/plain` type so a drag can land in any other text control
+    /// without an adapter. A masked field contributes its mask, exactly as copy does.
+    fn drag_source_mut(&mut self) -> Option<&mut dyn DragSource> {
+        Some(self)
+    }
+
+    /// The field accepts plain text dropped at the pointer.
+    fn drop_target_mut(&mut self) -> Option<&mut dyn DropTarget> {
+        Some(self)
     }
 
     fn size_hint(&self) -> Size {
@@ -1357,6 +1800,14 @@ impl Widget for LineEdit {
                 &self.context_menu_requested,
                 |v| CapabilityValue::String(format!("{v:?}")),
             )),
+            "selection_changed" => {
+                Some(EventSignalRef::unit("selection_changed", &self.selection_changed))
+            }
+            "cursor_position_changed" => Some(EventSignalRef::mapped(
+                "cursor_position_changed",
+                &self.cursor_position_changed,
+                |v| CapabilityValue::UInt(*v as u64),
+            )),
             _ => None,
         }
     }
@@ -1399,12 +1850,19 @@ impl WidgetProperties for LineEdit {
             },
             "over_limit" => Ok(CapabilityValue::Bool(self.is_over_limit())),
             "valid" => Ok(CapabilityValue::Bool(self.is_valid())),
+            "validation_state" => Ok(CapabilityValue::String(
+                validation_state_token(self.validation_state()).to_string(),
+            )),
             "validation_message" => {
                 Ok(CapabilityValue::String(self.validation_message().to_string()))
             }
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
+            "modified" => Ok(CapabilityValue::Bool(self.is_modified())),
+            "clear_button_enabled" => Ok(CapabilityValue::Bool(self.clear_button_enabled())),
+            "password_echo_on_edit" => Ok(CapabilityValue::Bool(self.password_echo_on_edit())),
+            "scroll_x" => Ok(CapabilityValue::Int(self.scroll_x() as i64)),
             _ => base_property_get(self, name),
         }
     }
@@ -1456,13 +1914,36 @@ impl WidgetProperties for LineEdit {
             // text already determines, and one of the two would be able to disagree.
             "counter" | "over_limit" => Err(CapabilityAccessError::ReadOnlyProperty),
             // Derived from the value and the field's grammar, exactly like the two above.
-            "valid" | "validation_message" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "valid" | "validation_state" | "validation_message" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
             "cursor_position" => {
                 self.set_cursor_position(expect_usize(value)?);
                 Ok(())
             }
             "alignment" => {
                 self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
+            "modified" => {
+                self.set_modified(expect_bool(value)?);
+                Ok(())
+            }
+            "clear_button_enabled" => {
+                self.set_clear_button_enabled(expect_bool(value)?);
+                Ok(())
+            }
+            "password_echo_on_edit" => {
+                self.set_password_echo_on_edit(expect_bool(value)?);
+                Ok(())
+            }
+            "scroll_x" => {
+                let offset = match value {
+                    CapabilityValue::Int(v) => v as i32,
+                    CapabilityValue::UInt(v) => v as i32,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_scroll_x(offset);
                 Ok(())
             }
             _ => base_property_set(self, name, value),
@@ -1485,8 +1966,13 @@ impl WidgetProperties for LineEdit {
             "counter",
             "over_limit",
             "valid",
+            "validation_state",
             "validation_message",
             "alignment",
+            "modified",
+            "clear_button_enabled",
+            "password_echo_on_edit",
+            "scroll_x",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1550,8 +2036,15 @@ impl LineEdit {
                 // Left arrow. A plain press deselects and steps one character back; a
                 // Shift press extends from the anchor rather than replacing it, so the
                 // range grows instead of collapsing to a caret (see `select_with_modifiers`).
+                // Primary (Ctrl/Cmd) steps by **word**, which is the convention every desktop
+                // text field follows; the boundary helper only walks when it is held.
+                let by_word = modifiers.contains(crate::shortcut::Modifiers::PRIMARY);
                 if self.cursor_position > 0 {
-                    let target = self.previous_char_boundary();
+                    let target = if by_word {
+                        self.previous_word_boundary(self.cursor_position)
+                    } else {
+                        self.previous_char_boundary()
+                    };
                     self.select_with_modifiers(target, modifiers);
                 } else if !modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
                     // Already at the start, and no Shift: the key cannot move the caret, but it
@@ -1564,8 +2057,13 @@ impl LineEdit {
             }
             39 => {
                 // Right arrow. Same contract as Left, stepping forward.
+                let by_word = modifiers.contains(crate::shortcut::Modifiers::PRIMARY);
                 if self.cursor_position < self.text.len() {
-                    let target = self.next_char_boundary();
+                    let target = if by_word {
+                        self.next_word_boundary(self.cursor_position)
+                    } else {
+                        self.next_char_boundary()
+                    };
                     self.select_with_modifiers(target, modifiers);
                 } else if !modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
                     // Already at the end: see the Left arm — the deselect still applies.
@@ -1789,6 +2287,24 @@ impl EventHandler for LineEdit {
             Event::MousePress { pos, button, modifiers, .. }
                 if *button == 1 && self.field_rect().contains_point(*pos) =>
             {
+                // The clear button owns its corner of the field and consumes the press before the
+                // caret can move there: a click meant to erase must not also select text.
+                if self.clear_button_hit(*pos) {
+                    self.clear();
+                    self.modified = true;
+                    self.press_streak = 0;
+                    return;
+                }
+                // Track a multi-click streak so a third press can select the whole value. The
+                // platform reports a double click separately; the press that precedes it is what
+                // tells this field the streak is still growing.
+                let elapsed = self.clock_ms.wrapping_sub(self.last_press_ms);
+                if self.press_streak > 0 && elapsed <= MULTI_CLICK_WINDOW_MS {
+                    self.press_streak = self.press_streak.saturating_add(1);
+                } else {
+                    self.press_streak = 1;
+                }
+                self.last_press_ms = self.clock_ms;
                 self.set_focused(true);
                 // A press places the caret where the user aimed and starts a selection.
                 //
@@ -1801,6 +2317,25 @@ impl EventHandler for LineEdit {
                 // the gesture that means "extend".
                 let index = self.byte_index_at_x(pos.x);
                 self.press_at(index, crate::shortcut::Modifiers::from_event_bits(*modifiers));
+            }
+            // A double click selects the word under the pointer; a third click in the same streak
+            // selects the whole value, which is the convention for single-line fields.
+            Event::MouseDoubleClick { pos, button }
+                if *button == 1 && self.field_rect().contains_point(*pos) =>
+            {
+                let index = self.byte_index_at_x(pos.x);
+                if self.press_streak >= 3 {
+                    self.select_all();
+                } else {
+                    let before_cursor = self.cursor_position;
+                    let before_selection = self.selection_start;
+                    let (start, end) = self.word_range_at(index);
+                    self.selection_start = Some(start);
+                    self.cursor_position = end;
+                    self.dragging_selection = false;
+                    self.notify_caret_change(before_cursor, before_selection);
+                    self.base.request_redraw();
+                }
             }
             // A drag extends the selection the press began, and only then — see `drag_to`.
             Event::MouseMove { pos } => {
@@ -1818,6 +2353,64 @@ impl EventHandler for LineEdit {
         }
     }
 }
+/// A selected value is the field's drag payload.
+///
+/// The payload uses the `text/plain` type so it can land in any other text control without an
+/// adapter, and a masked field contributes the mask rather than the plaintext — the same rule
+/// its copy path follows.
+impl DragSource for LineEdit {
+    fn drag_payload(&self, pos: Point) -> Option<DragPayload> {
+        if !self.field_rect().contains_point(pos) {
+            return None;
+        }
+        let selected = self.selected_text();
+        if selected.is_empty() {
+            return None;
+        }
+        let carried = match self.echo_mode {
+            EchoMode::Normal => selected.clone(),
+            EchoMode::Password => Self::mask_text(&selected),
+            EchoMode::NoEcho => return None,
+        };
+        Some(DragPayload::new("text/plain", carried.clone()).with_label(carried).with_origin(pos))
+    }
+
+    /// A `Move` drop removes the source selection; every other effect keeps it.
+    fn on_drag_finished(&mut self, effect: DropEffect) {
+        if !effect.consumes_source() || self.read_only {
+            return;
+        }
+        if !self.selected_text().is_empty() {
+            self.backspace();
+            self.modified = true;
+        }
+    }
+}
+
+/// The field accepts plain text and inserts it at the drop point.
+impl DropTarget for LineEdit {
+    fn can_accept(&self, payload: &DragPayload) -> bool {
+        !self.read_only && payload.is_type("text/plain")
+    }
+
+    fn on_drop(&mut self, payload: &DragPayload, pos: Point) -> DropEffect {
+        if !self.can_accept(payload) || !self.field_rect().contains_point(pos) {
+            return DropEffect::None;
+        }
+        let text =
+            if payload.label.is_empty() { payload.item_id.clone() } else { payload.label.clone() };
+        if text.is_empty() {
+            return DropEffect::None;
+        }
+        self.press_at(self.byte_index_at_x(pos.x), crate::shortcut::Modifiers::empty());
+        self.end_drag();
+        self.insert_str(&text);
+        self.modified = true;
+        self.base.request_redraw();
+        DropEffect::Copy
+    }
+}
+
 impl Draw for LineEdit {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
@@ -1874,12 +2467,14 @@ impl Draw for LineEdit {
         // whole value once per frame on the crate's highest-traffic control. Only the password mask
         // genuinely derives a string, and it is held in `masked` so the borrow can outlive the match.
         let masked: String;
+        let revealed = self.reveals_value();
         let display_text: &str = if self.text.is_empty() && !self.placeholder_text.is_empty() {
             &self.placeholder_text
         } else {
             match self.echo_mode {
                 EchoMode::Normal => &self.text,
                 EchoMode::NoEcho => "",
+                EchoMode::Password if revealed => &self.text,
                 EchoMode::Password => {
                     masked = Self::mask_text(&self.text);
                     &masked
@@ -1910,11 +2505,65 @@ impl Draw for LineEdit {
             value_line.height,
         );
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        let value_advance = context.measure_text(display_text, font).width as i32;
+        let value_origin = crate::render::fitted_origin(value_box, value_advance, value_align);
+        // ── Selection band ──
+        //
+        // Painted under the glyphs so the value stays readable while selected. The two offsets are
+        // measured through the renderer's shaper, the same ruler the caret uses, and clipped to the
+        // value's own box so a selection cannot spill over the prefix, the suffix or the border.
+        if let Some((start, end)) = self.selection_range() {
+            let start = start.min(display_text.len());
+            let end = end.min(display_text.len());
+            if start < end {
+                let selection_color = text_color.blend(&bg, 0.3).blend(&bg, 0.25);
+                let left_edge = layout.value.x;
+                let right_edge = layout.value.x + layout.value.width as i32;
+                let start_advance = context.measure_text(&display_text[..start], font).width as i32;
+                let end_advance = context.measure_text(&display_text[..end], font).width as i32;
+                let x0 =
+                    (value_origin.x + start_advance - self.scroll_x).clamp(left_edge, right_edge);
+                let x1 =
+                    (value_origin.x + end_advance - self.scroll_x).clamp(left_edge, right_edge);
+                if x1 > x0 {
+                    context.draw_rect(
+                        Rect::new(x0, value_line.y, (x1 - x0) as u32, value_line.height.max(1)),
+                        selection_color,
+                    );
+                }
+            }
+        }
         if !display_text.is_empty() {
-            // The field's own line box. A glyph origin is the box's top-left edge, so the
-            // previous `rect.y + rect.height / 2` placed that edge on the field's middle line
-            // and drew the value half a line low.
-            context.draw_text_fitted_cow(value_box, display_text, font, text_color, value_align);
+            if self.scroll_x == 0 {
+                // The field's own line box. A glyph origin is the box's top-left edge, so the
+                // previous `rect.y + rect.height / 2` placed that edge on the field's middle line
+                // and drew the value half a line low.
+                context.draw_text_fitted_cow(
+                    value_box,
+                    display_text,
+                    font,
+                    text_color,
+                    value_align,
+                );
+            } else {
+                // Scrolled: the value's origin moves left with the caret and the paint is clipped
+                // to the value box, so the leading characters leave the field instead of being
+                // elided. A value that fits never takes this path (`scroll_x` stays zero).
+                context.push_clip(
+                    layout.value.x,
+                    value_line.y,
+                    layout.value.width,
+                    value_line.height,
+                );
+                context.draw_text(
+                    Point::new(value_origin.x - self.scroll_x, value_line.y),
+                    display_text,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+                context.pop_clip();
+            }
         }
 
         // ── The in-field slots ──
@@ -2020,7 +2669,7 @@ impl Draw for LineEdit {
             let value_advance = context.measure_text(display_text, font).width as i32;
             let value_origin = crate::render::fitted_origin(value_box, value_advance, value_align);
             let prefix_advance = context.measure_text(prefix, font).width as i32;
-            let caret_x = value_origin.x + prefix_advance;
+            let caret_x = value_origin.x + prefix_advance - self.scroll_x;
             // The marker is clipped to the **value's** box. A caret beyond the visible text (a value
             // wider than the room it has) belongs at the last pixel a user can see, not outside the
             // control and not under the suffix. Clipping to the whole field instead would let the caret
@@ -2057,6 +2706,12 @@ impl Draw for LineEdit {
             if let Some(preedit) = self.composition.as_deref() {
                 let preedit_x = caret_x;
                 let preedit_width = context.measure_text(preedit, font).width as i32;
+                context.push_clip(
+                    layout.value.x,
+                    value_line.y,
+                    layout.value.width,
+                    value_line.height,
+                );
                 context.draw_text(
                     Point::new(preedit_x, value_line.y),
                     preedit,
@@ -2070,6 +2725,42 @@ impl Draw for LineEdit {
                     Point::new(preedit_x, underline_y),
                     Point::new(preedit_x + preedit_width, underline_y),
                     caret_color,
+                );
+                context.pop_clip();
+            }
+        }
+
+        // ── The opt-in clear button ──
+        //
+        // Drawn only when the field holds text, so an empty field keeps its plain corner. The
+        // glyph is a cross built from two lines, which needs no icon registry and reads at any
+        // scale the field's own font takes.
+        if self.clear_button_enabled && !self.text.is_empty() {
+            let button = self.clear_button_rect();
+            let ink = slot_color;
+            let inset = 4;
+            let cx = button.x + button.width as i32 / 2;
+            let cy = button.y + button.height as i32 / 2;
+            let arm = (button.width as i32 - inset * 2).max(2) / 2;
+            context.draw_line(Point::new(cx - arm, cy - arm), Point::new(cx + arm, cy + arm), ink);
+            context.draw_line(Point::new(cx - arm, cy + arm), Point::new(cx + arm, cy - arm), ink);
+        }
+
+        // ── Focus ring ──
+        //
+        // Only a keyboard focus draws it — a pointer press focuses without claiming visual
+        // focus, which is the rule every other control in the crate follows.
+        if self.base.draws_focus_ring() {
+            let ring = crate::widget::metrics::FocusRing::for_control(
+                rect,
+                style.border_radius.unwrap_or(0),
+            );
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    crate::widget::metrics::focus_ring_color(bg.contrast_color()),
+                    crate::widget::metrics::FOCUS_RING_WIDTH,
                 );
             }
         }
@@ -2779,6 +3470,7 @@ mod tests {
     /// `size_hint`'s 24 by a factor of five. This pins the shared `full_width_band`
     /// derivation in both directions: the height is the table's constant whatever the
     /// cell, and a control smaller than the field clamps rather than painting outside.
+    #[cfg(device_profile)]
     #[test]
     fn the_field_is_a_text_field_height_in_any_rectangle() {
         // The assertion is the Material height, so a concurrent test that activates the Macos
@@ -3583,9 +4275,26 @@ mod tests {
 #[cfg(test)]
 mod composition_tests {
     use super::*;
+    use crate::compat::Vec;
 
     fn field() -> LineEdit {
         LineEdit::new(Rect::new(0, 0, 200, 24))
+    }
+
+    /// Renders the field into an RGBA frame, for pixel-level assertions.
+    fn render(widget: &mut LineEdit, rect: Rect) -> Vec<u8> {
+        use crate::core::{Color, Size};
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+        use crate::widget::Draw;
+
+        let mut surface = SoftwarePaintBackend::new(Size::new(rect.width, rect.height), 1.0);
+        surface.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut surface);
+            widget.draw(&mut context);
+        }
+        surface.end_frame();
+        surface.frame_rgba().to_vec()
     }
 
     /// A composition does **not** change the field's value.
@@ -3957,5 +4666,273 @@ mod composition_tests {
             "This address is already registered",
             "a caller's refusal must not be cleared by the field's own grammar"
         );
+    }
+
+    /// A host rule is consulted through the trait, and its three-way state is published.
+    ///
+    /// # What this pins
+    ///
+    /// The field used to hold a closed enum of two grammars, so a caller with its own domain
+    /// rule had no way to install it. It now holds `Box<dyn Validator>`, and the state is
+    /// three-way: an empty value is *intermediate* — not yet acceptable, but not an error
+    /// either — so a form can keep submit disabled without painting the field red.
+    #[test]
+    fn a_host_rule_can_be_installed_behind_the_trait() {
+        #[derive(Debug)]
+        struct DigitsOnly;
+
+        impl Validator for DigitsOnly {
+            fn state(&self, text: &str) -> ValidationState {
+                if text.is_empty() {
+                    ValidationState::Intermediate
+                } else if text.chars().all(|ch| ch.is_ascii_digit()) {
+                    ValidationState::Acceptable
+                } else {
+                    ValidationState::Invalid
+                }
+            }
+
+            fn message(&self) -> &'static str {
+                "Enter digits only"
+            }
+
+            fn filter(&self, text: &str) -> String {
+                text.chars().filter(|ch| ch.is_ascii_digit()).collect()
+            }
+
+            fn fixup(&self, text: &str) -> Option<String> {
+                text.is_empty().then(|| "0".to_string())
+            }
+        }
+
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_dyn_validator(Some(Box::new(DigitsOnly)));
+        assert_eq!(field.validation_state(), ValidationState::Intermediate);
+        assert!(!field.is_valid(), "intermediate is not acceptable for submission");
+        assert_eq!(field.error_text(), "", "an incomplete value is not an accusation");
+        assert_eq!(
+            field.get("validation_state").unwrap(),
+            CapabilityValue::String("intermediate".to_string())
+        );
+
+        // The rule's own filter runs on the insertion path.
+        field.insert_str("a1b2");
+        assert_eq!(field.text(), "12");
+        assert_eq!(field.validation_state(), ValidationState::Acceptable);
+        assert!(field.is_valid());
+        assert_eq!(
+            field.get("validation_state").unwrap(),
+            CapabilityValue::String("acceptable".to_string())
+        );
+        assert_eq!(
+            field.set("validation_state", CapabilityValue::String("invalid".to_string())),
+            Err(CapabilityAccessError::ReadOnlyProperty),
+            "the state follows the value and cannot be assigned"
+        );
+
+        // Removing the rule returns the field to its free-form, always-acceptable behaviour.
+        field.set_dyn_validator(None);
+        assert_eq!(field.validation_state(), ValidationState::Acceptable);
+        assert!(field.is_valid());
+    }
+
+    /// A repairable value is fixed up through the rule's own nearest form.
+    #[test]
+    fn a_repairable_value_can_be_fixed_up() {
+        #[derive(Debug)]
+        struct DomainSuffix;
+
+        impl Validator for DomainSuffix {
+            fn state(&self, text: &str) -> ValidationState {
+                if text.ends_with("@example.com") {
+                    ValidationState::Acceptable
+                } else if text.contains('@') {
+                    ValidationState::Invalid
+                } else {
+                    ValidationState::Intermediate
+                }
+            }
+
+            fn message(&self) -> &'static str {
+                "Enter a name@example.com address"
+            }
+
+            fn fixup(&self, text: &str) -> Option<String> {
+                let name = text.trim();
+                if name.is_empty() || name.contains('@') {
+                    None
+                } else {
+                    Some(format!("{name}@example.com"))
+                }
+            }
+        }
+
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_dyn_validator(Some(Box::new(DomainSuffix)));
+        field.insert_str("ada");
+        assert_eq!(field.validation_state(), ValidationState::Intermediate);
+        assert!(field.fixup(), "the rule completes the name");
+        assert_eq!(field.text(), "ada@example.com");
+        assert!(field.is_valid());
+        assert!(!field.fixup(), "a value already in its nearest form is not rewritten");
+        assert!(field.undo(), "the repair goes through the undoable path");
+        assert_eq!(field.text(), "ada");
+    }
+
+    /// A user edit marks the field dirty; a programmatic write clears the flag.
+    #[test]
+    fn the_modified_flag_tracks_user_edits_only() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        assert!(!field.is_modified());
+        field.set_text("saved");
+        assert!(!field.is_modified(), "a programmatic write is the saved state");
+        field.handle_event(&Event::TextInput { text: "!".to_string() });
+        assert!(field.is_modified(), "typing must mark the value dirty");
+        field.set_text("saved");
+        assert!(!field.is_modified(), "rewriting the value clears the flag");
+    }
+
+    /// The clear button is opt-in, and a press on it erases the value.
+    #[test]
+    fn the_optional_clear_button_erases_on_press() {
+        let rect = Rect::new(0, 0, 200, 48);
+        let mut plain = LineEdit::new(rect);
+        plain.set_text("gone");
+        let mut button = LineEdit::new(rect);
+        button.set_clear_button_enabled(true);
+        button.set_text("gone");
+        assert_ne!(
+            render(&mut plain, rect),
+            render(&mut button, rect),
+            "enabling the button must paint it"
+        );
+        let hit = button.clear_button_rect();
+        button.handle_event(&Event::MousePress {
+            pos: Point::new(hit.x + 2, hit.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(button.text(), "", "a press on the clear button empties the field");
+    }
+
+    /// Password echo on edit reveals the value only while the field owns focus.
+    #[test]
+    fn password_echo_on_edit_reveals_only_while_focused() {
+        let rect = Rect::new(0, 0, 200, 48);
+        let mut field = LineEdit::new(rect);
+        field.set_echo_mode(EchoMode::Password);
+        field.set_password_echo_on_edit(true);
+        field.set_text("secret");
+        let masked = render(&mut field, rect);
+        field.set_focused(true);
+        let revealed = render(&mut field, rect);
+        assert_ne!(masked, revealed, "focus must reveal the value");
+
+        let mut plain = LineEdit::new(rect);
+        plain.set_echo_mode(EchoMode::Password);
+        plain.set_text("secret");
+        assert_eq!(
+            masked,
+            render(&mut plain, rect),
+            "a blurred echo-on-edit field paints the same mask as a plain password field"
+        );
+    }
+
+    /// A double click selects the word the pointer landed on.
+    #[test]
+    fn a_double_click_selects_the_word() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 240, 48));
+        field.set_text("alpha beta");
+        // `alpha` occupies the leading cells; a press inside it selects that word.
+        field.handle_event(&Event::MouseDoubleClick { pos: Point::new(3, 10), button: 1 });
+        assert_eq!(field.selected_text(), "alpha");
+    }
+
+    /// A selection paints a band behind the value.
+    #[test]
+    fn a_selection_paints_a_band() {
+        let rect = Rect::new(0, 0, 200, 48);
+        let mut plain = LineEdit::new(rect);
+        plain.set_text("selected");
+        let mut selected = LineEdit::new(rect);
+        selected.set_text("selected");
+        selected.select_all();
+        assert_ne!(
+            render(&mut plain, rect),
+            render(&mut selected, rect),
+            "a selection must change the pixels, or the range is invisible"
+        );
+    }
+
+    /// A value wider than the field scrolls so the caret stays visible.
+    #[test]
+    fn a_long_value_scrolls_to_reveal_the_caret() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 90, 48));
+        field.set_text("a very long value that cannot fit");
+        assert_eq!(field.cursor_position(), field.text().len());
+        assert!(field.scroll_x() > 0, "the caret at the end needs the value scrolled");
+        field.set_cursor_position(0);
+        assert_eq!(field.scroll_x(), 0, "the start of the value needs no scroll");
+    }
+
+    /// Primary+Left/Right step by word instead of by character.
+    #[test]
+    fn primary_arrows_step_by_word() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 240, 24));
+        field.set_text("one two three");
+        let end = field.text().len();
+        field.handle_event(&Event::KeyPress { key: 37, modifiers: 0b1000 });
+        assert_eq!(field.cursor_position(), 8, "the caret moves to the start of `three`");
+        field.handle_event(&Event::KeyPress { key: 39, modifiers: 0b1000 });
+        assert_eq!(field.cursor_position(), end, "and back to the end");
+    }
+
+    /// A selected value is exported as a `text/plain` drag payload.
+    #[test]
+    fn a_selection_is_a_drag_payload() {
+        use crate::event::dnd::DragSource;
+        let mut field = LineEdit::new(Rect::new(0, 0, 240, 48));
+        field.set_text("dragged");
+        field.select_all();
+        let payload =
+            field.drag_payload(Point::new(10, 10)).expect("a selected value must be draggable");
+        assert_eq!(payload.label, "dragged");
+        assert!(payload.is_type("text/plain"));
+    }
+
+    /// Keyboard focus draws the focus ring; a pointer press does not.
+    #[test]
+    fn keyboard_focus_draws_the_focus_ring() {
+        let rect = Rect::new(0, 0, 200, 48);
+        let mut blurred = LineEdit::new(rect);
+        blurred.set_text("x");
+        let mut focused = LineEdit::new(rect);
+        focused.set_text("x");
+        focused.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        assert!(focused.base().draws_focus_ring());
+        assert_ne!(render(&mut blurred, rect), render(&mut focused, rect));
+    }
+
+    /// The selection and caret signals report a pointer selection once per real change.
+    #[test]
+    fn selection_and_caret_signals_report_moves() {
+        use crate::compat::Vec;
+        use std::sync::{Arc, Mutex};
+        let mut field = LineEdit::new(Rect::new(0, 0, 240, 48));
+        field.set_text("abcdef");
+        field.set_cursor_position(0);
+        let carets = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let carets_clone = carets.clone();
+        field.cursor_position_changed.connect(move |value| {
+            carets_clone.lock().unwrap().push(*value);
+        });
+        let selections = Arc::new(Mutex::new(0usize));
+        let selections_clone = selections.clone();
+        field.selection_changed.connect(move || {
+            *selections_clone.lock().unwrap() += 1;
+        });
+        field.select_all();
+        assert!(!carets.lock().unwrap().is_empty(), "the caret moved to the end");
+        assert_eq!(*selections.lock().unwrap(), 1);
     }
 }

@@ -41,7 +41,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -140,6 +140,14 @@ pub struct Mention {
     pub mention_inserted: Signal1<String>,
     /// Emitted when the popup opens or closes, with the new state.
     pub popup_toggled: Signal1<bool>,
+    /// How many candidate rows the popup shows at once.
+    max_visible: usize,
+    /// The height of one candidate row, in logical pixels.
+    row_height: u32,
+    /// The other end of the pointer selection, or `None` when nothing is selected.
+    selection_anchor: Option<usize>,
+    /// Whether a pointer drag is extending the selection.
+    dragging_selection: bool,
 }
 
 impl Mention {
@@ -160,6 +168,10 @@ impl Mention {
             text_changed: Signal1::new(),
             mention_inserted: Signal1::new(),
             popup_toggled: Signal1::new(),
+            max_visible: MAX_VISIBLE,
+            row_height: ROW_HEIGHT,
+            selection_anchor: None,
+            dragging_selection: false,
         }
     }
 
@@ -248,6 +260,81 @@ impl Mention {
         self.refresh();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
+    }
+
+    /// The maximum number of candidate rows the popup shows at once.
+    pub fn max_visible(&self) -> usize {
+        self.max_visible
+    }
+
+    /// Sets the visible-row count, clamped to at least one.
+    pub fn set_max_visible(&mut self, rows: usize) {
+        let rows = rows.max(1);
+        if self.max_visible == rows {
+            return;
+        }
+        self.max_visible = rows;
+        self.base.request_redraw();
+    }
+
+    /// The height of one candidate row, in logical pixels.
+    pub fn row_height(&self) -> u32 {
+        self.row_height
+    }
+
+    /// Sets the candidate row height, clamped to a drawable band.
+    pub fn set_row_height(&mut self, height: u32) {
+        let height = height.clamp(8, 96);
+        if self.row_height == height {
+            return;
+        }
+        self.row_height = height;
+        self.base.request_redraw();
+    }
+
+    /// The selected byte range of the field's text, if any.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        if anchor == self.caret {
+            return None;
+        }
+        let (start, end) =
+            if anchor < self.caret { (anchor, self.caret) } else { (self.caret, anchor) };
+        Some((start.min(self.text.len()), end.min(self.text.len())))
+    }
+
+    /// Selects the whole field's text.
+    pub fn select_all(&mut self) {
+        self.selection_anchor = Some(0);
+        self.caret = self.text.len();
+        self.base.request_redraw();
+    }
+
+    /// Drops the selection, leaving the caret where it is.
+    pub fn clear_selection(&mut self) {
+        if self.selection_anchor.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The byte offset a horizontal position points at.
+    ///
+    /// The prefix is measured with the shared metric model the paint path uses, so a click lands
+    /// on the character the pointer is over rather than at a count-derived guess.
+    fn byte_index_at_x(&self, x: i32) -> usize {
+        let font = self.field_font();
+        let target = (x - (self.geometry().x + 8)).max(0) as f32;
+        let mut best = 0usize;
+        for (index, ch) in self.text.char_indices() {
+            let prefix =
+                crate::widget::metrics::estimate_text_width(&self.text[..index], &font, 1.0);
+            let advance = crate::widget::metrics::estimate_text_width(&ch.to_string(), &font, 1.0);
+            if target < prefix as f32 + advance as f32 / 2.0 {
+                break;
+            }
+            best = index + ch.len_utf8();
+        }
+        best.min(self.text.len())
     }
 
     /// Inserts `ch` at the caret and moves the caret past it.
@@ -511,21 +598,20 @@ impl Mention {
 
     /// The rectangle of the popup row at `index`.
     fn row_rect(&self, index: usize) -> Option<Rect> {
-        if index >= self.filtered.len() {
+        if index >= self.filtered.len().min(self.max_visible) {
             return None;
         }
         let rect = self.geometry();
         Some(Rect::new(
             rect.x,
-            rect.y + rect.height as i32 + (index as u32 * ROW_HEIGHT) as i32,
+            rect.y + rect.height as i32 + (index as u32 * self.row_height) as i32,
             rect.width,
-            ROW_HEIGHT,
+            self.row_height,
         ))
     }
 
-    /// The popup index under `pos`, when the pointer is over a row.
     fn row_at(&self, pos: Point) -> Option<usize> {
-        let rows = self.filtered.len().min(MAX_VISIBLE);
+        let rows = self.filtered.len().min(self.max_visible);
         (0..rows).find(|index| self.row_rect(*index).is_some_and(|rect| rect.contains_point(pos)))
     }
 
@@ -617,6 +703,8 @@ impl WidgetProperties for Mention {
             "mention_count" => Ok(CapabilityValue::UInt(self.completed_mentions().len() as u64)),
             "popup_open" => Ok(CapabilityValue::Bool(self.is_popup_open())),
             "caret" => Ok(CapabilityValue::UInt(self.caret() as u64)),
+            "max_visible" => Ok(CapabilityValue::UInt(self.max_visible() as u64)),
+            "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -647,6 +735,14 @@ impl WidgetProperties for Mention {
                 // popup whose query does not exist. `open_popup` is the real entry.
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
+            "max_visible" => {
+                self.set_max_visible(expect_usize(value)?);
+                Ok(())
+            }
+            "row_height" => {
+                self.set_row_height(expect_usize(value)? as u32);
+                Ok(())
+            }
             // Derived from the text and the candidate list.
             "candidate_count" | "visible_candidate_count" | "mention_count" | "caret" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
@@ -665,6 +761,8 @@ impl WidgetProperties for Mention {
             "mention_count",
             "popup_open",
             "caret",
+            "max_visible",
+            "row_height",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -715,6 +813,21 @@ impl Draw for Mention {
         // no longer paint past the field's own edge. The popup below is drawn after the
         // clip is popped, so it is unaffected.
         context.push_clip(rect.x, rect.y, rect.width, rect.height);
+        // The selection band sits under the glyphs, measured with the same shaper the text uses.
+        if let Some((start, end)) = self.selection_range() {
+            let from = start.min(self.text.len());
+            let to = end.min(self.text.len());
+            let x0 =
+                rect.x + 8 + context.measure_text(&self.text[..from], &field_font).width as i32;
+            let x1 = rect.x + 8 + context.measure_text(&self.text[..to], &field_font).width as i32;
+            if x1 > x0 {
+                let fill = text_color.blend(&background, 0.3).blend(&background, 0.25);
+                context.fill_rect(
+                    Rect::new(x0, field_line.y, (x1 - x0) as u32, field_line.height.max(1)),
+                    fill,
+                );
+            }
+        }
         context.draw_text(
             Point::new(rect.x + 8, field_line.y),
             &self.text,
@@ -776,7 +889,7 @@ impl Mention {
     /// (`surface_container`), its border is the weak separator (`outline_variant`), a highlighted row
     /// is a *selection* (the accent pair), and the secondary description is the theme's weak ink.
     fn draw_popup(&self, context: &mut RenderContext) {
-        let rows = self.filtered.len().min(MAX_VISIBLE);
+        let rows = self.filtered.len().min(self.max_visible);
         if rows == 0 {
             return;
         }
@@ -785,7 +898,7 @@ impl Mention {
             rect.x,
             rect.y + rect.height as i32,
             rect.width,
-            (rows as u32 * ROW_HEIGHT).max(ROW_HEIGHT),
+            (rows as u32 * self.row_height).max(self.row_height),
         );
         // One guard over the theme reads, released before drawing: `theme_manager()` is a
         // non-reentrant mutex and the context's accessors cannot take it.
@@ -871,9 +984,12 @@ impl EventHandler for Mention {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
                 if rect.contains_point(*pos) {
-                    // Clicking the field puts the caret at the end, which is where a
-                    // text cursor lands in a single-line field with no glyph metrics.
-                    self.caret = self.text.len();
+                    // The press places the caret where the user aimed and starts a selection, so
+                    // clicking into the middle of the value inserts there instead of appending.
+                    let index = self.byte_index_at_x(pos.x);
+                    self.caret = index;
+                    self.selection_anchor = Some(index);
+                    self.dragging_selection = true;
                     self.refresh();
                     self.base.request_redraw();
                     return;
@@ -887,6 +1003,17 @@ impl EventHandler for Mention {
                         self.close_popup();
                     }
                 }
+            }
+            // A drag extends the press's selection; a bare hover still does nothing because
+            // `dragging_selection` is only raised by a press.
+            Event::MouseMove { pos } => {
+                if self.dragging_selection {
+                    self.caret = self.byte_index_at_x(pos.x);
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseRelease { button, .. } if *button == 1 => {
+                self.dragging_selection = false;
             }
             // Typing goes to the field, and a trigger character opens the popup as a
             // side effect of `refresh` — which is what makes the trigger model work
@@ -1524,5 +1651,47 @@ mod tests {
         assert!(candidate.matches("engineering"));
         assert!(candidate.matches(""));
         assert!(!candidate.matches("bob"));
+    }
+
+    /// A press places the caret where the pointer landed rather than at the end.
+    #[test]
+    fn a_click_places_the_caret_at_the_pointer() {
+        let mut m = mention();
+        m.set_text("hello world");
+        m.handle_event(&Event::MousePress { pos: Point::new(40, 8), button: 1, modifiers: 0 });
+        assert!(m.caret() > 0, "the caret must not stay at the start");
+        assert!(m.caret() < m.text().len(), "the caret must not jump to the end");
+    }
+
+    /// A press followed by a drag selects the swept range.
+    #[test]
+    fn a_drag_selects_a_range() {
+        let mut m = mention();
+        m.set_text("hello world");
+        m.handle_event(&Event::MousePress { pos: Point::new(9, 8), button: 1, modifiers: 0 });
+        m.handle_event(&Event::MouseMove { pos: Point::new(70, 8) });
+        m.handle_event(&Event::MouseRelease { pos: Point::new(70, 8), button: 1 });
+        let (start, end) = m.selection_range().expect("a drag must select");
+        assert!(end > start);
+        assert!(m.text()[start..end].starts_with("hello"));
+    }
+
+    /// The popup's visible-row count and row height are configurable.
+    #[test]
+    fn the_popup_geometry_is_configurable() {
+        let mut m = mention();
+        m.set_text("@");
+        m.set_max_visible(2);
+        m.set_row_height(30);
+        assert_eq!(m.max_visible(), 2);
+        assert_eq!(m.row_height(), 30);
+        assert!(m.row_rect(1).is_some());
+        assert!(m.row_rect(2).is_none(), "the popup must not lay out rows past its limit");
+        assert_eq!(m.row_rect(1).expect("second row").height, 30);
+
+        use crate::widget::capability::WidgetProperties;
+        m.set("max_visible", crate::widget::capability::CapabilityValue::UInt(4))
+            .expect("`max_visible` is writable");
+        assert_eq!(m.max_visible(), 4);
     }
 }

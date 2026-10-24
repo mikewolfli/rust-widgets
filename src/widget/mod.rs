@@ -87,7 +87,13 @@ pub mod a11y_submit;
 /// including the stripped ones, and they are this module's consumers. Gating it on the unstripped set was
 /// an over-restriction — it needs only `String` and `format` from [`crate::compat`], both of which exist
 /// under `alloc_frugal`.
-pub mod decorations;
+pub mod field_decorations;
+pub mod window_decorations;
+/// Backwards-compatible alias for the input-field decoration module.
+///
+/// The old name described window decoration, which this module never implemented; the
+/// canonical path is [`field_decorations`].
+pub use field_decorations as decorations;
 /// The shared hover/press fade used by pointer-driven controls.
 pub mod interaction_fade;
 /// Content-driven control metrics — the "implicit size" system.
@@ -132,6 +138,12 @@ pub mod cupertino;
 #[cfg(full_widgets)]
 pub mod dialog;
 pub mod display_widgets;
+/// The macOS (desktop) component set: a segmented picker, a stepper, a toolbar, a source list
+/// and a window title bar, drawn with the desktop metrics profile.
+///
+/// The desktop sibling of [`cupertino`], which styles the touch platform.
+#[cfg(full_widgets)]
+pub mod macos;
 
 /// Material Symbols icon data, compiled only under the opt-in `icons` feature.
 ///

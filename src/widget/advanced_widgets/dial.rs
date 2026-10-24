@@ -30,14 +30,17 @@ pub struct Dial {
     notches_visible: bool,
     notch_target: f64,
     wrapping: bool,
+    /// Whether a pointer drag is in flight.
+    dragging: bool,
     /// Emitted with the new value whenever [`Dial::set_value`] actually changes
     /// it. Redundant sets do not fire it.
     pub value_changed: Signal1<i32>,
     /// Emitted when the primary mouse button is pressed while the dial is
-    /// enabled. Purely a notification — the press does not change the value.
+    /// enabled. A press inside the dial also sets the value to the angle under the
+    /// pointer; see [`Dial::value_at_point`].
     pub slider_pressed: GenericSignal,
     /// Emitted when the primary mouse button is released while the dial is
-    /// enabled. Like `slider_pressed`, it does not change the value.
+    /// enabled, ending a drag if one was in flight.
     pub slider_released: GenericSignal,
 }
 impl Dial {
@@ -57,6 +60,7 @@ impl Dial {
             notches_visible: false,
             notch_target: 3.7,
             wrapping: false,
+            dragging: false,
             value_changed: Signal1::new(),
             slider_pressed: GenericSignal::new(),
             slider_released: GenericSignal::new(),
@@ -268,6 +272,39 @@ impl Dial {
             -std::f64::consts::PI * 0.75 + fraction * std::f64::consts::PI * 1.5
         }
     }
+
+    /// Whether a pointer drag is in flight.
+    pub fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+
+    /// The value a pointer position names on the dial's own scale.
+    ///
+    /// The angle is measured from the dial's centre and mapped through the **same**
+    /// fraction-to-angle relation the needle and the notch ring use, so a click on a
+    /// tick lands on that tick's value. Points in the non-wrapping dial's bottom gap
+    /// snap to the nearer end of the sweep rather than wrapping through the gap.
+    pub fn value_at_point(&self, pos: Point) -> i32 {
+        let rect = self.geometry();
+        let centre_x = rect.x as f64 + rect.width as f64 / 2.0;
+        let centre_y = rect.y as f64 + rect.height as f64 / 2.0;
+        let dx = pos.x as f64 - centre_x;
+        let dy = pos.y as f64 - centre_y;
+        if dx == 0.0 && dy == 0.0 {
+            return self.value;
+        }
+        let angle = dy.atan2(dx);
+        let fraction = if self.wrapping {
+            ((angle + std::f64::consts::PI) / (2.0 * std::f64::consts::PI)).rem_euclid(1.0)
+        } else {
+            let start = -std::f64::consts::PI * 0.75;
+            let sweep = std::f64::consts::PI * 1.5;
+            ((angle - start) / sweep).clamp(0.0, 1.0)
+        };
+        let range = self.maximum as f64 - self.minimum as f64;
+        let value = self.minimum as f64 + fraction * range;
+        (value.round() as i32).clamp(self.minimum, self.maximum)
+    }
     /// The angular sweep the dial's scale occupies, in radians.
     fn sweep_radians(wrapping: bool) -> f64 {
         if wrapping {
@@ -414,10 +451,22 @@ impl EventHandler for Dial {
             return;
         }
         match event {
-            Event::MousePress { button, .. } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.slider_pressed.emit();
+                if self.geometry().contains_point(*pos) {
+                    self.dragging = true;
+                    let value = self.value_at_point(*pos);
+                    self.set_value(value);
+                }
+            }
+            Event::MouseMove { pos } => {
+                if self.dragging {
+                    let value = self.value_at_point(*pos);
+                    self.set_value(value);
+                }
             }
             Event::MouseRelease { button, .. } if *button == 1 => {
+                self.dragging = false;
                 self.slider_released.emit();
             }
             Event::KeyPress { key, .. } => match *key {
@@ -880,5 +929,58 @@ mod tests {
         d.set_range(-1, i32::MAX - 1);
         d.set_value(0);
         assert_eq!(d.value(), 0);
+    }
+
+    /// A press on the face sets the value under the pointer, and the drag follows.
+    #[test]
+    fn the_pointer_sets_and_drags_the_value() {
+        use crate::core::Point;
+
+        let mut d = Dial::new(Rect::new(0, 0, 80, 80));
+        d.set_range(0, 100);
+        // The right-hand point of the sweep is the middle of the range.
+        let right = d.value_at_point(Point::new(70, 40));
+        assert!((45..=55).contains(&right), "the 3 o'clock position is the midpoint, got {right}");
+
+        d.handle_event(&Event::mouse_press(70, 40, 1));
+        assert!(d.is_dragging());
+        assert!((45..=55).contains(&d.value()));
+
+        // Moving up toward the start of the sweep lowers the value.
+        d.handle_event(&Event::mouse_move(52, 14));
+        let up = d.value();
+        assert!(up < right, "moving toward the sweep's start must lower the value");
+
+        d.handle_event(&Event::mouse_release(52, 14, 1));
+        assert!(!d.is_dragging());
+        let after_release = d.value();
+        d.handle_event(&Event::mouse_move(70, 40));
+        assert_eq!(d.value(), after_release, "a released dial stops following the pointer");
+    }
+
+    /// A press outside the dial still reports the press but does not grab the value.
+    #[test]
+    fn a_press_outside_the_dial_does_not_grab() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_value(20);
+        d.handle_event(&Event::mouse_press(200, 200, 1));
+        assert!(!d.is_dragging());
+        assert_eq!(d.value(), 20);
+    }
+
+    /// A wrapping dial maps the whole circle, including the bottom gap.
+    #[test]
+    fn a_wrapping_dial_maps_the_whole_circle() {
+        use crate::core::Point;
+
+        let mut d = Dial::new(Rect::new(0, 0, 80, 80));
+        d.set_wrapping(true);
+        d.set_range(0, 100);
+        let bottom = d.value_at_point(Point::new(40, 70));
+        // atan2(+y, 0) is +90 degrees, which is three quarters around a sweep that
+        // starts at -180: fraction 0.75.
+        assert!((70..=80).contains(&bottom), "the bottom of a wrapping dial is ~75, got {bottom}");
+        let left = d.value_at_point(Point::new(10, 40));
+        assert!(left <= 2 || left >= 98, "the 9 o'clock position is the wrap point, got {left}");
     }
 }

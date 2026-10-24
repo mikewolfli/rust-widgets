@@ -89,6 +89,8 @@ pub struct VirtualList {
     /// The coordinator reports the same effect through `DragSource::on_drag_finished`; this
     /// signal is the observable form for a host that holds the control by id.
     pub drag_finished: Signal1<DropEffect>,
+    /// Whether a vertical scroll-bar thumb is painted.
+    show_scrollbar: bool,
 }
 
 impl VirtualList {
@@ -110,7 +112,27 @@ impl VirtualList {
             selection_changed: Signal1::new(),
             visible_window_changed: Signal1::new(),
             drag_finished: Signal1::new(),
+            show_scrollbar: false,
         }
+    }
+
+    /// Whether a vertical scroll-bar thumb is painted.
+    pub fn show_scrollbar(&self) -> bool {
+        self.show_scrollbar
+    }
+
+    /// Enables or disables the vertical scroll-bar thumb.
+    pub fn set_show_scrollbar(&mut self, show: bool) {
+        if self.show_scrollbar == show {
+            return;
+        }
+        self.show_scrollbar = show;
+        self.base.request_redraw();
+    }
+
+    /// How many rows fit in the viewport.
+    fn visible_row_capacity(&self) -> usize {
+        (self.base.geometry().height / self.row_height.max(1)) as usize
     }
 
     /// Binds incremental data source.
@@ -789,6 +811,25 @@ impl Draw for VirtualList {
             let row_box = Rect::new(rect.x + 4, y, rect.width.saturating_sub(8), self.row_height);
             context.draw_text_line_cow(row_box, text, row_font, ink, HorizontalAlignment::Left);
         }
+
+        if self.show_scrollbar {
+            let total = self.row_count().max(1);
+            let visible = self.visible_row_capacity().max(1).min(total);
+            let track = rect.height.max(1);
+            let thumb =
+                ((track as u64 * visible as u64) / total as u64).max(24).min(track as u64) as u32;
+            let max_scroll = total.saturating_sub(visible);
+            let travel = track.saturating_sub(thumb);
+            let offset = if max_scroll == 0 {
+                0
+            } else {
+                (travel as u64 * self.scroll_row.min(max_scroll) as u64 / max_scroll as u64) as u32
+            };
+            context.fill_rect(
+                Rect::new(rect.x + rect.width as i32 - 6, rect.y + offset as i32, 4, thumb),
+                accent.with_alpha(120),
+            );
+        }
     }
 }
 
@@ -835,6 +876,27 @@ impl crate::event::EventHandler for VirtualList {
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
                 if scroll.lines_y != 0 {
                     self.scroll_by_rows(-(scroll.lines_y as isize));
+                }
+            }
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => {
+                let page = self.visible_row_capacity().max(1);
+                let last = self.row_count().saturating_sub(1);
+                let current = self.selected_row.unwrap_or(0);
+                let next = match *key {
+                    crate::event::key_codes::UP => current.saturating_sub(1),
+                    crate::event::key_codes::DOWN => current.saturating_add(1).min(last),
+                    crate::event::key_codes::HOME => 0,
+                    crate::event::key_codes::END => last,
+                    crate::event::key_codes::PAGE_UP => current.saturating_sub(page),
+                    crate::event::key_codes::PAGE_DOWN => current.saturating_add(page).min(last),
+                    _ => current,
+                };
+                if self.select_row(next) {
+                    if next < self.scroll_row {
+                        self.set_scroll_row(next);
+                    } else if next >= self.scroll_row + page {
+                        self.set_scroll_row(next + 1 - page);
+                    }
                 }
             }
             _ => { /* Other events are not relevant */ }
@@ -1299,5 +1361,25 @@ mod tests {
         assert_eq!(observed.0, vec!["B", "C", "A"]);
         assert_eq!(observed.1, Some(2), "the selection follows the row that moved");
         assert_eq!(*finished.lock().unwrap(), Some(DropEffect::Move));
+    }
+
+    /// Keyboard navigation and the scroll-bar thumb are wired.
+    #[test]
+    fn keyboard_and_scrollbar_are_wired() {
+        use crate::event::EventHandler;
+        let mut list = VirtualList::new(Rect::new(0, 0, 200, 80));
+        list.set_rows((0..50).map(|index| std::format!("row {index}")).collect());
+        list.set_show_scrollbar(true);
+        assert!(list.show_scrollbar());
+        list.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        list.handle_event(&Event::KeyPress { key: crate::event::key_codes::DOWN, modifiers: 0 });
+        assert_eq!(list.selected_row(), Some(1));
+        list.handle_event(&Event::KeyPress {
+            key: crate::event::key_codes::PAGE_DOWN,
+            modifiers: 0,
+        });
+        assert!(list.selected_row().unwrap_or(0) > 1);
+        list.handle_event(&Event::KeyPress { key: crate::event::key_codes::HOME, modifiers: 0 });
+        assert_eq!(list.selected_row(), Some(0));
     }
 }

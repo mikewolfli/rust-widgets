@@ -155,6 +155,10 @@ pub struct QuoteBoard {
     /// the sample size, the data generation, and the resolved font (a theme switch
     /// changes glyph advances). See `column_ranges`.
     ranges_cache: Option<(ColumnRangesKey, alloc::vec::Vec<(i32, i32)>)>,
+    /// Rows whose last price changed, with the flash alpha and direction.
+    flashes: alloc::vec::Vec<(String, bool, u8)>,
+    /// Whether the header row responds to clicks by cycling the sort.
+    sortable_headers: bool,
     /// Emitted with the symbol when a row is clicked.
     pub quote_clicked: Signal1<String>,
     /// Emitted with the symbol as the pointer moves onto a row.
@@ -215,6 +219,8 @@ impl QuoteBoard {
             falling_color: Color::rgb(220, 68, 70),
             data_generation: 0,
             ranges_cache: None,
+            flashes: alloc::vec::Vec::new(),
+            sortable_headers: false,
             quote_clicked: Signal1::new(),
             quote_hovered: Signal1::new(),
             selection_changed: Signal1::new(),
@@ -234,6 +240,17 @@ impl QuoteBoard {
     /// sort, and "no sort" would then mean "restore the order that happens to be left
     /// over", which is not the caller's order.
     pub fn set_quotes(&mut self, quotes: Vec<Quote>) {
+        // A changed last price flashes in its direction, for the next few frames. The
+        // comparison is by symbol, so a re-sorted or re-ordered snapshot still matches the
+        // row it describes.
+        self.flashes.clear();
+        for quote in &quotes {
+            if let Some(previous) = self.quotes.iter().find(|old| old.symbol == quote.symbol) {
+                if (quote.last - previous.last).abs() > f64::EPSILON {
+                    self.flashes.push((quote.symbol.clone(), quote.last >= previous.last, 200));
+                }
+            }
+        }
         self.quotes = quotes;
         self.original_order = self.quotes.clone();
         self.data_generation = self.data_generation.wrapping_add(1);
@@ -242,6 +259,54 @@ impl QuoteBoard {
         self.base.request_redraw();
     }
 
+    /// Enables header clicks that cycle the sort.
+    pub fn set_sortable_headers(&mut self, sortable: bool) {
+        if self.sortable_headers == sortable {
+            return;
+        }
+        self.sortable_headers = sortable;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether header clicks sort the board.
+    pub fn sortable_headers(&self) -> bool {
+        self.sortable_headers
+    }
+
+    /// Returns whether any row is still flashing.
+    pub fn is_flashing(&self) -> bool {
+        !self.flashes.is_empty()
+    }
+
+    /// The sort a click on `column` would apply next.
+    fn next_sort_for(&self, column: QuoteColumn) -> QuoteSort {
+        match column {
+            QuoteColumn::Symbol | QuoteColumn::Name => QuoteSort::Symbol,
+            QuoteColumn::Change | QuoteColumn::ChangePercent => QuoteSort::ChangeMagnitude,
+            _ => QuoteSort::LastDescending,
+        }
+    }
+
+    /// Handles a press in the header row: finds the column and cycles the sort.
+    fn sort_header_at(&mut self, pos: Point) -> bool {
+        let geometry = self.base.geometry();
+        if !self.sortable_headers || pos.y >= self.first_row_y() || pos.y < geometry.y {
+            return false;
+        }
+        let ranges = self.column_ranges();
+        for (index, (start, end)) in ranges.iter().enumerate() {
+            if pos.x >= *start && pos.x < *end {
+                if let Some(column) = self.columns.get(index).copied() {
+                    let next = self.next_sort_for(column);
+                    // A second click on the same column clears the sort, restoring the
+                    // caller's own order.
+                    self.set_sort(if self.sort == next { QuoteSort::None } else { next });
+                    return true;
+                }
+            }
+        }
+        false
+    }
     /// The visible columns, left to right.
     pub fn columns(&self) -> &[QuoteColumn] {
         &self.columns
@@ -615,6 +680,24 @@ fn format_volume(volume: f64) -> String {
 }
 
 impl Widget for QuoteBoard {
+    /// Fades the price-change flashes.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if self.flashes.is_empty() {
+            return false;
+        }
+        let decay = (delta_ms / 3).min(255) as u8;
+        for (_, _, alpha) in &mut self.flashes {
+            *alpha = alpha.saturating_sub(decay);
+        }
+        self.flashes.retain(|(_, _, alpha)| *alpha > 0);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Whether a price-change flash is still fading.
+    fn is_animating(&self) -> bool {
+        !self.flashes.is_empty()
+    }
     fn base(&self) -> &BaseWidget {
         &self.base
     }
@@ -691,6 +774,9 @@ impl crate::event::EventHandler for QuoteBoard {
                 self.base.request_redraw();
             }
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
+                if self.sort_header_at(*pos) {
+                    return;
+                }
                 if let Some(index) = self.row_at(pos.y) {
                     if let Some(quote) = self.quotes.get(index) {
                         self.quote_clicked.emit(quote.symbol.clone());
@@ -854,6 +940,16 @@ impl Draw for QuoteBoard {
                 context.fill_rect(
                     Rect::new(geometry.x, y, geometry.width, row_height as u32),
                     hovered_fill,
+                );
+            }
+            // A changed price flashes in the direction it moved, fading as `tick` runs.
+            if let Some((_, rising, alpha)) =
+                self.flashes.iter().find(|(symbol, _, _)| symbol == &quote.symbol)
+            {
+                let flash = if *rising { self.rising_color } else { self.falling_color };
+                context.fill_rect(
+                    Rect::new(geometry.x, y, geometry.width, row_height as u32),
+                    flash.with_alpha(*alpha),
                 );
             }
 

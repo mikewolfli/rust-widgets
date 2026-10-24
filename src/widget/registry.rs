@@ -1,23 +1,44 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Widget registry for container child forwarding.
+//! Child-forwarding table for container widgets.
 //!
-//! Provides a mechanism for container widgets (Frame, TabWidget, etc.) to forward
-//! Draw and EventHandler calls to child widgets identified by ObjectId.
+//! # What this module is, and what its name must not be read as
 //!
-//! This bridges the gap between the ObjectId-based child tracking and the
-//! trait-object-based rendering/event dispatch.
+//! [`SimpleRegistry`] is a **closure forwarding table**, not an ownership
+//! registry. It maps an [`ObjectId`] to a draw closure, an event closure and an
+//! optional geometry callback, so a container can paint and dispatch to a child
+//! it holds only by id.
+//!
+//! The crate has three different things whose names sound alike, and conflating
+//! them is the defect this note exists to prevent:
+//!
+//! | Name | Answers | Owner |
+//! |---|---|---|
+//! | [`SimpleRegistry`] (here) | "how do I draw/forward to this id?" | the container that holds it |
+//! | `WidgetFactory` (`widget::capability`) | "how do I construct control *name*?" | the crate; one shared table |
+//! | `widget::runtime` registry | "where is the live widget with this id?" | the runtime, which owns mounting |
+//!
+//! Ownership of a live control therefore lives in `widget::runtime`, never in
+//! this table: dropping a [`SimpleRegistry`] removes its forwarding closures and
+//! does not destroy a widget. A reader looking for "the registry" that owns the
+//! widget tree should start at `widget::runtime`.
 use crate::compat::{Box, HashMap};
 use crate::core::{ObjectId, Rect};
 use crate::event::Event;
 use crate::render::RenderContext;
 
-/// A registry that maps ObjectId to draw + event handler closures.
+/// A forwarding table that maps an [`ObjectId`] to draw + event closures.
 ///
-/// This allows container widgets to forward rendering and events to their
-/// child widgets without requiring architectural changes to the event dispatch
-/// system.
+/// Container widgets use it to reach children they track only by id, without
+/// requiring the event-dispatch layer to know their concrete type. It is a
+/// **closure table, not an ownership registry** — see the module docs for the
+/// three registry-shaped concepts in this crate and which one owns a live widget.
+///
+/// The name is historical. Renaming it would break the public surface for a
+/// change that is purely about reading, so the distinction is stated here
+/// instead; treat every "registry" mention in a container's documentation as
+/// this table rather than as the runtime's widget map.
 pub struct SimpleRegistry {
     entries: HashMap<ObjectId, RegistryEntry>,
 }
@@ -53,6 +74,18 @@ struct RegistryEntry {
 unsafe impl Send for SimpleRegistry {}
 
 crate::impl_default_via_new!(SimpleRegistry);
+
+/// Formats the table as its size.
+///
+/// The closures cannot be printed, and a caller that puts a container into a `Debug`
+/// summary wants "how many children are forwarded" rather than the boxes. Implemented by
+/// hand because a derive would require every closure type to be `Debug`, which no `FnMut`
+/// is.
+impl core::fmt::Debug for SimpleRegistry {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.debug_struct("SimpleRegistry").field("registered", &self.entries.len()).finish()
+    }
+}
 
 impl SimpleRegistry {
     /// Creates a new empty registry.

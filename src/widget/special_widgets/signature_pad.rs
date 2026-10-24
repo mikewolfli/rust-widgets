@@ -33,6 +33,8 @@ pub struct SignatureStroke {
     /// Normalized tip pressure (`0.0..=1.0`) for the point at the same index in
     /// `points`. Always the same length as `points`.
     pressures: Vec<f32>,
+    /// Stylus tilt in degrees, `(x, y)`, for the point at the same index.
+    tilts: Vec<(f32, f32)>,
 }
 
 /// The pressure a mouse or touch contact reports: neutral, so a stroke drawn with
@@ -42,7 +44,7 @@ const NEUTRAL_PRESSURE: f32 = 1.0;
 impl SignatureStroke {
     /// Creates an empty stroke.
     pub fn new() -> Self {
-        Self { points: Vec::new(), pressures: Vec::new() }
+        Self { points: Vec::new(), pressures: Vec::new(), tilts: Vec::new() }
     }
 
     /// Creates a stroke from a list of points.
@@ -52,7 +54,8 @@ impl SignatureStroke {
     /// attach real per-point pressure.
     pub fn from_points(points: Vec<Point>) -> Self {
         let pressures = vec![NEUTRAL_PRESSURE; points.len()];
-        Self { points, pressures }
+        let tilts = vec![(0.0, 0.0); points.len()];
+        Self { points, pressures, tilts }
     }
 
     /// Appends a point to the stroke with neutral pressure.
@@ -69,6 +72,23 @@ impl SignatureStroke {
             if pressure.is_finite() { pressure.clamp(0.0, 1.0) } else { NEUTRAL_PRESSURE };
         self.points.push(point);
         self.pressures.push(clamped);
+        self.tilts.push((0.0, 0.0));
+    }
+
+    /// Appends a point with the pen's pressure and tilt.
+    ///
+    /// Tilt is stored per point rather than per stroke, so a stroke that turns from an upright
+    /// pen to a flat one changes weight along its length. A non-finite angle is stored as zero
+    /// rather than rejected, because a device that reports no tilt is the common case and must
+    /// draw identically to one that reports "upright".
+    pub fn push_with_tilt(&mut self, point: Point, pressure: f32, tilt: (f32, f32)) {
+        self.push_with_pressure(point, pressure);
+        if let Some(last) = self.tilts.last_mut() {
+            *last = (
+                if tilt.0.is_finite() { tilt.0 } else { 0.0 },
+                if tilt.1.is_finite() { tilt.1 } else { 0.0 },
+            );
+        }
     }
 
     /// Returns the stroke's points.
@@ -80,6 +100,12 @@ impl SignatureStroke {
     /// order and of the same length as [`Self::points`].
     pub fn pressures(&self) -> &[f32] {
         &self.pressures
+    }
+
+    /// Returns the tilt recorded for each point, in the same order and of the same length
+    /// as [`Self::points`].
+    pub fn tilts(&self) -> &[(f32, f32)] {
+        &self.tilts
     }
 
     /// Returns the pressure recorded with the most recent point, or the neutral
@@ -158,6 +184,12 @@ pub struct SignaturePad {
     /// every segment uses [`Self::stroke_width`]. A mouse or touch contact reports a
     /// neutral pressure, so both settings render the same width for them.
     pressure_affects_width: bool,
+    /// Whether stylus tilt widens the ink.
+    tilt_affects_width: bool,
+    /// Whether strokes are drawn through a smoothing subdivision.
+    smooth_strokes: bool,
+    /// Strokes removed by `undo`, available to `redo`.
+    redo_stack: Vec<SignatureStroke>,
     /// Emitted with no payload whenever the committed stroke set changes.
     pub changed: GenericSignal,
     /// Emitted with the final stroke when a drag is released and committed.
@@ -179,6 +211,9 @@ impl SignaturePad {
             last_pressure: NEUTRAL_PRESSURE,
             last_tilt: (0.0, 0.0),
             pressure_affects_width: true,
+            tilt_affects_width: false,
+            smooth_strokes: false,
+            redo_stack: Vec::new(),
             changed: GenericSignal::new(),
             stroke_completed: Signal1::new(),
         }
@@ -202,13 +237,126 @@ impl SignaturePad {
     /// Removes the most recently committed stroke, returning whether one was
     /// removed. Emits `changed` when a stroke is actually removed.
     pub fn undo(&mut self) -> bool {
-        if self.strokes.pop().is_some() {
+        if let Some(stroke) = self.strokes.pop() {
+            self.redo_stack.push(stroke);
             self.changed.emit();
             self.base.request_redraw();
             true
         } else {
             false
         }
+    }
+
+    /// Re-applies the stroke most recently removed by [`Self::undo`].
+    ///
+    /// A new stroke clears the redo history, which is the usual linear-history contract:
+    /// once the user draws again, the branch that `undo` left behind is no longer reachable.
+    pub fn redo(&mut self) -> bool {
+        let Some(stroke) = self.redo_stack.pop() else {
+            return false;
+        };
+        self.strokes.push(stroke);
+        self.changed.emit();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Enables drawing through a smoothing subdivision.
+    ///
+    /// Sampling produces a polyline whose corners are real: a fast signature reads as a chain
+    /// of straight segments. Smoothing subdivides that polyline before it is stroked, which
+    /// rounds the corners without moving the recorded points. It is opt-in because it changes
+    /// the ink, and a caller comparing exported geometry must get what was captured.
+    pub fn set_smooth_strokes(&mut self, smooth: bool) {
+        if self.smooth_strokes == smooth {
+            return;
+        }
+        self.smooth_strokes = smooth;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether strokes are smoothed.
+    pub fn smooth_strokes(&self) -> bool {
+        self.smooth_strokes
+    }
+
+    /// Makes stylus tilt widen the ink.
+    pub fn set_tilt_affects_width(&mut self, affects: bool) {
+        if self.tilt_affects_width == affects {
+            return;
+        }
+        self.tilt_affects_width = affects;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether tilt widens the ink.
+    pub fn tilt_affects_width(&self) -> bool {
+        self.tilt_affects_width
+    }
+
+    /// Exports the committed strokes as an SVG document in the pad's own coordinate space.
+    ///
+    /// Each stroke is one `<path>` with a round cap and join, so a caller can embed the
+    /// signature in a document without the widget. The pad's surface is not painted: an
+    /// exported signature is ink on a transparent background.
+    pub fn export_svg(&self) -> String {
+        let rect = self.geometry();
+        let mut svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"{} {} {} {}\">",
+            rect.width, rect.height, rect.x, rect.y, rect.width, rect.height
+        );
+        let color =
+            format!("rgb({},{},{})", self.stroke_color.r, self.stroke_color.g, self.stroke_color.b);
+        for stroke in &self.strokes {
+            let Some(first) = stroke.points().first() else {
+                continue;
+            };
+            let mut path = format!("M {} {}", first.x, first.y);
+            for point in &stroke.points()[1..] {
+                path.push_str(&format!(" L {} {}", point.x, point.y));
+            }
+            svg.push_str(&format!(
+                "<path d=\"{path}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n",
+                self.stroke_width.max(1)
+            ));
+        }
+        svg.push_str("</svg>");
+        svg
+    }
+
+    /// Rasterises the committed strokes into a transparent RGBA buffer.
+    ///
+    /// The buffer is `size` pixels, with full coverage on inked pixels: a signature export is
+    /// ink, not antialiasing, which keeps the rasteriser dependency-free and its output
+    /// deterministic. The caller can hand the bytes to any PNG encoder it already has.
+    pub fn export_rgba(&self, size: (u32, u32)) -> Vec<u8> {
+        let (width, height) = size;
+        let mut pixels = vec![0u8; width as usize * height as usize * 4];
+        if width == 0 || height == 0 {
+            return pixels;
+        }
+        let rect = self.geometry();
+        let scale_x = width as f32 / rect.width.max(1) as f32;
+        let scale_y = height as f32 / rect.height.max(1) as f32;
+        for stroke in &self.strokes {
+            let points: Vec<(i32, i32)> = stroke
+                .points()
+                .iter()
+                .map(|point| {
+                    (
+                        ((point.x - rect.x) as f32 * scale_x).round() as i32,
+                        ((point.y - rect.y) as f32 * scale_y).round() as i32,
+                    )
+                })
+                .collect();
+            for pair in points.windows(2) {
+                raster_line(&mut pixels, width, height, pair[0], pair[1], self.stroke_color);
+            }
+            if points.len() == 1 {
+                raster_line(&mut pixels, width, height, points[0], points[0], self.stroke_color);
+            }
+        }
+        pixels
     }
 
     /// Removes every committed stroke. Emits `changed`.
@@ -354,7 +502,7 @@ impl SignaturePad {
     fn begin_stroke_with(&mut self, point: Point, pressure: f32, tilt: (f32, f32)) {
         self.record_pen_data(pressure, tilt);
         let mut stroke = SignatureStroke::new();
-        stroke.push_with_pressure(point, self.last_pressure);
+        stroke.push_with_tilt(point, self.last_pressure, self.last_tilt);
         self.current = Some(stroke);
         // The clock starts with the stroke, so the first interval is measured
         // against the press rather than against whenever a pointer last moved.
@@ -404,6 +552,7 @@ impl SignaturePad {
         // The pressure attributed to the new point(s): the caller's datum, already
         // clamped by `record_pen_data`, which the interpolation below interpolates.
         let new_pressure = self.last_pressure;
+        let new_tilt = self.last_tilt;
 
         let Some(current) = self.current.as_mut() else {
             return;
@@ -411,7 +560,7 @@ impl SignaturePad {
         let Some(last) = current.points().last().copied() else {
             // A stroke always begins with a point, but a caller-built empty `current`
             // must not silently swallow the move.
-            current.push_with_pressure(point, new_pressure);
+            current.push_with_tilt(point, new_pressure, new_tilt);
             self.last_point_at = Some(now);
             self.base.request_redraw();
             return;
@@ -445,10 +594,10 @@ impl SignaturePad {
                 from_pressure,
                 new_pressure,
             ) {
-                current.push_with_pressure(step, step_pressure);
+                current.push_with_tilt(step, step_pressure, new_tilt);
             }
         }
-        current.push_with_pressure(point, new_pressure);
+        current.push_with_tilt(point, new_pressure, new_tilt);
         self.last_point_at = Some(now);
         self.base.request_redraw();
     }
@@ -460,6 +609,9 @@ impl SignaturePad {
         // A single-point stroke still counts: it is a tap, which for a signature
         // pad is a legitimate dot.
         self.strokes.push(stroke.clone());
+        // Drawing again abandons the undone branch, which is the linear-history contract
+        // `redo` documents.
+        self.redo_stack.clear();
         self.stroke_completed.emit(stroke);
         self.changed.emit();
         self.base.request_redraw();
@@ -746,6 +898,8 @@ impl Draw for SignaturePad {
                 self.stroke_color,
                 self.stroke_width,
                 self.pressure_affects_width,
+                self.tilt_affects_width,
+                self.smooth_strokes,
             );
         }
         // Draw the in-progress stroke on top.
@@ -756,6 +910,8 @@ impl Draw for SignaturePad {
                 self.stroke_color,
                 self.stroke_width,
                 self.pressure_affects_width,
+                self.tilt_affects_width,
+                self.smooth_strokes,
             );
         }
 
@@ -832,25 +988,125 @@ fn draw_stroke(
     color: Color,
     width: u32,
     pressure_affects_width: bool,
+    tilt_affects_width: bool,
+    smooth: bool,
 ) {
-    let points = stroke.points();
+    let points_owned;
+    let points = if smooth {
+        points_owned = chaikin(stroke.points());
+        points_owned.as_slice()
+    } else {
+        stroke.points()
+    };
     let pressures = stroke.pressures();
+    let tilts = stroke.tilts();
     match points.len() {
         0 => {}
         1 => {
             // A single point renders as a dot.
             let pressure = pressures.first().copied().unwrap_or(NEUTRAL_PRESSURE);
-            let dot_width = segment_width(width, pressure, pressure, pressure_affects_width);
+            let tilt = tilts.first().copied().unwrap_or((0.0, 0.0));
+            let dot_width = segment_width(width, pressure, pressure, pressure_affects_width)
+                * tilt_factor(tilt, tilt_affects_width);
             context.draw_line_stroke_aa(points[0], points[0], color, dot_width.max(2));
         }
         _ => {
             for (index, pair) in points.windows(2).enumerate() {
                 let from_pressure = pressures.get(index).copied().unwrap_or(NEUTRAL_PRESSURE);
                 let to_pressure = pressures.get(index + 1).copied().unwrap_or(NEUTRAL_PRESSURE);
+                let from_tilt = tilts.get(index).copied().unwrap_or((0.0, 0.0));
+                let to_tilt = tilts.get(index + 1).copied().unwrap_or((0.0, 0.0));
                 let segment =
                     segment_width(width, from_pressure, to_pressure, pressure_affects_width);
-                context.draw_line_stroke_aa(pair[0], pair[1], color, segment);
+                let tilt = ((from_tilt.0 + to_tilt.0) * 0.5, (from_tilt.1 + to_tilt.1) * 0.5);
+                let segment = segment * tilt_factor(tilt, tilt_affects_width);
+                context.draw_line_stroke_aa(pair[0], pair[1], color, segment.max(1));
             }
+        }
+    }
+}
+
+/// The width multiplier a stylus tilt contributes.
+///
+/// A pen laid over widens its contact patch, so the angle between upright and flat is mapped
+/// to `1.0..=2.0`. With the setting off (the default) the factor is exactly one, so a device
+/// that reports tilt draws identically to one that does not.
+fn tilt_factor(tilt: (f32, f32), enabled: bool) -> u32 {
+    if !enabled {
+        return 1;
+    }
+    let magnitude = (tilt.0.abs() + tilt.1.abs()).min(180.0);
+    let factor = 1.0 + magnitude / 180.0;
+    factor.round().max(1.0) as u32
+}
+
+/// A Chaikin corner-cutting pass over a polyline.
+///
+/// Each segment contributes two points at a quarter and three quarters along it, so the
+/// original corners are replaced by a rounded path. Endpoints are preserved, which is what
+/// keeps the ink anchored where the pen touched down and lifted.
+fn chaikin(points: &[Point]) -> Vec<Point> {
+    if points.len() < 3 {
+        return points.to_vec();
+    }
+    let mut out = Vec::with_capacity(points.len() * 2);
+    out.push(points[0]);
+    for pair in points.windows(2) {
+        let (from, to) = (pair[0], pair[1]);
+        out.push(Point::new(
+            from.x + ((to.x - from.x) as f32 * 0.25).round() as i32,
+            from.y + ((to.y - from.y) as f32 * 0.25).round() as i32,
+        ));
+        out.push(Point::new(
+            from.x + ((to.x - from.x) as f32 * 0.75).round() as i32,
+            from.y + ((to.y - from.y) as f32 * 0.75).round() as i32,
+        ));
+    }
+    out.push(points[points.len() - 1]);
+    out
+}
+
+/// Stamps one line into an RGBA buffer.
+///
+/// Bresenham's integer walk, with one pixel per step: the export is a signature's ink, so a
+/// deterministic centreline is more useful than an antialiased edge the caller did not ask
+/// for.
+fn raster_line(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    from: (i32, i32),
+    to: (i32, i32),
+    color: Color,
+) {
+    let (mut x0, mut y0) = from;
+    let (x1, y1) = to;
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut error = dx + dy;
+    loop {
+        if x0 >= 0 && y0 >= 0 && (x0 as u32) < width && (y0 as u32) < height {
+            let index = ((y0 as u32 * width + x0 as u32) * 4) as usize;
+            if index + 3 < pixels.len() {
+                pixels[index] = color.r;
+                pixels[index + 1] = color.g;
+                pixels[index + 2] = color.b;
+                pixels[index + 3] = 255;
+            }
+        }
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let double = 2 * error;
+        if double >= dy {
+            error += dy;
+            x0 += sx;
+        }
+        if double <= dx {
+            error += dx;
+            y0 += sy;
         }
     }
 }

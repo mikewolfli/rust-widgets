@@ -54,6 +54,11 @@ pub struct LCDNumber {
     small_decimal_point: bool,
     mode: LCDNumberMode,
     segment_style: SegmentStyle,
+    /// Whether a sunken bezel is painted around the digit area.
+    ///
+    /// Off by default, so a display that never asks for it keeps its historic
+    /// flat panel.
+    bezel: bool,
     /// Set when the most recent [`LCDNumber::set_value`] call received a value
     /// outside `min_value ..= max_value`; cleared by the next in-range set.
     /// Mirrors [`LCDNumber::check_overflow`].
@@ -98,6 +103,7 @@ impl LCDNumber {
             small_decimal_point: false,
             mode: LCDNumberMode::Dec,
             segment_style: SegmentStyle::Filled,
+            bezel: false,
             overflowed: false,
             value_changed: Signal1::new(),
             overflow: GenericSignal::new(),
@@ -138,6 +144,24 @@ impl LCDNumber {
     /// [`SegmentStyle::Filled`].
     pub fn segment_style(&self) -> SegmentStyle {
         self.segment_style
+    }
+    /// Returns whether a sunken bezel is painted around the digit area.
+    ///
+    /// Defaults to `false`.
+    pub fn bezel(&self) -> bool {
+        self.bezel
+    }
+    /// Draws a 1px sunken bezel around the digit area when `bezel` is `true`.
+    ///
+    /// The bezel is dark on the top and left edges and light on the bottom and
+    /// right edges, the conventional way a recessed well is shaded. It is
+    /// opt-in; the default panel stays flat.
+    pub fn set_bezel(&mut self, bezel: bool) {
+        if self.bezel == bezel {
+            return;
+        }
+        self.bezel = bezel;
+        self.base.request_redraw();
     }
     /// Sets the displayed value, clamped into `min_value ..= max_value`.
     ///
@@ -542,6 +566,15 @@ impl Draw for LCDNumber {
         let panel_width = cell_width as i32 * cells as i32;
         let start_x = rect.x + ((rect.width as i32 - panel_width) / 2);
         let start_y = rect.y + ((rect.height as i32 - digit_height as i32) / 2);
+        if self.bezel {
+            // Before the digits, so a lit segment at the very edge of its cell
+            // covers the bezel rather than being cut by it.
+            self.draw_bezel(
+                context,
+                Rect::new(start_x, start_y, panel_width.max(0) as u32, digit_height),
+                bg_color,
+            );
+        }
         for (i, ch) in display_text.chars().enumerate() {
             let digit_x = (start_x + i as i32 * cell_width as i32) as u32;
             let digit_y = start_y as u32;
@@ -568,6 +601,30 @@ impl Draw for LCDNumber {
 }
 
 impl LCDNumber {
+    /// Paints the recessed frame around the digit area.
+    ///
+    /// A sunken well is described by two opposite edges: the top and left are
+    /// shadowed, the bottom and right catch the light. Both shades are derived
+    /// from the panel's own colour rather than from fixed greys, so the bezel
+    /// follows the active appearance instead of vanishing on a dark panel.
+    fn draw_bezel(&self, context: &mut RenderContext, area: Rect, panel: Color) {
+        if area.width < 2 || area.height < 2 {
+            return;
+        }
+        let shadow = panel.blend(&Color::BLACK, 0.55);
+        let highlight = panel.blend(&Color::WHITE, 0.55);
+        context.fill_rect(Rect::new(area.x, area.y, area.width, 1), shadow);
+        context.fill_rect(Rect::new(area.x, area.y, 1, area.height), shadow);
+        context.fill_rect(
+            Rect::new(area.x + area.width as i32 - 1, area.y, 1, area.height),
+            highlight,
+        );
+        context.fill_rect(
+            Rect::new(area.x, area.y + area.height as i32 - 1, area.width, 1),
+            highlight,
+        );
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn draw_digit(
         &self,
@@ -1117,5 +1174,28 @@ mod tests {
         let lcd = LCDNumber::new(Rect::new(0, 0, 100, 50));
         let _value_changed = &lcd.value_changed;
         let _overflow = &lcd.overflow;
+    }
+
+    /// The bezel is opt-in, and when enabled it adds the shadowed top/left and
+    /// lit bottom/right edges around the digit area.
+    #[test]
+    fn lcd_bezel_is_opt_in_and_frames_the_digit_area() {
+        let mut flat = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        flat.set_value(42.0);
+        assert!(!flat.bezel(), "the panel is flat by default");
+        let flat_svg = render_to_svg(&mut flat);
+
+        flat.set_bezel(true);
+        assert!(flat.bezel());
+        let bezelled = render_to_svg(&mut flat);
+        assert_ne!(flat_svg, bezelled, "the bezel reaches the rendering");
+        assert_eq!(
+            bezelled.matches("<rect").count(),
+            flat_svg.matches("<rect").count() + 4,
+            "four 1px edges are added"
+        );
+
+        flat.set_bezel(false);
+        assert_eq!(render_to_svg(&mut flat), flat_svg, "turning it off restores the flat panel");
     }
 }

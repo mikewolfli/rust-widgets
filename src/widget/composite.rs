@@ -106,6 +106,23 @@ pub enum FlexibleAxis {
     Height,
 }
 
+/// The semantic role of a button inside an [`ActionRow`].
+///
+/// A role is not a colour: it states what the button *means* in the dialog's contract, so the
+/// host that draws the row can apply its own emphasis. The enum exists because a bare label
+/// cannot tell a default action from a destructive one, and a caller that inferred it from the
+/// text (`"Delete"` is destructive) would be guessing in the wrong layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ButtonRole {
+    /// An ordinary action.
+    #[default]
+    Normal,
+    /// The default action, usually activated by Enter.
+    Primary,
+    /// An action that discards something.
+    Destructive,
+}
+
 /// Assembles a composite control from a layout and factory-created children.
 ///
 /// See the module documentation for what it does and, more importantly, what it
@@ -610,6 +627,7 @@ impl CompositeBuilder {
 pub struct ActionRow {
     builder: CompositeBuilder,
     labels: Vec<crate::compat::String>,
+    roles: Vec<ButtonRole>,
     gap: u32,
 }
 
@@ -627,6 +645,7 @@ impl ActionRow {
         Self {
             builder: CompositeBuilder::new(layout, EdgeOffsets::all(0), Size::new(0, 0)),
             labels: Vec::new(),
+            roles: Vec::new(),
             gap,
         }
     }
@@ -655,8 +674,40 @@ impl ActionRow {
         );
         if widget.is_some() {
             self.labels.push(label.to_string());
+            self.roles.push(ButtonRole::Normal);
         }
         widget
+    }
+
+    /// Adds a button with an explicit semantic role.
+    ///
+    /// Same layout contract as [`Self::add`]; the role is recorded alongside the label so a
+    /// dialog can find its default and destructive actions without matching on their text.
+    pub fn add_with_role(
+        &mut self,
+        factory: &WidgetFactory,
+        label: &str,
+        size: Size,
+        role: ButtonRole,
+    ) -> Option<Box<dyn Widget>> {
+        let leading = if self.labels.is_empty() { 0 } else { self.gap };
+        let widget = self.builder.add(
+            factory,
+            "button",
+            label,
+            Rect::new(0, 0, size.width, size.height),
+            LayoutParams::new().with_margins(EdgeOffsets::new(0, 0, 0, leading)),
+        );
+        if widget.is_some() {
+            self.labels.push(label.to_string());
+            self.roles.push(role);
+        }
+        widget
+    }
+
+    /// The role of the button at `index`, when there is one.
+    pub fn role(&self, index: usize) -> Option<ButtonRole> {
+        self.roles.get(index).copied()
     }
 
     /// How many buttons the row holds.
@@ -1211,5 +1262,19 @@ mod tests {
         assert_eq!(wide_rects.len(), 1, "the wide composite has one child");
         assert_eq!(narrow_rects.len(), 1, "the narrow composite has one child");
         assert_ne!(wide_rects[0].0, narrow_rects[0].0, "each composite placed its own child id");
+    }
+
+    #[test]
+    fn an_action_row_records_the_role_of_each_button() {
+        let factory = WidgetFactory::new_with_defaults();
+        let mut row = ActionRow::new(8);
+        row.add_with_role(&factory, "Cancel", Size::new(60, 30), ButtonRole::Normal);
+        row.add_with_role(&factory, "Delete", Size::new(60, 30), ButtonRole::Destructive);
+        row.add(&factory, "Save", Size::new(60, 30));
+        assert_eq!(row.len(), 3);
+        assert_eq!(row.role(0), Some(ButtonRole::Normal));
+        assert_eq!(row.role(1), Some(ButtonRole::Destructive));
+        assert_eq!(row.role(2), Some(ButtonRole::Normal));
+        assert_eq!(row.role(3), None);
     }
 }

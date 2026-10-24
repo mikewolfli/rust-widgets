@@ -7,7 +7,7 @@
 //! topmost page along with a navigation bar. It supports push, pop, and pop-to-root
 //! operations, similar to SwiftUI NavigationStack or UINavigationController.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, TextDirection};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -49,6 +49,14 @@ pub struct NavigationStack {
     /// See `draw`: the pages are laid out in the content rect and painted under this
     /// transition offset, with the lower page trailing at 30% for parallax.
     slide: PropertyDriver,
+    /// The writing direction the back affordance is placed by.
+    ///
+    /// The back button is the bar's **leading** affordance, so a right-to-left interface puts
+    /// it at the right edge. Both the paint path and the hit test read this field, so the
+    /// affordance cannot be drawn on one side and be tappable on the other.
+    direction: TextDirection,
+    /// An in-flight interactive pop gesture: `(start_x, start_slide)`.
+    edge_drag: Option<(f32, f32)>,
     /// Emitted when the navigation state changes.
     pub navigation_changed: Signal1<NavigationEvent>,
 }
@@ -61,6 +69,8 @@ impl NavigationStack {
             pages: Vec::new(),
             navigation_bar_title: String::new(),
             slide: PropertyDriver::at(0.0, MotionSlot::Normal),
+            direction: TextDirection::default(),
+            edge_drag: None,
             navigation_changed: Signal1::new(),
         }
     }
@@ -125,9 +135,36 @@ impl NavigationStack {
         if self.pages.is_empty() {
             return;
         }
+        let changed = self.pages.len() > 1;
         self.pages.drain(1..);
+        if changed {
+            // A pop-to-root is a pop: it arrives from the same leading edge, over frames.
+            self.slide.jump_to(-1.0);
+            self.slide.set_target(0.0);
+        }
         self.navigation_changed.emit(NavigationEvent::PoppedToRoot);
         self.base.request_redraw();
+    }
+
+    /// Returns the writing direction the back affordance is placed by.
+    pub fn direction(&self) -> TextDirection {
+        self.direction
+    }
+
+    /// Sets the writing direction, which mirrors the back affordance and its hit region.
+    pub fn set_direction(&mut self, direction: TextDirection) {
+        if self.direction == direction {
+            return;
+        }
+        self.direction = direction;
+        self.base.request_redraw();
+    }
+
+    /// The back affordance's rectangle: the leading end of the navigation bar.
+    fn back_rect(&self) -> Rect {
+        let bar = self.nav_bar_rect();
+        let x = if self.direction.is_right_to_left() { bar.right() - 60 } else { bar.x };
+        Rect::new(x, bar.y, 60.min(bar.width), NAV_BAR_HEIGHT)
     }
 
     /// Returns the current navigation bar title.
@@ -374,7 +411,8 @@ impl Draw for NavigationStack {
 
         // Back button (if can_pop)
         if self.can_pop() {
-            let back_text = "< Back";
+            let back = self.back_rect();
+            let back_text = if self.direction.is_right_to_left() { "Back >" } else { "< Back" };
             // The **effective font** — the resolved theme/caller font — for the back label and the
             // title, rather than the fixed 13/15 px sans-serif faces this used to build
             // (D09-STYLE-01).
@@ -385,9 +423,9 @@ impl Draw for NavigationStack {
             // neither: a glyph origin is the top edge of its box, so an offset that does not come
             // from the font puts one of the two rows off its own middle line. `text_line` is the
             // crate's one derivation for "where does this font's line sit in this band".
-            let back_line = context.text_line(nav_rect, back_font);
+            let back_line = context.text_line(back, back_font);
             context.draw_text(
-                Point::new(nav_rect.x + 8, back_line.y),
+                Point::new(back.x + 8, back_line.y),
                 back_text,
                 back_font,
                 back_color,
@@ -470,16 +508,35 @@ impl EventHandler for NavigationStack {
                 if *button == 1 {
                     // Check if the back button was clicked
                     if self.can_pop() {
-                        let nav_rect = self.nav_bar_rect();
-                        let back_rect = Rect::new(nav_rect.x, nav_rect.y, 60, NAV_BAR_HEIGHT);
+                        let back_rect = self.back_rect();
                         if back_rect.contains_point(*pos) {
                             self.pop();
                             return;
                         }
                     }
 
-                    // Forward to current page
+                    // An edge drag starts an interactive pop: pressing within the leading
+                    // strip of the content region and dragging inward follows the finger.
                     let content = self.content_rect();
+                    let edge = if self.direction.is_right_to_left() {
+                        Rect::new(
+                            content.right() - 24,
+                            content.y,
+                            24.min(content.width),
+                            content.height,
+                        )
+                    } else {
+                        Rect::new(content.x, content.y, 24.min(content.width), content.height)
+                    };
+                    if self.can_pop() && edge.contains_point(*pos) {
+                        // An edge drag always begins at the fully-popped end and follows the
+                        // pointer toward the settled end; it never starts from a half-settled
+                        // transition, which belongs to a previous gesture.
+                        self.edge_drag = Some((pos.x as f32, -1.0));
+                        return;
+                    }
+
+                    // Forward to current page
                     if content.contains_point(*pos) {
                         if let Some(page) = self.pages.last_mut() {
                             // The page is painted inside the content rect, so it must be
@@ -490,7 +547,50 @@ impl EventHandler for NavigationStack {
                     }
                 }
             }
-            Event::MouseRelease { pos, button: _ } | Event::MouseMove { pos } => {
+            Event::MouseMove { pos } => {
+                if let Some((start, start_slide)) = self.edge_drag {
+                    let content = self.content_rect();
+                    let width = content.width.max(1) as f32;
+                    let dx = if self.direction.is_right_to_left() {
+                        start - pos.x as f32
+                    } else {
+                        pos.x as f32 - start
+                    };
+                    // A leftward (for LTR) drag here would undo a pop, so the follow is clamped
+                    // to the pop direction only.
+                    let progress = (start_slide + dx / width).clamp(-1.0, 0.0);
+                    self.slide.jump_to(progress);
+                    self.base.request_redraw();
+                    return;
+                }
+                let content = self.content_rect();
+                if content.contains_point(*pos) {
+                    if let Some(page) = self.pages.last_mut() {
+                        page.set_geometry(content);
+                        page.handle_event(event);
+                    }
+                }
+            }
+            Event::MouseRelease { pos, button } => {
+                if *button != 1 {
+                    return;
+                }
+                if let Some((_, start_slide)) = self.edge_drag.take() {
+                    let progress = self.slide.value();
+                    // One third of the content width is the iOS commit point, expressed as a
+                    // fraction of the slide so a relayout moves the threshold with the region.
+                    if progress <= -1.0 / 3.0 {
+                        if self.pop().is_some() {
+                            self.slide.jump_to(progress);
+                            self.slide.set_target(0.0);
+                        }
+                    } else {
+                        self.slide.jump_to(progress);
+                        self.slide.set_target(start_slide.clamp(-1.0, 0.0));
+                    }
+                    self.base.request_redraw();
+                    return;
+                }
                 let content = self.content_rect();
                 if content.contains_point(*pos) {
                     if let Some(page) = self.pages.last_mut() {
@@ -852,5 +952,39 @@ mod tests {
             vec![content],
             "the page must be told the same rect it is painted in"
         );
+    }
+
+    #[test]
+    fn pop_to_root_plays_the_same_transition_as_a_single_pop() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        while stack.tick(16) {}
+        stack.pop_to_root();
+        assert_eq!(stack.page_count(), 1);
+        assert!(stack.is_animating(), "returning to the root is a movement, not a swap");
+    }
+
+    #[test]
+    fn a_right_to_left_bar_puts_the_back_affordance_at_the_trailing_edge() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        let ltr = stack.back_rect();
+        stack.set_direction(TextDirection::RightToLeft);
+        let rtl = stack.back_rect();
+        assert!(rtl.x > ltr.x, "the mirrored back zone moves to the other edge");
+    }
+
+    #[test]
+    fn an_edge_drag_pops_the_page_it_follows() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.handle_event(&Event::MousePress { pos: Point::new(4, 300), button: 1, modifiers: 0 });
+        stack.handle_event(&Event::MouseMove { pos: Point::new(200, 300) });
+        stack.handle_event(&Event::MouseRelease { pos: Point::new(200, 300), button: 1 });
+        assert_eq!(stack.page_count(), 1, "a long edge drag commits the pop");
     }
 }

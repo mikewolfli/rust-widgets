@@ -111,6 +111,12 @@ pub struct PieMenuItem {
     enabled: bool,
     angle_start: f32,
     angle_end: f32,
+    /// Optional shortcut label painted near the wedge's outer edge.
+    shortcut: Option<String>,
+    /// Whether the slot is a gap rather than a choice.
+    separator: bool,
+    /// Child items, shown as a second ring when this slot is activated.
+    children: Vec<PieMenuItem>,
 }
 
 impl PieMenuItem {
@@ -133,6 +139,9 @@ impl PieMenuItem {
             enabled: true,
             angle_start: 0.0,
             angle_end: 0.0,
+            shortcut: None,
+            separator: false,
+            children: Vec::new(),
         }
     }
 
@@ -215,6 +224,48 @@ impl PieMenuItem {
     pub fn set_angle_end(&mut self, angle: f32) {
         self.angle_end = angle;
     }
+
+    /// The shortcut label painted near this wedge's outer edge, if any.
+    pub fn shortcut(&self) -> Option<&str> {
+        self.shortcut.as_deref()
+    }
+
+    /// Sets the shortcut label.
+    pub fn set_shortcut(&mut self, shortcut: Option<String>) {
+        self.shortcut = shortcut;
+    }
+
+    /// Sets the shortcut label and returns `self`.
+    pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    /// Whether this slot is a gap rather than a choice.
+    pub fn is_separator(&self) -> bool {
+        self.separator
+    }
+
+    /// Marks the slot as a separator: it paints no wedge and cannot be hovered.
+    pub fn set_separator(&mut self, separator: bool) {
+        self.separator = separator;
+    }
+
+    /// The child slots shown as the second ring, empty for a leaf.
+    pub fn children(&self) -> &[PieMenuItem] {
+        &self.children
+    }
+
+    /// Attaches child slots, making this item a branch.
+    pub fn set_children(&mut self, children: Vec<PieMenuItem>) {
+        self.children = children;
+    }
+
+    /// Attaches child slots and returns `self`.
+    pub fn with_children(mut self, children: Vec<PieMenuItem>) -> Self {
+        self.children = children;
+        self
+    }
 }
 
 /// PieMenu (radial/circular menu) widget.
@@ -234,6 +285,8 @@ pub struct PieMenu {
     inner_radius: f32,
     hovered_index: Option<usize>,
     current_index: usize,
+    /// The top-level slot whose child ring is showing, if any.
+    open_submenu: Option<usize>,
     center: Point,
     /// How far the menu has opened, `0.0` at rest and `1.0` fully shown.
     ///
@@ -311,6 +364,7 @@ impl PieMenu {
             inner_radius,
             hovered_index: None,
             current_index: 0,
+            open_submenu: None,
             center,
             // At rest, so a freshly built menu opens rather than appearing already open. The
             // ring unfurling is a larger movement than a pointer reaction, so it is priced by
@@ -363,6 +417,25 @@ impl PieMenu {
     /// returned rather than the index: an index only names the item until the next insertion.
     pub fn add_item(&mut self, text: impl Into<String>) -> u64 {
         self.add_item_with_icon(text, "")
+    }
+
+    /// Adds an item that already carries presentation state and returns the id the
+    /// menu assigned it.
+    ///
+    /// This is the entry point for a shortcut hint, a separator slot, or a branch with
+    /// children — state [`PieMenu::add_item`] cannot express.
+    pub fn add_existing_item(&mut self, mut item: PieMenuItem) -> u64 {
+        let id = if item.id == 0 {
+            self.take_next_id()
+        } else {
+            self.next_id = self.next_id.max(item.id.saturating_add(1));
+            item.id
+        };
+        item.id = id;
+        self.items.push(item);
+        self.recalculate_angles();
+        self.base.request_redraw();
+        id
     }
 
     /// Adds an item with a text icon and returns the id the menu assigned it.
@@ -478,8 +551,15 @@ impl PieMenu {
     }
 
     /// Returns a slice of all menu items.
+    /// The items, for inspection.
     pub fn items(&self) -> &[PieMenuItem] {
         &self.items
+    }
+
+    /// The items, mutably; angle fields are recomputed by the menu, so a caller that
+    /// changes bounds here should re-add the item or use the setters.
+    pub fn items_mut(&mut self) -> &mut [PieMenuItem] {
+        &mut self.items
     }
 
     /// Enables or disables the item at `index`, ignoring out-of-range indices.
@@ -679,6 +759,7 @@ impl PieMenu {
     /// visible. The radius and item list are unchanged.
     pub fn show_at(&mut self, center: Point) {
         self.center = center;
+        self.open_submenu = None;
         self.update_geometry();
         self.hovered_index = None;
         self.about_to_show.emit();
@@ -692,6 +773,7 @@ impl PieMenu {
     pub fn hide(&mut self) {
         self.base.hide();
         self.hovered_index = None;
+        self.open_submenu = None;
         self.about_to_hide.emit();
     }
 
@@ -699,15 +781,123 @@ impl PieMenu {
 
     /// Recalculates the start/end angles for every item based on equal division.
     fn recalculate_angles(&mut self) {
-        let count = self.items.len();
+        Self::distribute_angles(&mut self.items);
+    }
+
+    /// Divides a full circle evenly among `items`.
+    fn distribute_angles(items: &mut [PieMenuItem]) {
+        let count = items.len();
         if count == 0 {
             return;
         }
         let slice = TAU / count as f32;
-        for (i, item) in self.items.iter_mut().enumerate() {
+        for (i, item) in items.iter_mut().enumerate() {
             item.set_angle_start(i as f32 * slice);
             item.set_angle_end((i as f32 + 1.0) * slice);
         }
+    }
+
+    /// The slots the menu is currently showing: a branch's children while its ring is
+    /// open, the top-level items otherwise.
+    fn active_items(&self) -> &[PieMenuItem] {
+        match self.open_submenu {
+            Some(index) => {
+                self.items.get(index).map(|item| item.children.as_slice()).unwrap_or(&self.items)
+            }
+            None => &self.items,
+        }
+    }
+
+    /// The top-level slot whose child ring is showing, if any.
+    pub fn open_submenu_index(&self) -> Option<usize> {
+        self.open_submenu
+    }
+
+    /// Opens the child ring of the slot at `index`.
+    ///
+    /// Returns `false` when the slot has no children. The children's arcs are divided
+    /// evenly among themselves, the same relation the top level uses.
+    pub fn open_submenu(&mut self, index: usize) -> bool {
+        let Some(item) = self.items.get_mut(index) else {
+            return false;
+        };
+        if item.children.is_empty() {
+            return false;
+        }
+        Self::distribute_angles(&mut item.children);
+        self.open_submenu = Some(index);
+        self.hovered_index = None;
+        self.base.request_redraw();
+        true
+    }
+
+    /// Returns from a child ring to the top level. Returns whether a ring was open.
+    pub fn close_submenu(&mut self) -> bool {
+        if self.open_submenu.take().is_none() {
+            return false;
+        }
+        self.hovered_index = None;
+        self.base.request_redraw();
+        true
+    }
+
+    /// The slot at `index` in the currently shown ring.
+    fn active_item(&self, index: usize) -> Option<&PieMenuItem> {
+        self.active_items().get(index)
+    }
+
+    /// Moves the highlight by `delta` slots in the shown ring, skipping gaps and
+    /// disabled slots.
+    fn move_highlight(&mut self, delta: i32) {
+        let count = self.active_items().len();
+        if count == 0 || delta == 0 {
+            return;
+        }
+        let start = match self.hovered_index {
+            Some(index) => index as i32,
+            None if delta > 0 => -1,
+            None => count as i32,
+        };
+        let mut index = start;
+        for _ in 0..count {
+            index = (index + delta).rem_euclid(count as i32);
+            if let Some(item) = self.active_item(index as usize) {
+                if item.is_enabled() && !item.is_separator() {
+                    self.hovered_index = Some(index as usize);
+                    self.base.request_redraw();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Activates the slot at `index` in the shown ring.
+    ///
+    /// A branch opens its child ring and keeps the menu up; a leaf reports the choice
+    /// and hides the menu.
+    fn activate(&mut self, index: usize) -> bool {
+        let Some(item) = self.active_item(index) else {
+            return false;
+        };
+        if !item.is_enabled() || item.is_separator() {
+            return false;
+        }
+        let is_branch = !item.children.is_empty();
+        let text = item.text().to_string();
+        if is_branch {
+            // Only a top-level branch has a ring this control knows how to open; a nested
+            // branch reports its label and leaves the deeper level to the host.
+            if self.open_submenu.is_none() {
+                self.open_submenu(index);
+            }
+            self.triggered_text.emit(text);
+            self.triggered.emit(index);
+            return true;
+        }
+        self.triggered.emit(index);
+        self.triggered_text.emit(text);
+        self.hide();
+        true
     }
 
     /// Updates the widget geometry to match the current center and radius.
@@ -733,7 +923,10 @@ impl PieMenu {
         if angle < 0.0 {
             angle += TAU;
         }
-        for (i, item) in self.items.iter().enumerate() {
+        for (i, item) in self.active_items().iter().enumerate() {
+            if item.is_separator() {
+                continue;
+            }
             if angle >= item.angle_start() && angle < item.angle_end() {
                 if item.is_enabled() {
                     return Some(i);
@@ -1045,20 +1238,35 @@ impl EventHandler for PieMenu {
             }
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(idx) = self.hit_test(*pos) {
-                    if let Some(item) = self.items.get(idx) {
-                        if item.is_enabled() {
-                            let text = item.text().to_string();
-                            self.triggered.emit(idx);
-                            self.triggered_text.emit(text);
-                            self.hide();
-                        }
-                    }
+                    self.activate(idx);
                 }
             }
-            Event::KeyPress { key, .. } if *key == key_codes::ESCAPE => {
-                // Escape
-                self.hide();
-            }
+            Event::KeyPress { key, .. } => match *key {
+                key_codes::ESCAPE => {
+                    // Escape unwinds one ring at a time: a child ring closes first.
+                    if !self.close_submenu() {
+                        self.hide();
+                    }
+                }
+                key_codes::LEFT | key_codes::UP => self.move_highlight(-1),
+                key_codes::RIGHT | key_codes::DOWN => self.move_highlight(1),
+                key_codes::HOME => {
+                    self.hovered_index = None;
+                    self.move_highlight(1);
+                }
+                key_codes::END => {
+                    self.hovered_index = None;
+                    self.move_highlight(-1);
+                }
+                key_codes::ENTER | key_codes::SPACE => {
+                    if let Some(index) = self.hovered_index {
+                        self.activate(index);
+                    } else if let Some(index) = self.selected_index() {
+                        self.activate(index);
+                    }
+                }
+                _ => {}
+            },
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -1174,7 +1382,11 @@ impl Draw for PieMenu {
         let hover_fill = self.hover_color();
         let wedge_fill = self.slice_color(ring, ink);
         // Draw each slice
-        for (i, item) in self.items.iter().enumerate() {
+        for (i, item) in self.active_items().iter().enumerate() {
+            if item.is_separator() {
+                // A separator is a gap in the ring: no fill, no label, no hit target.
+                continue;
+            }
             let is_hovered = self.hovered_index == Some(i);
             // A disabled slice takes the themed track — the fill an enabled wedge sits one
             // visible step above — so it reads as a muted wedge on either appearance.
@@ -1198,7 +1410,10 @@ impl Draw for PieMenu {
         }
 
         // Draw separator lines between slices (radial lines)
-        for item in self.items.iter() {
+        for item in self.active_items().iter() {
+            if item.is_separator() {
+                continue;
+            }
             context.draw_line_stroke(
                 Point::from_f32(
                     cx + inner_r * item.angle_start().cos(),
@@ -1225,8 +1440,8 @@ impl Draw for PieMenu {
         // theme/caller font — so the labels honour the theme body font and the user's text scale
         // (D09-STYLE-01).
         let font = effective_font(style);
-        for (i, item) in self.items.iter().enumerate() {
-            if !item.is_enabled() {
+        for (i, item) in self.active_items().iter().enumerate() {
+            if !item.is_enabled() || item.is_separator() {
                 continue;
             }
             let mid_angle = (item.angle_start() + item.angle_end()) * 0.5;
@@ -1282,6 +1497,20 @@ impl Draw for PieMenu {
                     HorizontalAlignment::Center,
                 );
             }
+            // The shortcut hint sits nearer the rim than the label, in the weaker ink: it
+            // annotates the slot rather than naming it.
+            if let Some(shortcut) = item.shortcut() {
+                let hint_r = (outer_r - 10.0).max(inner_r);
+                let hx = cx + hint_r * mid_angle.cos();
+                let hy = cy + hint_r * mid_angle.sin();
+                context.draw_text_fitted_cow(
+                    Rect::new((hx - 24.0) as i32, (hy - 8.0) as i32, 48, 16),
+                    shortcut,
+                    font,
+                    secondary,
+                    HorizontalAlignment::Center,
+                );
+            }
         }
 
         // The hovered item's name reads out in the hub. A slice led by a typed icon paints
@@ -1289,7 +1518,7 @@ impl Draw for PieMenu {
         // weapon-wheel menus use. The idle hub keeps its centre dot.
         let hub_label = self
             .hovered_index
-            .and_then(|i| self.items.get(i))
+            .and_then(|i| self.active_item(i))
             .filter(|item| item.is_enabled())
             .map(|item| item.text());
         if let Some(label) = hub_label {
@@ -2340,5 +2569,99 @@ mod tests {
             assert_eq!(pinned.hover_color(), Color::rgb(255, 0, 0), "under {mode:?}");
             assert_eq!(pinned.text_color(), Color::rgb(255, 255, 255), "under {mode:?}");
         }
+    }
+
+    /// The keyboard walks the ring and commits the highlighted slot.
+    #[test]
+    fn the_keyboard_walks_the_ring_and_commits() {
+        use crate::event::EventHandler;
+
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        menu.add_item("Open");
+        menu.add_item("Close");
+        menu.add_item("Quit");
+        menu.show_at(Point::new(100, 100));
+
+        let chosen = Arc::new(Mutex::new(Vec::new()));
+        let sink = chosen.clone();
+        menu.triggered_text.connect(move |text| {
+            sink.lock().unwrap().push(text.to_string());
+        });
+
+        menu.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(menu.hovered_index(), Some(0));
+        menu.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(menu.hovered_index(), Some(1));
+        menu.handle_event(&Event::key_press(crate::event::key_codes::LEFT, 0));
+        assert_eq!(menu.hovered_index(), Some(0));
+        menu.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert_eq!(&*chosen.lock().unwrap(), &["Open".to_string()]);
+        assert!(!menu.is_visible(), "committing a leaf closes the menu");
+    }
+
+    /// A branch opens a second ring, and Escape returns to the first.
+    #[test]
+    fn a_branch_opens_a_child_ring() {
+        use crate::event::EventHandler;
+
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        let branch = PieMenuItem::new("Edit")
+            .with_children(vec![PieMenuItem::new("Copy"), PieMenuItem::new("Paste")]);
+        menu.add_existing_item(branch);
+        menu.add_item("View");
+        menu.show_at(Point::new(100, 100));
+
+        assert!(menu.open_submenu(0));
+        assert_eq!(menu.open_submenu_index(), Some(0));
+        // The child ring is divided evenly among the two children.
+        assert_eq!(menu.items()[0].children()[0].angle_start(), 0.0);
+        assert_eq!(menu.items()[0].children()[1].angle_start(), std::f32::consts::PI);
+
+        menu.handle_event(&Event::key_press(crate::event::key_codes::ESCAPE, 0));
+        assert_eq!(menu.open_submenu_index(), None, "Escape returns one ring");
+        assert!(menu.is_visible(), "and leaves the menu up");
+        menu.handle_event(&Event::key_press(crate::event::key_codes::ESCAPE, 0));
+        assert!(!menu.is_visible());
+    }
+
+    /// Separators are gaps: they are skipped by the keyboard and never hovered.
+    #[test]
+    fn separator_slots_are_skipped() {
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        menu.add_item("Before");
+        let mut gap = PieMenuItem::new("");
+        gap.set_separator(true);
+        menu.add_existing_item(gap);
+        menu.add_item("After");
+        menu.show_at(Point::new(100, 100));
+
+        menu.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(menu.hovered_index(), Some(0));
+        menu.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(menu.hovered_index(), Some(2), "the gap is stepped over");
+        assert!(menu.items()[1].is_separator());
+    }
+
+    /// A shortcut label is painted, and the ring reveal is driven by `tick`.
+    #[test]
+    fn shortcut_labels_and_the_reveal_reach_the_painter() {
+        use crate::widget::Widget;
+
+        let mut menu = PieMenu::new(Point::new(80, 80), 70.0);
+        menu.add_existing_item(PieMenuItem::new("Copy").with_shortcut("Ctrl+C"));
+        menu.add_existing_item(PieMenuItem::new("Paste"));
+        menu.show_at(Point::new(80, 80));
+        menu.set_animation_progress(1.0);
+        let without = crate::widget::svg::render_to_svg(&mut menu);
+
+        menu.items_mut()[0].set_shortcut(Some("Ctrl+Shift+C".to_string()));
+        let with = crate::widget::svg::render_to_svg(&mut menu);
+        assert_ne!(without, with, "the shortcut hint must reach the painter");
+
+        menu.set_animation_progress(0.0);
+        assert_eq!(menu.animation_progress(), 0.0);
+        menu.set_animation_progress(1.0);
+        assert!(!menu.is_animating());
+        assert!((menu.animation_progress() - 1.0).abs() < f32::EPSILON);
     }
 }

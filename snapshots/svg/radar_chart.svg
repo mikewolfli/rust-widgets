@@ -44,8 +44,8 @@
   <line x1="94" y1="72" x2="72" y2="83" stroke="rgba(66,133,244,1.00)" stroke-width="2" />
   <line x1="72" y1="83" x2="44" y2="72" stroke="rgba(66,133,244,1.00)" stroke-width="2" />
   <line x1="44" y1="72" x2="72" y2="56" stroke="rgba(66,133,244,1.00)" stroke-width="2" />
-  <circle cx="72" cy="56" r="3" fill="rgba(66,133,244,1.00)" />
-  <circle cx="94" cy="72" r="3" fill="rgba(66,133,244,1.00)" />
-  <circle cx="72" cy="83" r="3" fill="rgba(66,133,244,1.00)" />
-  <circle cx="44" cy="72" r="3" fill="rgba(66,133,244,1.00)" />
+  <circle cx="72" cy="56" r="2" fill="rgba(66,133,244,1.00)" />
+  <circle cx="94" cy="72" r="2" fill="rgba(66,133,244,1.00)" />
+  <circle cx="72" cy="83" r="2" fill="rgba(66,133,244,1.00)" />
+  <circle cx="44" cy="72" r="2" fill="rgba(66,133,244,1.00)" />
 </svg>

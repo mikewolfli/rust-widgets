@@ -299,6 +299,10 @@ pub struct Carousel {
     /// behaviour. What it buys is that a host can tune the feel without patching the crate, and that
     /// the same four thresholds are shared with every other pager instead of re-invented.
     physics: ScrollPhysics,
+    /// Whether dragging past a non-looping edge is damped instead of hard-stopped.
+    rubber_band: bool,
+    /// Remaining spring-back offset after a release that did not page.
+    settle_offset: f32,
     /// Emitted when the current page index changes.
     pub page_changed: Signal1<usize>,
 }
@@ -321,6 +325,8 @@ impl Carousel {
             indicator_position: CarouselIndicatorPosition::Bottom,
             drag: DragState::Idle,
             physics: ScrollPhysics::default(),
+            rubber_band: false,
+            settle_offset: 0.0,
             page_changed: Signal1::new(),
         }
     }
@@ -649,19 +655,30 @@ impl Widget for Carousel {
     /// only through `Event::Timer`, whose rate set the interval, so the carousel advanced a page
     /// per host tick instead of per its own configured seconds.
     fn tick(&mut self, delta_ms: u32) -> bool {
+        let mut settling = false;
+        if self.settle_offset.abs() > 0.5 {
+            let decay = (delta_ms as f32 / 200.0).clamp(0.0, 1.0);
+            self.settle_offset *= 1.0 - decay;
+            if self.settle_offset.abs() <= 0.5 {
+                self.settle_offset = 0.0;
+            } else {
+                settling = true;
+            }
+            self.base.request_redraw();
+        }
         if !self.autoplay_should_run() {
-            return false;
+            return settling;
         }
         self.advance_autoplay_by(core::time::Duration::from_millis(u64::from(delta_ms)));
         // The clock is still running, so the next frame is owed even when this one did not
         // advance: the interval has to keep elapsing while nothing else repaints.
-        self.autoplay_should_run()
+        self.autoplay_should_run() || settling
     }
 
     /// An autoplay carousel with more than one page owes frames; a paused or single-page one
     /// does not, which is what keeps an idle carousel from repainting forever.
     fn is_animating(&self) -> bool {
-        self.autoplay_should_run()
+        self.autoplay_should_run() || self.settle_offset.abs() > 0.5
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -864,6 +881,10 @@ impl Draw for Carousel {
                 let target = self.neighbour_for_offset(offset_x);
                 (offset_x, target)
             }
+            _ if self.settle_offset.abs() > 0.5 => {
+                let offset = self.settle_offset.round() as i32;
+                (offset, self.neighbour_for_offset(offset))
+            }
             _ => (0, None),
         };
 
@@ -949,6 +970,32 @@ impl Carousel {
         }
         self.physics = physics;
         self.base.request_redraw();
+    }
+
+    /// Whether an edge drag is damped.
+    pub fn rubber_band(&self) -> bool {
+        self.rubber_band
+    }
+
+    /// Enables or disables edge damping and its spring-back.
+    ///
+    /// Off by default: the historical behaviour stops a non-looping edge hard, and turning
+    /// this on adds the rubber-band feel. A damped drag released without paging springs the
+    /// content back over roughly 200 ms via [`Widget::tick`].
+    pub fn set_rubber_band(&mut self, rubber_band: bool) {
+        if self.rubber_band == rubber_band {
+            return;
+        }
+        self.rubber_band = rubber_band;
+        if !rubber_band {
+            self.settle_offset = 0.0;
+        }
+        self.base.request_redraw();
+    }
+
+    /// The remaining spring-back offset, in pixels.
+    pub fn settle_offset(&self) -> f32 {
+        self.settle_offset
     }
 
     /// Which way a released drag pages, given both its travel and its release
@@ -1288,9 +1335,17 @@ impl EventHandler for Carousel {
                     // The offset tracks the pointer for the whole gesture; it is
                     // not clamped here, because the drawing step clips it and a
                     // spring-back animation would need the true value.
+                    let raw = pos.x - start_x;
+                    // Edge rubber-band: a drag that reveals no neighbour is damped, so the
+                    // content moves a third of the pointer travel and visibly resists.
+                    let offset = if self.rubber_band && self.step_for_offset(raw).is_none() {
+                        raw / 3
+                    } else {
+                        raw
+                    };
                     self.drag = DragState::Swiping {
                         start_x,
-                        offset_x: pos.x - start_x,
+                        offset_x: offset,
                         last_x: pos.x,
                         last_moved_at: Some(Instant::now()),
                     };
@@ -1308,6 +1363,7 @@ impl EventHandler for Carousel {
                     // — an animation would leave the control mid-offset wherever
                     // no frame clock is driving it.
                     DragState::Swiping { offset_x, last_x, last_moved_at, .. } => {
+                        let before = self.current_index;
                         let velocity = swipe_velocity_px_per_sec(
                             last_x,
                             pos.x,
@@ -1324,6 +1380,12 @@ impl EventHandler for Carousel {
                             // Below both thresholds on release: the drag was a slip,
                             // so it is treated as a click at the release position.
                             None => self.page_for_click(pos.x),
+                        }
+                        // A release that did not page springs back to rest. The offset is
+                        // the damped one the drag actually showed, so the animation starts
+                        // where the content is rather than where the pointer was.
+                        if self.rubber_band && self.current_index == before && offset_x != 0 {
+                            self.settle_offset = offset_x as f32;
                         }
                         self.base.request_redraw();
                     }
@@ -2459,5 +2521,22 @@ mod tests {
             }
         }
         assert!(non_white > 0, "a page with content must paint the content");
+    }
+
+    /// An edge drag is damped when rubber-band is on, and the release springs back over
+    /// frames rather than snapping the content to rest in one step.
+    #[test]
+    fn rubber_band_damps_the_edge_and_springs_back() {
+        let mut c = default_carousel();
+        c.set_rubber_band(true);
+        c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1, modifiers: 0 });
+        c.handle_event(&Event::MouseMove { pos: Point::new(100, 100) });
+        c.handle_event(&Event::MouseRelease { pos: Point::new(100, 100), button: 1 });
+        assert_eq!(c.selected_index().unwrap_or(0), 0, "page 0 cannot move backwards");
+        assert!(c.settle_offset().abs() > 0.0, "the release keeps the damped offset");
+        assert!(c.is_animating());
+        c.tick(200);
+        assert_eq!(c.settle_offset(), 0.0, "one 200 ms frame settles the spring");
+        assert!(!c.is_animating());
     }
 }

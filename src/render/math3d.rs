@@ -181,6 +181,19 @@ impl Mat4 {
         Self { m }
     }
 
+    /// Translation by `(dx, dy, dz)`.
+    ///
+    /// The `z` term is what lets the pseudo-3D item path move the transformed plane in front of
+    /// the camera before [`Mat4::perspective`] divides by depth. A 2D affine only needs
+    /// [`Mat3::translation`].
+    pub fn translation(dx: f32, dy: f32, dz: f32) -> Self {
+        let mut m = Self::IDENTITY.m;
+        m[3] = dx;
+        m[7] = dy;
+        m[11] = dz;
+        Self { m }
+    }
+
     /// A standard right-handed perspective projection.
     ///
     /// `fov_y` is the vertical field of view in radians, `aspect` is width divided by height,
@@ -249,6 +262,21 @@ impl Transform {
     /// Builds a transform from a 2D affine matrix.
     pub fn from_affine(m: Mat3) -> Self {
         Self { matrix: Mat4::from_affine(m) }
+    }
+
+    /// Builds a transform from an arbitrary homogeneous matrix.
+    ///
+    /// Used by the item-level pseudo-3D path, where the matrix is a composition of an affine,
+    /// a rotation about an axis and a perspective divide rather than a plain 2D affine. The
+    /// transform stack stores one representation for both kinds, so a saved matrix restores
+    /// exactly what was active when it was pushed.
+    pub fn from_matrix(matrix: Mat4) -> Self {
+        Self { matrix }
+    }
+
+    /// The full homogeneous matrix this transform carries.
+    pub fn matrix(&self) -> Mat4 {
+        self.matrix
     }
 
     /// Returns the transform's 2D affine part.
@@ -459,8 +487,22 @@ mod tests {
 
     #[test]
     fn transform_affine_round_trips() {
-        let affine = Mat3::translation(3.0, 4.0).then(&Mat3::scaling(2.0, 0.5));
+        let affine = Mat3::translation(3.0, -2.0).then(&Mat3::scaling(2.0, 4.0));
         let transform = Transform::from_affine(affine);
         assert_eq!(transform.affine(), affine);
+        assert_eq!(Transform::from_matrix(Mat4::IDENTITY), Transform::IDENTITY);
+    }
+
+    /// A 3D translation moves the point in `z`, which is what the pseudo-3D item path needs before
+    /// the perspective divide.
+    #[test]
+    fn mat4_translation_moves_all_three_axes() {
+        let t = Mat4::translation(2.0, 4.0, -8.0);
+        let (x, y, w) = t.project_row(1.0, 1.0);
+        assert_close(x, 3.0, "x translation");
+        assert_close(y, 5.0, "y translation");
+        assert_close(w, 1.0, "a translation keeps the homogeneous divisor");
+        let moved = Transform::from_matrix(t);
+        assert_eq!(moved.matrix(), t);
     }
 }

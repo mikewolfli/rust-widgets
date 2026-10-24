@@ -61,9 +61,12 @@
 //! 3. Write a `fn create_xxx(geometry, text) -> Box<dyn Widget>` constructor.
 //! 4. Register all three in `WidgetFactory::register_core_widgets()`.
 //!
-//! Currently **64 widget kinds** are registered, covering all major control
-//! families: base widgets, inputs, containers, dialogs, displays, menu/toolbar,
-//! advanced widgets, special widgets (productivity + rich media), and web widgets.
+//! Currently every capability-bearing kind is registered, covering all major
+//! control families: base widgets, inputs, containers, dialogs, displays,
+//! menu/toolbar, advanced widgets, special widgets (productivity + rich media),
+//! the macOS and Cupertino component sets, and web widgets. The authoritative
+//! count is the factory's canonical-name list ([`WidgetFactory::widget_names`]);
+//! no number is repeated here, so this paragraph cannot drift from the registry.
 //!
 //! # Relationship to BLUE9 Milestones
 //!
@@ -163,6 +166,21 @@ use crate::widget::container_widgets::toolbox::ToolBox;
 // widget, so the tie-break row below answers all four with the same concrete check.
 #[cfg(full_widgets)]
 use crate::widget::input_widgets::lineedit::LineEdit;
+
+// The macOS (desktop) component set, and the three controls whose shared kind it refines. Each
+// name that a kind group gains needs a row in the tie-break table below, because the kind alone
+// cannot say which concrete control a mounted widget is — the same reason the types above are
+// named here.
+#[cfg(full_widgets)]
+use crate::widget::container_widgets::stepper::Stepper;
+#[cfg(full_widgets)]
+use crate::widget::macos::{
+    MacSegmentedControl, MacSourceList, MacStepper, MacToolbar, MacWindowChrome,
+};
+#[cfg(full_widgets)]
+use crate::widget::menu_toolbar::tool_bar::ToolBar;
+#[cfg(full_widgets)]
+use crate::widget::window::Window;
 
 /// Shared capability value and error types (`CapabilityValue`,
 /// `CapabilityAccessError`, …) exchanged through the property contract below.
@@ -1448,17 +1466,25 @@ impl WidgetFactory {
             // `WidgetKind::TreeView`
             "tree_view" => self::coercion::widget_as::<TreeView>(widget).is_some(),
             // `WidgetKind::ToggleButton`
-            "segmented_control" => self::coercion::widget_as::<SegmentedControl>(widget).is_some(),
             "toggle_button" => self::coercion::widget_as::<ToggleButton>(widget).is_some(),
+            // `WidgetKind::SegmentedControl`. The desktop picker is the same concept drawn
+            // with the desktop metrics, so each name answers **its own** concrete type: a
+            // shared arm would make the first-registered capability claim the other control
+            // and hand it a sibling's schema.
+            "segmented_control" => self::coercion::widget_as::<SegmentedControl>(widget).is_some(),
+            "mac_segmented_control" => {
+                self::coercion::widget_as::<MacSegmentedControl>(widget).is_some()
+            }
             // `WidgetKind::ListView`. `list_view` shares the kind with
-            // `command_palette` and `notification_center`, so all three need a row:
-            // without one the lookup falls through to an empty schema and the
+            // `command_palette`, `notification_center` and `mac_source_list`, so all four need
+            // a row: without one the lookup falls through to an empty schema and the
             // control reports `UnknownWidget` for its own properties.
             "list_view" => self::coercion::widget_as::<ListView>(widget).is_some(),
             "command_palette" => self::coercion::widget_as::<CommandPalette>(widget).is_some(),
             "notification_center" => {
                 self::coercion::widget_as::<NotificationCenter>(widget).is_some()
             }
+            "mac_source_list" => self::coercion::widget_as::<MacSourceList>(widget).is_some(),
             // `WidgetKind::TextEdit`
             "text_edit" => self::coercion::widget_as::<TextEdit>(widget).is_some(),
             "terminal_view" => self::coercion::widget_as::<TerminalView>(widget).is_some(),
@@ -1494,6 +1520,17 @@ impl WidgetFactory {
             // `WidgetKind::ToolButton`
             "tool_button" => self::coercion::widget_as::<ToolButton>(widget).is_some(),
             "split_button" => self::coercion::widget_as::<SplitButton>(widget).is_some(),
+            // `WidgetKind::ToolBar`. The macOS toolbar strip is the desktop rendition of the
+            // same kind; each name is keyed to its own type so neither can claim the other.
+            "tool_bar" => self::coercion::widget_as::<ToolBar>(widget).is_some(),
+            "mac_toolbar" => self::coercion::widget_as::<MacToolbar>(widget).is_some(),
+            // `WidgetKind::Stepper`. Same arrangement for the desktop stepper.
+            "stepper" => self::coercion::widget_as::<Stepper>(widget).is_some(),
+            "mac_stepper" => self::coercion::widget_as::<MacStepper>(widget).is_some(),
+            // `WidgetKind::Window`. The title bar reports the window kind so the theme and the
+            // accessibility role classify it as window chrome.
+            "window" => self::coercion::widget_as::<Window>(widget).is_some(),
+            "mac_window_chrome" => self::coercion::widget_as::<MacWindowChrome>(widget).is_some(),
             // `WidgetKind::PopupWindow`
             "popup_window" => self::coercion::widget_as::<PopupWindow>(widget).is_some(),
             "toast_stack" => self::coercion::widget_as::<ToastStack>(widget).is_some(),

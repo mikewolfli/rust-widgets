@@ -20,13 +20,11 @@
 //!
 //! # Relationship to the tree
 //!
-//! The builder's rows are a **flattened view** of the tree at one level: the
-//! conjunction/disjunction is chosen once for the whole builder (a two-operator
-//! UI), and each row is one predicate. That covers the shape a person actually
-//! builds by hand, and the resulting tree is a genuine `FilterExpr` — so a caller
-//! needing deeper nesting can construct one directly and hand it to
-//! [`DataGrid::set_filter_expr`](crate::widget::DataGrid::set_filter_expr), which
-//! accepts anything the builder can produce.
+//! The builder edits rows grouped into nested scopes ([`QueryBuilderGroup`]). Each scope has
+//! its own conjunction and negation, and scopes nest to any depth, so `(a AND b) OR c` is
+//! expressible: the two conditions sit in a group whose conjunction is AND, and the group is
+//! one operand of the root OR. A caller that already has a deeper `FilterExpr` can load it with
+//! [`QueryBuilder::set_query`], which rebuilds the groups.
 
 //! # Reachability
 //!
@@ -159,13 +157,33 @@ pub struct QueryBuilderRow {
     /// people actually reach for, and a group-level `Not` would invert the whole
     /// conjunction instead.
     pub negated: bool,
+    /// The group this row belongs to, or `None` for the root scope.
+    pub group: Option<usize>,
 }
 
 impl QueryBuilderRow {
     /// Creates a row on `field` with that field's default operator and no operand.
     pub fn new(field: usize, operator: FilterOperator) -> Self {
-        Self { field, operator, operand: String::new(), negated: false }
+        Self { field, operator, operand: String::new(), negated: false, group: None }
     }
+}
+
+/// A nested scope inside the builder.
+///
+/// A group is a set of rows and child groups combined with their own conjunction, and
+/// optionally negated. Groups may nest: `parent` names another group, or `None` for the
+/// root scope. That is what lets the builder express `(a AND b) OR c`, which a single
+/// flat conjunction cannot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryBuilderGroup {
+    /// The group's identifier, stable for the lifetime of the builder.
+    pub id: usize,
+    /// The enclosing group, or `None` when the group sits at the root.
+    pub parent: Option<usize>,
+    /// How the group's members are combined.
+    pub conjunction: FilterConjunction,
+    /// Whether the whole group is negated.
+    pub negated: bool,
 }
 
 /// The height of one condition row, and the header strip above them.
@@ -190,6 +208,16 @@ pub struct QueryBuilder {
     hovered_row: Option<usize>,
     /// Emitted whenever the produced expression changes, with the new expression.
     pub query_changed: Signal1<FilterExpr>,
+    /// Emitted with the new row list whenever rows are added, removed or reordered.
+    pub rows_changed: Signal1<Vec<QueryBuilderRow>>,
+    /// The first visible row.
+    scroll_offset: usize,
+    /// The row being dragged for a reorder.
+    drag_row: Option<usize>,
+    /// The nested scopes, in creation order.
+    groups: Vec<QueryBuilderGroup>,
+    /// The next group identifier.
+    next_group_id: usize,
 }
 
 impl QueryBuilder {
@@ -205,6 +233,11 @@ impl QueryBuilder {
             active_row: None,
             hovered_row: None,
             query_changed: Signal1::new(),
+            rows_changed: Signal1::new(),
+            scroll_offset: 0,
+            drag_row: None,
+            groups: Vec::new(),
+            next_group_id: 0,
         }
     }
 
@@ -243,11 +276,147 @@ impl QueryBuilder {
         let default_operator = self.fields.get(field)?.default_operator();
         let index = self.rows.len();
         self.rows.push(QueryBuilderRow::new(field, default_operator));
+        self.notify_rows_changed();
         // A new row becomes the active one, because the user's next act is to type
         // its operand.
         self.active_row = Some(index);
         self.emit_query();
         Some(index)
+    }
+
+    /// Appends a row inside `group`, returning its index.
+    ///
+    /// A group that does not exist is rejected; the row is not silently moved to the root.
+    pub fn add_row_in_group(&mut self, field: usize, group: usize) -> Option<usize> {
+        if !self.groups.iter().any(|candidate| candidate.id == group) {
+            return None;
+        }
+        let index = self.add_row(field)?;
+        if let Some(row) = self.rows.get_mut(index) {
+            row.group = Some(group);
+        }
+        self.notify_rows_changed();
+        Some(index)
+    }
+
+    /// Creates a nested scope, returning its identifier.
+    ///
+    /// A parent that does not exist is refused with `None`: the new group would otherwise be
+    /// unreachable from the root.
+    pub fn add_group(&mut self, parent: Option<usize>) -> Option<usize> {
+        if parent.is_some_and(|parent| !self.groups.iter().any(|group| group.id == parent)) {
+            return None;
+        }
+        let id = self.next_group_id;
+        self.next_group_id = self.next_group_id.saturating_add(1);
+        self.groups.push(QueryBuilderGroup {
+            id,
+            parent,
+            conjunction: FilterConjunction::And,
+            negated: false,
+        });
+        self.emit_query();
+        Some(id)
+    }
+
+    /// The nested scopes, in creation order.
+    pub fn groups(&self) -> &[QueryBuilderGroup] {
+        &self.groups
+    }
+
+    /// Sets how a group's members are combined.
+    pub fn set_group_conjunction(&mut self, id: usize, conjunction: FilterConjunction) -> bool {
+        let Some(group) = self.groups.iter_mut().find(|group| group.id == id) else {
+            return false;
+        };
+        if group.conjunction == conjunction {
+            return true;
+        }
+        group.conjunction = conjunction;
+        self.emit_query();
+        true
+    }
+
+    /// Sets whether a group is negated.
+    pub fn set_group_negated(&mut self, id: usize, negated: bool) -> bool {
+        let Some(group) = self.groups.iter_mut().find(|group| group.id == id) else {
+            return false;
+        };
+        if group.negated == negated {
+            return true;
+        }
+        group.negated = negated;
+        self.emit_query();
+        true
+    }
+
+    /// Removes a group, its child groups and its rows.
+    pub fn remove_group(&mut self, id: usize) -> bool {
+        if !self.groups.iter().any(|group| group.id == id) {
+            return false;
+        }
+        // The descendant identifiers are collected **before** the removal, because a row in a
+        // child group can only be recognised while that child still exists.
+        let removed: Vec<usize> = self
+            .groups
+            .iter()
+            .filter(|group| Self::group_is_within(group, id, &self.groups))
+            .map(|group| group.id)
+            .collect();
+        self.groups.retain(|group| !removed.contains(&group.id));
+        self.rows.retain(|row| !row.group.is_some_and(|group| removed.contains(&group)));
+        self.active_row = None;
+        self.notify_rows_changed();
+        self.emit_query();
+        true
+    }
+
+    /// Whether `group` is `ancestor` or nested inside it.
+    fn group_is_within(
+        group: &QueryBuilderGroup,
+        ancestor: usize,
+        all: &[QueryBuilderGroup],
+    ) -> bool {
+        let mut current = Some(group.id);
+        while let Some(id) = current {
+            if id == ancestor {
+                return true;
+            }
+            current = all
+                .iter()
+                .find(|candidate| candidate.id == id)
+                .and_then(|candidate| candidate.parent);
+        }
+        false
+    }
+
+    /// Moves `row` into `group`, or to the root when `group` is `None`.
+    pub fn set_row_group(&mut self, row: usize, group: Option<usize>) -> bool {
+        if group.is_some_and(|group| !self.groups.iter().any(|candidate| candidate.id == group)) {
+            return false;
+        }
+        let Some(entry) = self.rows.get_mut(row) else {
+            return false;
+        };
+        if entry.group == group {
+            return true;
+        }
+        entry.group = group;
+        self.notify_rows_changed();
+        self.emit_query();
+        true
+    }
+
+    /// How deeply nested the row's group is, `0` for a root row.
+    fn row_group_depth(&self, row: usize) -> usize {
+        let mut depth = 0;
+        let mut current = self.rows.get(row).and_then(|row| row.group);
+        while let Some(id) = current {
+            depth += 1;
+            current =
+                self.groups.iter().find(|group| group.id == id).and_then(|group| group.parent);
+        }
+        depth
     }
 
     /// Removes the row at `index`, returning it.
@@ -258,6 +427,7 @@ impl QueryBuilder {
             return None;
         }
         let removed = self.rows.remove(index);
+        self.notify_rows_changed();
         self.active_row = match self.active_row {
             Some(active) if active == index => None,
             Some(active) if active > index => Some(active - 1),
@@ -280,6 +450,7 @@ impl QueryBuilder {
             return false;
         }
         self.rows.swap(a, b);
+        self.notify_rows_changed();
         self.emit_query();
         true
     }
@@ -400,9 +571,14 @@ impl QueryBuilder {
     /// the grid can evaluate — and so a half-typed row does not blank the grid.
     /// A field index that no longer exists is skipped for the same reason.
     pub fn build_query(&self) -> FilterExpr {
+        self.build_scope(None)
+    }
+
+    /// Builds the expression for one scope: the rows that belong to it plus its child groups.
+    fn build_scope(&self, parent: Option<usize>) -> FilterExpr {
         let mut children = Vec::new();
         for row in &self.rows {
-            if row.operand.is_empty() {
+            if row.group != parent || row.operand.is_empty() {
                 continue;
             }
             let Some(field) = self.fields.get(row.field) else {
@@ -412,58 +588,138 @@ impl QueryBuilder {
             let predicate = FilterExpr::Predicate(condition);
             children.push(if row.negated { FilterExpr::negate(predicate) } else { predicate });
         }
-        match self.conjunction {
+        // Child groups follow the rows of the same scope. A group is a single operand of the
+        // enclosing conjunction, which is exactly what makes `(a AND b) OR c` expressible.
+        for group in self.groups.iter().filter(|group| group.parent == parent) {
+            let inner = self.build_scope(Some(group.id));
+            children.push(if group.negated { FilterExpr::negate(inner) } else { inner });
+        }
+        let conjunction = match parent {
+            None => self.conjunction,
+            Some(id) => self
+                .groups
+                .iter()
+                .find(|group| group.id == id)
+                .map(|group| group.conjunction)
+                .unwrap_or(FilterConjunction::And),
+        };
+        match conjunction {
             FilterConjunction::And => FilterExpr::and(children),
             FilterConjunction::Or => FilterExpr::or(children),
         }
     }
 
-    /// Loads rows from an expression, replacing the current ones.
+    /// Loads rows and groups from an expression, replacing the current ones.
     ///
-    /// # What this can and cannot reconstruct
+    /// The load is structural: a nested `And`/`Or` becomes a [`QueryBuilderGroup`] whose
+    /// conjunction differs from its parent's, and a negated group keeps its negation. A
+    /// conjunction that matches the enclosing scope is flattened into that scope, which is
+    /// semantics-preserving. Conditions on a column with no declared field cannot be shown;
+    /// the load still succeeds for the rest and reports `false`.
     ///
-    /// A flat `And`/`Or` of predicates round-trips exactly — that is the shape the
-    /// builder produces. Anything deeper loses its grouping, because the builder
-    /// edits one level: the conditions are still loaded (so nothing is silently
-    /// dropped) and the conjunction is set from the **outermost** group, with the
-    /// loss reported by the returned flag rather than hidden.
-    ///
-    /// Returns `false` when the expression could not be represented exactly.
+    /// Returns `false` when some part of the expression could not be represented.
     pub fn set_query(&mut self, expr: &FilterExpr) -> bool {
-        let (conjunction, children) = match expr {
-            FilterExpr::And(children) => (FilterConjunction::And, children.as_slice()),
-            FilterExpr::Or(children) => (FilterConjunction::Or, children.as_slice()),
-            FilterExpr::MatchAll | FilterExpr::MatchNothing => {
-                self.rows.clear();
-                self.active_row = None;
-                self.conjunction = FilterConjunction::And;
-                return true;
-            }
-            // A single predicate (or a negation) is a one-row query.
-            other => (FilterConjunction::And, std::slice::from_ref(other)),
-        };
+        self.rows.clear();
+        self.groups.clear();
+        self.next_group_id = 0;
+        self.active_row = None;
+        self.hovered_row = None;
+        self.scroll_offset = 0;
+        self.conjunction = FilterConjunction::And;
+        let exact = self.load_scope(expr, None, true);
+        self.notify_rows_changed();
+        self.emit_query();
+        exact
+    }
 
-        let mut rows = Vec::new();
-        let mut exact = true;
-        for child in children {
-            match Self::row_from_expr(child, &self.fields) {
-                Some(row) => rows.push(row),
-                None => {
-                    // A nested group, or a negated group, is deeper than one level.
-                    exact = false;
+    /// Loads one expression into `parent`'s scope.
+    ///
+    /// `outer` marks the root call, which is allowed to set the root conjunction; a nested
+    /// branch of a different conjunction becomes a group instead.
+    fn load_scope(&mut self, expr: &FilterExpr, parent: Option<usize>, outer: bool) -> bool {
+        match expr {
+            FilterExpr::MatchAll | FilterExpr::MatchNothing => true,
+            FilterExpr::Predicate(_) => self.push_row_from_expr(expr, parent),
+            FilterExpr::Not(inner) => match inner.as_ref() {
+                FilterExpr::Predicate(_) => self.push_row_from_expr(expr, parent),
+                other => {
+                    let id = self.new_group(parent, FilterConjunction::And, true);
+                    self.load_scope(other, Some(id), false)
                 }
+            },
+            FilterExpr::And(children) => {
+                self.load_branch(children, parent, FilterConjunction::And, outer)
+            }
+            FilterExpr::Or(children) => {
+                self.load_branch(children, parent, FilterConjunction::Or, outer)
             }
         }
-        self.rows = rows;
-        self.conjunction = conjunction;
-        self.active_row = None;
-        self.base.request_redraw();
+    }
+
+    /// Loads a conjunction's children into a scope, creating a subgroup when the
+    /// conjunction differs from the enclosing scope's.
+    fn load_branch(
+        &mut self,
+        children: &[FilterExpr],
+        parent: Option<usize>,
+        conjunction: FilterConjunction,
+        outer: bool,
+    ) -> bool {
+        let target = match parent {
+            None if outer => {
+                self.conjunction = conjunction;
+                None
+            }
+            None if self.conjunction == conjunction => None,
+            None => Some(self.new_group(None, conjunction, false)),
+            Some(id) if self.group_conjunction(id) == conjunction => Some(id),
+            Some(id) => Some(self.new_group(Some(id), conjunction, false)),
+        };
+        let mut exact = true;
+        for child in children {
+            exact &= self.load_scope(child, target, false);
+        }
         exact
+    }
+
+    /// Appends the row an expression denotes, inside `parent`.
+    fn push_row_from_expr(&mut self, expr: &FilterExpr, parent: Option<usize>) -> bool {
+        match Self::row_from_expr(expr, &self.fields) {
+            Some(mut row) => {
+                row.group = parent;
+                self.rows.push(row);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A group's conjunction, defaulting to `And` for an unknown id.
+    fn group_conjunction(&self, id: usize) -> FilterConjunction {
+        self.groups
+            .iter()
+            .find(|group| group.id == id)
+            .map(|group| group.conjunction)
+            .unwrap_or(FilterConjunction::And)
+    }
+
+    /// Creates a group without emitting; used while loading an expression.
+    fn new_group(
+        &mut self,
+        parent: Option<usize>,
+        conjunction: FilterConjunction,
+        negated: bool,
+    ) -> usize {
+        let id = self.next_group_id;
+        self.next_group_id = self.next_group_id.saturating_add(1);
+        self.groups.push(QueryBuilderGroup { id, parent, conjunction, negated });
+        id
     }
 
     /// Converts one predicate (optionally negated) into a row.
     ///
-    /// Returns `None` for a nested group, which a one-level builder cannot show.
+    /// Returns `None` for a nested group: groups are loaded by [`Self::load_scope`] into
+    /// [`QueryBuilderGroup`] entries, not flattened into rows.
     fn row_from_expr(expr: &FilterExpr, fields: &[FilterField]) -> Option<QueryBuilderRow> {
         let (condition, negated) = match expr {
             FilterExpr::Predicate(condition) => (condition, false),
@@ -482,6 +738,7 @@ impl QueryBuilder {
             operator: condition.operator,
             operand: condition.operand.clone(),
             negated,
+            group: None,
         })
     }
 
@@ -496,16 +753,46 @@ impl QueryBuilder {
 
     /// The rectangle of the row at `index`.
     fn row_rect(&self, index: usize) -> Option<Rect> {
-        if index >= self.rows.len() {
+        if index >= self.rows.len() || index < self.scroll_offset {
             return None;
         }
         let rect = self.geometry();
         Some(Rect::new(
             rect.x,
-            rect.y + HEADER_HEIGHT as i32 + (index as i32) * ROW_HEIGHT as i32,
+            rect.y
+                + HEADER_HEIGHT as i32
+                + ((index - self.scroll_offset) as i32) * ROW_HEIGHT as i32,
             rect.width,
             ROW_HEIGHT,
         ))
+    }
+
+    /// Rows that fit below the header.
+    fn visible_row_count(&self) -> usize {
+        let rect = self.geometry();
+        (rect.height.saturating_sub(HEADER_HEIGHT) / ROW_HEIGHT).max(1) as usize
+    }
+
+    /// The first visible row.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Sets the first visible row, clamped to the row list.
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        let max = self.rows.len().saturating_sub(self.visible_row_count());
+        let next = offset.min(max);
+        if next == self.scroll_offset {
+            return;
+        }
+        self.scroll_offset = next;
+        self.base.request_redraw();
+    }
+
+    fn notify_rows_changed(&self) {
+        if self.rows_changed.slot_count() > 0 {
+            self.rows_changed.emit(self.rows.clone());
+        }
     }
 
     /// The row under `pos`, when the pointer is over one.
@@ -692,7 +979,7 @@ impl Draw for QueryBuilder {
         self.draw_header(context, rect, &chrome);
         let fonts = QueryBuilderFonts::new();
         let bottom = rect.y + rect.height as i32;
-        for index in 0..self.rows.len() {
+        for index in self.scroll_offset..self.rows.len() {
             let Some(row_rect) = self.row_rect(index) else {
                 break;
             };
@@ -940,6 +1227,16 @@ impl QueryBuilder {
         );
 
         let mut x = row_rect.x + 8;
+        // A row inside a nested scope is drawn with a guide bar and an indent, so the scope's
+        // boundary is visible without a synthetic header row. Root rows (the default) are
+        // laid out exactly as before.
+        let depth = self.row_group_depth(index);
+        if depth > 0 {
+            let guide_x = row_rect.x + 4 + (depth.saturating_sub(1)) as i32 * 10;
+            context
+                .fill_rect(Rect::new(guide_x, row_rect.y, 1, row_rect.height), chrome.separator());
+            x += depth as i32 * 10;
+        }
         // Not-negation marker: a `!` shown only when set, so an un-negated row is not
         // cluttered by a control the user rarely wants.
         if row.negated {
@@ -980,7 +1277,12 @@ impl QueryBuilder {
         x += 96;
 
         // Operand field, drawn as an input box so an empty row reads as "type here".
-        let operand_box = Rect::new(x, row_rect.y + 6, row_rect.width.saturating_sub(200), 18);
+        let operand_box = Rect::new(
+            x,
+            row_rect.y + 6,
+            row_rect.width.saturating_sub(200 + depth as u32 * 10),
+            18,
+        );
         context.fill_rect(operand_box, chrome.field());
         context.draw_rect(operand_box, chrome.border);
         let (text, color): (&str, Color) = if row.operand.is_empty() {
@@ -1045,6 +1347,22 @@ impl EventHandler for QueryBuilder {
                     self.base.request_redraw();
                 }
             }
+            Event::MouseRelease { pos, button: 1 } => {
+                if let Some(from) = self.drag_row.take() {
+                    if let Some(to) = self.row_at(*pos) {
+                        if from != to {
+                            self.swap_rows(from, to);
+                            self.active_row = Some(to);
+                            self.base.request_redraw();
+                        }
+                    }
+                }
+            }
+            Event::Wheel { delta, modifiers } => {
+                let scroll = crate::event::WheelScroll::from_event(*delta, *modifiers, 1);
+                let next = self.scroll_offset as isize - scroll.lines_y as isize;
+                self.set_scroll_offset(next.max(0) as usize);
+            }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
                 let header = Rect::new(rect.x, rect.y, rect.width, HEADER_HEIGHT);
@@ -1071,6 +1389,7 @@ impl EventHandler for QueryBuilder {
                         self.remove_row(index);
                     } else {
                         self.set_active_row(index);
+                        self.drag_row = Some(index);
                     }
                 }
             }
@@ -1435,9 +1754,9 @@ mod tests {
     }
 
     #[test]
-    fn query_builder_set_query_reports_a_nesting_it_cannot_represent() {
+    fn query_builder_set_query_round_trips_a_nested_group() {
         let mut b = builder();
-        // (name AND amount) OR status — deeper than the builder's one level.
+        // (name AND amount) OR status — a group inside the root disjunction.
         let nested = FilterExpr::or(vec![
             FilterExpr::and(vec![
                 FilterExpr::Predicate(FilterCondition::contains(0, "a")),
@@ -1446,9 +1765,50 @@ mod tests {
             FilterExpr::Predicate(FilterCondition::contains(2, "open")),
         ]);
 
-        // The nesting is reported rather than silently flattened into something that
-        // means something else.
-        assert!(!b.set_query(&nested), "a nested group is not representable");
+        assert!(b.set_query(&nested), "a nested group is now representable");
+        assert!(!b.groups().is_empty(), "the group survived the load");
+        // Both sides agree on every row, which is what "round trip" has to mean for a
+        // tree whose operand order the loader normalises.
+        for row in [
+            vec![Some("a".into()), Some("5".into()), Some("closed".into())],
+            vec![Some("a".into()), Some("1".into()), Some("open".into())],
+            vec![Some("z".into()), Some("0".into()), Some("open".into())],
+            vec![Some("z".into()), Some("0".into()), Some("closed".into())],
+            vec![Some("a".into()), Some("5".into()), Some("open".into())],
+        ] {
+            assert_eq!(nested.accepts(&row), b.build_query().accepts(&row), "{row:?}");
+        }
+    }
+
+    /// Groups nest to any depth and `(a AND b) OR c` evaluates as written.
+    #[test]
+    fn nested_groups_build_a_parenthesised_expression() {
+        let mut b = builder();
+        let group = b.add_group(None).expect("a root group");
+        let a = b.add_row_in_group(0, group).expect("a row in the group");
+        let b_row = b.add_row_in_group(1, group).expect("a row in the group");
+        let c = b.add_row(2).expect("a root row");
+        b.set_row_operand(a, "a");
+        b.set_row_operand(b_row, "5");
+        b.set_row_operand(c, "c");
+        b.set_conjunction(FilterConjunction::Or);
+
+        let expr = b.build_query();
+        assert!(expr.accepts(&[Some("a".into()), Some("5".into()), Some("z".into())]));
+        assert!(!expr.accepts(&[Some("a".into()), Some("4".into()), Some("z".into())]));
+        assert!(expr.accepts(&[Some("x".into()), Some("0".into()), Some("c".into())]));
+
+        // A deeper group reports its depth, which is what the row indentation draws from.
+        let inner = b.add_group(Some(group)).expect("a nested group");
+        assert!(b.set_group_conjunction(inner, FilterConjunction::Or));
+        let deep = b.add_row_in_group(0, inner).expect("a row in the nested group");
+        b.set_row_operand(deep, "d");
+        assert_eq!(b.row_group_depth(deep), 2);
+
+        // Removing the outer group removes the nested group and every row inside it.
+        assert!(b.remove_group(group));
+        assert!(b.groups().is_empty(), "the nested group went with its parent");
+        assert_eq!(b.row_count(), 1, "only the root row remains");
     }
 
     #[test]
@@ -1703,5 +2063,43 @@ mod tests {
         // Removing the hovered row clears it.
         b.remove_row(0).expect("row 0");
         assert_eq!(b.hovered_row, None);
+    }
+
+    /// Row changes broadcast, the strip scrolls by rows, and a drag reorders the rows.
+    #[test]
+    fn rows_changed_scroll_and_drag_reorder_are_wired() {
+        let mut b = QueryBuilder::new(Rect::new(0, 0, 360, 70));
+        b.set_fields(fields());
+        let changes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sink = std::sync::Arc::clone(&changes);
+        b.rows_changed.connect(move |_| {
+            sink.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        b.add_row(0).expect("a row");
+        b.add_row(1).expect("a row");
+        assert_eq!(changes.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(b.row_count(), 2);
+
+        let first = b.row_rect(0).expect("the first row is visible");
+        let second = b.row_rect(1).expect("the second row is visible");
+        b.handle_event(&Event::MousePress {
+            pos: Point::new(first.x + 20, first.y + 10),
+            button: 1,
+            modifiers: 0,
+        });
+        b.handle_event(&Event::MouseRelease {
+            pos: Point::new(second.x + 20, second.y + 10),
+            button: 1,
+        });
+        assert_eq!(
+            changes.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "the drag emits one row-change notification"
+        );
+
+        b.set_scroll_offset(1);
+        assert_eq!(b.scroll_offset(), 1);
+        b.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(b.scroll_offset(), 0);
     }
 }

@@ -500,3 +500,135 @@ fn increase_max_items_saturates_at_maximum() {
     dialog.increase_max_items();
     assert_eq!(dialog.config().max_visible_items(), u32::MAX);
 }
+
+/// Every policy field the configuration exposes reaches the effect snapshot the
+/// controls draw from — the wide configuration surface must have a narrow consumer.
+#[test]
+fn every_policy_field_reaches_the_effect_snapshot() {
+    let mut config = MenuConfig::new();
+    config.set_enabled(true);
+    config.set_animations_enabled(false);
+    config.set_transparency_enabled(true);
+    config.set_shadows_enabled(true);
+    config.set_blur_enabled(true);
+    config.set_animation_speed(2.0);
+    config.set_max_visible_items(7);
+    config.set_hardware_acceleration(true);
+    config.set_caching_enabled(true);
+
+    let effects = config.effects();
+    assert!(effects.enabled);
+    assert!(!effects.animations);
+    assert!(effects.transparency);
+    assert!(effects.shadows);
+    assert!(effects.blur);
+    assert_eq!(effects.animation_speed, 2.0);
+    assert_eq!(effects.max_visible_items, Some(7));
+    assert!(effects.hardware_acceleration);
+    assert!(effects.caching);
+}
+
+/// The settings panel is a real widget: its rows read the configuration, a click
+/// toggles the row under the pointer, and the change is announced.
+#[test]
+fn the_settings_panel_toggles_the_row_under_the_pointer() {
+    use crate::core::{Point, Rect};
+    use crate::event::{Event, EventHandler};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let mut panel = MenuConfigPanel::new(MenuConfig::new(), Rect::new(0, 0, 260, 180));
+    assert_eq!(panel.row_count(), 7);
+    assert_eq!(panel.row_label(0), Some("Adaptive configuration"));
+    assert_eq!(panel.row_label(99), None);
+
+    let announced = Arc::new(AtomicUsize::new(0));
+    let sink = Arc::clone(&announced);
+    panel.changed.connect(move || {
+        sink.fetch_add(1, Ordering::SeqCst);
+    });
+
+    // Row 1 is Animations; clicking it flips the policy and emits once.
+    let before = panel.row_value(1).expect("row 1 exists");
+    let rect = panel.row_rect(1);
+    panel.handle_event(&Event::MousePress {
+        pos: Point::new(rect.x + 4, rect.y + 4),
+        button: 1,
+        modifiers: 0,
+    });
+    assert_eq!(panel.row_value(1), Some(!before));
+    assert_eq!(announced.load(Ordering::SeqCst), 1);
+
+    assert!(!panel.toggle_row(99), "an out-of-range row is refused");
+    assert!(panel.toggle_row(1));
+    assert_eq!(panel.row_value(1), Some(before));
+}
+
+/// A power-source change is the automatic trigger for the battery reduction.
+#[test]
+fn a_power_source_change_applies_the_battery_reduction() {
+    let mut manager = MenuConfigManager::new();
+    manager.set_auto_adjust(true);
+    manager.on_power_source_changed(true);
+    assert!(manager.config().hardware_caps().on_battery);
+    assert!(
+        !manager.config().animations_enabled(),
+        "the battery reduction disables animation when no user override pins it"
+    );
+    assert!(!manager.effects().animations);
+}
+
+/// The configuration file is named for its format and carries a version line.
+#[test]
+fn the_config_file_is_named_for_its_format_and_versioned() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir must be created");
+    let persistence = ConfigPersistence::with_dir(temp_dir.path().to_path_buf());
+    let mut config = MenuConfig::new();
+    config.set_animations_enabled(false);
+    persistence.save(&config).expect("save succeeds");
+
+    let path = persistence.path();
+    assert_eq!(path.file_name().and_then(|name| name.to_str()), Some("menu_config.conf"));
+    let content = std::fs::read_to_string(&path).expect("the file is readable");
+    assert!(
+        content.contains(&format!("version={CURRENT_CONFIG_VERSION}")),
+        "the file must declare its format version: {content}"
+    );
+    assert!(!content.trim_start().starts_with('{'), "the file is not JSON");
+    assert!(persistence.exists());
+
+    let loaded = persistence.load().expect("the file round-trips");
+    assert_eq!(loaded.animations, Some(false));
+}
+
+/// A pre-versioning `menu_config.json` is still read, and the next save moves it.
+#[test]
+fn the_legacy_file_name_is_still_read() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir must be created");
+    let legacy = temp_dir.path().join("menu_config.json");
+    std::fs::write(&legacy, "enabled=true\n").expect("the legacy file is writable");
+    let persistence = ConfigPersistence::with_dir(temp_dir.path().to_path_buf());
+
+    let loaded = persistence.load().expect("the legacy file parses");
+    assert_eq!(loaded.enabled, Some(true));
+
+    let mut config = MenuConfig::new();
+    config.set_enabled(true);
+    persistence.save(&config).expect("save writes the new name");
+    assert!(persistence.path().exists());
+    assert!(legacy.exists(), "the legacy file is left alone, not silently deleted");
+}
+
+/// A file from a newer build is refused rather than half-understood.
+#[test]
+fn a_newer_config_version_is_refused() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir must be created");
+    let persistence = ConfigPersistence::with_dir(temp_dir.path().to_path_buf());
+    std::fs::write(persistence.path(), "version=99\nenabled=true\n").expect("the file is writable");
+
+    let error = persistence.load().expect_err("a newer version is refused");
+    assert!(matches!(
+        error,
+        ConfigLoadError::UnsupportedVersion { found: 99, supported: CURRENT_CONFIG_VERSION }
+    ));
+}

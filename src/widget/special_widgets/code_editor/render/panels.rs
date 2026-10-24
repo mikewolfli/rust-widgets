@@ -342,11 +342,20 @@ impl CodeEditor {
                     // `relative_line_numbers`). An absolute number on the caret line is
                     // what lets a relative gutter still answer "which line am I on".
                     self.write_line_number_label(line, &mut number_buf);
+                    let number_color = if line == active_line {
+                        if self.config.accent_active_line_number {
+                            chrome.accent
+                        } else {
+                            chrome.ink
+                        }
+                    } else {
+                        chrome.dim_ink
+                    };
                     context.draw_text(
                         Point::new(numbers_right, y + (row_height as i32 - number_box) / 2),
                         number_buf.as_str(),
                         &number_font,
-                        if line == active_line { chrome.ink } else { chrome.dim_ink },
+                        number_color,
                         HorizontalAlignment::Right,
                     );
                 }
@@ -357,14 +366,44 @@ impl CodeEditor {
                 // passes walked the whole region list twice per foldable row.
                 if let Ok(index) = folds.binary_search_by_key(&line, |region| region.start_line) {
                     let region = &folds[index];
-                    let marker = if region.folded { ">" } else { "v" };
-                    context.draw_text(
-                        Point::new(fold_x, y + (row_height as i32 - line_box) / 2),
-                        marker,
-                        self.chrome_font(),
-                        chrome.dim_ink,
-                        HorizontalAlignment::Left,
-                    );
+                    if self.config.vector_gutter_marks {
+                        // Two strokes instead of the glyphs `v` and `>`: the text
+                        // versions depended on the font covering them and read as
+                        // punctuation in the gutter.
+                        let mid = y + (row_height as i32 - line_box) / 2 + line_box / 2;
+                        if region.folded {
+                            context.draw_line(
+                                Point::new(fold_x, mid - 4),
+                                Point::new(fold_x + 5, mid),
+                                chrome.dim_ink,
+                            );
+                            context.draw_line(
+                                Point::new(fold_x + 5, mid),
+                                Point::new(fold_x, mid + 4),
+                                chrome.dim_ink,
+                            );
+                        } else {
+                            context.draw_line(
+                                Point::new(fold_x, mid - 3),
+                                Point::new(fold_x + 4, mid + 1),
+                                chrome.dim_ink,
+                            );
+                            context.draw_line(
+                                Point::new(fold_x + 4, mid + 1),
+                                Point::new(fold_x + 8, mid - 3),
+                                chrome.dim_ink,
+                            );
+                        }
+                    } else {
+                        let marker = if region.folded { ">" } else { "v" };
+                        context.draw_text(
+                            Point::new(fold_x, y + (row_height as i32 - line_box) / 2),
+                            marker,
+                            self.chrome_font(),
+                            chrome.dim_ink,
+                            HorizontalAlignment::Left,
+                        );
+                    }
                 }
                 // Severity dot, at the gutter's leading edge so it never collides
                 // with the digits. The top-most severity wins.
@@ -374,11 +413,25 @@ impl CodeEditor {
                     .filter(|(l, _)| *l == line)
                     .map(|(_, severity)| *severity);
                 if let Some(severity) = severity {
-                    let diameter = 5u32;
-                    let dot_y = y + (row_height as i32 - diameter as i32) / 2 + 1;
+                    if self.config.round_severity_dots {
+                        context.fill_circle_aa(
+                            Point::new(rect.x + 7, y + row_height as i32 / 2),
+                            3,
+                            severity.color(),
+                        );
+                    } else {
+                        let diameter = 5u32;
+                        let dot_y = y + (row_height as i32 - diameter as i32) / 2 + 1;
+                        context.fill_rect(
+                            Rect::new(rect.x + 3, dot_y, diameter, diameter),
+                            severity.color(),
+                        );
+                    }
+                }
+                if self.config.show_bookmarks && self.bookmarks.contains(&line) {
                     context.fill_rect(
-                        Rect::new(rect.x + 3, dot_y, diameter, diameter),
-                        severity.color(),
+                        Rect::new(rect.x + 1, y + 3, 2, (row_height as i32 - 6).max(2) as u32),
+                        chrome.accent,
                     );
                 }
             }

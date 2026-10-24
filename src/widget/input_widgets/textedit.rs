@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Multi-line text edit widget.
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -33,6 +33,44 @@ pub struct RowSpan {
     /// One past the last byte of the value this row paints, including a trailing newline when the
     /// row ends at one.
     pub end: usize,
+}
+
+/// A styled run of a [`TextEdit`] document.
+///
+/// The range is a byte range into the value, and the format applies to every character it
+/// covers. Spans are stored exactly as the caller gives them: they may overlap (a later span wins
+/// where it does) and they need not cover the whole document — anything outside a span keeps the
+/// control's own ink and weight.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextSpan {
+    /// The byte range the format applies to.
+    pub range: core::ops::Range<usize>,
+    /// The format painted for that range.
+    pub format: CharFormat,
+}
+
+/// The character attributes a [`TextSpan`] can carry.
+///
+/// The default is "inherit the control's own style": no weight change, no italic, no underline
+/// and the themed text colour. That keeps an empty span list — which is the initial state —
+/// drawing the document exactly as an unstyled editor does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CharFormat {
+    /// Paint the run in a bold face.
+    pub bold: bool,
+    /// Paint the run in an italic face.
+    pub italic: bool,
+    /// Draw a line under the run.
+    pub underline: bool,
+    /// Override the run's ink; `None` keeps the themed text colour.
+    pub color: Option<Color>,
+}
+
+impl CharFormat {
+    /// Whether this format changes anything about the painted run.
+    pub fn is_plain(&self) -> bool {
+        !self.bold && !self.italic && !self.underline && self.color.is_none()
+    }
 }
 
 /// Multi-line text edit widget.
@@ -95,15 +133,22 @@ pub struct TextEdit {
     /// text plus the interior width, wrap flag and font — the exact inputs `rows_for` reads — so a
     /// change to any of them re-wraps and nothing else can leave a stale row behind (WDGT-01).
     row_cache: RefCell<Option<RowCache>>,
+    /// Styled runs painted over the value, in caller order.
+    ///
+    /// Empty by default, which keeps the paint path on its original single-run drawing.
+    spans: Vec<TextSpan>,
+    /// Bumped on every value change, so the row cache can identify the document in O(1).
+    revision: u64,
 }
 
 /// Memoised output of [`TextEdit::layout_rows`].
 ///
-/// The text is stored (not hashed) so a hit is an exact comparison rather than a collision-prone
-/// fingerprint; the comparison is O(bytes), which is far cheaper than the per-character measurement
-/// a miss performs.
+/// The text is identified by the mutation counter rather than stored: comparing the whole
+/// document on every read was O(bytes) per keystroke, which is the same order as re-wrapping
+/// it. The counter changes only when the value changes, so a hit is an integer comparison and
+/// cannot collide.
 struct RowCache {
-    text: String,
+    revision: u64,
     interior_width: u32,
     line_wrap: bool,
     font: Font,
@@ -131,11 +176,49 @@ impl TextEdit {
             restoring_history: false,
             text_changed: Signal1::new(),
             row_cache: RefCell::new(None),
+            spans: Vec::new(),
+            revision: 0,
         }
     }
     /// Returns the current text.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The styled runs painted over the value.
+    pub fn spans(&self) -> &[TextSpan] {
+        &self.spans
+    }
+
+    /// Replaces the styled runs.
+    ///
+    /// Ranges are clamped to the current value and ranges that no longer address anything are
+    /// dropped, so a caller editing the document cannot leave a span pointing past its end. An
+    /// empty list restores the unstyled paint path byte for byte.
+    pub fn set_spans(&mut self, spans: Vec<TextSpan>) {
+        let len = self.text.len();
+        let next: Vec<TextSpan> = spans
+            .into_iter()
+            .filter_map(|mut span| {
+                span.range.start = floor_char_boundary(&self.text, span.range.start.min(len));
+                span.range.end = floor_char_boundary(&self.text, span.range.end.min(len));
+                (span.range.start < span.range.end).then_some(span)
+            })
+            .collect();
+        if self.spans == next {
+            return;
+        }
+        self.spans = next;
+        self.base.request_redraw();
+    }
+
+    /// The format that applies at `offset`, taken from the last span covering it.
+    pub fn format_at(&self, offset: usize) -> CharFormat {
+        self.spans
+            .iter()
+            .rev()
+            .find(|span| span.range.contains(&offset))
+            .map_or(CharFormat::default(), |span| span.format)
     }
 
     // ─── The caret and the selection ───
@@ -452,6 +535,7 @@ impl TextEdit {
         }
         let before = self.text.clone();
         self.text = text;
+        self.revision = self.revision.wrapping_add(1);
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.text.clone();
             self.undo_stack.push(Box::new(ValueCommand::new(
@@ -498,7 +582,7 @@ impl TextEdit {
         if let Some(cache) = self.row_cache.borrow().as_ref() {
             if cache.interior_width == interior_width
                 && cache.line_wrap == self.line_wrap
-                && cache.text == self.text
+                && cache.revision == self.revision
                 && cache.font == *font
             {
                 // A cache hit used to clone the whole table. Callers only read it, so a
@@ -532,7 +616,7 @@ impl TextEdit {
             })
         }));
         *self.row_cache.borrow_mut() = Some(RowCache {
-            text: self.text.clone(),
+            revision: self.revision,
             interior_width,
             line_wrap: self.line_wrap,
             font: font.clone(),
@@ -582,6 +666,9 @@ impl TextEdit {
         let mut rows = Vec::new();
         let mut row_start = 0usize;
         let mut row_width = 0.0f32;
+        // The byte offset just past the most recent place a word may be split, or `None` when
+        // this row has no space or hyphen to break at.
+        let mut last_break: Option<usize> = None;
         for (offset, ch) in self.text.char_indices() {
             if ch == '\n' {
                 // The newline ends the row and belongs to it, so the next row starts after it. Its
@@ -589,13 +676,30 @@ impl TextEdit {
                 rows.push(RowSpan { start: row_start, end: offset + 1 });
                 row_start = offset + 1;
                 row_width = 0.0;
+                last_break = None;
                 continue;
             }
             let advance = advance_of(ch) as f32;
             if self.line_wrap && row_width + advance > interior_width as f32 && offset > row_start {
-                rows.push(RowSpan { start: row_start, end: offset });
-                row_start = offset;
+                // Break at the last word boundary rather than at an arbitrary character, which is
+                // what keeps a word from being split across two rows. A row with no boundary (a
+                // single long token) falls back to the old character break so it still fits.
+                let break_at = last_break
+                    .filter(|boundary| *boundary > row_start && *boundary <= offset)
+                    .unwrap_or(offset);
+                rows.push(RowSpan { start: row_start, end: break_at });
+                row_start = break_at;
+                // The characters between the break and the overflow are re-measured so they
+                // start the new row at the correct width. Only a handful of glyphs are involved
+                // and only on the frame a row actually wraps.
                 row_width = 0.0;
+                for (_, carried) in self.text[row_start..offset].char_indices() {
+                    row_width += advance_of(carried) as f32;
+                }
+                last_break = None;
+            }
+            if ch.is_whitespace() || ch == '-' {
+                last_break = Some(offset + ch.len_utf8());
             }
             row_width += advance;
         }
@@ -905,10 +1009,80 @@ impl TextEdit {
         let text = self.history_target.borrow().clone();
         self.restoring_history = true;
         self.text = text;
+        self.revision = self.revision.wrapping_add(1);
+        self.cursor = self.text.len();
+        self.selection_anchor = None;
         self.restoring_history = false;
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
     }
+
+    /// The byte range of the word around `offset`, for a double-click selection.
+    ///
+    /// A word is a run of non-whitespace characters; a press on whitespace selects that run, so
+    /// a double click on a gap does something rather than silently collapsing the selection.
+    fn word_range_at(&self, offset: usize) -> (usize, usize) {
+        let offset = floor_char_boundary(&self.text, offset.min(self.text.len()));
+        let sampled = self.text[offset..]
+            .chars()
+            .next()
+            .or_else(|| self.text[..offset].chars().next_back())
+            .unwrap_or(' ');
+        let same_class = |ch: char| ch.is_whitespace() == sampled.is_whitespace();
+        let mut start = offset;
+        for (index, ch) in self.text[..offset].char_indices().rev() {
+            if !same_class(ch) {
+                break;
+            }
+            start = index;
+        }
+        let mut end = offset;
+        for (index, ch) in self.text[offset..].char_indices() {
+            if !same_class(ch) {
+                break;
+            }
+            end = offset + index + ch.len_utf8();
+        }
+        if start == end {
+            if let Some((index, ch)) = self.text[..offset].char_indices().next_back() {
+                return (index, index + ch.len_utf8());
+            }
+        }
+        (start, end)
+    }
+
+    /// Copies the selected text to the platform clipboard.
+    ///
+    /// Returns the text it placed there, or `None` when there was nothing selected or the
+    /// platform build has no clipboard.
+    #[cfg(not(alloc_frugal))]
+    fn copy_selection_to_clipboard(&self) -> Option<String> {
+        let selected = self.selected_text();
+        if selected.is_empty() {
+            return None;
+        }
+        crate::set_clipboard_text(&selected);
+        Some(selected)
+    }
+
+    /// The allocation-frugal build has no clipboard integration.
+    #[cfg(alloc_frugal)]
+    fn copy_selection_to_clipboard(&self) -> Option<String> {
+        None
+    }
+
+    /// Inserts the platform clipboard's text at the caret.
+    #[cfg(not(alloc_frugal))]
+    fn paste_from_clipboard(&mut self) {
+        let text = crate::get_clipboard_text();
+        if !text.is_empty() {
+            self.insert_str(&text);
+        }
+    }
+
+    /// The allocation-frugal build has no clipboard integration.
+    #[cfg(alloc_frugal)]
+    fn paste_from_clipboard(&mut self) {}
 }
 // Implement Widget trait
 impl Widget for TextEdit {
@@ -1109,6 +1283,16 @@ impl EventHandler for TextEdit {
                     self.drag_to(offset);
                 }
             }
+            // A double click selects the word under the pointer.
+            Event::MouseDoubleClick { pos, button } if *button == 1 => {
+                self.focused = true;
+                let offset = self.offset_at_point(*pos);
+                let (start, end) = self.word_range_at(offset);
+                self.selection_anchor = Some(start);
+                self.cursor = end;
+                self.dragging_selection = false;
+                self.base.request_redraw();
+            }
             // A release anywhere ends the gesture: the anchor stays where the press put it, so the
             // selection the user made is kept.
             Event::MouseRelease { button, .. } if *button == 1 => {
@@ -1158,7 +1342,24 @@ impl EventHandler for TextEdit {
                     self.select_all();
                     return;
                 }
+                if primary && *key == 67 {
+                    // Primary+C: copy the selection. Allowed while read-only, which is the one
+                    // edit gesture a read-only editor still owes the user.
+                    let _ = self.copy_selection_to_clipboard();
+                    return;
+                }
                 if self.read_only {
+                    return;
+                }
+                if primary && *key == 88 {
+                    // Primary+X: copy, then remove the selection.
+                    let _ = self.copy_selection_to_clipboard();
+                    self.backspace();
+                    return;
+                }
+                if primary && *key == 86 {
+                    // Primary+V: paste at the caret, replacing any selection.
+                    self.paste_from_clipboard();
                     return;
                 }
 
@@ -1235,6 +1436,28 @@ impl EventHandler for TextEdit {
                             let row = Self::row_of_offset_in(&rows, &self.text, self.cursor);
                             rows.get(row).map_or(0, |row| row.start)
                         };
+                        self.select_with_modifiers(target, mods);
+                    }
+                    33 => {
+                        // Page Up — one window of rows toward the start, keeping the column.
+                        let rows = self.layout_rows();
+                        let row = Self::row_of_offset_in(&rows, &self.text, self.cursor);
+                        let page = self.visible_row_count().saturating_sub(1).max(1);
+                        let target_row = row.saturating_sub(page);
+                        let target = rows
+                            .get(target_row)
+                            .map_or(0, |span| self.offset_in_row_with(&rows, *span, self.cursor));
+                        self.select_with_modifiers(target, mods);
+                    }
+                    34 => {
+                        // Page Down — the mirror of Page Up.
+                        let rows = self.layout_rows();
+                        let row = Self::row_of_offset_in(&rows, &self.text, self.cursor);
+                        let page = self.visible_row_count().saturating_sub(1).max(1);
+                        let target_row = (row + page).min(rows.len().saturating_sub(1));
+                        let target = rows.get(target_row).map_or(self.text.len(), |span| {
+                            self.offset_in_row_with(&rows, *span, self.cursor)
+                        });
                         self.select_with_modifiers(target, mods);
                     }
                     35 => {
@@ -1490,8 +1713,116 @@ impl TextEdit {
             // The row's own newline is not ink; it is what the break consumed.
             let end = if self.text[..span.end].ends_with('\n') { span.end - 1 } else { span.end };
             let row = &self.text[span.start..end.max(span.start)];
-            Self::flush_row(context, row, interior, top, line_height, bottom, font, color, align);
+            if self.spans.is_empty() {
+                Self::flush_row(
+                    context,
+                    row,
+                    interior,
+                    top,
+                    line_height,
+                    bottom,
+                    font,
+                    color,
+                    align,
+                );
+            } else {
+                self.flush_row_rich(
+                    context,
+                    span.start,
+                    row,
+                    interior,
+                    top,
+                    line_height,
+                    bottom,
+                    font,
+                    color,
+                    align,
+                );
+            }
         }
+    }
+
+    /// Paints one row whose characters may carry different [`CharFormat`]s.
+    ///
+    /// The unstyled path stays in [`Self::flush_row`], so a document with no spans draws exactly
+    /// as it did before this method existed. Here the row is split into format runs, each run is
+    /// measured with its own face (a bold run is wider than the regular one), and the runs are
+    /// laid end to end from an origin chosen by the control's horizontal alignment.
+    #[allow(clippy::too_many_arguments)]
+    fn flush_row_rich(
+        &self,
+        context: &mut RenderContext,
+        row_start: usize,
+        row: &str,
+        interior: Rect,
+        pen_y: i32,
+        line_height: i32,
+        bottom: i32,
+        font: &Font,
+        color: Color,
+        align: HorizontalAlignment,
+    ) -> i32 {
+        if pen_y + line_height > bottom {
+            return pen_y;
+        }
+        // Split the row into contiguous runs of one format. `format_at` reads the last span
+        // covering an offset, so overlapping spans resolve to the newest one.
+        let mut pieces: Vec<(usize, usize, CharFormat)> = Vec::new();
+        let mut run_start = 0usize;
+        let mut run_format = self.format_at(row_start);
+        for (index, _) in row.char_indices() {
+            let format = self.format_at(row_start + index);
+            if format != run_format {
+                if run_start < index {
+                    pieces.push((run_start, index, run_format));
+                }
+                run_start = index;
+                run_format = format;
+            }
+        }
+        pieces.push((run_start, row.len(), run_format));
+
+        let face = |format: CharFormat| {
+            let mut face = font.clone();
+            if format.bold {
+                face = face.with_bold(true);
+            }
+            if format.italic {
+                face = face.with_italic(true);
+            }
+            face
+        };
+        let mut total = 0.0f32;
+        for (start, end, format) in &pieces {
+            total += context.measure_text(&row[*start..*end], &face(*format)).width as f32;
+        }
+        let total = total.round() as i32;
+        let origin = match align {
+            HorizontalAlignment::Center => interior.x + (interior.width as i32 - total) / 2,
+            HorizontalAlignment::Right => interior.x + interior.width as i32 - total,
+            HorizontalAlignment::Left => interior.x,
+        };
+        let mut pen_x = origin;
+        for (start, end, format) in pieces {
+            if start >= end {
+                continue;
+            }
+            let face = face(format);
+            let run = &row[start..end];
+            let ink = format.color.unwrap_or(color);
+            context.draw_text(Point::new(pen_x, pen_y), run, &face, ink, HorizontalAlignment::Left);
+            let advance = context.measure_text(run, &face).width as i32;
+            if format.underline {
+                let underline_y = pen_y + line_height - 2;
+                context.draw_line(
+                    Point::new(pen_x, underline_y),
+                    Point::new(pen_x + advance, underline_y),
+                    ink,
+                );
+            }
+            pen_x += advance;
+        }
+        pen_y + line_height
     }
 
     /// The wraps to paint, in view order, as `(view_row, span)`.
@@ -2501,5 +2832,93 @@ mod tests {
             te.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, -1), modifiers: 0 });
         }
         assert_eq!(te.first_visible_row(), max_first, "the viewport clamps at the last window");
+    }
+
+    /// Soft wrapping breaks at word boundaries instead of splitting a word.
+    #[test]
+    fn soft_wrap_breaks_at_word_boundaries() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 70, 400));
+        te.set_text("alpha beta gamma delta".to_string());
+        let text = te.text().to_string();
+        let rows = te.layout_rows();
+        assert!(rows.len() > 1, "the value has to wrap: {rows:?}");
+        for pair in rows.windows(2) {
+            let boundary = pair[0].end;
+            assert!(
+                text[..boundary].ends_with(' ') || boundary == text.len(),
+                "a word must not be split at {boundary}: {rows:?}"
+            );
+        }
+    }
+
+    /// Styled spans are addressable and change the painted document.
+    #[test]
+    fn spans_format_the_named_run() {
+        use crate::widget::svg::render_to_svg;
+        let mut te = TextEdit::new(Rect::new(0, 0, 200, 100));
+        te.set_text("bold and plain".to_string());
+        let plain = render_to_svg(&mut te);
+        te.set_spans(std::vec![TextSpan {
+            range: 0..4,
+            format: CharFormat { bold: true, ..CharFormat::default() },
+        }]);
+        assert!(te.format_at(0).bold);
+        assert!(!te.format_at(6).bold);
+        assert_ne!(plain, render_to_svg(&mut te), "a bold run must change the ink");
+    }
+
+    /// Primary+V pastes the clipboard at the caret.
+    #[test]
+    fn primary_v_pastes_at_the_caret() {
+        let _clipboard = crate::clipboard::clipboard_test_guard();
+        crate::set_clipboard_text("pasted");
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        te.set_text("ab".to_string());
+        te.set_cursor(1);
+        te.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
+        te.handle_event(&Event::KeyPress { key: 86, modifiers: 0b1000 });
+        assert_eq!(te.text(), "apastedb");
+    }
+
+    /// A double click selects the word the pointer landed on.
+    #[test]
+    fn a_double_click_selects_a_word() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 100));
+        te.set_text("alpha beta".to_string());
+        te.handle_event(&Event::MouseDoubleClick {
+            pos: crate::core::Point::new(6, 10),
+            button: 1,
+        });
+        assert_eq!(te.selected_text(), "alpha");
+    }
+
+    /// Page Down and Page Up move the caret by a window of rows.
+    #[test]
+    fn page_keys_move_by_a_window() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 200, 80));
+        te.set_text((0..30).map(|n| format!("line {n}\n")).collect::<String>());
+        te.set_cursor(0);
+        te.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
+        te.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
+        let after_down = te.cursor();
+        assert!(after_down > 0, "Page Down must move the caret");
+        te.handle_event(&Event::KeyPress { key: 33, modifiers: 0 });
+        assert!(te.cursor() < after_down, "Page Up must move it back");
+    }
+
+    /// The wrap cache is keyed by the mutation counter, not by the document text.
+    #[test]
+    fn the_wrap_cache_uses_the_revision_counter() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 200, 100));
+        te.set_text("one".to_string());
+        let first = te.layout_rows();
+        let first_revision = te.revision;
+        assert_eq!(te.row_cache.borrow().as_ref().expect("cache filled").revision, first_revision);
+        assert_eq!(te.layout_rows(), first);
+        te.set_text("one two".to_string());
+        assert!(te.revision > first_revision, "a text change bumps the revision");
+        let _ = te.layout_rows();
+        assert_eq!(te.row_cache.borrow().as_ref().expect("cache filled").revision, te.revision);
+        assert_ne!(te.layout_rows(), first);
     }
 }

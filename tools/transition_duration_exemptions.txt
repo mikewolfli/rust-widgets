@@ -87,3 +87,8 @@ src/widget/display_widgets/skeleton_loader.rs    no-theme fallback for a looping
 # Verified: the constant is read only in the idleness accumulator that decides *when* to aim the
 # opacity driver down; the driver's own duration comes from its `MotionSlot`.
 src/widget/display_widgets/scrollbar.rs    an idle dwell before the fade begins, not the fade's duration
+src/widget/display_widgets/arc.rs    the no-theme fallback for a looping revolution; the themed path reads theme.motion.slow (see SPIN_SLOW_MULTIPLE)
+src/widget/display_widgets/color_well.rs    the dwell window that groups a double click, not an interaction transition
+src/widget/display_widgets/icon.rs    the frame step of a multi-frame icon animation, a data duration, not a transition
+src/widget/input_widgets/lineedit.rs    the multi-click grouping window, a dwell timing rather than a transition
+src/widget/menu_toolbar/tool_button.rs    the hover dwell before a delayed popup opens, not the popup's transition duration

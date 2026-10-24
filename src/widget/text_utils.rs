@@ -7,6 +7,20 @@
 //! helpers answer "how does a string fit a box?" without every control inventing its
 //! own budget arithmetic. Both families return byte ranges, because every slice in
 //! this crate is in bytes; the character budget is converted exactly once here.
+//!
+//! # The two fitting questions
+//!
+//! | Question | Helpers |
+//! |---|---|
+//! | "shorten to at most N characters" | [`elide`], [`elide_end`], [`elide_middle`], [`elide_start`] |
+//! | "shorten to at most N pixels" | [`elide_to_width`] |
+//! | "split into lines of at most N characters" | [`wrap_char_ranges`] |
+//! | "split into lines of at most N pixels, at word breaks" | [`wrap_to_width`] |
+//!
+//! Each family has a character-budget and a width-budget form because the two are
+//! needed in different places: a pre-layout size hint has no renderer to measure with,
+//! while a paint path does. A control that reimplements either form locally is the
+//! duplication these entry points exist to absorb.
 
 use core::ops::Range;
 
@@ -23,7 +37,7 @@ const ELLIPSIS: &str = "\u{2026}";
 /// `candidate.to_lowercase().contains(&lower)`, which allocated one `String` per candidate per
 /// frame while a filter was active. Non-ASCII needles keep the owned path, because folding
 /// Unicode case is not a byte-wise operation.
-#[cfg(not(alloc_frugal))]
+#[cfg(widgets_unstripped)]
 pub(crate) fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
@@ -42,7 +56,7 @@ pub(crate) fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
 /// Same contract as [`contains_ignore_ascii_case`]: `needle` is already lower-cased, and a
 /// non-ASCII needle takes the owned path. The command palette ranks a prefix match above a
 /// substring match, and it used to build a lowered copy of every candidate to answer this.
-#[cfg(not(alloc_frugal))]
+#[cfg(widgets_unstripped)]
 pub(crate) fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
@@ -196,7 +210,137 @@ pub fn elide_middle(text: &str, max_chars: usize) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Shortens `text` so its measured width fits `max_width`.
+impl ElideMode {
+    /// Whether this mode ever removes characters.
+    ///
+    /// A control uses it to skip the fitting work entirely for a mode that keeps the
+    /// whole string, which is also the cheapest way to make elision opt-in.
+    pub const fn removes_text(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+/// Which end of a string is cut when it must fit a character budget.
+///
+/// The variants name the end that is **replaced by the ellipsis**, which is the
+/// question a control actually asks: a file name keeps its base and cuts the tail
+/// ([`ElideMode::End`]), a path keeps both ends ([`ElideMode::Middle`]), and a
+/// left-truncated numeric field keeps its least-significant digits
+/// ([`ElideMode::Start`]). [`ElideMode::None`] is the opt-out and returns the input
+/// untouched, which is the default behaviour of a control that has not opted in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ElideMode {
+    /// Cut the tail: `"Report 2026"` → `"Report…"`.
+    #[default]
+    End,
+    /// Cut the centre: `"/Users/me/…/widget.rs"`.
+    Middle,
+    /// Cut the head: `"…widget.rs"`.
+    Start,
+    /// Do not elide; the input is returned unchanged.
+    None,
+}
+
+/// Shortens `text` to at most `max_chars` **characters** using `mode`.
+///
+/// Dispatches to the single-end primitives, so a control that exposes an elide mode
+/// as a property (a tab strip, a legend, a breadcrumb) does not carry its own `match`
+/// over those variants — the one place the modes are enumerated is
+/// [`ElideMode`] itself. Every arm follows the same contract as [`elide_end`]: fitting
+/// text is borrowed, and a budget of one or less yields the ellipsis alone (except for
+/// [`ElideMode::None`], which never shortens).
+pub fn elide(text: &str, max_chars: usize, mode: ElideMode) -> Cow<'_, str> {
+    match mode {
+        ElideMode::End => elide_end(text, max_chars),
+        ElideMode::Middle => elide_middle(text, max_chars),
+        ElideMode::Start => elide_start(text, max_chars),
+        ElideMode::None => Cow::Borrowed(text),
+    }
+}
+
+/// Shortens `text` to at most `max_chars` **characters**, eliding the leading end.
+///
+/// The counterpart of [`elide_end`] for a value whose **tail** is the identifying part:
+/// a file name in a narrow column, a scroll position, a left-truncated numeric field.
+/// Same borrow rule and floor as [`elide_end`]: fitting text is borrowed, and a budget
+/// of one or less yields the ellipsis alone.
+pub fn elide_start(text: &str, max_chars: usize) -> Cow<'_, str> {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return Cow::Borrowed(text);
+    }
+    if max_chars <= 1 {
+        return Cow::Borrowed(ELLIPSIS);
+    }
+    let keep = max_chars - 1;
+    let start = byte_index_of_char(text, char_count - keep);
+    let mut out = String::with_capacity(text.len().min(max_chars.saturating_mul(4)));
+    out.push('\u{2026}');
+    out.push_str(&text[start..]);
+    Cow::Owned(out)
+}
+
+/// Shortens `text` so its measured width fits `max_width`, eliding the **middle**.
+///
+/// The width-budget counterpart of [`elide_middle`], for a path or URL in a column too
+/// narrow for its full text but whose tail is as identifying as its head. Same contract
+/// as [`elide_to_width`]: `measure` is the caller's renderer measurement, the ellipsis is
+/// part of the budget, and when even the ellipsis does not fit the result is empty
+/// rather than an overflowing glyph.
+///
+/// The head receives the extra pixel when the budget is odd, matching the character
+/// form's deterministic split.
+pub fn elide_middle_to_width<'a>(
+    text: &'a str,
+    max_width: u32,
+    measure: &mut dyn FnMut(&str) -> u32,
+) -> Cow<'a, str> {
+    if measure(text) <= max_width {
+        return Cow::Borrowed(text);
+    }
+    if max_width == 0 || measure(ELLIPSIS) > max_width {
+        return Cow::Borrowed("");
+    }
+
+    let char_count = text.chars().count();
+    // Binary search the number of characters that fit, exactly as `elide_to_width`
+    // does, but split the accepted count between the two ends on every probe.
+    let mut low = 0usize;
+    let mut high = char_count;
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        let head_chars = mid.div_ceil(2);
+        let tail_chars = mid - head_chars;
+        let head_end = byte_index_of_char(text, head_chars);
+        let tail_start = byte_index_of_char(text, char_count - tail_chars);
+        let mut candidate = String::with_capacity(head_end + (text.len() - tail_start) + 3);
+        candidate.push_str(&text[..head_end]);
+        candidate.push('\u{2026}');
+        candidate.push_str(&text[tail_start..]);
+        if measure(&candidate) <= max_width {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    if low == char_count {
+        // The full text measured wider above, so a fitting split cannot own every
+        // character; this arm is defensive and keeps the borrow contract total.
+        return Cow::Borrowed(text);
+    }
+    let head_chars = low.div_ceil(2);
+    let tail_chars = low - head_chars;
+    let head_end = byte_index_of_char(text, head_chars);
+    let tail_start = byte_index_of_char(text, char_count - tail_chars);
+    let mut out = String::with_capacity(head_end + (text.len() - tail_start) + 3);
+    out.push_str(&text[..head_end]);
+    out.push('\u{2026}');
+    out.push_str(&text[tail_start..]);
+    Cow::Owned(out)
+}
+
+/// Shortens `text` so its measured width fits `max_width`, keeping the head.
 ///
 /// `measure` is the caller's renderer measurement (for example
 /// [`crate::render::RenderContext::measure_text`]); keeping it a callback means this
@@ -288,6 +432,136 @@ pub fn wrap_char_ranges(text: &str, max_chars: usize) -> Vec<Range<usize>> {
         paragraph_start += paragraph.len() + 1;
     }
     out
+}
+
+/// Splits `text` into visual lines no wider than `max_width` **pixels**.
+///
+/// Returns **byte** ranges into `text`, excluding the separators. The contract matches
+/// [`wrap_char_ranges`] exactly, so a caller can swap one for the other based on whether
+/// it has a renderer to measure with: existing `\n` breaks are honoured, an empty line is
+/// reported as an empty range, and `max_width == 0` means "no wrapping".
+///
+/// # Why this is shared
+///
+/// Word wrapping needs a measurement callback, so every control that wraps has to carry
+/// the same greedy loop. `empty_state` carried a private copy; the two tab controls
+/// carried character-budget variants. The greedy rule itself is subtle in three places,
+/// and all three are what this implementation names once:
+///
+/// * a word that overflows moves to the next line **whole**, so a line never starts with
+///   the tail of the previous word;
+/// * a single word wider than the line is broken at a character boundary — never a byte
+///   — because otherwise the line overflows anyway and the clip is silent;
+/// * trailing spaces at a break are not part of the emitted range, so a caller's ink
+///   bounds do not include a space that is invisible on screen.
+///
+/// `measure` is the caller's renderer measurement (for example
+/// [`crate::render::RenderContext::measure_text`]). Keeping it a callback means the paint
+/// path and a pre-layout path share one implementation without importing a backend.
+pub fn wrap_to_width<'a>(
+    text: &'a str,
+    max_width: u32,
+    measure: &mut dyn FnMut(&str) -> u32,
+) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    if max_width == 0 {
+        out.push(0..text.len());
+        return out;
+    }
+
+    let mut paragraph_base = 0usize;
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            out.push(paragraph_base..paragraph_base);
+        } else {
+            wrap_paragraph(paragraph, paragraph_base, max_width, measure, &mut out);
+        }
+        paragraph_base += paragraph.len() + 1;
+    }
+    out
+}
+
+/// Appends the wrapped line ranges of one `\n`-free paragraph.
+///
+/// Split from [`wrap_to_width`] so the paragraph bookkeeping (absolute byte offsets) and
+/// the greedy fit (word and character boundaries) are two readable steps rather than one
+/// nested loop.
+fn wrap_paragraph(
+    paragraph: &str,
+    paragraph_base: usize,
+    max_width: u32,
+    measure: &mut dyn FnMut(&str) -> u32,
+    out: &mut Vec<Range<usize>>,
+) {
+    let mut line_start: Option<usize> = None;
+    let mut line_end = 0usize;
+
+    for word in word_ranges(paragraph) {
+        let (word_start, word_end) = (word.start, word.end);
+        if let Some(start) = line_start {
+            if measure(&paragraph[start..word_end]) <= max_width {
+                line_end = word_end;
+                continue;
+            }
+            // The word does not fit beside the current line: emit the line and start a
+            // new one. The emitted range already excludes the separating space because
+            // `line_end` is the end of the previous *word*.
+            out.push(paragraph_base + start..paragraph_base + line_end);
+        }
+
+        // A new line starts here. If the word fits on its own, it is the line so far;
+        // a later word may still join it.
+        if measure(&paragraph[word_start..word_end]) <= max_width {
+            line_start = Some(word_start);
+            line_end = word_end;
+            continue;
+        }
+
+        // The word alone is wider than the line. Break it at character boundaries so
+        // the result is drawable, leaving the final chunk open for the next word.
+        let mut chunk_start = word_start;
+        let mut chunk_end = word_start;
+        for (offset, ch) in paragraph[word_start..word_end].char_indices() {
+            let end = word_start + offset + ch.len_utf8();
+            // `chunk_end > chunk_start` guarantees progress: at least one character is
+            // kept even when a single glyph is wider than the whole line.
+            if chunk_end > chunk_start && measure(&paragraph[chunk_start..end]) > max_width {
+                out.push(paragraph_base + chunk_start..paragraph_base + chunk_end);
+                chunk_start = word_start + offset;
+            }
+            chunk_end = end;
+        }
+        line_start = Some(chunk_start);
+        line_end = chunk_end;
+    }
+
+    if let Some(start) = line_start {
+        out.push(paragraph_base + start..paragraph_base + line_end);
+    }
+}
+
+/// The byte ranges of the non-space runs in `text`.
+///
+/// Splitting on ASCII spaces is safe at any byte offset, so no character-boundary
+/// arithmetic is needed here; a run that contains a multi-byte character is still a
+/// whole-character range because its ends are at space positions.
+fn word_ranges(text: &str) -> Vec<Range<usize>> {
+    let bytes = text.as_bytes();
+    let mut words = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        while cursor < bytes.len() && bytes[cursor] == b' ' {
+            cursor += 1;
+        }
+        let start = cursor;
+        while cursor < bytes.len() && bytes[cursor] != b' ' {
+            cursor += 1;
+        }
+        if start < cursor {
+            words.push(start..cursor);
+        }
+    }
+    words
 }
 
 /// Removes the selected range from `text`, returning the caret position to place.
@@ -507,5 +781,101 @@ mod tests {
             assert!("\u{4e16}\u{754c}\u{4f60}\u{597d}".is_char_boundary(range.start));
             assert!("\u{4e16}\u{754c}\u{4f60}\u{597d}".is_char_boundary(range.end));
         }
+    }
+
+    /// Start elision keeps the identifying tail and never splits a glyph.
+    #[test]
+    fn start_elision_keeps_the_tail() {
+        assert!(matches!(elide_start("hello", 5), Cow::Borrowed("hello")));
+        assert_eq!(elide_start("hello world", 8), "\u{2026}o world");
+        assert_eq!(elide_start("hello", 1), "\u{2026}");
+        assert_eq!(elide_start("hello", 0), "\u{2026}");
+        // `aé世🎉` is 4 characters across 10 bytes; a byte budget would cut mid-glyph.
+        assert_eq!(elide_start("a\u{e9}\u{4e16}\u{1f389}", 2), "\u{2026}\u{1f389}");
+    }
+
+    /// The mode dispatcher maps every variant to its primitive and never shortens `None`.
+    ///
+    /// This is the API a control with an exposed elide mode calls, so the variants must
+    /// stay distinguishable: a dispatcher that silently treated `Start` as `End` would
+    /// leave a file name showing its directory prefix and hiding its own name.
+    #[test]
+    fn the_elide_mode_dispatches_to_distinct_endings() {
+        let long = "abcdefghij";
+        assert_eq!(elide(long, 4, ElideMode::End), "abc\u{2026}");
+        assert_eq!(elide(long, 4, ElideMode::Middle), "ab\u{2026}j");
+        assert_eq!(elide(long, 4, ElideMode::Start), "\u{2026}hij");
+        assert!(matches!(elide(long, 4, ElideMode::None), Cow::Borrowed(value) if value == long));
+
+        assert!(ElideMode::End.removes_text());
+        assert!(ElideMode::Start.removes_text());
+        assert!(!ElideMode::None.removes_text());
+    }
+
+    /// Middle width elision keeps both ends within the measured budget.
+    #[test]
+    fn middle_width_elision_keeps_the_head_and_the_tail() {
+        let mut measure = |value: &str| value.chars().count() as u32;
+        assert_eq!(elide_middle_to_width("abcdef", 6, &mut measure), "abcdef");
+        assert_eq!(elide_middle_to_width("abcdef", 4, &mut measure), "ab\u{2026}f");
+        assert_eq!(elide_middle_to_width("abcdef", 1, &mut measure), "\u{2026}");
+        assert_eq!(elide_middle_to_width("abcdef", 0, &mut measure), "");
+    }
+
+    /// Width wrapping breaks at spaces, honours explicit newlines and starts no line
+    /// with a space.
+    #[test]
+    fn width_wrapping_breaks_at_word_boundaries() {
+        // One pixel per character, measured exactly like a monospace face.
+        let mut measure = |value: &str| value.chars().count() as u32;
+        let lines = |text: &str, width: u32, measure: &mut dyn FnMut(&str) -> u32| {
+            wrap_to_width(text, width, measure)
+                .into_iter()
+                .map(|range| String::from(&text[range]))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            lines("one two three", 7, &mut measure),
+            vec!["one two", "three"],
+            "a word moves whole rather than being split at the break"
+        );
+        assert_eq!(lines("ab\ncd", 10, &mut measure), vec!["ab", "cd"], "explicit breaks survive");
+        assert_eq!(
+            lines("ab\n", 10, &mut measure),
+            vec!["ab", ""],
+            "a blank trailing line is kept"
+        );
+        assert_eq!(lines("", 10, &mut measure), vec![""], "an empty value is one empty line");
+        assert_eq!(wrap_to_width("ab\ncd", 0, &mut measure), vec![0..5], "zero means no wrapping");
+        assert_eq!(lines("a  b", 10, &mut measure), vec!["a  b"], "inner spaces are preserved");
+
+        for range in wrap_to_width("\u{4e16}\u{754c} \u{4f60}\u{597d}", 4, &mut measure) {
+            assert!("\u{4e16}\u{754c} \u{4f60}\u{597d}".is_char_boundary(range.start));
+            assert!("\u{4e16}\u{754c} \u{4f60}\u{597d}".is_char_boundary(range.end));
+        }
+    }
+
+    /// A single word wider than the line is broken at character boundaries.
+    ///
+    /// Without this the line would simply overflow its box, which the caller's clip
+    /// hides — the failure mode is silent, so the rule needs its own assertion.
+    #[test]
+    fn an_over_long_word_is_split_on_character_boundaries() {
+        let mut measure = |value: &str| value.chars().count() as u32;
+        let text = "abcdefgh";
+        let lines: Vec<&str> =
+            wrap_to_width(text, 3, &mut measure).into_iter().map(|range| &text[range]).collect();
+        assert_eq!(lines, vec!["abc", "def", "gh"]);
+
+        // Every split is sliceable for a value that is not ASCII either.
+        let text = "\u{4e16}\u{754c}\u{4f60}\u{597d}";
+        let ranges = wrap_to_width(text, 2, &mut measure);
+        for range in &ranges {
+            assert!(text.is_char_boundary(range.start));
+            assert!(text.is_char_boundary(range.end));
+            assert!(range.end > range.start, "each line makes progress");
+        }
+        assert_eq!(ranges.len(), 2, "four characters at two per line is two lines");
     }
 }

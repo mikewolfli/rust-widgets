@@ -3,7 +3,7 @@
 
 //! Font dialog widget.
 use crate::compat::{format, String, Vec};
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::platform::SystemFont;
@@ -52,6 +52,20 @@ pub struct FontDialog {
     style_scroll: usize,
     size_scroll: usize,
     active_column: usize,
+    /// The styles currently offered, which a host provider may make family-specific.
+    styles: Vec<FontStyleChoice>,
+    /// The host's per-family style provider, if one was installed.
+    style_provider: Option<FontStyleProvider>,
+    /// Whether the action row is hidden.
+    no_buttons: bool,
+    /// Whether the preview well is hidden.
+    show_preview: bool,
+    /// Whether the preview sample is underlined.
+    underline: bool,
+    /// Whether the preview sample is struck through.
+    strikethrough: bool,
+    /// Digits typed into the active size column, before they are applied on Enter.
+    size_entry: String,
     /// The OK button's rect from the last paint, so a press resolves to the button the user saw.
     ok_button: Rect,
     /// The Cancel button's rect from the last paint.
@@ -71,6 +85,33 @@ pub struct FontDialog {
 }
 
 /// One entry in the Style column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontStyleChoice {
+    /// The label painted in the style column.
+    pub label: String,
+    /// The CSS-like weight the choice applies.
+    pub weight: u16,
+    /// Whether the choice applies italic.
+    pub italic: bool,
+}
+
+impl FontStyleChoice {
+    /// Builds a style choice from its label and the two font traits it selects.
+    pub fn new(label: impl Into<String>, weight: u16, italic: bool) -> Self {
+        Self { label: label.into(), weight, italic }
+    }
+}
+
+/// A font-dialog feature that can be switched on independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontDialogOption {
+    /// Hide the OK/Cancel row. Enter and Escape still commit and cancel.
+    NoButtons,
+    /// Hide the preview well, as a compact font panel does.
+    ShowPreview,
+}
+
+/// The static description the built-in style table is written in.
 struct StyleChoice {
     label: &'static str,
     weight: u16,
@@ -85,6 +126,21 @@ const STYLES: [StyleChoice; 5] = [
     StyleChoice { label: "Bold Italic", weight: Font::BOLD_WEIGHT, italic: true },
     StyleChoice { label: "Light", weight: 300, italic: false },
 ];
+
+/// The built-in style choices as owned values, so the dialog can replace them per family.
+fn builtin_styles() -> Vec<FontStyleChoice> {
+    STYLES
+        .iter()
+        .map(|style| FontStyleChoice::new(style.label, style.weight, style.italic))
+        .collect()
+}
+
+/// A host callback that supplies the styles available for a family.
+///
+/// A family's face list is host metadata: a family may ship a variable weight axis, a
+/// condensed cut, or only a regular face. The dialog asks the host rather than keeping the
+/// five universal combinations it can synthesise itself.
+pub type FontStyleProvider = Box<dyn Fn(&str) -> Vec<FontStyleChoice>>;
 
 /// Sizes offered when the current size is not already in the list.
 const SIZES: [u32; 17] = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 48, 64, 72];
@@ -126,6 +182,13 @@ impl FontDialog {
             style_scroll: 0,
             size_scroll: 0,
             active_column: 0,
+            styles: builtin_styles(),
+            style_provider: None,
+            no_buttons: false,
+            show_preview: true,
+            underline: false,
+            strikethrough: false,
+            size_entry: String::new(),
             ok_button: Rect::new(0, 0, 0, 0),
             cancel_button: Rect::new(0, 0, 0, 0),
             font_selected: Signal1::new(),
@@ -231,8 +294,100 @@ impl FontDialog {
     }
 
     /// The style labels currently offered.
-    pub fn font_styles(&self) -> Vec<&'static str> {
-        STYLES.iter().map(|style| style.label).collect()
+    ///
+    /// This is the family-specific list: a host that installed
+    /// [`FontDialog::set_font_style_provider`] sees the labels it supplied for the current
+    /// family, and a dialog with no provider sees the five built-in combinations.
+    pub fn font_styles(&self) -> Vec<String> {
+        self.styles.iter().map(|style| style.label.clone()).collect()
+    }
+
+    /// The style choices currently offered, with the traits each one applies.
+    pub fn font_style_choices(&self) -> Vec<FontStyleChoice> {
+        self.styles.clone()
+    }
+
+    /// Installs a host callback that reports the styles a family ships.
+    ///
+    /// The built-in five are used until this is called. The provider is consulted whenever the
+    /// selected family changes, so a family with a single face does not offer a bold it cannot
+    /// draw.
+    pub fn set_font_style_provider(&mut self, provider: FontStyleProvider) {
+        self.style_provider = Some(provider);
+        self.refresh_styles();
+        self.base.request_redraw();
+    }
+
+    /// Removes the host style provider and returns to the built-in combinations.
+    pub fn clear_font_style_provider(&mut self) {
+        if self.style_provider.is_none() {
+            return;
+        }
+        self.style_provider = None;
+        self.styles = builtin_styles();
+        self.style_index = self.style_index.min(self.styles.len().saturating_sub(1));
+        self.base.request_redraw();
+    }
+
+    /// Re-derives the style list from the provider for the selected family.
+    fn refresh_styles(&mut self) {
+        let Some(provider) = self.style_provider.as_ref() else { return };
+        let family = self.families.get(self.family_index).cloned().unwrap_or_default();
+        let styles = provider(&family);
+        if styles.is_empty() {
+            return;
+        }
+        self.styles = styles;
+        self.style_index = self.style_index.min(self.styles.len() - 1);
+    }
+
+    /// Whether `option` is enabled.
+    pub fn test_option(&self, option: FontDialogOption) -> bool {
+        match option {
+            FontDialogOption::NoButtons => self.no_buttons,
+            FontDialogOption::ShowPreview => self.show_preview,
+        }
+    }
+
+    /// Enables or disables `option` and repaints when it changes.
+    pub fn set_option(&mut self, option: FontDialogOption, enabled: bool) {
+        let slot = match option {
+            FontDialogOption::NoButtons => &mut self.no_buttons,
+            FontDialogOption::ShowPreview => &mut self.show_preview,
+        };
+        if *slot == enabled {
+            return;
+        }
+        *slot = enabled;
+        self.base.request_redraw();
+    }
+
+    /// Whether the preview sample is underlined.
+    pub fn is_underline(&self) -> bool {
+        self.underline
+    }
+
+    /// Sets the preview's underline and repaints when it changes.
+    pub fn set_underline(&mut self, underline: bool) {
+        if self.underline == underline {
+            return;
+        }
+        self.underline = underline;
+        self.base.request_redraw();
+    }
+
+    /// Whether the preview sample is struck through.
+    pub fn is_strikethrough(&self) -> bool {
+        self.strikethrough
+    }
+
+    /// Sets the preview's strikethrough and repaints when it changes.
+    pub fn set_strikethrough(&mut self, strikethrough: bool) {
+        if self.strikethrough == strikethrough {
+            return;
+        }
+        self.strikethrough = strikethrough;
+        self.base.request_redraw();
     }
 
     /// The sizes currently offered, ascending.
@@ -341,6 +496,54 @@ impl FontDialog {
         }
     }
 
+    /// Applies one typed digit to the active size column.
+    ///
+    /// The digits accumulate in `size_entry`, and each complete prefix is applied as a size so
+    /// the user sees the sample change while typing. Enter then clears the buffer.
+    fn type_size_digit(&mut self, digit: u8) {
+        if self.size_entry.len() >= 3 {
+            self.size_entry.clear();
+        }
+        self.size_entry.push(char::from(b'0' + digit));
+        let Ok(size) = self.size_entry.parse::<u32>() else { return };
+        if size == 0 {
+            return;
+        }
+        match self.sizes.iter().position(|candidate| *candidate == size) {
+            Some(index) => self.select_row(2, index),
+            None => {
+                let index = self
+                    .sizes
+                    .iter()
+                    .position(|candidate| *candidate > size)
+                    .unwrap_or(self.sizes.len());
+                self.sizes.insert(index, size);
+                self.select_row(2, index);
+            }
+        }
+    }
+
+    /// Removes the last typed size digit and re-applies what remains.
+    fn backspace_size_digit(&mut self) {
+        self.size_entry.pop();
+        if let Ok(size) = self.size_entry.parse::<u32>() {
+            if let Some(index) = self.sizes.iter().position(|candidate| *candidate == size) {
+                self.select_row(2, index);
+            }
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether the action row is painted.
+    pub fn has_buttons(&self) -> bool {
+        !self.no_buttons
+    }
+
+    /// The row selections, as `(family, style, size)` indices. Exposed for a host that needs
+    /// to persist a browsing position; the font itself is what the dialog commits.
+    pub fn selection_indices(&self) -> (usize, usize, usize) {
+        (self.family_index, self.style_index, self.size_index)
+    }
     /// Applies the current row selections to `current_font` and emits `font_selected`.
     fn apply_selection(&mut self) {
         let mut font = self.current_font.clone();
@@ -354,7 +557,7 @@ impl FontDialog {
             }
             font.set_family(family.as_str());
         }
-        if let Some(style) = STYLES.get(self.style_index) {
+        if let Some(style) = self.styles.get(self.style_index) {
             font = font.with_weight_value(style.weight).with_italic(style.italic);
         }
         if let Some(size) = self.sizes.get(self.size_index) {
@@ -367,7 +570,7 @@ impl FontDialog {
     fn select_row(&mut self, column: usize, row: usize) {
         let length = match column {
             0 => self.families.len(),
-            1 => STYLES.len(),
+            1 => self.styles.len(),
             _ => self.sizes.len(),
         };
         if length == 0 {
@@ -378,6 +581,9 @@ impl FontDialog {
             0 => self.family_index = row,
             1 => self.style_index = row,
             _ => self.size_index = row,
+        }
+        if column == 0 {
+            self.refresh_styles();
         }
         let visible = self.visible_rows();
         let start = self.scroll(column);
@@ -395,7 +601,7 @@ impl FontDialog {
         let column = self.active_column;
         let length = match column {
             0 => self.families.len(),
-            1 => STYLES.len(),
+            1 => self.styles.len(),
             _ => self.sizes.len(),
         };
         if length == 0 {
@@ -496,6 +702,10 @@ impl WidgetProperties for FontDialog {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
+            "underline" => Ok(CapabilityValue::Bool(self.is_underline())),
+            "strikethrough" => Ok(CapabilityValue::Bool(self.is_strikethrough())),
+            "no_buttons" => Ok(CapabilityValue::Bool(self.no_buttons)),
+            "show_preview" => Ok(CapabilityValue::Bool(self.show_preview)),
             _ => base_property_get(self, name),
         }
     }
@@ -506,12 +716,35 @@ impl WidgetProperties for FontDialog {
                 self.set_modal(expect_bool(value)?);
                 Ok(())
             }
+            "underline" => {
+                self.set_underline(expect_bool(value)?);
+                Ok(())
+            }
+            "strikethrough" => {
+                self.set_strikethrough(expect_bool(value)?);
+                Ok(())
+            }
+            "no_buttons" => {
+                self.set_option(FontDialogOption::NoButtons, expect_bool(value)?);
+                Ok(())
+            }
+            "show_preview" => {
+                self.set_option(FontDialogOption::ShowPreview, expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["modal", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "modal",
+            "underline",
+            "strikethrough",
+            "no_buttons",
+            "show_preview",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `font_dialog` publishes.
@@ -580,25 +813,56 @@ impl EventHandler for FontDialog {
                     self.base.request_redraw();
                 }
             }
-            Event::KeyPress { key, .. } => match *key {
-                key_codes::ENTER => self.accept(),
-                key_codes::ESCAPE => self.reject(),
-                key_codes::TAB => {
-                    self.active_column = (self.active_column + 1) % 3;
-                    self.base.request_redraw();
+            Event::KeyPress { key, modifiers } => {
+                let primary = *modifiers & (2 | 8) != 0;
+                if (48..=57).contains(key) && self.active_column == 2 {
+                    self.type_size_digit((*key - 48) as u8);
+                    return;
                 }
-                key_codes::LEFT => {
-                    self.active_column = self.active_column.saturating_sub(1);
-                    self.base.request_redraw();
+                match *key {
+                    key_codes::ENTER => {
+                        if self.active_column == 2 && !self.size_entry.is_empty() {
+                            self.size_entry.clear();
+                            self.base.request_redraw();
+                        } else {
+                            self.accept();
+                        }
+                    }
+                    key_codes::ESCAPE => {
+                        if !self.size_entry.is_empty() {
+                            self.size_entry.clear();
+                            self.base.request_redraw();
+                        } else {
+                            self.reject();
+                        }
+                    }
+                    key_codes::BACKSPACE
+                        if self.active_column == 2 && !self.size_entry.is_empty() =>
+                    {
+                        self.backspace_size_digit();
+                    }
+                    key_codes::TAB => {
+                        self.size_entry.clear();
+                        self.active_column = (self.active_column + 1) % 3;
+                        self.base.request_redraw();
+                    }
+                    key_codes::LEFT => {
+                        self.size_entry.clear();
+                        self.active_column = self.active_column.saturating_sub(1);
+                        self.base.request_redraw();
+                    }
+                    key_codes::RIGHT => {
+                        self.size_entry.clear();
+                        self.active_column = (self.active_column + 1).min(2);
+                        self.base.request_redraw();
+                    }
+                    key_codes::UP => self.move_selection(-1),
+                    key_codes::DOWN => self.move_selection(1),
+                    85 if primary => self.set_underline(!self.underline),
+                    88 if primary => self.set_strikethrough(!self.strikethrough),
+                    _ => {}
                 }
-                key_codes::RIGHT => {
-                    self.active_column = (self.active_column + 1).min(2);
-                    self.base.request_redraw();
-                }
-                key_codes::UP => self.move_selection(-1),
-                key_codes::DOWN => self.move_selection(1),
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
@@ -640,7 +904,8 @@ impl Draw for FontDialog {
         // The **effective font** — the resolved theme/caller font — for the title, the column
         // headers and the buttons. The preview sample keeps `self.current_font`, which is the
         // user's selected font and deliberately not the theme's (D09-STYLE-01).
-        let font = effective_font(style);
+        let font = effective_font(style).clone();
+        let font = &font;
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. The style step alone
@@ -788,7 +1053,7 @@ impl Draw for FontDialog {
                     let index = start + row;
                     let label = match column {
                         0 => self.families.get(index).map(String::as_str),
-                        1 => STYLES.get(index).map(|style| style.label),
+                        1 => self.styles.get(index).map(|style| style.label.as_str()),
                         _ => match self.sizes.get(index) {
                             Some(size) => {
                                 size_label.clear();
@@ -832,7 +1097,7 @@ impl Draw for FontDialog {
         }
         // Preview area: the sample is drawn in the user's selected font, not the theme's, and
         // the well has zero height exactly when `layout()` decided there was no room for it.
-        if layout.preview_h > 0 {
+        if layout.preview_h > 0 && self.show_preview {
             let prev_y = list_y + list_h as i32 + PREVIEW_GAP;
             let well =
                 Rect::new(rect.x + 4, prev_y, rect.width.saturating_sub(8), layout.preview_h);
@@ -849,12 +1114,29 @@ impl Draw for FontDialog {
                 ink,
                 HorizontalAlignment::Left,
             );
+            // Underline and strikethrough are dialog preview options rather than font fields:
+            // `Font` describes a face, and these are decorations the sample is shown with.
+            let sample_left = well.x + 6;
+            let sample_right = (well.x + well.width as i32 - 6).min(sample_left + 160);
+            if self.underline {
+                let y = well.y + well.height as i32 - 4;
+                context.draw_line(Point::new(sample_left, y), Point::new(sample_right, y), ink);
+            }
+            if self.strikethrough {
+                let y = well.y + well.height as i32 / 2;
+                context.draw_line(Point::new(sample_left, y), Point::new(sample_right, y), ink);
+            }
             context.pop_clip();
         }
         // OK/Cancel. Right-aligned inside the frame through the shared
         // [`action_row_geometry`] derivation, so this dialog and the five others that draw the
         // same pair cannot disagree about the button width, the gap between them or where the
         // row's left edge falls. The labels are centred in their buttons and fitted to them.
+        self.ok_button = Rect::new(0, 0, 0, 0);
+        self.cancel_button = Rect::new(0, 0, 0, 0);
+        if self.no_buttons {
+            return;
+        }
         let labels = vec![
             super::localized_label("dialog.ok", "OK"),
             super::localized_label("dialog.cancel", "Cancel"),
@@ -1053,5 +1335,73 @@ mod tests {
         dialog.select_row(2, index);
 
         assert_eq!(dialog.current_font().size_u32(), target);
+    }
+
+    #[test]
+    fn a_host_provider_makes_the_styles_family_specific() {
+        let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
+        assert_eq!(dialog.font_style_choices().len(), 5, "the built-in five are the default");
+        dialog.set_font_style_provider(Box::new(|family| {
+            if family == "Mono" {
+                vec![FontStyleChoice::new("Regular", Font::REGULAR_WEIGHT, false)]
+            } else {
+                vec![
+                    FontStyleChoice::new("Regular", Font::REGULAR_WEIGHT, false),
+                    FontStyleChoice::new("Bold", Font::BOLD_WEIGHT, false),
+                ]
+            }
+        }));
+        dialog.set_font_families(vec!["Mono".to_string(), "Sans".to_string()]);
+        let mono = dialog
+            .font_families()
+            .iter()
+            .position(|family| family == "Mono")
+            .expect("Mono is in the catalogue");
+        dialog.select_row(0, mono);
+        assert_eq!(dialog.font_styles(), vec!["Regular".to_string()]);
+        let sans = dialog
+            .font_families()
+            .iter()
+            .position(|family| family == "Sans")
+            .expect("Sans is in the catalogue");
+        dialog.select_row(0, sans);
+        assert_eq!(dialog.font_styles().len(), 2);
+    }
+
+    #[test]
+    fn options_hide_parts_of_the_dialog() {
+        let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
+        dialog.show();
+        let _ = crate::widget::svg::render_to_svg(&mut dialog);
+        assert!(dialog.ok_button.width > 0);
+        dialog.set_option(FontDialogOption::NoButtons, true);
+        let _ = crate::widget::svg::render_to_svg(&mut dialog);
+        assert_eq!(dialog.ok_button.width, 0, "a hidden row has no hit area");
+        assert!(!dialog.has_buttons());
+        dialog.set_option(FontDialogOption::NoButtons, false);
+        assert!(dialog.has_buttons());
+    }
+
+    #[test]
+    fn typing_digits_into_the_size_column_applies_a_size() {
+        let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
+        dialog.active_column = 2;
+        dialog.handle_event(&Event::key_press(50, 0)); // '2'
+        dialog.handle_event(&Event::key_press(52, 0)); // '4'
+        assert_eq!(dialog.current_font().size_u32(), 24);
+    }
+
+    #[test]
+    fn underline_and_strikethrough_decorate_the_preview() {
+        let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
+        dialog.show();
+        let plain = crate::widget::svg::render_to_svg(&mut dialog);
+        dialog.set_underline(true);
+        let underlined = crate::widget::svg::render_to_svg(&mut dialog);
+        assert_ne!(plain, underlined, "the underline must be painted");
+        dialog.set_strikethrough(true);
+        let struck = crate::widget::svg::render_to_svg(&mut dialog);
+        assert_ne!(underlined, struck, "the strike-through must be painted");
+        assert!(dialog.is_underline() && dialog.is_strikethrough());
     }
 }

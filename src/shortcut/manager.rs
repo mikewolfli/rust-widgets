@@ -139,7 +139,7 @@ impl ShortcutManager {
 
     /// Removes the Control bit that macOS reports alongside Command.
     ///
-    /// `⌘C` and `⌃C` are different chords, but AppKit sets the Control flag on
+    /// `⌘C` and `⌃C` are different chords, but macOS sets the Control flag on
     /// some Command events; leaving it in place would make `Shortcut::primary`
     /// bindings unreachable. On other platforms the input is already canonical.
     ///

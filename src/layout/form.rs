@@ -43,6 +43,30 @@ pub enum RowWrapPolicy {
 
 /// Two-column form layout storing `(label, field)` row pairs
 /// plus standalone items added via the `Layout` trait.
+/// How a form's label column places a label narrower than the column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FormLabelAlignment {
+    /// Left-aligned in the label column (the historical behaviour).
+    #[default]
+    Left,
+    /// Centred in the label column.
+    Center,
+    /// Right-aligned against the field gap.
+    Right,
+}
+
+/// The role of an entry in a form row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormItemRole {
+    /// The label half of a `(label, field)` row.
+    Label,
+    /// The field half of a `(label, field)` row.
+    Field,
+    /// A standalone item added through [`Layout::add_widget`].
+    Standalone,
+}
+
+/// A two-column form layout with a measured label column and a flexible field column.
 pub struct FormLayout {
     spacing: u32,
     margin: u32,
@@ -50,6 +74,7 @@ pub struct FormLayout {
     margins: Option<EdgeOffsets>,
     growth_policy: FieldGrowthPolicy,
     row_wrap_policy: RowWrapPolicy,
+    label_alignment: FormLabelAlignment,
     rows: Vec<(ObjectId, ObjectId)>,
     /// Standalone items added via the `Layout` trait (widget_id, stretch).
     items: Vec<(ObjectId, u32)>,
@@ -64,6 +89,7 @@ impl FormLayout {
             margins: None,
             growth_policy: FieldGrowthPolicy::default(),
             row_wrap_policy: RowWrapPolicy::default(),
+            label_alignment: FormLabelAlignment::default(),
             rows: Vec::new(),
             items: Vec::new(),
         }
@@ -87,6 +113,41 @@ impl FormLayout {
     /// The row wrap policy.
     pub fn row_wrap_policy(&self) -> RowWrapPolicy {
         self.row_wrap_policy
+    }
+
+    /// How a label narrower than its column is positioned.
+    pub fn label_alignment(&self) -> FormLabelAlignment {
+        self.label_alignment
+    }
+
+    /// Sets how a label narrower than its column is positioned.
+    pub fn set_label_alignment(&mut self, alignment: FormLabelAlignment) {
+        self.label_alignment = alignment;
+    }
+
+    /// The field paired with `label_id`, if the id names a label.
+    ///
+    /// This is the layout-side equivalent of a label's buddy: a caller can walk from the
+    /// caption it built to the control it describes.
+    pub fn field_for_label(&self, label_id: ObjectId) -> Option<ObjectId> {
+        self.rows.iter().find(|(label, _)| *label == label_id).map(|(_, field)| *field)
+    }
+
+    /// The label paired with `field_id`, if the id names a field.
+    pub fn label_for_field(&self, field_id: ObjectId) -> Option<ObjectId> {
+        self.rows.iter().find(|(_, field)| *field == field_id).map(|(label, _)| *label)
+    }
+
+    /// The widget at `row` in `role`.
+    ///
+    /// Returns `None` for a row that does not exist or a role the row does not have. A
+    /// standalone role indexes the standalone item list, not the pair list.
+    pub fn item_at(&self, row: usize, role: FormItemRole) -> Option<ObjectId> {
+        match role {
+            FormItemRole::Label => self.rows.get(row).map(|(label, _)| *label),
+            FormItemRole::Field => self.rows.get(row).map(|(_, field)| *field),
+            FormItemRole::Standalone => self.items.get(row).map(|(id, _)| *id),
+        }
     }
 
     /// Sets four-way margins, overriding the uniform [`Self::margin`].
@@ -269,7 +330,22 @@ impl Layout for FormLayout {
         let spacing_total = Self::spacing_budget(entries, self.spacing);
         let entry_height = (available_height.saturating_sub(spacing_total) / entries as u32).max(1);
 
-        let label_width = inner_width / 3;
+        // Measure the label column instead of assuming one third of the form. A form of
+        // short captions wasted most of that third; a form of long ones clipped them. The
+        // preferred extents from the hint channel are the only measurement available here,
+        // and a form whose hints are all zero keeps the historical one-third split.
+        let measured_label = self
+            .rows
+            .iter()
+            .filter_map(|(label, _)| ChildInfo::find(children, *label))
+            .map(|info| info.hints.width.pref)
+            .max()
+            .unwrap_or(0);
+        let label_width = if measured_label > 0 {
+            measured_label.min(inner_width.saturating_sub(1))
+        } else {
+            inner_width / 3
+        };
         let gap = self.spacing.min(inner_width.saturating_sub(label_width));
         let remaining_field_width = inner_width.saturating_sub(Self::sum_budget(label_width, gap));
         let origin_x = rect.x.saturating_add(left as i32);
@@ -285,7 +361,20 @@ impl Layout for FormLayout {
                 out(*field, Rect::new(origin_x, field_y, inner_width, entry_height));
                 cursor_y = field_y.saturating_add(entry_height_i32).saturating_add(spacing);
             } else {
-                out(*label, Rect::new(origin_x, row_y, label_width, entry_height));
+                let wanted = ChildInfo::find(children, *label)
+                    .map(|info| info.hints.width.pref)
+                    .unwrap_or(0);
+                let label_rect = if wanted > 0 && wanted < label_width {
+                    let offset = match self.label_alignment {
+                        FormLabelAlignment::Left => 0,
+                        FormLabelAlignment::Center => (label_width - wanted) / 2,
+                        FormLabelAlignment::Right => label_width - wanted,
+                    };
+                    Rect::new(origin_x.saturating_add(offset as i32), row_y, wanted, entry_height)
+                } else {
+                    Rect::new(origin_x, row_y, label_width, entry_height)
+                };
+                out(*label, label_rect);
                 let field_width = match self.growth_policy {
                     FieldGrowthPolicy::AllNonFixed | FieldGrowthPolicy::ExpandingFieldsGrow => {
                         remaining_field_width
@@ -619,5 +708,29 @@ mod tests {
         assert_eq!(field.width, 60, "the field keeps its own width");
         // The default policy would have given it the rest of the row.
         assert!(field.width < 200 - 200 / 3);
+    }
+
+    /// The label column is measured from the label's preferred width, and the label's
+    /// rect honours the alignment inside that column.
+    #[test]
+    fn the_label_column_uses_the_measured_width() {
+        let mut layout = FormLayout::new(0, 0);
+        layout.add_row_pair(1, 2);
+        layout.add_row_pair(3, 4);
+        layout.set_label_alignment(FormLabelAlignment::Right);
+        let children = [
+            ChildInfo::new(1, crate::layout::Hints::fixed(50, 20)),
+            ChildInfo::new(2, crate::layout::Hints::fixed(40, 20)),
+            ChildInfo::new(3, crate::layout::Hints::fixed(80, 20)),
+            ChildInfo::new(4, crate::layout::Hints::fixed(40, 20)),
+        ];
+        let mut out = Vec::new();
+        layout.arrange(Rect::new(0, 0, 200, 60), &children, &mut |id, rect| out.push((id, rect)));
+        let label = out.iter().find(|(id, _)| *id == 1).unwrap().1;
+        assert_eq!(label.width, 50, "the label rect is its measured width");
+        assert_eq!(label.x, 30, "right alignment places the slack before the label");
+        assert_eq!(layout.field_for_label(1), Some(2));
+        assert_eq!(layout.label_for_field(2), Some(1));
+        assert_eq!(layout.item_at(0, FormItemRole::Field), Some(2));
     }
 }

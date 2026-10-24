@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 //! Radio button widget.
-use crate::compat::{String, ToString};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::compat::{String, ToString, Vec};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::base_widgets::button_group::{self, GroupKey, GroupMember};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -70,6 +71,13 @@ pub struct RadioButton {
     base: BaseWidget,
     checked: bool,
     group_id: Option<String>,
+    /// Whether radios under one parent exclude each other without a `group_id`.
+    ///
+    /// On by default, matching the reference toolkit: a radio button in a group *is* exclusive,
+    /// and requiring every caller to opt in would preserve a state that no radio user expects.
+    /// A grouped radio is exclusive under either rule; this one supplies the group when no id was
+    /// given.
+    auto_exclusive: bool,
     text: String,
     /// The hover/press fade that tints the indicator while the pointer interacts.
     ///
@@ -197,6 +205,7 @@ impl RadioButton {
             base: BaseWidget::new(WidgetKind::RadioButton, geometry, "RadioButton"),
             checked: false,
             group_id: None,
+            auto_exclusive: true,
             text: String::new(),
             fade: InteractionFade::new(),
             selected: GenericSignal::new(),
@@ -204,9 +213,89 @@ impl RadioButton {
         }
     }
     /// Returns current checked state.
+    ///
+    /// A radio displaced by a selected peer reports `false` even though its own latch is still
+    /// set: the group owns the selection, and this control reads that fact back rather than
+    /// keeping a second copy of it.
     pub fn is_checked(&self) -> bool {
-        self.checked
+        match self.exclusive_key() {
+            Some(key) => {
+                button_group::is_selected(&key, self.id())
+                    || (button_group::selected(&key).is_none() && self.checked)
+            }
+            None => self.checked,
+        }
     }
+
+    /// The group this radio belongs to, if any.
+    ///
+    /// A caller-chosen `group_id` always forms a group. Without one, `auto_exclusive` groups the
+    /// radios that share a parent, which is the reference toolkit's rule and the reason two radios
+    /// dropped into one container behave as one question without any extra wiring.
+    fn exclusive_key(&self) -> Option<GroupKey> {
+        if let Some(id) = self.group_id.as_ref() {
+            return Some(GroupKey::Name(id.clone()));
+        }
+        if !self.auto_exclusive {
+            return None;
+        }
+        self.parent().map(GroupKey::Parent)
+    }
+
+    /// Records this radio's current facts with its group, if it has one.
+    fn sync_group_registration(&self) {
+        if let Some(key) = self.exclusive_key() {
+            button_group::register(key, self.id(), self.geometry(), self.base.is_enabled());
+        }
+    }
+
+    /// Makes this radio the group's selected member and unchecks the one it replaced.
+    fn claim_group_selection(&mut self) {
+        let Some(key) = self.exclusive_key() else {
+            return;
+        };
+        button_group::register(key.clone(), self.id(), self.geometry(), self.base.is_enabled());
+        if let Some(previous) = button_group::select(&key, self.id()) {
+            if previous != self.id() {
+                button_group::notify_checked(&[previous], false);
+            }
+        }
+    }
+
+    /// Releases the group's selection when this radio holds it.
+    fn release_group_selection(&mut self) {
+        if let Some(key) = self.exclusive_key() {
+            if button_group::is_selected(&key, self.id()) {
+                button_group::clear_selection(&key);
+            }
+        }
+    }
+
+    /// Returns whether radios under one parent group themselves automatically.
+    pub fn is_auto_exclusive(&self) -> bool {
+        self.auto_exclusive
+    }
+
+    /// Enables or disables same-parent exclusivity.
+    ///
+    /// A `group_id` still forms a group when this is off; this flag only decides whether the
+    /// parent is used as an implicit one.
+    pub fn set_auto_exclusive(&mut self, exclusive: bool) {
+        if self.auto_exclusive == exclusive {
+            return;
+        }
+        let previous_key = self.exclusive_key();
+        self.auto_exclusive = exclusive;
+        if let Some(key) = previous_key {
+            button_group::unregister(&key, self.id());
+        }
+        self.sync_group_registration();
+        if exclusive && self.checked {
+            self.claim_group_selection();
+        }
+        self.base.request_redraw();
+    }
+
     /// Returns the text label displayed next to the radio button.
     pub fn text(&self) -> &str {
         &self.text
@@ -225,7 +314,18 @@ impl RadioButton {
     }
     /// Sets optional group identifier.
     pub fn set_group_id(&mut self, group_id: Option<String>) {
+        if self.group_id == group_id {
+            return;
+        }
+        let previous_key = self.exclusive_key();
         self.group_id = group_id;
+        if let Some(key) = previous_key {
+            button_group::unregister(&key, self.id());
+        }
+        self.sync_group_registration();
+        if self.checked {
+            self.claim_group_selection();
+        }
     }
     /// Returns optional group identifier.
     pub fn group_id(&self) -> Option<&str> {
@@ -233,10 +333,23 @@ impl RadioButton {
     }
     /// Sets checked state and emits deterministic signals.
     pub fn set_checked(&mut self, checked: bool) {
-        if self.checked == checked {
+        let previous = self.is_checked();
+        if self.checked == checked && previous == checked {
+            // Re-asserting "checked" on the selected member is a no-op, but a radio whose latch
+            // was set before it joined a group still needs to claim the selection once.
+            if checked {
+                self.claim_group_selection();
+            }
             return;
         }
-        self.checked = checked;
+        if checked {
+            self.checked = true;
+            self.claim_group_selection();
+        } else {
+            self.checked = false;
+            self.release_group_selection();
+        }
+        self.sync_group_registration();
         // Before the signals: a handler reading the style back must see the state it is being
         // told about, not the previous one. `apply_active_theme` runs once, at creation — a
         // redraw re-runs `draw`, not the theme application — so without this the selection
@@ -248,11 +361,75 @@ impl RadioButton {
         // does both, and doing only the first is why a programmatic `set_checked` could leave
         // the old fill on screen.
         self.base.request_redraw();
-        self.checked_changed.emit(checked);
-        if checked {
-            self.selected.emit();
+        // The effective state is what a listener observes: a displaced radio clearing its own
+        // latch did not become unchecked just now — it already reported that.
+        if previous != checked {
+            self.checked_changed.emit(checked);
+            if checked {
+                self.selected.emit();
+            }
         }
     }
+    /// Moves selection to the next enabled peer in the group and returns whether it moved.
+    ///
+    /// # Order
+    ///
+    /// Members are ordered by their recorded rectangles — top to bottom, then left to right —
+    /// which is the order a keyboard user perceives. That is why the registry keeps a geometry
+    /// snapshot per member: the member doing the navigation cannot borrow its peers, and "which
+    /// control is below this one" is a question only geometry can answer.
+    ///
+    /// The target is selected through the group, so a mounted peer emits its own signals. An
+    /// unmounted peer still reports the right state (it derives it from the group) but does not
+    /// emit, which is the documented limit of a control that has no event loop yet.
+    pub fn navigate_group(&mut self, forward: bool) -> bool {
+        let Some(key) = self.exclusive_key() else {
+            return false;
+        };
+        self.sync_group_registration();
+        let mut peers: Vec<GroupMember> =
+            button_group::members(&key).into_iter().filter(|member| member.enabled).collect();
+        if peers.len() < 2 {
+            return false;
+        }
+        peers.sort_by_key(|member| (member.rect.y, member.rect.x));
+        let index = peers.iter().position(|member| member.id == self.id()).unwrap_or(0);
+        let next = if forward {
+            (index + 1) % peers.len()
+        } else {
+            (index + peers.len() - 1) % peers.len()
+        };
+        let target = peers[next].id;
+        if target == self.id() {
+            // Wrapped back to this control: make sure it is the selected one and stop.
+            self.set_checked(true);
+            return true;
+        }
+
+        if let Some(previous) = button_group::select(&key, target) {
+            if previous != self.id() && previous != target {
+                button_group::notify_checked(&[previous], false);
+            }
+        }
+        // This control is no longer the selected member; its own latch would otherwise come back
+        // to life the moment the new selection is cleared.
+        if self.checked {
+            self.checked = false;
+            crate::style::reapply_active_theme_state(self);
+            self.checked_changed.emit(false);
+        }
+        button_group::notify_checked(&[target], true);
+        #[cfg(not(alloc_frugal))]
+        {
+            // Focus follows selection, which is what makes a second arrow press continue from
+            // the control the first one reached.
+            let _ = crate::widget::runtime::focus_widget(target);
+            crate::widget::runtime::request_repaint(target);
+        }
+        self.base.request_redraw();
+        true
+    }
+
     /// Selects one radio button within a peer group.
     pub fn select_in_group(peers: &mut [&mut RadioButton], selected_index: usize) -> bool {
         if selected_index >= peers.len() {
@@ -391,6 +568,33 @@ impl Widget for RadioButton {
         &mut self.base
     }
 
+    /// Keeps the group's geometry snapshot in step with a layout pass.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.sync_group_registration();
+    }
+
+    /// Keeps the group's enabled snapshot in step, so a peer's arrow navigation skips this
+    /// control as soon as it is disabled.
+    fn set_enabled(&mut self, enabled: bool) {
+        if self.base.is_enabled() == enabled {
+            return;
+        }
+        self.base.set_enabled(enabled);
+        self.set_state_theme_hook();
+        self.sync_group_registration();
+    }
+
+    /// Keeps the exclusive group in step with the parent it may be keyed by.
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        let previous = self.exclusive_key();
+        self.base.set_parent(parent);
+        if let Some(key) = previous {
+            button_group::unregister(&key, self.id());
+        }
+        self.sync_group_registration();
+    }
+
     fn size_hint(&self) -> Size {
         // Reads the metric-driven derivation, so this site carries the vocabulary the
         // `check_implicit_size_uses_metrics` gate looks for without the arithmetic being
@@ -426,7 +630,7 @@ impl Widget for RadioButton {
         if !self.base.is_enabled() {
             return WidgetState::Disabled;
         }
-        if self.checked {
+        if self.is_checked() {
             return WidgetState::Checked;
         }
         if self.base.is_pressed() {
@@ -481,6 +685,7 @@ impl WidgetProperties for RadioButton {
                 Some(id) => Ok(CapabilityValue::String(id.to_string())),
                 None => Ok(CapabilityValue::Null),
             },
+            "auto_exclusive" => Ok(CapabilityValue::Bool(self.is_auto_exclusive())),
             _ => base_property_get(self, name),
         }
     }
@@ -502,12 +707,16 @@ impl WidgetProperties for RadioButton {
                 }
                 Ok(())
             }
+            "auto_exclusive" => {
+                self.set_auto_exclusive(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "checked", "group_id", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "checked", "group_id", "auto_exclusive", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `radio_button` publishes.
@@ -528,6 +737,9 @@ impl WidgetProperties for RadioButton {
 impl EventHandler for RadioButton {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // Refresh the group's geometry/enabled snapshot before anything reads it: a peer's
+        // arrow-key navigation and a peer's selection both consult it.
+        self.sync_group_registration();
         // The four pointer events are the only ones that can change the interaction fade. They
         // run before the enabled early return so a disabled radio still retargets both drivers
         // to rest instead of leaving a hovered tint frozen in place.
@@ -564,6 +776,19 @@ impl EventHandler for RadioButton {
                 // Space or Enter
                 self.set_checked(true);
                 self.base.clicked.emit();
+            }
+            // Arrow keys move the selection inside the group, which is the keyboard half of
+            // auto-exclusivity: Tab reaches the group, arrows choose within it.
+            Event::KeyPress { key, .. }
+                if matches!(
+                    *key,
+                    key_codes::UP | key_codes::DOWN | key_codes::LEFT | key_codes::RIGHT
+                ) =>
+            {
+                let forward = matches!(*key, key_codes::DOWN | key_codes::RIGHT);
+                if self.navigate_group(forward) {
+                    self.base.clicked.emit();
+                }
             }
             Event::FocusGained { reason } => {
                 // The base records the reason; this arm only asks for the repaint, because
@@ -634,7 +859,7 @@ impl Draw for RadioButton {
         let ring = if enabled { ink } else { ink.with_alpha(140) };
         context.draw_circle_stroke(center, radius, ring, RING_WIDTH);
 
-        if self.checked {
+        if self.is_checked() {
             // The dot is the control's *meaning*, and the theme **declares** what it is: the
             // `"radio_button:checked"` key carries `background: primary`. This arm is what
             // consumes that key.
@@ -726,7 +951,7 @@ impl Draw for RadioButton {
         // click focuses without painting a ring. Reading the same overlay as the fill above is
         // what keeps "the pointer is here" from being answered twice, differently.
         //
-        // The macOS metrics profile uses AppKit's outer halo; every other profile keeps the
+        // The macOS metrics profile uses the platform's outer halo; every other profile keeps the
         // inset stroke unchanged.
         if overlay.focused {
             if active_profile() == ControlMetricsProfile::Macos {
@@ -755,6 +980,18 @@ impl Draw for RadioButton {
                     );
                 }
             }
+        }
+    }
+}
+
+/// A dropped radio leaves its exclusive group.
+///
+/// The registry is thread-local and has no lifetime of its own, so a control that is never
+/// unregistered would keep a group (and its selection) alive after the control is gone.
+impl Drop for RadioButton {
+    fn drop(&mut self) {
+        if let Some(key) = self.exclusive_key() {
+            button_group::unregister(&key, self.id());
         }
     }
 }
@@ -1743,5 +1980,104 @@ mod tests {
             "Full mode records no damage, so the control repaints whole"
         );
         runtime::unregister(id);
+    }
+
+    // ── Group exclusivity and arrow navigation (R016, R017) ────────────
+
+    #[test]
+    fn a_clicked_radio_unchecks_its_grouped_peer() {
+        let mut a = RadioButton::new(Rect::new(0, 0, 80, 20));
+        let mut b = RadioButton::new(Rect::new(0, 24, 80, 20));
+        a.set_group_id(Some("size".into()));
+        b.set_group_id(Some("size".into()));
+
+        a.set_checked(true);
+        assert!(a.is_checked());
+        b.set_checked(true);
+        assert!(b.is_checked());
+        assert!(!a.is_checked(), "the group selects one member, so the peer is no longer checked");
+    }
+
+    #[test]
+    fn different_group_ids_do_not_exclude_each_other() {
+        let mut a = RadioButton::new(Rect::new(0, 0, 80, 20));
+        let mut b = RadioButton::new(Rect::new(0, 24, 80, 20));
+        a.set_group_id(Some("left".into()));
+        b.set_group_id(Some("right".into()));
+        a.set_checked(true);
+        b.set_checked(true);
+        assert!(a.is_checked() && b.is_checked());
+    }
+
+    #[test]
+    fn clearing_the_group_id_releases_the_selection() {
+        let mut a = RadioButton::new(Rect::new(0, 0, 80, 20));
+        let mut b = RadioButton::new(Rect::new(0, 24, 80, 20));
+        a.set_group_id(Some("g".into()));
+        b.set_group_id(Some("g".into()));
+        a.set_checked(true);
+        b.set_group_id(None);
+        assert!(a.is_checked(), "a departing member cannot hold the group's selection");
+    }
+
+    #[test]
+    fn arrow_keys_move_the_selection_down_the_group() {
+        let mut first = RadioButton::new(Rect::new(0, 0, 80, 20));
+        let mut second = RadioButton::new(Rect::new(0, 24, 80, 20));
+        let mut third = RadioButton::new(Rect::new(0, 48, 80, 20));
+        for radio in [&mut first, &mut second, &mut third] {
+            radio.set_group_id(Some("column".into()));
+        }
+        first.set_checked(true);
+
+        first.handle_event(&Event::KeyPress { key: key_codes::DOWN, modifiers: 0 });
+        assert!(!first.is_checked());
+        assert!(second.is_checked(), "Down selects the next radio");
+        assert!(!third.is_checked());
+
+        second.handle_event(&Event::KeyPress { key: key_codes::UP, modifiers: 0 });
+        assert!(first.is_checked(), "Up selects the previous radio");
+    }
+
+    #[test]
+    fn arrow_navigation_wraps_and_skips_disabled_peers() {
+        let mut first = RadioButton::new(Rect::new(0, 0, 80, 20));
+        let mut middle = RadioButton::new(Rect::new(0, 24, 80, 20));
+        let mut last = RadioButton::new(Rect::new(0, 48, 80, 20));
+        for radio in [&mut first, &mut middle, &mut last] {
+            radio.set_group_id(Some("wrapping".into()));
+        }
+        middle.set_enabled(false);
+        first.set_checked(true);
+
+        first.handle_event(&Event::KeyPress { key: key_codes::DOWN, modifiers: 0 });
+        assert!(last.is_checked(), "a disabled member is skipped, and the search wraps");
+    }
+
+    #[test]
+    fn auto_exclusive_groups_same_parent_radios() {
+        let mut a = RadioButton::new(Rect::new(0, 0, 80, 20));
+        let mut b = RadioButton::new(Rect::new(0, 24, 80, 20));
+        a.set_parent(Some(7));
+        b.set_parent(Some(7));
+        assert!(a.is_auto_exclusive(), "same-parent exclusivity is the default");
+
+        a.set_checked(true);
+        b.set_checked(true);
+        assert!(b.is_checked());
+        assert!(!a.is_checked());
+    }
+
+    #[test]
+    fn auto_exclusive_can_be_turned_off() {
+        let mut a = RadioButton::new(Rect::new(0, 0, 80, 20));
+        let mut b = RadioButton::new(Rect::new(0, 24, 80, 20));
+        a.set_parent(Some(7));
+        b.set_parent(Some(7));
+        a.set_auto_exclusive(false);
+        b.set_auto_exclusive(false);
+        a.set_checked(true);
+        b.set_checked(true);
+        assert!(a.is_checked() && b.is_checked());
     }
 }

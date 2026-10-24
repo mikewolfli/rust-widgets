@@ -475,6 +475,66 @@ pub fn motion_easing() -> crate::style::animation::EasingFunction {
     crate::style::animation::EasingFunction::default()
 }
 
+/// The width bounds that classify a viewport into [`Breakpoint`](crate::view::Breakpoint) tiers.
+///
+/// # Why these are tokens rather than constants read at the call site
+///
+/// The classification is a *style* decision (a desktop window at 840 px is not a tablet, and a
+/// theme aimed at one device family may draw that line elsewhere), so the numbers belong beside
+/// the motion tokens rather than compiled into the view layer. The defaults reproduce the
+/// metric table's values exactly, which is what keeps every existing view byte-identical; a
+/// theme preset or a host that wants different boundaries calls
+/// [`set_breakpoint_tokens`] once.
+///
+/// The values are **inclusive** upper bounds, matching
+/// [`Breakpoint::of`](crate::view::Breakpoint::of): a width equal to `compact_max` is still
+/// `Compact`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BreakpointTokens {
+    /// The widest viewport still classified `Compact`.
+    pub compact_max: u32,
+    /// The widest viewport still classified `Medium`; anything above is `Expanded`.
+    pub medium_max: u32,
+}
+
+impl BreakpointTokens {
+    /// The metric table's boundaries: 599 px for compact and 839 px for medium.
+    pub const fn from_metrics() -> Self {
+        Self {
+            compact_max: crate::widget::metrics::dimensions::BREAKPOINT_COMPACT_MAX,
+            medium_max: crate::widget::metrics::dimensions::BREAKPOINT_MEDIUM_MAX,
+        }
+    }
+}
+
+impl Default for BreakpointTokens {
+    fn default() -> Self {
+        Self::from_metrics()
+    }
+}
+
+thread_local! {
+    /// A per-thread override, so a theme applied on the UI thread changes the classifier there
+    /// without affecting a test running on another thread.
+    static BREAKPOINT_TOKENS: core::cell::Cell<Option<BreakpointTokens>> =
+        const { core::cell::Cell::new(None) };
+}
+
+/// The breakpoint boundaries in force for this thread.
+///
+/// Falls back to [`BreakpointTokens::from_metrics`] when nothing has overridden them, so a build
+/// without a theme classifies exactly as it did before the tokens existed.
+pub fn breakpoint_tokens() -> BreakpointTokens {
+    BREAKPOINT_TOKENS.try_with(|cell| cell.get()).ok().flatten().unwrap_or_default()
+}
+
+/// Replaces this thread's breakpoint boundaries; `None` restores the metric defaults.
+///
+/// Returns the previous value, mirroring the other scoped token setters in this module.
+pub fn set_breakpoint_tokens(tokens: Option<BreakpointTokens>) -> Option<BreakpointTokens> {
+    BREAKPOINT_TOKENS.try_with(|cell| cell.replace(tokens)).ok().flatten()
+}
+
 /// The process-wide theme manager, behind its lock.
 ///
 /// The return type is spelled out rather than elided because it is a guard: a caller must

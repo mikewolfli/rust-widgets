@@ -11,6 +11,7 @@ use crate::action::Action as CmdAction;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::shortcut::{Key, Modifiers, PlatformShortcutStyle, Shortcut};
 use crate::signal::{ConnectionHandle, GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -18,6 +19,56 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Where an action belongs in the platform's application menu.
+///
+/// The role is metadata, not painting: a host that builds a native application menu
+/// uses it to merge the action into the system's About/Preferences/Quit items instead
+/// of appending a duplicate entry. A host that draws its own menu ignores it, which is
+/// why the default [`MenuRole::None`] changes no pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MenuRole {
+    /// No special placement; the action is an ordinary menu entry.
+    #[default]
+    None,
+    /// The application's About item.
+    About,
+    /// The application's Preferences/Settings item.
+    Preferences,
+    /// The application's Quit item.
+    Quit,
+    /// The application's Hide item.
+    Hide,
+    /// The application's Hide Others item.
+    HideOthers,
+    /// The application's Show All item.
+    ShowAll,
+    /// The application's Services submenu placeholder.
+    Services,
+    /// The application's Window menu placeholder.
+    Window,
+    /// The application's Help menu placeholder.
+    Help,
+}
+
+impl MenuRole {
+    /// The stable identifier used by hosts and serialized configuration.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::About => "about",
+            Self::Preferences => "preferences",
+            Self::Quit => "quit",
+            Self::Hide => "hide",
+            Self::HideOthers => "hide_others",
+            Self::ShowAll => "show_all",
+            Self::Services => "services",
+            Self::Window => "window",
+            Self::Help => "help",
+        }
+    }
+}
+
 /// Represents a user action (command, toggle, etc.) used in menus and toolbars.
 ///
 /// The inner [`CmdAction`] owns the canonical command state (`id`, `checkable`,
@@ -37,6 +88,19 @@ pub struct Action {
     shortcut: String,
     /// Whether this action is a visual separator.
     separator: bool,
+    /// Where the action belongs in the platform's application menu.
+    menu_role: MenuRole,
+    /// Whether the action's icon is painted in menu surfaces.
+    ///
+    /// Toolbar surfaces ignore this flag; menus honour it, so an action can show an
+    /// icon on a toolbar while keeping the menu row text-only.
+    icon_visible_in_menu: bool,
+    /// One-line hint a host may show in a status bar while the action is hovered.
+    status_tip: String,
+    /// The "What's This?" help text, empty when the action has none.
+    whats_this: String,
+    /// A real keyboard binding, as opposed to the display-only shortcut label.
+    shortcut_key: Option<Shortcut>,
     /// Emitted when the action fires, with the checked state *after* the fire.
     ///
     /// Emitted by [`Action::trigger`], which routes through the inner command,
@@ -78,6 +142,11 @@ impl Action {
             icon_source: None,
             shortcut: String::new(),
             separator: false,
+            menu_role: MenuRole::None,
+            icon_visible_in_menu: true,
+            status_tip: String::new(),
+            whats_this: String::new(),
+            shortcut_key: None,
             triggered: Signal1::new(),
             toggled: Signal1::new(),
             hovered: GenericSignal::new(),
@@ -114,10 +183,132 @@ impl Action {
     }
     /// Returns the shortcut display string (for example `"Ctrl+S"`).
     ///
-    /// Purely a label: the action does not register or respond to the shortcut
-    /// it displays.
+    /// This is the label. When a binding was installed through
+    /// [`Action::set_shortcut_key`] the label is kept in sync with it, and the
+    /// action also responds to the key itself through [`Action::matches_shortcut`].
     pub fn shortcut(&self) -> &str {
         &self.shortcut
+    }
+    /// Returns the role that places the action in a platform application menu.
+    pub fn menu_role(&self) -> MenuRole {
+        self.menu_role
+    }
+    /// Assigns the platform application-menu role. Metadata only: no repaint.
+    pub fn set_menu_role(&mut self, role: MenuRole) {
+        if self.menu_role == role {
+            return;
+        }
+        self.menu_role = role;
+        self.changed.emit();
+    }
+    /// Whether this action's icon is painted in menu surfaces.
+    pub fn is_icon_visible_in_menu(&self) -> bool {
+        self.icon_visible_in_menu
+    }
+    /// Shows or hides the icon in menu surfaces. Requests a repaint when it changes.
+    pub fn set_icon_visible_in_menu(&mut self, visible: bool) {
+        if self.icon_visible_in_menu == visible {
+            return;
+        }
+        self.icon_visible_in_menu = visible;
+        self.changed.emit();
+        self.base.request_redraw();
+    }
+    /// The short hint a host may display while the action is hovered.
+    pub fn status_tip(&self) -> &str {
+        &self.status_tip
+    }
+    /// Replaces the status-bar hint. Metadata only: no repaint.
+    pub fn set_status_tip(&mut self, tip: impl Into<String>) {
+        let tip = tip.into();
+        if self.status_tip == tip {
+            return;
+        }
+        self.status_tip = tip;
+        self.changed.emit();
+    }
+    /// The "What's This?" help text, or `""` when the action has none.
+    pub fn whats_this(&self) -> &str {
+        &self.whats_this
+    }
+    /// Replaces the "What's This?" help text. Metadata only: no repaint.
+    pub fn set_whats_this(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.whats_this == text {
+            return;
+        }
+        self.whats_this = text;
+        self.changed.emit();
+    }
+    /// The installed keyboard binding, if any.
+    ///
+    /// Unlike the display-only [`Action::shortcut`] string, a binding is matched by
+    /// [`Action::matches_shortcut`] and fires the action from
+    /// [`EventHandler::handle_event`].
+    pub fn shortcut_key(&self) -> Option<&Shortcut> {
+        self.shortcut_key.as_ref()
+    }
+    /// Installs a keyboard binding and refreshes the display label from it.
+    ///
+    /// The label uses the compile target's modifier notation, so one declaration
+    /// reads `⌘S` on macOS and `Ctrl+S` elsewhere. Returns the action so a host can
+    /// register the binding with a global shortcut manager as well.
+    pub fn set_shortcut_key(&mut self, shortcut: Shortcut) -> Shortcut {
+        let label = PlatformShortcutStyle::current().format(&shortcut);
+        let changed = self.shortcut_key.as_ref() != Some(&shortcut) || self.shortcut != label;
+        self.shortcut_key = Some(shortcut.clone());
+        self.shortcut = label;
+        if changed {
+            self.changed.emit();
+            self.base.request_redraw();
+        }
+        shortcut
+    }
+    /// Removes the keyboard binding and clears the display label.
+    pub fn clear_shortcut_key(&mut self) {
+        if self.shortcut_key.is_none() && self.shortcut.is_empty() {
+            return;
+        }
+        self.shortcut_key = None;
+        self.shortcut.clear();
+        self.changed.emit();
+        self.base.request_redraw();
+    }
+    /// Whether a key event matches the installed binding.
+    ///
+    /// Both arguments use the same convention as [`Event::KeyPress`]. A binding
+    /// written with [`Modifiers::PRIMARY`] therefore matches Command on macOS and
+    /// Control elsewhere, exactly like the rest of the shortcut system.
+    pub fn matches_shortcut(&self, key: u32, modifiers: u32) -> bool {
+        let Some(binding) = self.shortcut_key.as_ref() else {
+            return false;
+        };
+        let Some(pressed) = Key::from_key_code(key) else {
+            return false;
+        };
+        if binding.key != pressed {
+            return false;
+        }
+        // The event bitmask and the shortcut bitmask are not identical: a Command
+        // press also carries the Control bit, and on Windows/Linux a Control press
+        // is that platform's primary accelerator. Normalizing here keeps a
+        // `Shortcut::primary` binding reachable on every host, which is the same
+        // rule the global shortcut manager applies.
+        let style = PlatformShortcutStyle::current();
+        let mut pressed = Modifiers::from_event_bits(modifiers);
+        if style == PlatformShortcutStyle::Mac
+            && pressed.contains(Modifiers::PRIMARY)
+            && pressed.contains(Modifiers::CTRL)
+        {
+            pressed = pressed.without(Modifiers::CTRL);
+        }
+        if binding.modifiers == pressed {
+            return true;
+        }
+        style == PlatformShortcutStyle::Desktop
+            && pressed.contains(Modifiers::CTRL)
+            && !pressed.contains(Modifiers::PRIMARY)
+            && binding.modifiers == pressed.without(Modifiers::CTRL) | Modifiers::PRIMARY
     }
     /// Delegates to inner [`CmdAction::is_checkable`].
     pub fn is_checkable(&self) -> bool {
@@ -272,6 +463,144 @@ impl Action {
         }
     }
 }
+/// A named set of actions that can enforce mutual exclusion.
+///
+/// A group owns its members, because exclusive behaviour needs to reach the
+/// siblings of the action that was checked. The alternative — every action
+/// holding a shared registry — would make `Action` non-`Send` and would hide the
+/// membership in interior mutability; owning the members keeps the rule visible
+/// at the call site and testable without a widget tree.
+///
+/// Members are ordinary [`Action`] values, so they keep their signals and can be
+/// hosted by a menu or toolbar through [`ActionGroup::get`]/[`ActionGroup::get_mut`].
+#[derive(Debug)]
+pub struct ActionGroup {
+    name: String,
+    exclusive: bool,
+    actions: Vec<Action>,
+}
+
+impl core::fmt::Debug for Action {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Action")
+            .field("text", &self.text)
+            .field("separator", &self.separator)
+            .field("checkable", &self.cmd.is_checkable())
+            .field("checked", &self.cmd.is_checked())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ActionGroup {
+    /// Creates an empty non-exclusive group.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into(), exclusive: false, actions: Vec::new() }
+    }
+    /// Creates an empty exclusive group: checking one member clears the others.
+    pub fn exclusive(name: impl Into<String>) -> Self {
+        Self { name: name.into(), exclusive: true, actions: Vec::new() }
+    }
+    /// The group's name, for diagnostics and configuration keys.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Whether checking one member clears the others.
+    pub fn is_exclusive(&self) -> bool {
+        self.exclusive
+    }
+    /// Turns mutual exclusion on or off.
+    ///
+    /// Turning it on leaves at most one member checked: the first checked member in
+    /// insertion order keeps its state and the rest are cleared.
+    pub fn set_exclusive(&mut self, exclusive: bool) {
+        if self.exclusive == exclusive {
+            return;
+        }
+        self.exclusive = exclusive;
+        if exclusive {
+            let keep = self.actions.iter().position(Action::is_checked);
+            for (index, action) in self.actions.iter_mut().enumerate() {
+                if Some(index) != keep {
+                    action.set_checked(false);
+                }
+            }
+        }
+    }
+    /// Appends an action and returns its index.
+    pub fn add(&mut self, action: Action) -> usize {
+        self.actions.push(action);
+        self.actions.len() - 1
+    }
+    /// The number of members.
+    pub fn len(&self) -> usize {
+        self.actions.len()
+    }
+    /// Whether the group has no members.
+    pub fn is_empty(&self) -> bool {
+        self.actions.is_empty()
+    }
+    /// Reads a member by index.
+    pub fn get(&self, index: usize) -> Option<&Action> {
+        self.actions.get(index)
+    }
+    /// Mutates a member by index.
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut Action> {
+        self.actions.get_mut(index)
+    }
+    /// All members in insertion order.
+    pub fn actions(&self) -> &[Action] {
+        &self.actions
+    }
+    /// All members mutably, in insertion order.
+    pub fn actions_mut(&mut self) -> &mut [Action] {
+        &mut self.actions
+    }
+    /// The index of the checked member, if any.
+    pub fn checked_index(&self) -> Option<usize> {
+        self.actions.iter().position(Action::is_checked)
+    }
+    /// Checks or clears a member, applying the group's exclusion rule.
+    ///
+    /// An out-of-range index is ignored rather than panicking: hosts commonly
+    /// drive groups from tables whose content changed under them.
+    pub fn set_checked(&mut self, index: usize, checked: bool) {
+        let exclusive = self.exclusive;
+        let Some(action) = self.actions.get_mut(index) else {
+            return;
+        };
+        action.set_checked(checked);
+        if checked && exclusive {
+            for (other, candidate) in self.actions.iter_mut().enumerate() {
+                if other != index && candidate.is_checked() {
+                    candidate.set_checked(false);
+                }
+            }
+        }
+    }
+    /// Triggers a member, then re-applies exclusion.
+    ///
+    /// A checkable member toggles, so triggering the already-checked member clears
+    /// it and leaves the group with no selection. That is the behaviour of a
+    /// single-selection radio group only when the caller wants it; pass
+    /// `checked = true` to [`ActionGroup::set_checked`] for a group that must always
+    /// retain a selection.
+    pub fn trigger(&mut self, index: usize) {
+        let exclusive = self.exclusive;
+        let Some(action) = self.actions.get_mut(index) else {
+            return;
+        };
+        action.trigger();
+        let now_checked = action.is_checked();
+        if now_checked && exclusive {
+            for (other, candidate) in self.actions.iter_mut().enumerate() {
+                if other != index && candidate.is_checked() {
+                    candidate.set_checked(false);
+                }
+            }
+        }
+    }
+}
+
 impl Widget for Action {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -441,6 +770,9 @@ impl EventHandler for Action {
         }
         match event {
             Event::MousePress { button, .. } if *button == 1 => self.trigger(),
+            Event::KeyPress { key, modifiers } if self.matches_shortcut(*key, *modifiers) => {
+                self.trigger();
+            }
             Event::MouseEnter { .. } => {
                 // The base already recorded the hover; this arm only repaints and
                 // announces it, so the flag cannot be set in two places.
@@ -537,7 +869,13 @@ impl Draw for Action {
         // its check mark and shortcut were dimmed — the same row in two weights.
         let content_ink = self.base.disabled_ink_on(ink, highlight);
         let mut x = rect.x + 8;
-        if let Some(source) = self.icon_source {
+        if !self.icon_visible_in_menu {
+            // The row keeps the icon slot, so text stays aligned with sibling rows that
+            // do show an icon, but the menu does not paint the glyph.
+            if self.icon_source.is_some() || !self.icon_text.is_empty() {
+                x += 20;
+            }
+        } else if let Some(source) = self.icon_source {
             let line_height = context.measure_text("M", &font).height;
             let side = line_height.min(rect.height).max(1);
             let icon_rect = Rect::new(x, line.y, side, side);
@@ -874,5 +1212,119 @@ mod tests {
         assert!(a.is_checked());
         a.trigger();
         assert!(!a.is_checked());
+    }
+
+    #[test]
+    fn menu_role_and_help_metadata_round_trip() {
+        use super::MenuRole;
+        let mut a = Action::new("About", rect());
+        assert_eq!(a.menu_role(), MenuRole::None);
+        assert!(a.is_icon_visible_in_menu(), "menus show icons unless told otherwise");
+        assert!(a.status_tip().is_empty());
+        assert!(a.whats_this().is_empty());
+
+        let changed = Arc::new(AtomicUsize::new(0));
+        let c = changed.clone();
+        a.changed.connect(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        a.set_menu_role(MenuRole::About);
+        assert_eq!(a.menu_role(), MenuRole::About);
+        a.set_menu_role(MenuRole::About);
+        assert_eq!(
+            changed.load(Ordering::SeqCst),
+            1,
+            "an unchanged role must not announce a change"
+        );
+
+        a.set_icon_visible_in_menu(false);
+        assert!(!a.is_icon_visible_in_menu());
+        let before = changed.load(Ordering::SeqCst);
+        a.set_icon_visible_in_menu(false);
+        assert_eq!(changed.load(Ordering::SeqCst), before, "no-op visibility must stay quiet");
+
+        a.set_status_tip("Version information");
+        a.set_whats_this("Shows the application version");
+        assert_eq!(a.status_tip(), "Version information");
+        assert_eq!(a.whats_this(), "Shows the application version");
+    }
+
+    #[test]
+    fn a_bound_shortcut_fires_the_action_and_labels_itself() {
+        use crate::shortcut::{Key, Shortcut};
+        let mut a = Action::new("Save", rect());
+        a.set_shortcut_key(Shortcut::primary(Key::S));
+        assert!(!a.shortcut().is_empty(), "the label follows the binding");
+        assert_eq!(a.shortcut_key(), Some(&Shortcut::primary(Key::S)));
+
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f = fired.clone();
+        a.triggered.connect(move |_| {
+            f.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // 83 is 'S'; bit 3 is the primary accelerator in the event convention.
+        a.handle_event(&Event::KeyPress { key: 83, modifiers: 0 });
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "the modifier is part of the chord");
+        a.handle_event(&Event::KeyPress { key: 83, modifiers: 0b1000 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "the primary+S chord must fire");
+        a.handle_event(&Event::KeyPress { key: 84, modifiers: 0b1000 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "a different key must not fire");
+
+        a.clear_shortcut_key();
+        assert!(a.shortcut_key().is_none());
+        assert!(a.shortcut().is_empty());
+        a.handle_event(&Event::KeyPress { key: 83, modifiers: 0b1000 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "a cleared binding stops firing");
+    }
+
+    #[test]
+    fn an_exclusive_group_keeps_one_member_checked() {
+        use super::ActionGroup;
+        let mut group = ActionGroup::exclusive("alignment");
+        let mut left = Action::new("Left", rect());
+        left.set_checkable(true);
+        let mut center = Action::new("Center", rect());
+        center.set_checkable(true);
+        let mut right = Action::new("Right", rect());
+        right.set_checkable(true);
+        group.add(left);
+        group.add(center);
+        group.add(right);
+
+        group.set_checked(0, true);
+        assert_eq!(group.checked_index(), Some(0));
+        group.set_checked(2, true);
+        assert_eq!(group.checked_index(), Some(2), "checking a sibling must clear the first");
+        assert_eq!(group.get(0).map(Action::is_checked), Some(false));
+
+        group.trigger(2);
+        assert_eq!(group.checked_index(), None, "triggering the checked member toggles it off");
+
+        group.set_checked(9, true);
+        assert_eq!(group.checked_index(), None, "an out-of-range index is ignored");
+    }
+
+    #[test]
+    fn a_non_exclusive_group_lets_members_accumulate() {
+        use super::ActionGroup;
+        let mut group = ActionGroup::new("filters");
+        assert!(!group.is_exclusive());
+        let mut a = Action::new("A", rect());
+        a.set_checkable(true);
+        let mut b = Action::new("B", rect());
+        b.set_checkable(true);
+        group.add(a);
+        group.add(b);
+        group.set_checked(0, true);
+        group.set_checked(1, true);
+        assert_eq!(group.get(0).map(Action::is_checked), Some(true));
+        assert_eq!(group.get(1).map(Action::is_checked), Some(true));
+
+        group.set_exclusive(true);
+        assert_eq!(group.checked_index(), Some(0), "the first checked member keeps its state");
+        assert_eq!(group.get(1).map(Action::is_checked), Some(false));
+        assert_eq!(group.len(), 2);
     }
 }

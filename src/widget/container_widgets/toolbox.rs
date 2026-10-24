@@ -57,6 +57,12 @@ pub struct ToolBox {
     /// partial tab at the top of the strip would be a tab whose label is cut in half, and the
     /// overflow rule above is deliberately "whole tabs, or none".
     scroll_offset: usize,
+    /// The smooth-scroll position in tab units while a selection change animates.
+    scroll_render: f32,
+    /// Whether selection changes animate the strip's scroll.
+    smooth_scroll: bool,
+    /// Height of one vertical tab. Defaults to [`ITEM_HEIGHT`].
+    item_height: u32,
     /// Emitted with the new page index whenever the current page changes through
     /// [`ToolBox::set_current_index`] or user input. `clear()` resets the index to `0`
     /// without emitting, because it also empties the page vector.
@@ -179,6 +185,9 @@ impl ToolBox {
             current_index: 0,
             orientation: Orientation::Vertical,
             scroll_offset: 0,
+            scroll_render: 0.0,
+            smooth_scroll: false,
+            item_height: ITEM_HEIGHT,
             current_changed: Signal1::new(),
             registry: None,
         }
@@ -377,14 +386,56 @@ impl ToolBox {
         }
         self.current_index = 0;
         self.scroll_offset = 0;
+        self.scroll_render = 0.0;
         self.base.request_redraw();
     }
     /// The extent one tab occupies along the strip's axis.
     fn item_extent(&self) -> u32 {
         match self.orientation {
-            Orientation::Vertical => ITEM_HEIGHT,
+            Orientation::Vertical => self.item_height.max(1),
             Orientation::Horizontal => ITEM_WIDTH,
         }
+    }
+
+    /// The height of one vertical tab.
+    pub fn item_height(&self) -> u32 {
+        self.item_height
+    }
+
+    /// Sets the height of one vertical tab.
+    ///
+    /// Returns nothing because every positive value is valid; zero is clamped to one. The
+    /// value is the strip's own metric, not a content measurement, and it defaults to
+    /// [`ITEM_HEIGHT`] so an existing toolbox keeps its pixels.
+    pub fn set_item_height(&mut self, height: u32) {
+        let height = height.max(1);
+        if self.item_height == height {
+            return;
+        }
+        self.item_height = height;
+        self.clamp_scroll();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Whether scroll changes animate.
+    pub fn smooth_scroll(&self) -> bool {
+        self.smooth_scroll
+    }
+
+    /// Enables or disables the scroll tween.
+    ///
+    /// Off by default, so a selection still snaps exactly as it did. When on, the strip's
+    /// scroll position eases toward the selected tab over subsequent [`Widget::tick`] frames.
+    pub fn set_smooth_scroll(&mut self, smooth: bool) {
+        if self.smooth_scroll == smooth {
+            return;
+        }
+        self.smooth_scroll = smooth;
+        if !smooth {
+            self.scroll_render = self.scroll_offset as f32;
+        }
+        self.base.request_redraw();
     }
 
     /// How much room the tab strip has, along its own axis.
@@ -422,6 +473,9 @@ impl ToolBox {
         let clamped = offset.min(self.max_scroll());
         if self.scroll_offset != clamped {
             self.scroll_offset = clamped;
+            if !self.smooth_scroll {
+                self.scroll_render = clamped as f32;
+            }
             self.base.request_redraw();
         }
     }
@@ -480,15 +534,14 @@ impl ToolBox {
         }
         let rect = self.geometry();
         let extent = self.item_extent();
-        // An item scrolled above the strip's start contributes no pixels, and a `usize`
-        // subtraction would underflow here — which is why the offset is compared rather than
-        // subtracted.
-        let visible_from = self.scroll_offset;
-        if index < visible_from {
+        // Item positions are relative to the rendered scroll fraction, which equals the
+        // integer offset when smoothing is off. A negative relative slot is fully hidden.
+        let relative = index as f32
+            - if self.smooth_scroll { self.scroll_render } else { self.scroll_offset as f32 };
+        if relative < 0.0 {
             return None;
         }
-        let slot = (index - visible_from) as u32;
-        let position = slot * extent;
+        let position = (relative * extent as f32).round() as u32;
         match self.orientation {
             Orientation::Horizontal => {
                 let strip = Rect::new(rect.x, rect.y, rect.width, rect.height);
@@ -506,7 +559,7 @@ impl ToolBox {
                     rect.x,
                     rect.y.saturating_add_unsigned(position),
                     rect.width,
-                    ITEM_HEIGHT,
+                    self.item_height,
                 );
                 full.intersection(&strip)
             }
@@ -600,6 +653,32 @@ impl Widget for ToolBox {
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
         self.place_current_page();
+    }
+
+    /// Eases the strip toward the selected tab when smooth scrolling is on.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.smooth_scroll {
+            return false;
+        }
+        let target = self.scroll_offset as f32;
+        let delta = target - self.scroll_render;
+        if delta.abs() <= 0.01 {
+            self.scroll_render = target;
+            return false;
+        }
+        let step = (delta_ms as f32 / 120.0).clamp(0.0, 1.0);
+        self.scroll_render += delta * step;
+        if (target - self.scroll_render).abs() <= 0.01 {
+            self.scroll_render = target;
+            self.base.request_redraw();
+            return false;
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    fn is_animating(&self) -> bool {
+        self.smooth_scroll && (self.scroll_render - self.scroll_offset as f32).abs() > 0.01
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -1673,5 +1752,23 @@ mod tests {
         tb.insert_item(9, "C".to_string(), None);
         assert_eq!(tb.count(), 3);
         assert_eq!(tb.item(2).map(|i| i.text()), Some("C"), "past the end lands last");
+    }
+
+    /// The row height is a settable metric, and a smooth scroll eases toward the target.
+    #[test]
+    fn item_height_and_smooth_scroll_are_wired() {
+        let mut tb = ToolBox::new(Rect::new(0, 0, 200, 100));
+        for index in 0..6 {
+            tb.add_item(format!("Item {index}"), None);
+        }
+        tb.set_item_height(48);
+        assert_eq!(tb.item_height(), 48);
+        assert_eq!(tb.item_rect(1).map(|rect| rect.height), Some(48));
+        tb.set_smooth_scroll(true);
+        tb.set_scroll_offset(1);
+        assert!(tb.is_animating());
+        assert!(tb.tick(60));
+        assert!(!tb.tick(1000));
+        assert!(!tb.is_animating());
     }
 }

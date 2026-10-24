@@ -8,7 +8,9 @@
 //! color has alpha transparency, a checkerboard pattern is rendered behind it
 //! to indicate the transparent regions. An optional border frames the swatch.
 
-use crate::core::{Color, Rect};
+use crate::compat::Duration;
+use crate::core::{Color, Point, Rect};
+use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -20,14 +22,34 @@ use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// The payload type a colour well carries and accepts.
+const COLOR_PAYLOAD_TYPE: &str = "color";
+
+/// How long two presses may be apart and still count as one double click.
+const DOUBLE_CLICK_INTERVAL_MS: u64 = 400;
+
+/// How far apart two presses may be and still count as one double click.
+const DOUBLE_CLICK_SLOP: i32 = 4;
+
 /// A compact color swatch widget that displays a color and emits a signal
 /// when clicked.
 pub struct ColorWell {
     base: BaseWidget,
     color: Color,
     show_border: bool,
+    /// The previous left press and its reading, for double-click detection.
+    ///
+    /// The interval and distance thresholds are the platform conventions:
+    /// two presses within 400 ms and 4 px are one gesture. Keeping the reading
+    /// in the control means a host need not pre-classify the pointer stream.
+    last_press: Option<(crate::compat::Instant, Point)>,
     /// Emitted when the color well is clicked.
     pub clicked: GenericSignal,
+    /// Emitted when a second press lands within 400 ms and 4 px of the first.
+    ///
+    /// This is the gesture that opens a color chooser. The control does not open
+    /// one itself: the host owns the picker, so the signal is the request.
+    pub picker_requested: GenericSignal,
 }
 
 impl ColorWell {
@@ -39,7 +61,9 @@ impl ColorWell {
             base: BaseWidget::new(WidgetKind::ColorWell, geometry, "ColorWell"),
             color,
             show_border: true,
+            last_press: None,
             clicked: GenericSignal::new(),
+            picker_requested: GenericSignal::new(),
         }
     }
 
@@ -69,6 +93,22 @@ impl ColorWell {
             self.base.request_redraw();
         }
     }
+
+    /// Records a left press and returns whether it completes a double click.
+    ///
+    /// A completed pair clears the stored press, so three quick presses are one
+    /// double click followed by a new first press rather than two overlapping pairs.
+    fn is_double_press(&mut self, pos: Point) -> bool {
+        let now = crate::compat::Instant::now();
+        let double = self.last_press.is_some_and(|(when, previous)| {
+            now.checked_duration_since(when)
+                .is_some_and(|elapsed| elapsed <= Duration::from_millis(DOUBLE_CLICK_INTERVAL_MS))
+                && (pos.x - previous.x).abs() <= DOUBLE_CLICK_SLOP
+                && (pos.y - previous.y).abs() <= DOUBLE_CLICK_SLOP
+        });
+        self.last_press = if double { None } else { Some((now, pos)) };
+        double
+    }
 }
 
 impl Widget for ColorWell {
@@ -85,6 +125,17 @@ impl Widget for ColorWell {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(40, 24)
     }
+
+    /// Opts the well into the runtime's drag coordinator as a source.
+    fn drag_source_mut(&mut self) -> Option<&mut dyn DragSource> {
+        Some(self)
+    }
+
+    /// Opts the well into the runtime's drag coordinator as a drop target.
+    fn drop_target_mut(&mut self) -> Option<&mut dyn DropTarget> {
+        Some(self)
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -284,37 +335,128 @@ impl Draw for ColorWell {
         if self.show_border {
             context.draw_rect_stroke(well, border, 1);
         }
+
+        // Hover and press are painted as a ring and a faint wash, not a different
+        // swatch: the colour is caller data and must stay readable. Both states are
+        // opt-in by interaction, so an untouched well paints exactly the same bytes
+        // as before.
+        let hovered = self.base.is_hovered();
+        let pressed = self.base.is_pressed();
+        if hovered || pressed {
+            let accent = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.primary)
+                .unwrap_or_else(|| border.blend(&text_color, 0.5));
+            if pressed {
+                context.fill_rounded_rect(well, 2, accent.with_alpha(40));
+                context.draw_rect_stroke(well, accent, 2);
+            } else {
+                context.draw_rect_stroke(well, accent.with_alpha(160), 2);
+            }
+        }
     }
 }
 
 impl EventHandler for ColorWell {
-    /// Emits `clicked` only for a press that lands on the well.
+    /// Emits `clicked` only for a press that lands on the well, and tracks the
+    /// hover/press state the paint path reads.
     ///
     /// The position used to be discarded (`pos: _`), so a left press **anywhere**
     /// emitted this control's `clicked` — a press on a neighbouring control fired the
     /// well's colour-changed path. 43 other widgets in this crate guard the press with
     /// [`Rect::contains_point`](crate::core::Rect::contains_point); this one now does too.
+    ///
+    /// A second press within the double-click window additionally emits
+    /// [`Self::picker_requested`]; the ordinary click is still emitted for that press,
+    /// because the two are separate questions ("was I pressed" and "should a chooser
+    /// open").
     fn handle_event(&mut self, event: &Event) {
         if !self.base.is_enabled() {
             return;
         }
+        let was_hovered = self.base.is_hovered();
+        let was_pressed = self.base.is_pressed();
+        self.base.handle_event(event);
         match event {
             Event::MousePress { pos, button, .. } => {
                 if *button == 1 && self.geometry().contains_point(*pos) {
+                    if self.is_double_press(*pos) {
+                        self.picker_requested.emit();
+                    }
                     self.clicked.emit();
+                } else if *button == 1 {
+                    // A press elsewhere ends the gesture, so the next press here
+                    // is the first of a new pair rather than the second of a stale
+                    // one.
+                    self.last_press = None;
                 }
             }
-            _ => {
-                self.base.handle_event(event);
+            // A pointer that leaves the well abandons the pressed look even though
+            // the release will still be routed here.
+            Event::MouseLeave { .. } => {
+                self.base.set_pressed(false);
             }
+            _ => {}
         }
+        if was_hovered != self.base.is_hovered() || was_pressed != self.base.is_pressed() {
+            self.base.request_redraw();
+        }
+    }
+}
+
+/// A press on the well carries its colour as a `"color"` payload.
+///
+/// The item id is the `#RRGGBBAA` spelling [`Color::to_hex_rgba`] produces, so a
+/// target reads the value back with [`Color::parse_hex`] and no shared memory is
+/// needed between the two ends of the drag. The drag is a copy: the well keeps its
+/// colour whatever the target reports.
+impl DragSource for ColorWell {
+    fn drag_payload(&self, pos: Point) -> Option<DragPayload> {
+        if !self.base.is_enabled() || !self.geometry().contains_point(pos) {
+            return None;
+        }
+        let hex = self.color.to_hex_rgba();
+        Some(DragPayload::new(COLOR_PAYLOAD_TYPE, hex.clone()).with_label(hex).with_origin(pos))
+    }
+}
+
+/// A `"color"` payload dropped on the well becomes its colour.
+///
+/// The effect is [`DropEffect::Copy`]: the source keeps its own colour, because a
+/// well is a value display rather than a container of the dragged item.
+impl DropTarget for ColorWell {
+    fn can_accept(&self, payload: &DragPayload) -> bool {
+        self.base.is_enabled()
+            && payload.is_type(COLOR_PAYLOAD_TYPE)
+            && Color::parse_hex(&payload.item_id).is_some()
+    }
+
+    fn on_drop(&mut self, payload: &DragPayload, _pos: Point) -> DropEffect {
+        if !self.can_accept(payload) {
+            return DropEffect::None;
+        }
+        let Some(color) = Color::parse_hex(&payload.item_id) else {
+            return DropEffect::None;
+        };
+        self.set_color(color);
+        DropEffect::Copy
+    }
+
+    /// Highlights the well's own square, which is where the colour is shown.
+    fn preview_rect(&self, payload: &DragPayload, _pos: Point) -> Option<Rect> {
+        if !self.can_accept(payload) {
+            return None;
+        }
+        Some(ControlMetrics::centered_square(self.geometry(), dimensions::COLOR_WELL_SIZE))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::Duration;
     use crate::core::Point;
+    use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -423,5 +565,105 @@ mod tests {
         let mut small = ColorWell::new(Color::RED, Rect::new(0, 0, 20, 20));
         let svg = crate::widget::svg::render_to_svg(&mut small);
         assert!(svg.contains("width=\"20\" height=\"20\""), "the well clamps to 20x20: {svg}");
+    }
+
+    /// Two presses inside the window and the slop are one double click.
+    #[test]
+    fn color_well_double_click_requests_the_picker() {
+        let mut cw = ColorWell::new(Color::RED, Rect::new(0, 0, 40, 40));
+        let fired = Arc::new(AtomicBool::new(false));
+        cw.picker_requested.connect({
+            let fired = Arc::clone(&fired);
+            move || fired.store(true, Ordering::SeqCst)
+        });
+
+        // The first press of the pair, as the clock would have recorded it.
+        cw.last_press =
+            Some((crate::compat::Instant::now() - Duration::from_millis(100), Point::new(10, 10)));
+        cw.handle_event(&Event::mouse_press(12, 12, 1));
+
+        assert!(fired.load(Ordering::SeqCst), "the second press opens the picker");
+        assert!(cw.last_press.is_none(), "a completed pair does not arm a third press");
+    }
+
+    /// A slow or distant press is the start of a new gesture, not a double click.
+    #[test]
+    fn color_well_slow_or_far_presses_are_not_a_double_click() {
+        let mut cw = ColorWell::new(Color::RED, Rect::new(0, 0, 40, 40));
+        let fired = Arc::new(AtomicBool::new(false));
+        cw.picker_requested.connect({
+            let fired = Arc::clone(&fired);
+            move || fired.store(true, Ordering::SeqCst)
+        });
+
+        // Outside the 400 ms window.
+        cw.last_press =
+            Some((crate::compat::Instant::now() - Duration::from_millis(500), Point::new(10, 10)));
+        cw.handle_event(&Event::mouse_press(10, 10, 1));
+        assert!(!fired.load(Ordering::SeqCst), "a slow press is not a double click");
+
+        // Outside the 4 px slop, but promptly.
+        cw.last_press =
+            Some((crate::compat::Instant::now() - Duration::from_millis(100), Point::new(10, 10)));
+        cw.handle_event(&Event::mouse_press(20, 20, 1));
+        assert!(!fired.load(Ordering::SeqCst), "a distant press is not a double click");
+    }
+
+    /// A drag from the well carries the colour as `#RRGGBBAA` under `"color"`.
+    #[test]
+    fn color_well_drag_source_carries_the_hex_colour() {
+        let cw = ColorWell::new(Color::rgba(0x11, 0x22, 0x33, 0x44), Rect::new(0, 0, 40, 40));
+        let payload =
+            cw.drag_payload(Point::new(10, 10)).expect("a press on the well starts a drag");
+        assert_eq!(payload.type_id, COLOR_PAYLOAD_TYPE);
+        assert_eq!(payload.item_id, "#11223344");
+        assert_eq!(payload.label, "#11223344");
+        // A press outside the well starts nothing.
+        assert!(cw.drag_payload(Point::new(100, 100)).is_none());
+    }
+
+    /// A `"color"` payload dropped on the well is accepted and becomes its colour.
+    #[test]
+    fn color_well_drop_target_accepts_a_colour() {
+        let mut cw = ColorWell::new(Color::RED, Rect::new(0, 0, 40, 40));
+        let payload = DragPayload::new(COLOR_PAYLOAD_TYPE, "#00FF0080");
+        assert!(cw.can_accept(&payload));
+        assert_eq!(cw.on_drop(&payload, Point::new(10, 10)), DropEffect::Copy);
+        assert_eq!(cw.color(), Color::rgba(0, 255, 0, 128));
+        assert!(cw.preview_rect(&payload, Point::new(10, 10)).is_some());
+    }
+
+    /// Another payload type, or an unparseable colour, is refused.
+    #[test]
+    fn color_well_drop_target_refuses_other_payloads() {
+        let mut cw = ColorWell::new(Color::RED, Rect::new(0, 0, 40, 40));
+        let text = DragPayload::new("text/plain", "#00FF00FF");
+        assert!(!cw.can_accept(&text));
+        assert_eq!(cw.on_drop(&text, Point::new(10, 10)), DropEffect::None);
+
+        let broken = DragPayload::new(COLOR_PAYLOAD_TYPE, "not-a-colour");
+        assert!(!cw.can_accept(&broken));
+        assert_eq!(cw.color(), Color::RED, "a refused drop must not change the colour");
+    }
+
+    /// Hover and press are opt-in painting states: an idle well is unchanged.
+    #[test]
+    fn color_well_hover_and_press_paint_feedback() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut cw = ColorWell::new(Color::RED, Rect::new(0, 0, 40, 40));
+        let idle = crate::widget::svg::render_to_svg(&mut cw);
+
+        cw.handle_event(&Event::mouse_enter(10, 10));
+        let hovered = crate::widget::svg::render_to_svg(&mut cw);
+        assert_ne!(idle, hovered, "hover paints a ring");
+
+        cw.handle_event(&Event::mouse_press(10, 10, 1));
+        let pressed = crate::widget::svg::render_to_svg(&mut cw);
+        assert_ne!(hovered, pressed, "a press paints its own state");
+
+        cw.handle_event(&Event::mouse_leave(100, 100));
+        cw.handle_event(&Event::mouse_release(100, 100, 1));
+        let released = crate::widget::svg::render_to_svg(&mut cw);
+        assert_eq!(released, idle, "leaving and releasing restores the idle drawing");
     }
 }

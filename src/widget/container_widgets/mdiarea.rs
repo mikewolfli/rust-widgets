@@ -30,6 +30,21 @@ pub struct MdiArea {
     /// including the automatic activation of the first sub-window on add and of
     /// a replacement sub-window after the active one is removed.
     pub subwindow_activated: Signal1<ObjectId>,
+    /// Child ids in the order they were activated, most recent last.
+    ///
+    /// Only [`ActivationOrder::HistoryOrder`] reads this, but every activation records it so a
+    /// later switch of order has a real history to traverse rather than starting empty.
+    activation_history: Vec<ObjectId>,
+    /// The live edge-resize gesture, if one is in progress.
+    resize_drag: Option<SubwindowResize>,
+    /// The geometry a maximized sub-window will return to, with its index.
+    maximized_restore: Option<(usize, Rect)>,
+    /// Viewport offset applied to every sub-window frame in `SubWindowView`.
+    ///
+    /// Zero is the default, so every existing placement, hit test and snapshot is unchanged.
+    /// A non-zero offset pans the work area without moving the stored geometries, which is
+    /// what lets a host scroll a desktop larger than the visible area.
+    scroll_offset: Point,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
@@ -250,6 +265,10 @@ impl MdiArea {
             background: Background::Plain,
             activation_order: ActivationOrder::StackingOrder,
             subwindow_activated: Signal1::new(),
+            activation_history: Vec::new(),
+            resize_drag: None,
+            maximized_restore: None,
+            scroll_offset: Point::new(0, 0),
             registry: None,
         }
     }
@@ -273,6 +292,7 @@ impl MdiArea {
         let index = self.subwindows.len().saturating_sub(1);
         if self.active_subwindow.is_none() {
             self.active_subwindow = Some(index);
+            self.record_activation(widget);
             self.subwindow_activated.emit(widget);
         }
         self.base.request_redraw();
@@ -291,6 +311,18 @@ impl MdiArea {
             // cannot paint over the remaining frames.
             crate::set_widget_visible(widget, false);
             self.subwindows.remove(index);
+            self.activation_history.retain(|id| *id != widget);
+            if self.resize_drag.is_some_and(|drag| drag.index == index) {
+                self.resize_drag = None;
+            }
+            if self.maximized_restore.is_some_and(|(maximized, _)| maximized == index) {
+                self.maximized_restore = None;
+            } else if let Some((maximized, _)) = self.maximized_restore {
+                if maximized > index {
+                    self.maximized_restore =
+                        self.maximized_restore.map(|(maximized, rect)| (maximized - 1, rect));
+                }
+            }
             if self.active_subwindow == Some(index) {
                 self.active_subwindow = None;
                 // Try to activate another sub-window
@@ -320,10 +352,20 @@ impl MdiArea {
         if let Some(index) = self.subwindows.iter().position(|sw| sw.widget == widget) {
             if self.active_subwindow != Some(index) {
                 self.active_subwindow = Some(index);
+                self.record_activation(widget);
                 self.subwindow_activated.emit(widget);
                 self.base.request_redraw();
             }
         }
+    }
+
+    /// Records `widget` as the most recently activated sub-window.
+    ///
+    /// A repeated activation moves the id to the end rather than adding a duplicate, so the
+    /// history reads as an ordering of windows rather than as a click log.
+    fn record_activation(&mut self, widget: ObjectId) {
+        self.activation_history.retain(|id| *id != widget);
+        self.activation_history.push(widget);
     }
     /// Returns sub-window at index.
     pub fn sub_window(&self, index: usize) -> Option<&MdiSubWindow> {
@@ -450,7 +492,14 @@ impl MdiArea {
         let subwindow = self.subwindows.get(index)?;
         match self.view_mode {
             ViewMode::SubWindowView => {
-                Some(SubwindowPlacement { frame: subwindow.geometry, title_bar: true })
+                // A maximized window owns the whole area, so the viewport offset does not
+                // move it; every other frame is drawn at its stored position minus the pan.
+                let frame = if subwindow.maximized {
+                    subwindow.geometry
+                } else {
+                    self.view_frame(subwindow.geometry)
+                };
+                Some(SubwindowPlacement { frame, title_bar: true })
             }
             ViewMode::TabbedView => {
                 if self.active_subwindow != Some(index) {
@@ -478,6 +527,42 @@ impl MdiArea {
     /// Returns background.
     pub fn background(&self) -> Background {
         self.background
+    }
+
+    /// The viewport pan applied to sub-window frames in `SubWindowView`.
+    pub fn scroll_offset(&self) -> Point {
+        self.scroll_offset
+    }
+
+    /// Sets the viewport pan.
+    ///
+    /// The stored geometries do not move: only the frames the painter and the hit test see
+    /// are translated, so a pan is reversible and a window dragged while panned still lands
+    /// where the pointer puts it.
+    pub fn set_scroll_offset(&mut self, offset: Point) {
+        if self.scroll_offset == offset {
+            return;
+        }
+        self.scroll_offset = offset;
+        self.base.request_redraw();
+    }
+
+    /// Pans the work area by `(dx, dy)`.
+    pub fn scroll_by(&mut self, dx: i32, dy: i32) {
+        self.set_scroll_offset(Point::new(
+            self.scroll_offset.x.saturating_add(dx),
+            self.scroll_offset.y.saturating_add(dy),
+        ));
+    }
+
+    /// Translates a stored frame into the panned viewport.
+    fn view_frame(&self, frame: Rect) -> Rect {
+        Rect::new(
+            frame.x.saturating_sub(self.scroll_offset.x),
+            frame.y.saturating_sub(self.scroll_offset.y),
+            frame.width,
+            frame.height,
+        )
     }
     /// Sets background.
     pub fn set_background(&mut self, background: Background) {
@@ -561,22 +646,180 @@ impl MdiArea {
         }
     }
     /// Activates next sub-window.
+    ///
+    /// The order traversed is [`Self::activation_order`], not the storage order: `CreationOrder`
+    /// walks the windows in the order they were added, `StackingOrder` from bottom to top by
+    /// `z_order`, and `HistoryOrder` from the most recently activated window backwards through the
+    /// activation history. Before this the field was stored and reported but every traversal used
+    /// the array index, so the enum named a behaviour nothing performed.
     pub fn activate_next_sub_window(&mut self) {
-        if self.subwindows.is_empty() {
+        let cycle = self.activation_cycle();
+        if cycle.is_empty() {
             return;
         }
-        let current = self.active_subwindow.unwrap_or(0);
-        let next = (current + 1) % self.subwindows.len();
+        let current = self.active_subwindow.unwrap_or(cycle[0]);
+        let position = cycle.iter().position(|index| *index == current).unwrap_or(0);
+        let next = cycle[(position + 1) % cycle.len()];
         self.set_active_sub_window(self.subwindows[next].widget);
     }
     /// Activates previous sub-window.
+    ///
+    /// Walks the same [`Self::activation_order`] cycle as [`Self::activate_next_sub_window`] in the
+    /// opposite direction. Under `HistoryOrder` activating a window moves it to the head of the
+    /// cycle, so the two are not strict inverses of each other: previous from the most recently
+    /// activated window wraps to the oldest entry.
     pub fn activate_previous_sub_window(&mut self) {
-        if self.subwindows.is_empty() {
+        let cycle = self.activation_cycle();
+        if cycle.is_empty() {
             return;
         }
-        let current = self.active_subwindow.unwrap_or(0);
-        let prev = if current == 0 { self.subwindows.len() - 1 } else { current - 1 };
-        self.set_active_sub_window(self.subwindows[prev].widget);
+        let current = self.active_subwindow.unwrap_or(cycle[0]);
+        let position = cycle.iter().position(|index| *index == current).unwrap_or(0);
+        let previous = cycle[(position + cycle.len() - 1) % cycle.len()];
+        self.set_active_sub_window(self.subwindows[previous].widget);
+    }
+
+    /// The sub-window indices in the order activation traverses them.
+    fn activation_cycle(&self) -> Vec<usize> {
+        match self.activation_order {
+            ActivationOrder::CreationOrder => (0..self.subwindows.len()).collect(),
+            ActivationOrder::StackingOrder => {
+                let mut cycle: Vec<usize> = (0..self.subwindows.len()).collect();
+                cycle.sort_by_key(|index| (self.subwindows[*index].z_order, *index));
+                cycle
+            }
+            ActivationOrder::HistoryOrder => {
+                // Most recent first: the head is the window the user just left, which is what
+                // "next" should return -- an activation history that walked oldest-first would
+                // answer the *least* recently used window, the opposite of the name.
+                self.activation_history
+                    .iter()
+                    .rev()
+                    .filter_map(|id| self.subwindows.iter().position(|sw| sw.widget == *id))
+                    .collect()
+            }
+        }
+    }
+
+    /// Maximises or restores a sub-window, returning whether anything changed.
+    ///
+    /// A maximized sub-window fills the area and remembers the rectangle it came from, so a
+    /// second toggle puts it back where it was. This is what a title-bar double-click calls; making
+    /// it public gives a host the same transition without synthesising pointer events.
+    pub fn toggle_maximized_sub_window(&mut self, widget: ObjectId) -> bool {
+        let Some(index) = self.subwindows.iter().position(|sw| sw.widget == widget) else {
+            return false;
+        };
+        if self.subwindows[index].maximized {
+            self.subwindows[index].maximized = false;
+            if let Some((maximized, rect)) = self.maximized_restore.take() {
+                if maximized == index {
+                    self.subwindows[index].geometry = rect;
+                } else {
+                    self.maximized_restore = Some((maximized, rect));
+                }
+            }
+        } else {
+            let previous = self.subwindows[index].geometry;
+            self.maximized_restore = Some((index, previous));
+            self.subwindows[index].maximized = true;
+            self.subwindows[index].geometry = self.geometry();
+        }
+        self.set_active_sub_window(widget);
+        self.base.request_redraw();
+        true
+    }
+
+    /// The sub-window whose title bar contains `pos`, topmost first.
+    ///
+    /// Only the sub-window presentation draws title bars; in `TabbedView` the strip names the
+    /// windows, so there is no bar to double-click.
+    fn title_bar_at(&self, pos: Point) -> Option<usize> {
+        if self.view_mode != ViewMode::SubWindowView {
+            return None;
+        }
+        let mut order: Vec<usize> = (0..self.subwindows.len()).collect();
+        order.sort_by_key(|index| -self.subwindows[*index].z_order);
+        order.into_iter().find(|index| {
+            let frame = self.view_frame(self.subwindows[*index].geometry);
+            let bar = Rect::new(
+                frame.x,
+                frame.y,
+                frame.width,
+                TITLE_BAR_HEIGHT.min(frame.height as i32).max(0) as u32,
+            );
+            bar.contains_point(pos)
+        })
+    }
+
+    /// The topmost resizable sub-window edge band under `pos`, if any.
+    fn resize_edges_at(&self, pos: Point) -> Option<(usize, ResizeEdges)> {
+        if self.view_mode != ViewMode::SubWindowView {
+            return None;
+        }
+        let mut order: Vec<usize> = (0..self.subwindows.len()).collect();
+        order.sort_by_key(|index| -self.subwindows[*index].z_order);
+        for index in order {
+            let subwindow = &self.subwindows[index];
+            if !subwindow.resizable || subwindow.maximized || subwindow.minimized {
+                continue;
+            }
+            let frame = self.view_frame(subwindow.geometry);
+            if !frame.contains_point(pos) {
+                continue;
+            }
+            let right = frame.x + frame.width as i32;
+            let bottom = frame.y + frame.height as i32;
+            let edges = ResizeEdges {
+                left: pos.x - frame.x < RESIZE_BAND,
+                right: right - pos.x <= RESIZE_BAND,
+                top: pos.y - frame.y < RESIZE_BAND,
+                bottom: bottom - pos.y <= RESIZE_BAND,
+            };
+            // The topmost window owns the point, so a press that is not on its edge is not a
+            // resize of a window *below* it either.
+            return edges.any().then_some((index, edges));
+        }
+        None
+    }
+
+    /// Moves the edges of the sub-window being resized to follow `pos`.
+    fn drag_resize(&mut self, pos: Point) {
+        let Some(drag) = self.resize_drag else {
+            return;
+        };
+        let Some(subwindow) = self.subwindows.get_mut(drag.index) else {
+            self.resize_drag = None;
+            return;
+        };
+        let dx = pos.x - drag.origin.x;
+        let dy = pos.y - drag.origin.y;
+        let mut x = drag.geometry.x;
+        let mut y = drag.geometry.y;
+        let mut width = drag.geometry.width as i32;
+        let mut height = drag.geometry.height as i32;
+        if drag.edges.left {
+            let candidate = width - dx;
+            if candidate >= MIN_SUBWINDOW_WIDTH as i32 {
+                x = drag.geometry.x + dx;
+                width = candidate;
+            }
+        }
+        if drag.edges.right {
+            width = (width + dx).max(MIN_SUBWINDOW_WIDTH as i32);
+        }
+        if drag.edges.top {
+            let candidate = height - dy;
+            if candidate >= MIN_SUBWINDOW_HEIGHT as i32 {
+                y = drag.geometry.y + dy;
+                height = candidate;
+            }
+        }
+        if drag.edges.bottom {
+            height = (height + dy).max(MIN_SUBWINDOW_HEIGHT as i32);
+        }
+        subwindow.geometry = Rect::new(x, y, width as u32, height as u32);
+        self.base.request_redraw();
     }
     /// The index of the sub-window whose close button is under `pos`, topmost first.
     ///
@@ -609,7 +852,7 @@ impl MdiArea {
         sorted_indices.sort_by_key(|&i| -self.subwindows[i].z_order);
         for index in sorted_indices {
             let subwindow = &self.subwindows[index];
-            if subwindow.geometry.contains(pos) {
+            if self.view_frame(subwindow.geometry).contains(pos) {
                 return Some(index);
             }
         }
@@ -744,6 +987,7 @@ impl EventHandler for MdiArea {
             return;
         }
         let mut hit_subwindow = false;
+        let mut gesture_consumed = false;
         if let Event::MousePress { pos, button, .. } = event {
             if *button == 1 {
                 // In `TabbedView` the tabs are the only clickable chrome, because the windows they
@@ -763,13 +1007,48 @@ impl EventHandler for MdiArea {
                     // removal activated.
                     let widget = self.subwindows[index].widget;
                     self.remove_sub_window(widget);
+                } else if let Some((index, edges)) = self.resize_edges_at(*pos) {
+                    // Grabbing a frame edge is the area's gesture, not the child's: it is the
+                    // frame's geometry being changed, so the press must not reach the content.
+                    let widget = self.subwindows[index].widget;
+                    self.set_active_sub_window(widget);
+                    self.resize_drag = Some(SubwindowResize {
+                        index,
+                        edges,
+                        origin: *pos,
+                        geometry: self.subwindows[index].geometry,
+                    });
+                    self.base.set_mouse_pressed(true);
+                    gesture_consumed = true;
                 } else if let Some(index) = self.sub_window_at_position(*pos) {
                     hit_subwindow = true;
                     self.set_active_sub_window(self.subwindows[index].widget);
                 }
             }
+        } else if let Event::MouseDoubleClick { pos, button } = event {
+            if *button == 1 {
+                if let Some(index) = self.title_bar_at(*pos) {
+                    let widget = self.subwindows[index].widget;
+                    self.toggle_maximized_sub_window(widget);
+                    gesture_consumed = true;
+                }
+            }
+        } else if let Event::MouseMove { pos } = event {
+            if self.resize_drag.is_some() {
+                self.drag_resize(*pos);
+                gesture_consumed = true;
+            }
+        } else if let Event::MouseRelease { button, .. } = event {
+            if *button == 1 && self.resize_drag.take().is_some() {
+                self.base.set_mouse_pressed(false);
+                gesture_consumed = true;
+            }
         }
-        let should_forward = !matches!(event, Event::MousePress { .. }) || hit_subwindow;
+        let should_forward = if gesture_consumed {
+            false
+        } else {
+            !matches!(event, Event::MousePress { .. }) || hit_subwindow
+        };
         // Forward background-independent events, or pointer events that hit a subwindow.
         if should_forward {
             if let Some(widget_id) = self.active_sub_window() {
@@ -814,6 +1093,40 @@ fn close_button_rect(frame: Rect) -> Rect {
 
 /// Height of a sub-window's title bar, in logical pixels.
 const TITLE_BAR_HEIGHT: i32 = 24;
+
+/// How close to an edge a press must land to begin an edge-resize drag, in logical pixels.
+const RESIZE_BAND: i32 = 4;
+
+/// The narrowest a sub-window may become through an edge drag, in logical pixels.
+const MIN_SUBWINDOW_WIDTH: u32 = 60;
+
+/// The shortest a sub-window may become through an edge drag, in logical pixels.
+const MIN_SUBWINDOW_HEIGHT: u32 = 40;
+
+/// Which edges of a sub-window an in-progress drag is moving.
+#[derive(Debug, Clone, Copy, Default)]
+struct ResizeEdges {
+    left: bool,
+    right: bool,
+    top: bool,
+    bottom: bool,
+}
+
+impl ResizeEdges {
+    /// Whether the gesture moves any edge at all.
+    fn any(self) -> bool {
+        self.left || self.right || self.top || self.bottom
+    }
+}
+
+/// The live edge-resize gesture.
+#[derive(Debug, Clone, Copy)]
+struct SubwindowResize {
+    index: usize,
+    edges: ResizeEdges,
+    origin: Point,
+    geometry: Rect,
+}
 
 /// Square side of the leading icon slot a sub-window's title bar reserves, in logical pixels.
 const SUBWINDOW_ICON_SIDE: u32 = 12;
@@ -2097,6 +2410,124 @@ mod tests {
         assert!(
             svg.contains(r#"<rect x="0" y="0" width="250" height="250" fill="rgba"#),
             "the checker must start from a base fill covering the whole work area"
+        );
+    }
+
+    /// Every activation order actually drives `next`/`previous`.
+    #[test]
+    fn activation_order_decides_what_next_visits() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_2(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_3(), Rect::new(0, 0, 100, 100));
+        // Reverse the stacking order so it differs from creation order.
+        area.sub_window_mut(0).expect("first").set_z_order(2);
+        area.sub_window_mut(1).expect("second").set_z_order(1);
+        area.sub_window_mut(2).expect("third").set_z_order(0);
+
+        area.set_active_sub_window(widget_id_1());
+        area.set_activation_order(ActivationOrder::CreationOrder);
+        area.activate_next_sub_window();
+        assert_eq!(area.active_sub_window(), Some(widget_id_2()), "creation order is add order");
+
+        area.set_active_sub_window(widget_id_1());
+        area.set_activation_order(ActivationOrder::StackingOrder);
+        area.activate_next_sub_window();
+        assert_eq!(
+            area.active_sub_window(),
+            Some(widget_id_3()),
+            "stacking order follows z_order, not the storage index"
+        );
+
+        area.set_activation_order(ActivationOrder::HistoryOrder);
+        area.set_active_sub_window(widget_id_1());
+        area.set_active_sub_window(widget_id_3());
+        area.set_active_sub_window(widget_id_2());
+        area.activate_next_sub_window();
+        assert_eq!(
+            area.active_sub_window(),
+            Some(widget_id_3()),
+            "history order returns the previously active window"
+        );
+        area.activate_previous_sub_window();
+        assert_eq!(
+            area.active_sub_window(),
+            Some(widget_id_1()),
+            "from the newest window, previous wraps through the history cycle"
+        );
+    }
+
+    /// Dragging a frame edge resizes it, and a title-bar double-click maximizes and restores.
+    #[test]
+    fn edge_drag_resizes_and_title_bar_double_click_maximizes() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(20, 20, 200, 150));
+
+        // Grab the right edge and pull it 30 px outward.
+        area.handle_event(&Event::MousePress {
+            pos: Point::new(219, 100),
+            button: 1,
+            modifiers: 0,
+        });
+        area.handle_event(&Event::MouseMove { pos: Point::new(249, 100) });
+        area.handle_event(&Event::MouseRelease { pos: Point::new(249, 100), button: 1 });
+        let resized = area.sub_window(0).expect("frame").geometry();
+        assert_eq!(resized, Rect::new(20, 20, 230, 150), "the right edge followed the drag");
+
+        // The drag cannot shrink the frame past its minimum.
+        area.handle_event(&Event::MousePress {
+            pos: Point::new(249, 100),
+            button: 1,
+            modifiers: 0,
+        });
+        area.handle_event(&Event::MouseMove { pos: Point::new(-400, 100) });
+        area.handle_event(&Event::MouseRelease { pos: Point::new(-400, 100), button: 1 });
+        assert_eq!(
+            area.sub_window(0).expect("frame").geometry().width,
+            MIN_SUBWINDOW_WIDTH,
+            "the drag stops at the minimum width"
+        );
+
+        // Double-click the title bar: maximize, then restore.
+        let before = area.sub_window(0).expect("frame").geometry();
+        area.handle_event(&Event::MouseDoubleClick { pos: Point::new(40, 22), button: 1 });
+        assert!(area.sub_window(0).expect("frame").is_maximized());
+        assert_eq!(area.sub_window(0).expect("frame").geometry(), area.geometry());
+        area.handle_event(&Event::MouseDoubleClick { pos: Point::new(40, 22), button: 1 });
+        assert!(!area.sub_window(0).expect("frame").is_maximized());
+        assert_eq!(area.sub_window(0).expect("frame").geometry(), before);
+    }
+
+    /// The viewport pan moves the painted frame and the hit test together, while the stored
+    /// geometry stays put; a maximized window ignores the pan.
+    #[test]
+    fn the_viewport_pan_translates_frames_and_hit_tests() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(100, 40, 120, 100));
+        let stored = area.sub_window(0).expect("frame").geometry();
+        assert!(area.sub_window_at_position(Point::new(110, 50)).is_some());
+        assert!(area.sub_window_at_position(Point::new(50, 35)).is_none());
+
+        area.set_scroll_offset(Point::new(60, 10));
+        assert_eq!(area.scroll_offset(), Point::new(60, 10));
+        let placed = area.subwindow_placement(0).expect("placed").frame;
+        assert_eq!(placed, Rect::new(40, 30, 120, 100), "the frame follows the pan");
+        assert!(area.sub_window_at_position(Point::new(50, 35)).is_some());
+        assert!(area.sub_window_at_position(Point::new(200, 50)).is_none());
+        assert_eq!(
+            area.sub_window(0).expect("frame").geometry(),
+            stored,
+            "stored frame is unchanged"
+        );
+
+        area.scroll_by(-10, -10);
+        assert_eq!(area.scroll_offset(), Point::new(50, 0));
+
+        area.toggle_maximized_sub_window(widget_id_1());
+        assert_eq!(
+            area.subwindow_placement(0).expect("placed").frame,
+            area.geometry(),
+            "a maximized window owns the area regardless of the pan"
         );
     }
 }

@@ -138,6 +138,47 @@ impl StandardButton {
         }
     }
 }
+/// The stable token for a standard button, used by the property route.
+fn standard_button_token(button: StandardButton) -> &'static str {
+    match button {
+        StandardButton::Ok => "ok",
+        StandardButton::Cancel => "cancel",
+        StandardButton::Yes => "yes",
+        StandardButton::No => "no",
+        StandardButton::YesAll => "yes_all",
+        StandardButton::NoAll => "no_all",
+        StandardButton::Save => "save",
+        StandardButton::Discard => "discard",
+        StandardButton::Apply => "apply",
+        StandardButton::Close => "close",
+        StandardButton::Abort => "abort",
+        StandardButton::Retry => "retry",
+        StandardButton::Ignore => "ignore",
+        StandardButton::Help => "help",
+    }
+}
+
+/// Parses a token produced by [`standard_button_token`].
+fn standard_button_from_token(token: &str) -> Option<StandardButton> {
+    Some(match token {
+        "ok" => StandardButton::Ok,
+        "cancel" => StandardButton::Cancel,
+        "yes" => StandardButton::Yes,
+        "no" => StandardButton::No,
+        "yes_all" => StandardButton::YesAll,
+        "no_all" => StandardButton::NoAll,
+        "save" => StandardButton::Save,
+        "discard" => StandardButton::Discard,
+        "apply" => StandardButton::Apply,
+        "close" => StandardButton::Close,
+        "abort" => StandardButton::Abort,
+        "retry" => StandardButton::Retry,
+        "ignore" => StandardButton::Ignore,
+        "help" => StandardButton::Help,
+        _ => return None,
+    })
+}
+
 /// Message box dialog.
 ///
 /// A ready-made modal prompt: it owns its title, body text, icon and the list of
@@ -154,9 +195,24 @@ pub struct MessageBox {
     base: BaseWidget,
     title: String,
     text: String,
+    /// A second, stronger line below the body (`informativeText`).
+    informative_text: String,
+    /// A muted detail block below the informative line (`detailedText`).
+    detailed_text: String,
+    /// An optional check box above the action row: its label and its state.
+    check_box_text: String,
+    check_box_checked: bool,
+    /// A caller-supplied picture that replaces the severity glyph.
+    pixmap: Option<crate::image::Image>,
     icon: MessageBoxIcon,
     buttons: Vec<StandardButton>,
     default_button: Option<StandardButton>,
+    /// The button Escape activates; `None` keeps the Cancel/No/Close fallback chain.
+    escape_button: Option<StandardButton>,
+    /// The action button under the pointer, for hover feedback.
+    hovered: Option<usize>,
+    /// The action button currently held down, for pressed feedback.
+    pressed: Option<usize>,
     modal: bool,
     /// How far the box has revealed, `0.0` hidden and `1.0` fully shown.
     ///
@@ -198,9 +254,17 @@ impl MessageBox {
             base: BaseWidget::new(WidgetKind::MessageBox, geometry, "MessageBox"),
             title: String::new(),
             text: String::new(),
+            informative_text: String::new(),
+            detailed_text: String::new(),
+            check_box_text: String::new(),
+            check_box_checked: false,
+            pixmap: None,
             icon: MessageBoxIcon::NoIcon,
             buttons: vec![StandardButton::Ok],
             default_button: Some(StandardButton::Ok),
+            escape_button: None,
+            hovered: None,
+            pressed: None,
             modal: true,
             // At rest at the hidden end: a freshly built box is not shown, so it must not animate
             // itself away on its first frame.
@@ -294,6 +358,113 @@ impl MessageBox {
         self.text = text;
         self.base.request_redraw();
     }
+
+    /// The informative text painted below the body.
+    pub fn informative_text(&self) -> &str {
+        &self.informative_text
+    }
+
+    /// Replaces the informative text and requests a redraw when it changes.
+    pub fn set_informative_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.informative_text == text {
+            return;
+        }
+        self.informative_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The detailed text painted below the informative line.
+    pub fn detailed_text(&self) -> &str {
+        &self.detailed_text
+    }
+
+    /// Replaces the detailed text and requests a redraw when it changes.
+    pub fn set_detailed_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.detailed_text == text {
+            return;
+        }
+        self.detailed_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The optional check box row's label, or `""` when no row is painted.
+    pub fn check_box_text(&self) -> &str {
+        &self.check_box_text
+    }
+
+    /// Installs a check box row above the actions. An empty label removes it.
+    pub fn set_check_box(&mut self, label: impl Into<String>) {
+        let label = label.into();
+        if self.check_box_text == label {
+            return;
+        }
+        self.check_box_text = label;
+        self.base.request_redraw();
+    }
+
+    /// Whether the check box is checked.
+    pub fn is_check_box_checked(&self) -> bool {
+        self.check_box_checked
+    }
+
+    /// Sets the check box state and requests a redraw when it changes.
+    pub fn set_check_box_checked(&mut self, checked: bool) {
+        if self.check_box_checked == checked {
+            return;
+        }
+        self.check_box_checked = checked;
+        self.base.request_redraw();
+    }
+
+    /// The picture drawn in place of the severity glyph, if one was set.
+    pub fn pixmap(&self) -> Option<&crate::image::Image> {
+        self.pixmap.as_ref()
+    }
+
+    /// Replaces the severity picture and requests a redraw when it changes.
+    ///
+    /// The picture takes precedence over [`MessageBox::icon`] when both are set.
+    pub fn set_pixmap(&mut self, pixmap: Option<crate::image::Image>) {
+        let unchanged = match (&self.pixmap, &pixmap) {
+            (None, None) => true,
+            (Some(current), Some(next)) => {
+                current.width() == next.width()
+                    && current.height() == next.height()
+                    && current.rgba8_data() == next.rgba8_data()
+            }
+            _ => false,
+        };
+        if unchanged {
+            return;
+        }
+        self.pixmap = pixmap;
+        self.base.request_redraw();
+    }
+
+    /// The button Escape activates, or `None` for the Cancel/No/Close fallback.
+    pub fn escape_button(&self) -> Option<StandardButton> {
+        self.escape_button
+    }
+
+    /// Sets the button Escape activates. `None` restores the fallback chain.
+    pub fn set_escape_button(&mut self, button: Option<StandardButton>) {
+        if self.escape_button == button {
+            return;
+        }
+        self.escape_button = button;
+        self.base.request_redraw();
+    }
+
+    /// Sets the button Enter activates, or clears it with `None`.
+    pub fn set_default_button_option(&mut self, button: Option<StandardButton>) {
+        if self.default_button == button {
+            return;
+        }
+        self.default_button = button;
+        self.base.request_redraw();
+    }
     /// Replaces the icon and requests a redraw.
     pub fn set_icon(&mut self, icon: MessageBoxIcon) {
         if self.icon == icon {
@@ -312,8 +483,9 @@ impl MessageBox {
     }
     /// Sets which button Enter activates and requests a redraw.
     ///
-    /// Takes a value, not an `Option`: there is no way to disable the default
-    /// button through this setter once it has been set.
+    /// Takes a value and keeps the button set. Use
+    /// [`MessageBox::set_default_button_option`] (or the writable `default_button`
+    /// property with `Null`) to clear it so Enter does nothing.
     pub fn set_default_button(&mut self, btn: StandardButton) {
         self.default_button = Some(btn);
         self.base.request_redraw();
@@ -509,6 +681,18 @@ impl WidgetProperties for MessageBox {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "icon" => Ok(CapabilityValue::String(message_box_icon_to_str(self.icon()).to_string())),
             "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
+            "informative_text" => Ok(CapabilityValue::String(self.informative_text.clone())),
+            "detailed_text" => Ok(CapabilityValue::String(self.detailed_text.clone())),
+            "check_box" => Ok(CapabilityValue::String(self.check_box_text.clone())),
+            "check_box_checked" => Ok(CapabilityValue::Bool(self.check_box_checked)),
+            "default_button" => Ok(match self.default_button {
+                Some(button) => CapabilityValue::String(standard_button_token(button).to_string()),
+                None => CapabilityValue::Null,
+            }),
+            "escape_button" => Ok(match self.escape_button {
+                Some(button) => CapabilityValue::String(standard_button_token(button).to_string()),
+                None => CapabilityValue::Null,
+            }),
             _ => base_property_get(self, name),
         }
     }
@@ -539,6 +723,44 @@ impl WidgetProperties for MessageBox {
                 self.set_modal(expect_bool(value)?);
                 Ok(())
             }
+            "informative_text" => {
+                self.set_informative_text(expect_string(value)?);
+                Ok(())
+            }
+            "detailed_text" => {
+                self.set_detailed_text(expect_string(value)?);
+                Ok(())
+            }
+            "check_box" => {
+                self.set_check_box(expect_string(value)?);
+                Ok(())
+            }
+            "check_box_checked" => {
+                self.set_check_box_checked(expect_bool(value)?);
+                Ok(())
+            }
+            "default_button" => {
+                let button = match value {
+                    CapabilityValue::Null => None,
+                    other => Some(
+                        standard_button_from_token(&expect_string(other)?)
+                            .ok_or(CapabilityAccessError::OutOfRange)?,
+                    ),
+                };
+                self.set_default_button_option(button);
+                Ok(())
+            }
+            "escape_button" => {
+                let button = match value {
+                    CapabilityValue::Null => None,
+                    other => Some(
+                        standard_button_from_token(&expect_string(other)?)
+                            .ok_or(CapabilityAccessError::OutOfRange)?,
+                    ),
+                };
+                self.set_escape_button(button);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -550,7 +772,19 @@ impl WidgetProperties for MessageBox {
         // so a name that is declared but absent here is a property the designer offers and
         // the control cannot answer. This is the BLUE20 layer 2 Q1 defect the alignment gate
         // exists to find, and `BASE_PROPERTY_NAMES` does not carry it.
-        property_names_of!["title", "text", "icon", "modal", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "text",
+            "icon",
+            "modal",
+            "informative_text",
+            "detailed_text",
+            "check_box",
+            "check_box_checked",
+            "default_button",
+            "escape_button",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `message_box` publishes.
@@ -590,22 +824,47 @@ impl EventHandler for MessageBox {
             return;
         }
         match event {
+            Event::MouseMove { pos } => {
+                let hovered = self.action_button_at(*pos);
+                if hovered != self.hovered {
+                    self.hovered = hovered;
+                    self.base.request_redraw();
+                }
+            }
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.action_button_at(*pos) {
+                    self.pressed = Some(index);
+                    self.base.request_redraw();
                     if let Some(activated) = self.buttons.get(index).copied() {
                         self.click_button(activated);
                     }
+                    return;
+                }
+                // A press on the check box toggles it, which is the row's whole purpose.
+                if !self.check_box_text.is_empty()
+                    && self.check_box_rect().is_some_and(|rect| rect.contains_point(*pos))
+                {
+                    self.check_box_checked = !self.check_box_checked;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseRelease { .. } => {
+                if self.pressed.take().is_some() {
+                    self.base.request_redraw();
                 }
             }
             Event::KeyPress { key, .. } => {
-                if *key == key_codes::ENTER {
+                if *key == key_codes::ENTER || *key == key_codes::LINE_FEED {
                     // Enter → default button
                     if let Some(btn) = self.default_button {
                         self.click_button(btn);
                     }
                 } else if *key == key_codes::ESCAPE {
-                    // Escape → Cancel/No
-                    if self.buttons.contains(&StandardButton::Cancel) {
+                    // An explicitly configured escape button wins; otherwise the conventional
+                    // Cancel/No/Close fallback chain applies.
+                    if let Some(btn) = self.escape_button {
+                        self.click_button(btn);
+                    } else if self.buttons.contains(&StandardButton::Cancel) {
                         self.click_button(StandardButton::Cancel);
                     } else if self.buttons.contains(&StandardButton::No) {
                         self.click_button(StandardButton::No);
@@ -703,6 +962,27 @@ impl MessageBox {
             .saturating_add(row_height)
             .max(dimensions::DIALOG_MIN_HEIGHT);
         Size::new(row.row.width.max(dimensions::DIALOG_MIN_WIDTH), height)
+    }
+
+    /// The check box row's rectangle, when one is installed.
+    fn check_box_rect(&self) -> Option<Rect> {
+        if self.check_box_text.is_empty() {
+            return None;
+        }
+        let backend_size =
+            Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
+        let mut backend = crate::render::SoftwarePaintBackend::new(backend_size, 1.0);
+        let context = RenderContext::new(&mut backend);
+        let rect = self.frame_rect(&context);
+        let body =
+            ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        let button_band = inset_action_band(
+            ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT),
+            body.y,
+        );
+        let row_h = dimensions::DIALOG_BUTTON_HEIGHT.min(rect.height);
+        let row_y = button_band.y.saturating_sub(row_h as i32).saturating_sub(4);
+        Some(Rect::new(button_band.x, row_y, button_band.width, row_h))
     }
 
     /// The index of the action button under `pos`, or `None`.
@@ -910,7 +1190,19 @@ impl Draw for MessageBox {
         // severity icon is shown.
         let icon_left = 12.min(body.width as i32);
         let icon_side = body_line_h.max(1) as u32;
-        let gutter = if let Some(name) = icon {
+        // A caller-supplied picture replaces the glyph entirely, so the two never compete for
+        // the same square. The pixels are resampled to the square because the draw primitive
+        // takes a destination rectangle and a buffer already at that size.
+        let pixmap_drawn = self.pixmap.as_ref().and_then(|pixmap| {
+            let side = icon_side.max(16).min(body.width).min(body.height);
+            let pixels = pixmap_pixels(pixmap, side, side)?;
+            let rect = Rect::new(body.x + icon_left, body.y, side, side);
+            context.draw_image(rect.x, rect.y, rect.width, rect.height, &pixels);
+            Some(icon_left + side as i32 + 8)
+        });
+        let gutter = if let Some(gutter) = pixmap_drawn {
+            gutter
+        } else if let Some(name) = icon {
             // Centred on the body band's first line, so the icon and the first message line share a
             // centre line.
             let icon_rect = Rect::new(body.x + icon_left, body.y, icon_side, icon_side);
@@ -968,6 +1260,68 @@ impl Draw for MessageBox {
                 HorizontalAlignment::Left,
             );
         }
+        // The two extra text levels share the message's column and continue below it. Each is
+        // painted only when it has ink, so a box that never sets them is byte-identical to the
+        // one-row box this control always drew.
+        let mut extra_y = message_band.y + body_line_h;
+        for (text, color) in [
+            (self.informative_text.as_str(), ink),
+            (self.detailed_text.as_str(), ink.with_alpha_f32(0.75)),
+        ] {
+            if text.is_empty()
+                || extra_y + body_line_h > message_band.y + message_band.height as i32
+            {
+                continue;
+            }
+            let band =
+                Rect::new(message_band.x, extra_y, message_band.width.max(1), body_line_h as u32);
+            let line = context.text_line(band, body_font);
+            context.draw_text_fitted_cow(
+                Rect::new(band.x, line.y, band.width.max(1), line.height.max(1)),
+                text,
+                body_font,
+                color,
+                HorizontalAlignment::Left,
+            );
+            extra_y += body_line_h;
+        }
+
+        // The check box row sits immediately above the action row, matching the notice cards.
+        if !self.check_box_text.is_empty() {
+            let row_h = dimensions::DIALOG_BUTTON_HEIGHT.min(rect.height);
+            let row_y = button_band.y.saturating_sub(row_h as i32).saturating_sub(4);
+            let row = Rect::new(button_band.x, row_y, button_band.width, row_h);
+            let box_side = row_h.saturating_sub(8).min(14);
+            let box_rect =
+                Rect::new(row.x, row.y + ((row_h - box_side) / 2) as i32, box_side, box_side);
+            context.fill_rect(box_rect, surface);
+            context.draw_rect(box_rect, border);
+            if self.check_box_checked {
+                let inset = 3.min(box_side as i32 / 2);
+                context.fill_rect(
+                    Rect::new(
+                        box_rect.x + inset,
+                        box_rect.y + inset,
+                        box_side.saturating_sub((inset * 2) as u32),
+                        box_side.saturating_sub((inset * 2) as u32),
+                    ),
+                    primary,
+                );
+            }
+            let label_band = Rect::new(
+                box_rect.x + box_side as i32 + 6,
+                row.y,
+                row.width.saturating_sub(box_side + 6),
+                row_h,
+            );
+            context.draw_text_line(
+                label_band,
+                &self.check_box_text,
+                body_font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
 
         // Buttons, right-aligned as a row.
         //
@@ -990,9 +1344,23 @@ impl Draw for MessageBox {
         // `body_line_h` records the line box the rows were measured against, so a later
         // change to the reserved rows and this measurement cannot silently disagree.
         debug_assert!(body_line_h > 0);
-        for (button, button_rect) in self.buttons.iter().zip(row.button_rects()) {
+        for (index, (button, button_rect)) in
+            self.buttons.iter().zip(row.button_rects()).enumerate()
+        {
             let is_default = self.default_button == Some(*button);
-            let bg = if is_default { primary } else { button_fill };
+            let is_pressed = self.pressed == Some(index);
+            let is_hovered = self.hovered == Some(index);
+            let base_fill = if is_default { primary } else { button_fill };
+            // Pressed ink is the fill stepped toward the ink it sits under; hover is a light
+            // veil. Both are opt-in in the sense that they only appear while the pointer is
+            // actually there, so a resting box is unchanged.
+            let bg = if is_pressed {
+                base_fill.blend(&ink, 0.22)
+            } else if is_hovered {
+                base_fill.blend(&ink, 0.08)
+            } else {
+                base_fill
+            };
             let fg = if is_default { primary_ink } else { ink };
             context.fill_rect(*button_rect, bg);
             context.draw_rect(*button_rect, border);
@@ -1007,9 +1375,38 @@ impl Draw for MessageBox {
     }
 }
 
+/// Resamples `image` to `width x height` RGBA8 using nearest-neighbour sampling.
+///
+/// The draw primitive takes a destination rectangle but no source grid, so passing a
+/// differently sized buffer is a crop on the raster backend. A message box is the only party
+/// that knows both the source size and the square it painted, so it hands over a buffer that
+/// is already the destination size. Returns `None` for a non-RGBA or empty image, which is
+/// the honest "nothing to paint" answer.
+fn pixmap_pixels(image: &crate::image::Image, width: u32, height: u32) -> Option<Vec<u8>> {
+    let source = image.rgba8_data()?;
+    let source_width = image.width();
+    let source_height = image.height();
+    if source.is_empty() || source_width == 0 || source_height == 0 || width == 0 || height == 0 {
+        return None;
+    }
+    let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    for y in 0..height {
+        let source_y = (y as u64 * source_height as u64 / height as u64) as u32;
+        for x in 0..width {
+            let source_x = (x as u64 * source_width as u64 / width as u64) as u32;
+            let source_index = ((source_y * source_width + source_x) * 4) as usize;
+            let target_index = ((y * width + x) * 4) as usize;
+            if source_index + 4 <= source.len() {
+                pixels[target_index..target_index + 4]
+                    .copy_from_slice(&source[source_index..source_index + 4]);
+            }
+        }
+    }
+    Some(pixels)
+}
+
 /// The action-button row a dialog paints, computed once and used by both the ink and the
 /// hit test.
-///
 /// # Why a type rather than three loose numbers
 ///
 /// Every dialog needs the *same three facts* about its row — where the row starts, how wide it
@@ -1887,5 +2284,115 @@ mod tests {
         assert_eq!(StandardButton::YesAll.label(), "Yes to All");
         assert_eq!(StandardButton::NoAll.label(), "No to All");
         assert_eq!(StandardButton::Discard.label(), "Discard");
+    }
+
+    #[test]
+    fn the_extra_text_levels_add_painted_lines() {
+        let mut dialog = MessageBox::new(Rect::new(0, 0, 360, 220));
+        dialog.show();
+        while dialog.tick(1000) {}
+        let before = crate::widget::svg::text_ink_boxes(&render_to_svg(&mut dialog)).len();
+        dialog.set_informative_text("This explains the message");
+        dialog.set_detailed_text("And this is the detail");
+        let after = crate::widget::svg::text_ink_boxes(&render_to_svg(&mut dialog)).len();
+        assert!(after > before, "both extra levels must paint: {before} -> {after}");
+        assert_eq!(dialog.informative_text(), "This explains the message");
+        assert_eq!(dialog.detailed_text(), "And this is the detail");
+    }
+
+    #[test]
+    fn the_check_box_row_toggles() {
+        let mut dialog = MessageBox::new(Rect::new(0, 0, 360, 200));
+        dialog.set_check_box("Do not ask again");
+        assert!(!dialog.is_check_box_checked());
+        let row = dialog.check_box_rect().expect("the row exists");
+        dialog.handle_event(&Event::MousePress {
+            pos: Point::new(row.x + 2, row.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(dialog.is_check_box_checked());
+    }
+
+    #[test]
+    fn escape_uses_the_configured_escape_button() {
+        let mut dialog = MessageBox::new(Rect::new(0, 0, 360, 180));
+        dialog.set_buttons(vec![StandardButton::Ok, StandardButton::Help]);
+        dialog.set_escape_button(Some(StandardButton::Help));
+        let clicked = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&clicked);
+        dialog.button_clicked.connect(move |button: Arc<StandardButton>| {
+            *sink.lock().expect("lock") = Some(*button);
+        });
+        dialog.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert_eq!(*clicked.lock().expect("lock"), Some(StandardButton::Help));
+    }
+
+    #[test]
+    fn the_default_button_can_be_cleared() {
+        let mut dialog = MessageBox::new(Rect::new(0, 0, 360, 180));
+        dialog.set("default_button", CapabilityValue::Null).expect("clearing the default is valid");
+        assert_eq!(dialog.default_button(), None);
+        let clicked = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&clicked);
+        dialog.button_clicked.connect(move |_| {
+            *sink.lock().expect("lock") += 1;
+        });
+        dialog.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(*clicked.lock().expect("lock"), 0, "Enter with no default does nothing");
+    }
+
+    #[test]
+    fn a_press_paints_pressed_feedback_and_release_clears_it() {
+        let mut dialog = MessageBox::new(Rect::new(0, 0, 360, 180));
+        dialog.show();
+        while dialog.tick(1000) {}
+        let _ = render_to_svg(&mut dialog);
+        let rect = {
+            // The single OK button is the last element of the action row.
+            let labels: Vec<String> =
+                dialog.buttons.iter().map(|button| button.translated_label()).collect();
+            let size = Size::new(
+                dialog.base.geometry().width.max(1),
+                dialog.base.geometry().height.max(1),
+            );
+            let mut backend = SoftwarePaintBackend::new(size, 1.0);
+            let context = RenderContext::new(&mut backend);
+            let frame = dialog.frame_rect(&context);
+            let body =
+                ControlMetrics::content_below_top_band(frame, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+            let band = inset_action_band(
+                ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT),
+                body.y,
+            );
+            action_row_geometry(&context, effective_font(dialog.base.style()), &labels, band, true)
+                .buttons[0]
+        };
+        dialog.handle_event(&Event::MousePress {
+            pos: Point::new(rect.x + 2, rect.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(dialog.pressed, Some(0));
+        dialog.handle_event(&Event::MouseRelease {
+            pos: Point::new(rect.x + 2, rect.y + 2),
+            button: 1,
+        });
+        assert_eq!(dialog.pressed, None);
+    }
+
+    #[test]
+    fn a_pixmap_replaces_the_severity_glyph() {
+        let mut dialog = MessageBox::new(Rect::new(0, 0, 360, 180));
+        dialog.set_icon(MessageBoxIcon::Warning);
+        dialog.show();
+        while dialog.tick(1000) {}
+        let glyph = render_to_svg(&mut dialog);
+        let image = crate::image::Image::try_from_rgba(vec![255, 0, 0, 255], 1, 1)
+            .expect("a 1x1 RGBA image is valid");
+        dialog.set_pixmap(Some(image));
+        let picture = render_to_svg(&mut dialog);
+        assert_ne!(glyph, picture, "the picture must be painted instead of the glyph");
+        assert!(dialog.pixmap().is_some());
     }
 }

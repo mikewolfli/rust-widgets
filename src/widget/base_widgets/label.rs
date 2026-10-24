@@ -2,18 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 //! Label widget implementation.
-use crate::compat::{String, ToString};
+use crate::compat::{Cow, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::render::RenderContext;
+use crate::render::{RenderContext, TEXT_FIT_MARGIN};
 
 use crate::style::EdgeOffsets;
-use crate::widget::capability::coercion::{alignment_to_str, expect_alignment, expect_string};
+use crate::widget::capability::coercion::{
+    alignment_to_str, expect_alignment, expect_bool, expect_string, expect_u32,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{
     dimensions, effective_font, estimate_line_height, estimate_text_width, ControlMetrics,
+};
+use crate::widget::text_utils::{
+    byte_index_of_char, elide_middle_to_width, elide_to_width, wrap_to_width,
 };
 use crate::widget::{BaseWidget, Draw, InteractionFade, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -38,11 +43,201 @@ const LABEL_PADDING: EdgeOffsets = EdgeOffsets { left: 2, top: 2, right: 2, bott
 /// against this agrees with the line its draw path measures.
 const LABEL_MIN_WIDTH: u32 = 16;
 
+/// How text that does not fit its box is shortened.
+///
+/// The four positions are the shared [`ElideMode`](crate::widget::text_utils::ElideMode) set,
+/// named the way the `elide` property publishes them (`none`, `left`, `middle`, `right`); the
+/// label owns this token set and the button and tool-button families take it from here, so
+/// "what does `elide` mean" has one answer per control family and one implementation per
+/// position in `text_utils`.
+///
+/// The default is [`TextElideMode::ElideRight`] because that is what a fitted label does when it
+/// shares a row with something else; a control that wants the historical "paint it and let the
+/// renderer clip" behaviour states [`TextElideMode::None`] explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextElideMode {
+    /// Paint the full text and let the renderer clip at the box edge.
+    None,
+    /// Keep the trailing end and replace the leading end with an ellipsis.
+    ElideLeft,
+    /// Keep both ends and elide the middle.
+    ElideMiddle,
+    /// Keep the leading end and append an ellipsis.
+    #[default]
+    ElideRight,
+}
+
+impl TextElideMode {
+    /// The token this mode is published and parsed as.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            TextElideMode::None => "none",
+            TextElideMode::ElideLeft => "left",
+            TextElideMode::ElideMiddle => "middle",
+            TextElideMode::ElideRight => "right",
+        }
+    }
+
+    /// Parses a published token.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "none" => TextElideMode::None,
+            "left" => TextElideMode::ElideLeft,
+            "middle" => TextElideMode::ElideMiddle,
+            "right" => TextElideMode::ElideRight,
+            _ => return None,
+        })
+    }
+}
+
+/// Shortens `text` to `width` according to `mode`, measuring with `measure`.
+///
+/// `ElideRight` and `ElideMiddle` delegate to the shared width-budget primitives, so the
+/// search over character boundaries — and its CJK/emoji safety — lives in one place.
+/// `ElideLeft` keeps a private search because `text_utils` publishes the *character*-budget
+/// [`elide_start`](crate::widget::text_utils::elide_start) but no pixel-budget form of it;
+/// this control's budget is pixels, and converting one to the other would be an approximation
+/// of the renderer's advance. An empty result means not even an ellipsis fits, which is the
+/// honest answer [`elide_to_width`] already gives for that case.
+pub(crate) fn elide_in_mode<'a>(
+    text: &'a str,
+    width: u32,
+    mode: TextElideMode,
+    measure: &mut dyn FnMut(&str) -> u32,
+) -> Cow<'a, str> {
+    match mode {
+        TextElideMode::None => Cow::Borrowed(text),
+        TextElideMode::ElideRight => elide_to_width(text, width, measure),
+        TextElideMode::ElideMiddle => elide_middle_to_width(text, width, measure),
+        TextElideMode::ElideLeft => {
+            if measure(text) <= width {
+                return Cow::Borrowed(text);
+            }
+            let count = text.chars().count();
+            if width == 0 || measure("\u{2026}") > width {
+                return Cow::Borrowed("");
+            }
+            let mut low = 0usize;
+            let mut high = count;
+            while low < high {
+                let mid = (low + high).div_ceil(2);
+                let start = byte_index_of_char(text, count - mid);
+                let mut candidate = String::with_capacity(text.len() - start + 4);
+                candidate.push('\u{2026}');
+                candidate.push_str(&text[start..]);
+                if measure(&candidate) <= width {
+                    low = mid;
+                } else {
+                    high = mid - 1;
+                }
+            }
+            let start = byte_index_of_char(text, count - low);
+            let mut out = String::with_capacity(text.len() - start + 4);
+            out.push('\u{2026}');
+            out.push_str(&text[start..]);
+            Cow::Owned(out)
+        }
+    }
+}
+
+/// Splits `text` into lines that fit `width`, measuring with `measure`.
+///
+/// The greedy split is [`wrap_to_width`]'s, so the two rules that are easy to get subtly
+/// wrong live in one place: a word that does not fit moves to the next line *whole*, and a
+/// single word wider than the line is broken at a character boundary rather than overflowing.
+/// Existing `\n` separators are honoured as paragraph breaks, and an empty paragraph is
+/// reported as an empty line so the blank row it represents is still drawn.
+///
+/// The one rule this wrapper owns is the historical whitespace policy: a run of whitespace
+/// inside a paragraph has always been painted as a single space, and leading/trailing
+/// whitespace has never been painted at all. Normalising before the shared split keeps that
+/// byte-for-byte while dropping the duplicated greedy loop.
+pub(crate) fn wrap_text(
+    text: &str,
+    width: u32,
+    measure: &mut dyn FnMut(&str) -> u32,
+) -> Vec<String> {
+    if width == 0 {
+        // Nothing can fit; report the text as one line rather than dropping it.
+        return vec![text.to_string()];
+    }
+    let normalised = collapse_whitespace(text);
+    wrap_to_width(&normalised, width, measure)
+        .into_iter()
+        .map(|range| normalised[range].to_string())
+        .collect()
+}
+
+/// `text` with every whitespace run collapsed to one space inside each `\n`-separated
+/// paragraph, and leading/trailing whitespace dropped.
+///
+/// This is exactly what `split_whitespace` did in the private wrap loop this helper replaced,
+/// restated per paragraph so explicit line breaks survive the normalisation.
+fn collapse_whitespace(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (index, paragraph) in text.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        let mut words = paragraph.split_whitespace();
+        if let Some(first) = words.next() {
+            out.push_str(first);
+            for word in words {
+                out.push(' ');
+                out.push_str(word);
+            }
+        }
+    }
+    out
+}
+
+/// Draws one line of `text` inside `bounds`, shortened by `mode` when it does not fit.
+///
+/// The measured width is the same budget [`RenderContext::draw_text_fitted_cow`] uses (the box
+/// less one fit inset at each end), so switching a label from `None` to an eliding mode changes
+/// only the string, not the room it is given.
+pub(crate) fn draw_elided_line(
+    context: &mut RenderContext,
+    bounds: Rect,
+    text: &str,
+    font: &Font,
+    color: Color,
+    alignment: HorizontalAlignment,
+    mode: TextElideMode,
+) {
+    let available = bounds.width.saturating_sub(2 * TEXT_FIT_MARGIN);
+    let fitted = {
+        let mut measure = |candidate: &str| context.measure_text(candidate, font).width;
+        elide_in_mode(text, available, mode, &mut measure)
+    };
+    context.draw_text_fitted_cow(bounds, &fitted, font, color, alignment);
+}
+
 /// Label widget for displaying text.
 pub struct Label {
     base: BaseWidget,
     text: String,
     alignment: crate::core::Alignment,
+    /// Whether text is wrapped to the label's width instead of painted on one line.
+    ///
+    /// Off by default: a label that has always been one line keeps every pixel of its
+    /// previous rendering until a caller asks for wrapping.
+    word_wrap: bool,
+    /// How text that still does not fit is shortened. See [`TextElideMode`].
+    ///
+    /// [`TextElideMode::None`] is the historical behaviour (paint, let the renderer clip);
+    /// the three eliding modes are opt-in so an existing layout's pixels do not move.
+    elide_mode: TextElideMode,
+    /// Uniform inset between the label's rectangle and its content.
+    margin: u32,
+    /// Optional image content. When set, it replaces the text as the drawn content.
+    #[cfg(feature = "image")]
+    pixmap: Option<crate::widget::Image>,
+    /// Whether the pixmap is scaled to the label's content box.
+    ///
+    /// Stored in every profile so the property is readable even where the `image` feature has
+    /// removed the pixmap itself; it simply has nothing to scale there.
+    scaled_contents: bool,
     /// The hover/press fade that deepens the ink while the pointer interacts.
     ///
     /// Both drivers rest at exactly `0.0`, so a label that has never been pointed at paints
@@ -56,6 +251,12 @@ impl Label {
             base: BaseWidget::new(WidgetKind::Label, geometry, "Label"),
             text,
             alignment: crate::core::Alignment::Left,
+            word_wrap: false,
+            elide_mode: TextElideMode::None,
+            margin: 0,
+            #[cfg(feature = "image")]
+            pixmap: None,
+            scaled_contents: false,
             fade: InteractionFade::new(),
         }
     }
@@ -85,6 +286,97 @@ impl Label {
         self.base.request_redraw();
     }
 
+    /// Whether the label wraps its text to its own width.
+    pub fn word_wrap(&self) -> bool {
+        self.word_wrap
+    }
+
+    /// Enables or disables wrapping.
+    ///
+    /// A same-value write is a no-op, so a host that mirrors state every frame does not queue a
+    /// repaint nobody can see.
+    pub fn set_word_wrap(&mut self, wrap: bool) {
+        if self.word_wrap == wrap {
+            return;
+        }
+        self.word_wrap = wrap;
+        self.base.request_redraw();
+    }
+
+    /// How text that does not fit is shortened.
+    pub fn elide_mode(&self) -> TextElideMode {
+        self.elide_mode
+    }
+
+    /// Sets the elide mode.
+    pub fn set_elide_mode(&mut self, mode: TextElideMode) {
+        if self.elide_mode == mode {
+            return;
+        }
+        self.elide_mode = mode;
+        self.base.request_redraw();
+    }
+
+    /// The uniform margin between the label's rectangle and its content.
+    pub fn margin(&self) -> u32 {
+        self.margin
+    }
+
+    /// Sets the uniform margin.
+    ///
+    /// The margin is part of the control's own layout: it insets the painted content, the wrapped
+    /// line width and the intrinsic size, all from the one value. Defaults to zero, so a label
+    /// with no explicit margin fills its rectangle exactly as before.
+    pub fn set_margin(&mut self, margin: u32) {
+        if self.margin == margin {
+            return;
+        }
+        self.margin = margin;
+        self.base.request_redraw();
+    }
+
+    /// Returns the optional pixmap content.
+    #[cfg(feature = "image")]
+    pub fn pixmap(&self) -> Option<&crate::widget::Image> {
+        self.pixmap.as_ref()
+    }
+
+    /// Sets (or clears) the label's pixmap content.
+    ///
+    /// A pixmap replaces the text as what the label draws — the reference toolkit's content model
+    /// is "an image or a string", and drawing both would be inventing an overlay nobody asked
+    /// for. The text is kept so a screen reader and `text()` still describe the control.
+    #[cfg(feature = "image")]
+    pub fn set_pixmap(&mut self, pixmap: Option<crate::widget::Image>) {
+        if self.pixmap.is_none() && pixmap.is_none() {
+            return;
+        }
+        self.pixmap = pixmap;
+        self.base.request_redraw();
+    }
+
+    /// Whether the pixmap is scaled to the label's content box.
+    pub fn scaled_contents(&self) -> bool {
+        self.scaled_contents
+    }
+
+    /// Sets whether the pixmap scales to fill the label.
+    ///
+    /// Off draws the image at its native size, aligned by [`Label::alignment`]; on scales it to
+    /// the content box. Off is the default, matching the reference toolkit.
+    pub fn set_scaled_contents(&mut self, scaled: bool) {
+        if self.scaled_contents == scaled {
+            return;
+        }
+        self.scaled_contents = scaled;
+        self.base.request_redraw();
+    }
+
+    /// The rectangle the label's content occupies: its geometry inset by [`Label::margin`].
+    pub fn content_rect(&self) -> Rect {
+        ControlMetrics::content_box(self.geometry(), EdgeOffsets::all(self.margin))
+    }
+
     /// The size this label claims when nothing constrains it.
     ///
     /// Routed through [`ControlMetrics::implicit_size`] so a label, a checkbox and a radio — which
@@ -97,9 +389,40 @@ impl Label {
         // `self.font()` — rather than `Font::default()`, so the hint follows the painted label
         // (D09-STYLE-02). A custom or scaled font now changes the label's intrinsic size too.
         let font = effective_font(self.style());
+        // A pixmap is the label's content when one is set, so the hint reports the image's own
+        // extent rather than the text it replaces. Scaling is a draw-time decision and does not
+        // change what the control asks for when nothing constrains it.
+        #[cfg(feature = "image")]
+        if let Some(pixmap) = self.pixmap.as_ref() {
+            let floor = Size::new(LABEL_MIN_WIDTH, pixmap.height());
+            return ControlMetrics::implicit_size(
+                Size::new(pixmap.width(), pixmap.height()),
+                EdgeOffsets::all(self.margin).grow(LABEL_PADDING),
+                floor,
+            );
+        }
         let text_width = estimate_text_width(&self.text, font, 1.0);
         let floor = Size::new(LABEL_MIN_WIDTH, estimate_line_height(font, 1.0));
-        ControlMetrics::implicit_size(Size::new(text_width, 0), LABEL_PADDING, floor)
+        ControlMetrics::implicit_size(
+            Size::new(text_width, 0),
+            EdgeOffsets::all(self.margin).grow(LABEL_PADDING),
+            floor,
+        )
+    }
+
+    /// Whether a pixmap is present.
+    ///
+    /// The helper exists so the draw path can ask the question in both feature configurations
+    /// without a `#[cfg]` around every arm that depends on it.
+    fn has_pixmap(&self) -> bool {
+        #[cfg(feature = "image")]
+        {
+            self.pixmap.is_some()
+        }
+        #[cfg(not(feature = "image"))]
+        {
+            false
+        }
     }
 
     /// Retargets the interaction fade from the pointer facts the base recorded.
@@ -176,6 +499,10 @@ impl WidgetProperties for Label {
             "alignment" => {
                 Ok(CapabilityValue::String(alignment_to_str(self.alignment()).to_string()))
             }
+            "word_wrap" => Ok(CapabilityValue::Bool(self.word_wrap())),
+            "elide" => Ok(CapabilityValue::String(self.elide_mode().as_str().to_string())),
+            "margin" => Ok(CapabilityValue::UInt(self.margin() as u64)),
+            "scaled_contents" => Ok(CapabilityValue::Bool(self.scaled_contents())),
             _ => base_property_get(self, name),
         }
     }
@@ -190,12 +517,40 @@ impl WidgetProperties for Label {
                 self.set_alignment(expect_alignment(value)?);
                 Ok(())
             }
+            "word_wrap" => {
+                self.set_word_wrap(expect_bool(value)?);
+                Ok(())
+            }
+            "elide" => {
+                let token = expect_string(value)?;
+                let Some(mode) = TextElideMode::from_name(&token) else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_elide_mode(mode);
+                Ok(())
+            }
+            "margin" => {
+                self.set_margin(expect_u32(value)?);
+                Ok(())
+            }
+            "scaled_contents" => {
+                self.set_scaled_contents(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "alignment", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "text",
+            "alignment",
+            "word_wrap",
+            "elide",
+            "margin",
+            "scaled_contents",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -247,8 +602,43 @@ impl Draw for Label {
                 None => (None, None, None),
             }
         };
+        // Draw pixmap content
+        //
+        // A pixmap is the label's content when one is set: the reference toolkits' label is
+        // "an image *or* a string", so drawing both would be an overlay nobody asked for. The
+        // text stays stored for accessibility and for `text()`.
+        #[cfg(feature = "image")]
+        if let Some(pixmap) = self.pixmap.as_ref() {
+            let content = self.content_rect();
+            let (width, height) = if self.scaled_contents {
+                (content.width, content.height)
+            } else {
+                (pixmap.width().min(content.width), pixmap.height().min(content.height))
+            };
+            if width > 0 && height > 0 {
+                let x = match self.alignment {
+                    crate::core::Alignment::Center => {
+                        content.x + ((content.width.saturating_sub(width)) / 2) as i32
+                    }
+                    crate::core::Alignment::Right => {
+                        content.x + content.width as i32 - width as i32
+                    }
+                    _ => content.x,
+                };
+                let y = match self.alignment {
+                    crate::core::Alignment::Top => content.y,
+                    crate::core::Alignment::Bottom => {
+                        content.y + content.height as i32 - height as i32
+                    }
+                    _ => content.y + ((content.height.saturating_sub(height)) / 2) as i32,
+                };
+                if let Some(pixels) = pixmap.rgba8_data() {
+                    context.draw_image(x, y, width, height, pixels);
+                }
+            }
+        }
         // Draw text
-        if !self.text.is_empty() {
+        if !self.text.is_empty() && !self.has_pixmap() {
             // The ink is the theme's own: `disabled` when the control is inert, `foreground`
             // otherwise. Both used to be literals — `rgb(150,150,150)` and `rgb(0,0,0)` — which made
             // a label theme-blind in the one way a *text* control cannot afford to be: black ink on
@@ -266,43 +656,98 @@ impl Draw for Label {
             // contrasting tone by the driver's own fraction.
             let text_color = self.interactive_ink(text_color);
             let font = effective_font(self.style());
-            // The **shared** estimate, because this is the same quantity `implicit_size` reports.
-            //
-            // This read `self.text.len() as u32 * 8` — a byte count, not an advance — while
-            // `implicit_size` two hundred lines above measured with `estimate_text_width`. So a
-            // centred or right-aligned label was *placed* with a width its own `hints()` disagreed
-            // with, and the disagreement grew with every non-ASCII caption: `estimate_text_width`
-            // counts clusters, `len()*8` counts UTF-8 bytes, so a CJK label drew from a width
-            // three times too large and drifted left. The label's own doc comment already claims
-            // the inline copy "would drift from the shared one on the first change to either" —
-            // it had, and this was the copy.
-            let text_width = estimate_text_width(&self.text, font, 1.0);
-            let text_x = match self.alignment {
-                crate::core::Alignment::Center => {
-                    rect.x + (rect.width.saturating_sub(text_width) / 2) as i32
+            // The margin is the control's own inset, so every text path below — measured,
+            // wrapped and elided — uses the same content box rather than the raw rectangle.
+            let content = self.content_rect();
+            if self.word_wrap {
+                // Wrap to the **content** width (margin already removed), then draw each line on
+                // its own band. An empty line is still a row, so blank paragraphs keep their
+                // height instead of collapsing the following text upward.
+                let lines = wrap_text(&self.text, content.width, &mut |candidate| {
+                    context.measure_text(candidate, font).width
+                });
+                let line_height = context.measure_text("M", font).height.max(1);
+                let mut y = content.y;
+                let bottom = content.y + content.height as i32;
+                for line in lines {
+                    if y + line_height as i32 > bottom {
+                        break;
+                    }
+                    let band = Rect::new(content.x, y, content.width, line_height);
+                    draw_elided_line(
+                        context,
+                        band,
+                        &line,
+                        font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                        self.elide_mode,
+                    );
+                    y += line_height as i32;
                 }
-                crate::core::Alignment::Right => rect.x + rect.width as i32 - text_width as i32,
-                _ => rect.x,
-            };
-            // The label's **line box**, not the label's own top edge. A glyph origin is the
-            // box's top-left corner, so `rect.y` pinned the text to the top of whatever area
-            // the label was given: in the 240x120 census cell `label.svg` carried
-            // `<text y="0">` — the text sat on the very first row and the other 106 were
-            // empty. Deriving the line from `context.text_line` centres the glyph box in the
-            // label, and it is the same helper every other text-bearing control in the crate
-            // uses, so a label and the value beside it cannot disagree about where a line of
-            // text goes.
-            //
-            // Only the vertical anchor moves: the horizontal origin above is computed from
-            // the caller's alignment and stays exactly as it was.
-            let line = context.text_line(rect, font);
-            context.draw_text(
-                Point::new(text_x, line.y),
-                &self.text,
-                font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
+            } else {
+                // The **shared** estimate, because this is the same quantity `implicit_size` reports.
+                //
+                // This read `self.text.len() as u32 * 8` — a byte count, not an advance — while
+                // `implicit_size` two hundred lines above measured with `estimate_text_width`. So a
+                // centred or right-aligned label was *placed* with a width its own `hints()` disagreed
+                // with, and the disagreement grew with every non-ASCII caption: `estimate_text_width`
+                // counts clusters, `len()*8` counts UTF-8 bytes, so a CJK label drew from a width
+                // three times too large and drifted left. The label's own doc comment already claims
+                // the inline copy "would drift from the shared one on the first change to either" —
+                // it had, and this was the copy.
+                let text_width = estimate_text_width(&self.text, font, 1.0);
+                let text_x = match self.alignment {
+                    crate::core::Alignment::Center => {
+                        content.x + (content.width.saturating_sub(text_width) / 2) as i32
+                    }
+                    crate::core::Alignment::Right => {
+                        content.x + content.width as i32 - text_width as i32
+                    }
+                    _ => content.x,
+                };
+                // The label's **line box**, not the label's own top edge. A glyph origin is the
+                // box's top-left corner, so `rect.y` pinned the text to the top of whatever area
+                // the label was given: in the 240x120 census cell `label.svg` carried
+                // `<text y="0">` — the text sat on the very first row and the other 106 were
+                // empty. Deriving the line from `context.text_line` centres the glyph box in the
+                // label, and it is the same helper every other text-bearing control in the crate
+                // uses, so a label and the value beside it cannot disagree about where a line of
+                // text goes.
+                //
+                // Only the vertical anchor moves: the horizontal origin above is computed from
+                // the caller's alignment and stays exactly as it was.
+                let line = context.text_line(content, font);
+                let horizontal = match self.alignment {
+                    crate::core::Alignment::Center => HorizontalAlignment::Center,
+                    crate::core::Alignment::Right => HorizontalAlignment::Right,
+                    _ => HorizontalAlignment::Left,
+                };
+                if self.elide_mode == TextElideMode::None {
+                    // Historical path: paint at the measured origin and let the renderer clip.
+                    // Unchanged so an existing label's pixels do not move.
+                    context.draw_text(
+                        Point::new(text_x, line.y),
+                        &self.text,
+                        font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                } else {
+                    // The eliding path owns placement, because the fitted string's own advance is
+                    // what the alignment centres — centring the *un*shortened width would leave an
+                    // elided label off-centre by the difference.
+                    draw_elided_line(
+                        context,
+                        Rect::new(content.x, line.y, content.width, line.height),
+                        &self.text,
+                        font,
+                        text_color,
+                        horizontal,
+                        self.elide_mode,
+                    );
+                }
+            }
         }
         // Draw border if specified
         if let Some(border_color) = self.style().border_color {
@@ -1083,6 +1528,7 @@ mod tests {
 
     /// A resting label paints its declared ink byte-for-byte, and returns to exactly that
     /// picture after a hover has come and gone.
+    #[cfg(device_profile)]
     #[test]
     fn a_resting_label_paints_the_untinted_ink() {
         // The label's draw reads the theme's role colours even when the caller overrides
@@ -1178,6 +1624,151 @@ mod tests {
         let _ = uninstall_environment();
         if let Some(previous) = previous {
             install_environment(previous);
+        }
+    }
+
+    // ── Rich content: wrap, elide and margin (R013–R015) ────────────────
+
+    #[test]
+    fn word_wrap_is_off_by_default_and_can_be_toggled() {
+        let mut label = Label::new("a b c".to_string(), Rect::new(0, 0, 40, 24));
+        assert!(!label.word_wrap());
+        label.set_word_wrap(true);
+        assert!(label.word_wrap());
+        label.set_word_wrap(true);
+        assert!(label.word_wrap(), "the same value is a no-op, not a toggle");
+        label.set_word_wrap(false);
+        assert!(!label.word_wrap());
+    }
+
+    #[test]
+    fn margin_insets_the_content_rect_and_the_hint() {
+        let mut label = Label::new("Hi".to_string(), Rect::new(0, 0, 80, 24));
+        let plain = label.implicit_size();
+        assert_eq!(label.content_rect(), Rect::new(0, 0, 80, 24));
+
+        label.set_margin(8);
+        assert_eq!(label.content_rect(), Rect::new(8, 8, 64, 8));
+        let padded = label.implicit_size();
+        assert_eq!(padded.width, plain.width + 16, "two sides of margin are added");
+        assert!(padded.height >= plain.height, "the hint never shrinks with a margin");
+    }
+
+    #[test]
+    fn a_margin_large_enough_grows_the_hint_height() {
+        let mut label = Label::new("Hi".to_string(), Rect::new(0, 0, 80, 24));
+        let plain = label.implicit_size();
+        label.set_margin(20);
+        assert!(
+            label.implicit_size().height > plain.height,
+            "a vertical margin larger than the padding grows the hint"
+        );
+    }
+
+    #[test]
+    fn elide_mode_round_trips_through_the_property_contract() {
+        let mut label = Label::new("a long caption".to_string(), Rect::new(0, 0, 40, 20));
+        assert_eq!(label.elide_mode(), TextElideMode::None, "the historical mode is the default");
+        label.set("elide", CapabilityValue::String("middle".into())).expect("elide is writable");
+        assert_eq!(label.elide_mode(), TextElideMode::ElideMiddle);
+        assert_eq!(label.get("elide"), Ok(CapabilityValue::String("middle".into())));
+        assert_eq!(
+            label.set("elide", CapabilityValue::String("sideways".into())),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
+    }
+
+    #[test]
+    fn elide_left_and_middle_keep_the_end_they_promise() {
+        let font = Font::default();
+        let mut measure = |text: &str| estimate_text_width(text, &font, 1.0);
+        let full = measure("abcdefghij");
+        let width = full / 2;
+
+        let right = elide_in_mode("abcdefghij", width, TextElideMode::ElideRight, &mut measure);
+        assert!(right.starts_with('a'), "elide-right keeps the head: {right:?}");
+        assert!(right.ends_with('\u{2026}'));
+        assert!(right.chars().count() < 10, "something must have been removed");
+
+        let left = elide_in_mode("abcdefghij", width, TextElideMode::ElideLeft, &mut measure);
+        assert!(left.starts_with('\u{2026}'), "elide-left keeps the tail: {left:?}");
+        assert!(left.ends_with('j'));
+        assert!(left.chars().count() < 10);
+
+        let middle = elide_in_mode("abcdefghij", width, TextElideMode::ElideMiddle, &mut measure);
+        assert!(middle.contains('\u{2026}'));
+        assert!(middle.starts_with('a'));
+        assert!(middle.ends_with('j'));
+        assert!(middle.chars().count() < 10);
+    }
+
+    #[test]
+    fn wrapping_breaks_on_words_and_hard_splits_a_long_one() {
+        let font = Font::default();
+        let mut measure = |text: &str| estimate_text_width(text, &font, 1.0);
+
+        let line_width = measure("one two");
+        let lines = wrap_text("one two three", line_width, &mut measure);
+        assert_eq!(lines, vec!["one two".to_string(), "three".to_string()]);
+
+        let hard_width = measure("abc");
+        let lines = wrap_text("abcdefgh", hard_width, &mut measure);
+        assert_eq!(lines, vec!["abc".to_string(), "def".to_string(), "gh".to_string()]);
+    }
+
+    #[test]
+    fn wrapping_honours_explicit_line_breaks_and_blank_paragraphs() {
+        let font = Font::default();
+        let mut measure = |text: &str| estimate_text_width(text, &font, 1.0);
+        let lines = wrap_text("a\n\nb", 40, &mut measure);
+        assert_eq!(lines, vec!["a".to_string(), String::new(), "b".to_string()]);
+    }
+
+    /// The shared splitter works on the text it is given, so the label's historical whitespace
+    /// policy — a run of spaces or tabs paints as one space, stray ends never paint — is applied
+    /// before the split rather than kept as a second copy of the greedy loop.
+    #[test]
+    fn wrapping_keeps_the_labels_whitespace_policy() {
+        let font = Font::default();
+        let mut measure = |text: &str| estimate_text_width(text, &font, 1.0);
+
+        let lines = wrap_text("one   two\tthree ", 400, &mut measure);
+        assert_eq!(lines, vec!["one two three".to_string()]);
+
+        // Normalising per paragraph must not eat the explicit line breaks themselves.
+        let lines = wrap_text("a  \n\n  b", 400, &mut measure);
+        assert_eq!(lines, vec!["a".to_string(), String::new(), "b".to_string()]);
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn a_pixmap_becomes_the_labels_content() {
+        let image = crate::widget::Image::try_from_rgba(vec![0u8; 12 * 8 * 4], 12, 8)
+            .expect("the buffer matches its dimensions");
+        let mut label = Label::new("fallback text".to_string(), Rect::new(0, 0, 80, 24));
+        assert!(label.pixmap().is_none());
+        let text_hint = label.implicit_size();
+
+        label.set_pixmap(Some(image));
+        assert!(label.pixmap().is_some());
+        assert_eq!(label.text(), "fallback text", "the text stays for accessibility");
+        let pixmap_hint = label.implicit_size();
+        assert!(
+            pixmap_hint.width < text_hint.width,
+            "the hint follows the image's own extent, not the text it replaced"
+        );
+        assert!(!label.scaled_contents(), "native size is the default");
+        label.set_scaled_contents(true);
+        assert!(label.scaled_contents());
+    }
+
+    #[test]
+    fn every_published_property_is_readable() {
+        // `property_names` must not advertise a name `get` rejects (see
+        // `capability::properties_tests::assert_contract`).
+        let label = Label::new("x".to_string(), Rect::new(0, 0, 20, 20));
+        for name in label.property_names() {
+            assert!(label.get(name).is_ok(), "{name:?} is published but not readable");
         }
     }
 }

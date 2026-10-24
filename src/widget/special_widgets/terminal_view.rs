@@ -1,7 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! TerminalView widget.
+//! TerminalView widget — a pseudo-terminal view with local line editing.
+//!
+//! # Scope
+//!
+//! This is a **pseudo-terminal**: it owns an output buffer, an editable input line, command
+//! history, in-line cursor movement, selection, scrollback, and a minimal ANSI SGR parser. It
+//! does not allocate a PTY and does not spawn a process. A host that owns a process feeds its
+//! output through [`TerminalView::append_output`] and executes the strings published by
+//! `command_submitted` (or by `interrupt_requested` for a signal request).
 
 #[cfg(test)]
 use crate::core::Point;
@@ -54,8 +62,20 @@ pub struct TerminalView {
     /// in the crate whose animation a user is most likely to be *waiting on*. The blink is the
     /// crate's shared [`CursorBlink`], the same primitive `line_edit` and `code_editor` use.
     cursor: CursorBlink,
+    /// The caret's position in the input line, in characters.
+    input_cursor: usize,
+    /// The other end of the selected run in the input line, when a selection exists.
+    selection_anchor: Option<usize>,
+    /// Uncommitted IME composition text, drawn at the caret.
+    preedit: String,
+    /// The declared character grid, as `(columns, rows)`; `None` derives it from the geometry.
+    grid: Option<(u32, u32)>,
     /// Emitted when command is submitted.
     pub command_submitted: Signal1<String>,
+    /// Emitted when the user asks to interrupt the running process (Ctrl+C).
+    pub interrupt_requested: Signal1<String>,
+    /// Emitted when the user asks for completion (Tab), with the current line.
+    pub completion_requested: Signal1<String>,
 }
 
 impl TerminalView {
@@ -76,8 +96,97 @@ impl TerminalView {
             scroll_offset: 0,
             visible_output_rows,
             cursor,
+            input_cursor: 0,
+            selection_anchor: None,
+            preedit: String::new(),
+            grid: None,
             command_submitted: Signal1::new(),
+            interrupt_requested: Signal1::new(),
+            completion_requested: Signal1::new(),
         }
+    }
+
+    /// Sets the character grid the view reports, or `None` to derive it from the geometry.
+    pub fn set_grid(&mut self, grid: Option<(u32, u32)>) {
+        let grid = grid.map(|(columns, rows)| (columns.max(1), rows.max(1)));
+        if self.grid == grid {
+            return;
+        }
+        self.grid = grid;
+        self.base.request_redraw();
+    }
+
+    /// The character grid: the declared size, or a geometry-derived default.
+    pub fn grid(&self) -> (u32, u32) {
+        self.grid.unwrap_or_else(|| {
+            let rect = self.geometry();
+            let columns = (rect.width / 8).max(1);
+            let rows = Self::estimated_output_rows(rect) as u32;
+            (columns, rows)
+        })
+    }
+
+    /// The caret's character index in the input line.
+    pub fn input_cursor(&self) -> usize {
+        self.input_cursor
+    }
+
+    /// Returns the selected input text, if a selection exists.
+    pub fn selected_input(&self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        Some(self.input_line.chars().skip(start).take(end - start).collect())
+    }
+
+    /// The ordered selection range in characters.
+    fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        let start = anchor.min(self.input_cursor);
+        let end = anchor.max(self.input_cursor);
+        (start != end).then_some((start, end))
+    }
+
+    /// Clamps the caret and selection to the input line's current length.
+    fn clamp_input_positions(&mut self) {
+        let length = self.input_line.chars().count();
+        self.input_cursor = self.input_cursor.min(length);
+        if let Some(anchor) = self.selection_anchor {
+            self.selection_anchor = Some(anchor.min(length));
+        }
+    }
+
+    /// Inserts `text` at the caret, replacing any selection.
+    fn insert_input(&mut self, text: &str) {
+        self.clamp_input_positions();
+        let chars: Vec<char> = self.input_line.chars().collect();
+        let (start, end) = self.selection_range().unwrap_or((self.input_cursor, self.input_cursor));
+        let mut next: String = chars[..start].iter().collect();
+        next.push_str(text);
+        next.extend(chars[end..].iter());
+        self.input_line = next;
+        self.input_cursor = start + text.chars().count();
+        self.selection_anchor = None;
+        self.history_index = None;
+        self.base.request_redraw();
+    }
+
+    /// Deletes the selected run, or `count` characters before the caret.
+    fn delete_input(&mut self, count: usize) {
+        self.clamp_input_positions();
+        let chars: Vec<char> = self.input_line.chars().collect();
+        if let Some((start, end)) = self.selection_range() {
+            self.input_line = chars[..start].iter().chain(chars[end..].iter()).collect();
+            self.input_cursor = start;
+            self.selection_anchor = None;
+        } else if count > 0 && self.input_cursor > 0 {
+            let start = self.input_cursor.saturating_sub(count);
+            self.input_line = chars[..start]
+                .iter()
+                .chain(chars[self.input_cursor.min(chars.len())..].iter())
+                .collect();
+            self.input_cursor = start;
+        }
+        self.history_index = None;
+        self.base.request_redraw();
     }
 
     /// How many output rows a body of this geometry shows, before the first frame has measured the
@@ -147,18 +256,67 @@ impl TerminalView {
             return;
         }
         self.input_line = line;
+        // A programmatic line is placed whole, so the caret follows its end: leaving the caret
+        // where the previous line's cursor was made a later Backspace delete from the middle.
+        self.input_cursor = self.input_line.chars().count();
+        self.selection_anchor = None;
         self.base.request_redraw();
     }
 
     /// Appends output line.
+    ///
+    /// A line that contains the clear-screen sequence (`ESC[2J`) empties the buffer before the
+    /// text after it is appended, which is how a full-screen program tells a terminal to start
+    /// over. SGR colour sequences are interpreted at paint time; everything else is text.
     pub fn append_output(&mut self, line: impl Into<String>) {
-        self.lines.push(line.into());
+        let line = line.into();
+        if line.contains("\u{1b}[2J") {
+            self.lines.clear();
+            self.scroll_offset = 0;
+        }
+        // A carriage return without a line feed overwrites the current line, which is how a
+        // progress indicator repaints itself.
+        if let Some(rest) = line.strip_prefix('\r') {
+            if let Some(last) = self.lines.last_mut() {
+                *last = rest.to_string();
+                self.base.request_redraw();
+                return;
+            }
+        }
+        self.lines.push(line);
         if self.lines.len() > 200 {
             let drop_count = self.lines.len() - 200;
             self.lines.drain(0..drop_count);
         }
         // New output returns the view to the tail. A reader who scrolled back would otherwise
         // have their offset silently point at different lines as the buffer shifts.
+        self.scroll_offset = 0;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Appends several output lines with one layout pass.
+    ///
+    /// A process writes in bursts; asking for a layout per line made a 200-line burst queue 200
+    /// requests for one visible change.
+    pub fn append_output_batch(&mut self, lines: impl IntoIterator<Item = impl Into<String>>) {
+        let mut changed = false;
+        for line in lines {
+            let line = line.into();
+            if line.contains("\u{1b}[2J") {
+                self.lines.clear();
+                self.scroll_offset = 0;
+            }
+            self.lines.push(line);
+            changed = true;
+        }
+        if !changed {
+            return;
+        }
+        if self.lines.len() > 200 {
+            let drop_count = self.lines.len() - 200;
+            self.lines.drain(0..drop_count);
+        }
         self.scroll_offset = 0;
         self.base.request_layout();
         self.base.request_redraw();
@@ -175,6 +333,8 @@ impl TerminalView {
         self.lines.push(format!("> {cmd}"));
         self.command_submitted.emit(cmd);
         self.input_line.clear();
+        self.input_cursor = 0;
+        self.selection_anchor = None;
         self.scroll_offset = 0;
         self.base.request_layout();
         self.base.request_redraw();
@@ -197,6 +357,8 @@ impl TerminalView {
         self.history_index = next_index;
         self.input_line =
             next_index.and_then(|index| self.history.get(index).cloned()).unwrap_or_default();
+        self.input_cursor = self.input_line.chars().count();
+        self.selection_anchor = None;
         self.base.request_redraw();
     }
 }
@@ -332,27 +494,149 @@ impl EventHandler for TerminalView {
             // Matching only `TextInput` dropped every IME commit, so a user typing through an
             // input method saw nothing arrive at the prompt.
             Event::TextInput { text } | Event::ImeCommit { text } => {
-                self.input_line.push_str(text);
-                // Typing starts a fresh line, so a later Up/Down recalls from the
-                // newest history entry rather than resuming the recalled one.
-                self.history_index = None;
+                self.preedit.clear();
+                self.insert_input(text);
+            }
+            Event::ImePreedit { text, cursor } => {
+                // The composition is shown without committing it; `cursor` is the caret inside
+                // the composition and is retained for the host's candidate window.
+                let _ = cursor;
+                self.preedit = text.clone();
                 self.base.request_redraw();
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                13 => {
-                    let _ = self.submit();
+            Event::KeyPress { key, modifiers } => {
+                let pressed = crate::shortcut::Key::from_key_code(*key);
+                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let primary = modifiers.contains(crate::shortcut::Modifiers::PRIMARY);
+                let shift = modifiers.contains(crate::shortcut::Modifiers::SHIFT);
+                if primary {
+                    match pressed {
+                        Some(crate::shortcut::Key::C) => {
+                            // Ctrl+C: copy the selection, or interrupt when nothing is selected.
+                            if let Some(selected) = self.selected_input() {
+                                let _ = crate::clipboard::ClipboardManager::set_text(selected);
+                            } else {
+                                self.interrupt_requested.emit(self.input_line.clone());
+                            }
+                            return;
+                        }
+                        Some(crate::shortcut::Key::V) => {
+                            let text = crate::clipboard::ClipboardManager::text();
+                            if !text.is_empty() {
+                                self.insert_input(&text);
+                            }
+                            return;
+                        }
+                        Some(crate::shortcut::Key::L) => {
+                            self.lines.clear();
+                            self.scroll_offset = 0;
+                            self.base.request_redraw();
+                            return;
+                        }
+                        Some(crate::shortcut::Key::A) => {
+                            self.selection_anchor = Some(0);
+                            self.input_cursor = self.input_line.chars().count();
+                            self.base.request_redraw();
+                            return;
+                        }
+                        Some(crate::shortcut::Key::Left) => {
+                            self.input_cursor = self.input_cursor.saturating_sub(1);
+                            if !shift {
+                                self.selection_anchor = None;
+                            }
+                            self.base.request_redraw();
+                            return;
+                        }
+                        Some(crate::shortcut::Key::Right) => {
+                            let length = self.input_line.chars().count();
+                            self.input_cursor = (self.input_cursor + 1).min(length);
+                            if !shift {
+                                self.selection_anchor = None;
+                            }
+                            self.base.request_redraw();
+                            return;
+                        }
+                        _ => {}
+                    }
                 }
-                8 => {
-                    // Backspace deletes one Unicode scalar, not one byte, so a
-                    // multi-byte glyph is removed whole.
-                    self.input_line.pop();
-                    self.history_index = None;
+                match pressed {
+                    Some(crate::shortcut::Key::Enter) => {
+                        let _ = self.submit();
+                    }
+                    Some(crate::shortcut::Key::Backspace) => self.delete_input(1),
+                    Some(crate::shortcut::Key::Delete) => {
+                        let length = self.input_line.chars().count();
+                        if self.input_cursor < length {
+                            self.input_cursor += 1;
+                            self.delete_input(1);
+                        }
+                    }
+                    Some(crate::shortcut::Key::Left) => {
+                        self.input_cursor = self.input_cursor.saturating_sub(1);
+                        if shift {
+                            self.selection_anchor.get_or_insert(self.input_cursor + 1);
+                        } else {
+                            self.selection_anchor = None;
+                        }
+                        self.base.request_redraw();
+                    }
+                    Some(crate::shortcut::Key::Right) => {
+                        let length = self.input_line.chars().count();
+                        self.input_cursor = (self.input_cursor + 1).min(length);
+                        if shift {
+                            self.selection_anchor
+                                .get_or_insert(self.input_cursor.saturating_sub(1));
+                        } else {
+                            self.selection_anchor = None;
+                        }
+                        self.base.request_redraw();
+                    }
+                    Some(crate::shortcut::Key::Home) => {
+                        self.input_cursor = 0;
+                        self.selection_anchor = None;
+                        self.base.request_redraw();
+                    }
+                    Some(crate::shortcut::Key::End) => {
+                        self.input_cursor = self.input_line.chars().count();
+                        self.selection_anchor = None;
+                        self.base.request_redraw();
+                    }
+                    Some(crate::shortcut::Key::Up) => self.recall_history(true),
+                    Some(crate::shortcut::Key::Down) => self.recall_history(false),
+                    Some(crate::shortcut::Key::Tab) => {
+                        self.completion_requested.emit(self.input_line.clone());
+                    }
+                    _ => { /* Other keys are not relevant */ }
+                }
+            }
+            Event::MousePress { pos, button: 1, .. } => {
+                // A click on the prompt row places the caret; a click in the output area is not
+                // an input position.
+                let rect = self.geometry();
+                let row_top = rect.y + rect.height as i32 - OUTPUT_LINE_HEIGHT - 6;
+                if pos.y >= row_top {
+                    let prefix = "> ";
+                    let font = effective_font(self.base.style());
+                    let prefix_width =
+                        crate::widget::metrics::estimate_text_width(prefix, font, 1.0) as i32;
+                    let click_x = pos.x - rect.x - 8 - prefix_width;
+                    let mut offset = 0i32;
+                    self.input_cursor = 0;
+                    for ch in self.input_line.chars() {
+                        let width =
+                            crate::widget::metrics::estimate_text_width(&ch.to_string(), font, 1.0)
+                                as i32;
+                        if click_x < offset + width / 2 {
+                            break;
+                        }
+                        offset += width;
+                        self.input_cursor += 1;
+                    }
+                    self.input_cursor = self.input_cursor.min(self.input_line.chars().count());
+                    self.selection_anchor = None;
                     self.base.request_redraw();
                 }
-                38 => self.recall_history(true),
-                40 => self.recall_history(false),
-                _ => { /* Other keys are not relevant */ }
-            },
+            }
             // Wheel: positive `delta.y` moves the content down, which in a terminal means
             // revealing older output above the tail. Three lines per notch is the desktop
             // default; the tail itself clamps so neither direction can leave the buffer.
@@ -466,39 +750,95 @@ impl Draw for TerminalView {
             let y = rect.y + 16 + idx as i32 * prompt_line_height as i32;
             let line_bounds =
                 Rect::new(rect.x + 8, y, rect.width.saturating_sub(16), prompt_line_height);
-            context.draw_text_fitted_cow(
-                line_bounds,
-                line,
-                prompt_font,
-                output_color,
-                HorizontalAlignment::Left,
-            );
+            // SGR-styled output: each run is drawn with its colour, and the run widths place
+            // the next run, so a coloured prompt line is not a second copy of the parser.
+            let mut x = line_bounds.x;
+            let right = line_bounds.x + line_bounds.width as i32;
+            for run in ansi_runs(line) {
+                if x >= right {
+                    break;
+                }
+                let color = match run.color {
+                    Some(color) => {
+                        if run.dim {
+                            color.blend(&background, 0.4)
+                        } else {
+                            color
+                        }
+                    }
+                    None if run.dim => output_color.blend(&background, 0.4),
+                    None => output_color,
+                };
+                let width = context.measure_text(&run.text, prompt_font).width as i32;
+                context.draw_text(
+                    crate::core::Point::new(x, y),
+                    &run.text,
+                    prompt_font,
+                    color,
+                    HorizontalAlignment::Left,
+                );
+                x += width;
+            }
         }
 
         let prompt_y = (rect.y + rect.height as i32 - prompt_row_height as i32 + 3).max(rect.y);
-        let prompt_text = format!("> {}", self.input_line);
-        let prompt_bounds =
-            Rect::new(rect.x + 8, prompt_y, rect.width.saturating_sub(16), prompt_line_height);
-        context.draw_text_fitted_cow(
-            prompt_bounds,
-            &prompt_text,
+        let prefix = "> ";
+        let prefix_width = context.measure_text(prefix, prompt_font).width as i32;
+        context.draw_text(
+            crate::core::Point::new(rect.x + 8, prompt_y),
+            prefix,
             prompt_font,
             prompt_color,
             HorizontalAlignment::Left,
         );
 
-        // The caret sits immediately after the input text, in the prompt's own ink — it is the
-        // same line, continued. Its x is the measured advance of the text already typed, so it
-        // tracks the input rather than sitting at a fixed offset from the field's left edge.
-        //
-        // Drawn only when the blink's own half-period says so: a caret that ignores
-        // `cursor.is_visible()` is a caret that never blinks, which is the state this control was
-        // in before it had one at all.
+        // The input line is drawn character by character from the caret's own metrics: that is
+        // the only way the selection band, the caret and the IME composition can all sit where
+        // the glyphs are. A single fitted run put the caret at the end of the *string*, which
+        // made in-line editing invisible.
+        let input_x = rect.x + 8 + prefix_width;
+        let mut caret_x = input_x;
+        let selection = self.selection_range();
+        let mut pen_x = input_x;
+        for (index, ch) in self.input_line.chars().enumerate() {
+            let glyph = ch.to_string();
+            let width = context.measure_text(&glyph, prompt_font).width as i32;
+            if selection.is_some_and(|(start, end)| index >= start && index < end) {
+                context.fill_rect(
+                    Rect::new(pen_x, prompt_y, width.max(1) as u32, prompt_line_height),
+                    prompt_color.with_alpha(70),
+                );
+            }
+            if index == self.input_cursor {
+                caret_x = pen_x;
+            }
+            context.draw_text(
+                crate::core::Point::new(pen_x, prompt_y),
+                &glyph,
+                prompt_font,
+                prompt_color,
+                HorizontalAlignment::Left,
+            );
+            pen_x += width;
+        }
+        if self.input_cursor >= self.input_line.chars().count() {
+            caret_x = pen_x;
+        }
+        if !self.preedit.is_empty() {
+            context.draw_text(
+                crate::core::Point::new(pen_x, prompt_y),
+                &self.preedit,
+                prompt_font,
+                prompt_color.with_alpha(160),
+                HorizontalAlignment::Left,
+            );
+        }
+
+        // The caret sits at the input cursor, in the prompt's own ink — it is the same line,
+        // continued. Its x is the measured advance of the characters before it, so it tracks
+        // in-line movement rather than always sitting after the whole string.
         if self.base.is_enabled() && self.cursor.is_visible() {
-            let typed = context.measure_text(&prompt_text, prompt_font);
-            let caret_x = (rect.x + 8 + typed.width as i32)
-                .min(rect.x + rect.width as i32 - 2)
-                .max(rect.x + 8);
+            let caret_x = caret_x.min(rect.x + rect.width as i32 - 2).max(rect.x + 8);
             // A caret is a thin, full-height block rather than a stroke: it is the position the
             // *next* character will occupy, so it is as tall as the line and as wide as one
             // pixel column of it.
@@ -506,6 +846,121 @@ impl Draw for TerminalView {
                 Rect::new(caret_x, prompt_y, 1, prompt_line_height.max(1)),
                 prompt_color,
             );
+        }
+    }
+}
+
+/// One styled run of an ANSI-coloured output line.
+struct AnsiRun {
+    text: String,
+    color: Option<Color>,
+    dim: bool,
+}
+
+/// Splits one line into SGR-styled runs.
+///
+/// The parser understands the subset a shell and a progress program actually emit: reset,
+/// bold/dim, the sixteen basic colours, and 256-colour foregrounds. Any other control sequence
+/// is consumed and ignored, so it cannot leak its escape bytes into the visible text.
+fn ansi_runs(line: &str) -> Vec<AnsiRun> {
+    let mut runs = Vec::new();
+    let mut current = String::new();
+    let mut color = None;
+    let mut dim = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            current.push(ch);
+            continue;
+        }
+        if chars.peek() != Some(&'[') {
+            continue;
+        }
+        chars.next();
+        let mut params = String::new();
+        for next in chars.by_ref() {
+            if next.is_ascii_alphabetic() {
+                if !current.is_empty() {
+                    runs.push(AnsiRun { text: core::mem::take(&mut current), color, dim });
+                }
+                if next == 'm' {
+                    apply_sgr(&params, &mut color, &mut dim);
+                }
+                break;
+            }
+            params.push(next);
+        }
+    }
+    if !current.is_empty() {
+        runs.push(AnsiRun { text: current, color, dim });
+    }
+    runs
+}
+
+/// Applies one SGR parameter list to the current run's style.
+fn apply_sgr(params: &str, color: &mut Option<Color>, dim: &mut bool) {
+    let values: Vec<u32> = params.split(';').filter_map(|part| part.parse::<u32>().ok()).collect();
+    if values.is_empty() {
+        *color = None;
+        *dim = false;
+        return;
+    }
+    let mut index = 0usize;
+    while index < values.len() {
+        match values[index] {
+            0 => {
+                *color = None;
+                *dim = false;
+            }
+            1 => *dim = false,
+            2 => *dim = true,
+            22 => *dim = false,
+            39 => *color = None,
+            30..=37 => *color = Some(basic_ansi_color(values[index] - 30)),
+            90..=97 => *color = Some(basic_ansi_color(values[index] - 90)),
+            38 => {
+                if let (Some(&5), Some(entry)) = (values.get(index + 1), values.get(index + 2)) {
+                    *color = Some(xterm_color(*entry));
+                    index += 2;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+}
+
+/// The sixteen basic ANSI colours.
+fn basic_ansi_color(index: u32) -> Color {
+    const COLORS: [Color; 8] = [
+        Color::rgb(0, 0, 0),
+        Color::rgb(205, 49, 49),
+        Color::rgb(13, 188, 121),
+        Color::rgb(229, 229, 16),
+        Color::rgb(36, 114, 200),
+        Color::rgb(188, 63, 188),
+        Color::rgb(17, 168, 205),
+        Color::rgb(229, 229, 229),
+    ];
+    COLORS[(index % 8) as usize]
+}
+
+/// The 256-colour palette's entry `index`.
+fn xterm_color(index: u32) -> Color {
+    match index {
+        0..=15 => basic_ansi_color(index % 8),
+        16..=231 => {
+            let value = index - 16;
+            let steps = [0u8, 95, 135, 175, 215, 255];
+            Color::rgb(
+                steps[(value / 36) as usize % 6],
+                steps[(value / 6) as usize % 6],
+                steps[value as usize % 6],
+            )
+        }
+        _ => {
+            let level = 8 + (index.saturating_sub(232) as u8).min(23) * 10;
+            Color::rgb(level, level, level)
         }
     }
 }

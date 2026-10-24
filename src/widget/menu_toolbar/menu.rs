@@ -26,8 +26,69 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width};
-use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The mnemonic letter carried by a menu label.
+///
+/// A label marks its accelerator with `&`: `"&File"` is drawn as `File` and answered by
+/// Alt+F. A doubled `&&` is a literal ampersand and marks nothing.
+///
+/// Returns `None` when the label carries no marker, which is the default for every
+/// existing menu: parsing is metadata, so a label that never used `&` behaves exactly
+/// as it did.
+pub fn menu_mnemonic(text: &str) -> Option<char> {
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '&' {
+            continue;
+        }
+        match chars.next() {
+            Some('&') => continue,
+            Some(next) => return Some(next),
+            None => return None,
+        }
+    }
+    None
+}
+
+/// Removes mnemonic markers from a label, keeping literal ampersands.
+///
+/// `"&&File"` becomes `"&File"`, `"&File"` becomes `"File"`, and a label without
+/// markers is returned unchanged.
+pub fn strip_menu_mnemonic(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '&' {
+            stripped.push(ch);
+            continue;
+        }
+        match chars.peek() {
+            Some('&') => {
+                chars.next();
+                stripped.push('&');
+            }
+            Some(_) => { /* the marker itself is not drawn */ }
+            None => stripped.push('&'),
+        }
+    }
+    stripped
+}
+
+/// The ASCII letter or digit a key code names, for mnemonic accelerators.
+///
+/// Only letters and digits are mnemonics; every other key belongs to the menu's
+/// navigation contract.
+fn mnemonic_letter(key: u32) -> Option<char> {
+    match key {
+        65..=90 => char::from_u32(key),
+        48..=57 => char::from_u32(key),
+        97..=122 => char::from_u32(key),
+        _ => None,
+    }
+}
+
 /// A single item in a menu.
 #[derive(Debug, Clone)]
 pub struct MenuEntry {
@@ -38,6 +99,12 @@ pub struct MenuEntry {
     enabled: bool,
     separator: bool,
     has_submenu: bool,
+    /// Optional icon shown in the row's indicator column.
+    icon: Option<IconSource>,
+    /// Child entries, when this row opens a nested panel.
+    submenu: Option<Vec<MenuEntry>>,
+    /// Whether the row is a section caption rather than a choice.
+    section: bool,
 }
 impl MenuEntry {
     /// Creates a visible, enabled entry carrying `text`.
@@ -53,6 +120,9 @@ impl MenuEntry {
             enabled: true,
             separator: false,
             has_submenu: false,
+            icon: None,
+            submenu: None,
+            section: false,
         }
     }
     /// Creates a separator entry: an empty-text entry marked
@@ -165,11 +235,73 @@ impl MenuEntry {
 
     /// Shows or hides the submenu indicator.
     ///
-    /// This type does not own any child menus, so the flag is purely visual: it
-    /// marks the entry as leading somewhere without providing the mechanism to
-    /// go there.
+    /// The flag alone marks the entry as a branch. Attaching children through
+    /// [`MenuEntry::set_submenu`] is what makes this menu paint the nested panel itself;
+    /// without children the flag stays a hint for a host that draws its own child menu.
     pub fn set_has_submenu(&mut self, has: bool) {
         self.has_submenu = has;
+    }
+
+    /// The icon painted in this row's indicator column, if any.
+    pub fn icon(&self) -> Option<IconSource> {
+        self.icon
+    }
+
+    /// Sets or clears the row icon. An icon takes the indicator column, so a
+    /// checkable row with an icon shows the icon and no tick.
+    pub fn set_icon(&mut self, icon: Option<IconSource>) {
+        self.icon = icon;
+    }
+
+    /// Sets the row icon and returns `self`, for chaining onto [`MenuEntry::new`].
+    pub fn with_icon(mut self, icon: IconSource) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// The nested entries this row opens, or `None` for a leaf.
+    pub fn submenu(&self) -> Option<&[MenuEntry]> {
+        self.submenu.as_deref()
+    }
+
+    /// Attaches nested entries, making this row a branch this menu can open itself.
+    ///
+    /// The panel is painted one level deep and to the right of the parent row. Deeply
+    /// recursive trees are left to a host that builds its own child menus; the flag
+    /// and the [`Menu::submenu_requested`] signal remain the contract for those.
+    pub fn set_submenu(&mut self, children: Option<Vec<MenuEntry>>) {
+        self.submenu = children;
+        self.has_submenu = self.submenu.as_deref().is_some_and(|c| !c.is_empty());
+    }
+
+    /// Sets nested entries and returns `self`.
+    pub fn with_submenu(mut self, children: Vec<MenuEntry>) -> Self {
+        self.set_submenu(Some(children));
+        self
+    }
+
+    /// Creates a section caption: a non-selectable row that groups the entries below it.
+    pub fn section(title: impl Into<String>) -> Self {
+        let mut entry = Self::new(title);
+        entry.section = true;
+        entry
+    }
+
+    /// Whether this row is a section caption rather than a choice.
+    pub fn is_section(&self) -> bool {
+        self.section
+    }
+
+    /// Whether this row can be highlighted and chosen.
+    ///
+    /// Separators and section captions cannot; neither can a disabled entry.
+    pub fn is_selectable(&self) -> bool {
+        !self.separator && !self.section && self.enabled
+    }
+
+    /// The mnemonic letter this entry answers to, parsed from `&` in its label.
+    pub fn mnemonic(&self) -> Option<char> {
+        menu_mnemonic(&self.text)
     }
 }
 /// Menu widget.
@@ -271,6 +403,24 @@ pub struct Menu {
     /// shaped measurement per frame; a menu that is open while an animation runs paid it
     /// on every frame of the reveal.
     heading_line_cache: core::cell::Cell<Option<(u32, u32)>>,
+    /// The entry whose nested panel is open, when the children were attached through
+    /// [`MenuEntry::set_submenu`].
+    submenu_open: Option<usize>,
+    /// The highlighted row inside the open nested panel.
+    submenu_hovered: Option<usize>,
+    /// Whether the popup paints a tear-off strip above its rows.
+    tearoff: bool,
+    /// Emitted when the tear-off strip is pressed.
+    ///
+    /// The menu does not remove itself: a host that supports a torn-off copy connects
+    /// this and creates the detached window. A host that ignores it simply sees the
+    /// press do nothing, which is the honest failure rather than a silent dismissal.
+    pub tearoff_requested: GenericSignal,
+    /// Whether mnemonic markers are stripped and underlined.
+    ///
+    /// Off by default: a menu that never asks paints its labels exactly as before, so
+    /// wiring the accelerator parser changed no pixels.
+    show_mnemonics: bool,
 }
 impl Menu {
     /// Creates a menu titled `title`, initially **hidden**.
@@ -297,6 +447,11 @@ impl Menu {
             show_heading: true,
             scroll_offset: 0,
             heading_line_cache: core::cell::Cell::new(None),
+            submenu_open: None,
+            submenu_hovered: None,
+            tearoff: false,
+            tearoff_requested: GenericSignal::new(),
+            show_mnemonics: false,
         };
         // A menu is a popup, so it starts hidden. `BaseWidget` defaults to visible,
         // which is right for a control that owns part of the surface but wrong for
@@ -454,7 +609,7 @@ impl Menu {
                 index = 0;
             }
             let candidate = &self.items[index as usize];
-            if !candidate.is_separator() && candidate.is_enabled() {
+            if candidate.is_selectable() {
                 self.hovered_index = Some(index as usize);
                 self.ensure_hovered_visible();
                 self.base.request_redraw();
@@ -486,26 +641,26 @@ impl Menu {
         let Some(item) = self.items.get(index) else {
             return false;
         };
-        if item.is_separator() || !item.is_enabled() {
+        if !item.is_selectable() {
             return false;
         }
-        // An entry that owns a submenu is a **branch, not a leaf**: activating it means "open the
-        // next level", never "choose this". The old code emitted `triggered` and hid the menu, so
-        // a click on `Cut >` fired the `Cut` action and closed the popup — the submenu was
-        // unreachable by pointer at all, and the user got a command they did not ask for. This is
-        // the more severe half of BLUE22 · G-3, which was registered only as "the arrow keys have
-        // no exit from a submenu".
+        // An entry that owns a submenu is a **branch, not a leaf**: activating it means "open
+        // the next level", never "choose this". The old code emitted `triggered` and hid the
+        // menu, so a click on `Cut >` fired the `Cut` action and closed the popup — the submenu
+        // was unreachable by pointer at all, and the user got a command they did not ask for.
         //
-        // The branch is reported the same way the arrow keys report it — through the same signal —
-        // so a host has one thing to listen for and still receives nothing it could mistake for a
-        // committed choice. The menu stays open, because the branch was opened rather than taken.
+        // The branch is reported the same way the arrow keys report it — through the same
+        // signal — so a host has one thing to listen for and still receives nothing it could
+        // mistake for a committed choice. When the row owns children this menu also paints the
+        // child panel itself, which is what makes `submenu_requested` a notification rather
+        // than the only way to reach the next level.
+        let text = item.text().to_string();
         if item.has_submenu() {
-            let text = item.text().to_string();
+            self.open_submenu(index);
             self.submenu_requested.emit(text);
             self.base.request_redraw();
             return true;
         }
-        let text = item.text().to_string();
         self.triggered.emit(text);
         self.triggered_index.emit(index);
         self.hide();
@@ -696,7 +851,7 @@ impl Menu {
                 }
             })
             .sum();
-        let mut y = padding as i32 - skipped;
+        let mut y = padding as i32 + self.tearoff_band_height() as i32 - skipped;
         for item in self.items.iter() {
             let height = if item.is_separator() {
                 Self::separator_height() as u32
@@ -737,6 +892,349 @@ impl Menu {
     /// Whether the title heading is painted.
     pub fn shows_heading(&self) -> bool {
         self.show_heading
+    }
+
+    /// Makes the popup paint a tear-off strip above its rows.
+    ///
+    /// The strip is a drag handle a host can use to detach a copy of the menu. It is
+    /// off by default, so an ordinary menu's rows do not move.
+    pub fn set_tearoff(&mut self, tearoff: bool) {
+        if self.tearoff == tearoff {
+            return;
+        }
+        self.tearoff = tearoff;
+        self.base.request_redraw();
+    }
+
+    /// Whether the popup paints a tear-off strip.
+    pub fn tears_off(&self) -> bool {
+        self.tearoff
+    }
+
+    /// The height of the tear-off strip in popup coordinates.
+    fn tearoff_band_height(&self) -> u32 {
+        if self.tearoff {
+            8
+        } else {
+            0
+        }
+    }
+
+    /// Enables mnemonic parsing: `&` markers are removed from the drawn label and the
+    /// marked letter is underlined.
+    ///
+    /// Off by default. Alt+letter activation works regardless; this flag only changes
+    /// the painted label.
+    pub fn set_show_mnemonics(&mut self, show: bool) {
+        if self.show_mnemonics == show {
+            return;
+        }
+        self.show_mnemonics = show;
+        self.base.request_redraw();
+    }
+
+    /// Whether mnemonic markers are stripped and underlined when painted.
+    pub fn shows_mnemonics(&self) -> bool {
+        self.show_mnemonics
+    }
+
+    /// The index of the first enabled entry whose mnemonic is `letter`.
+    ///
+    /// Matching is case-insensitive, which is what lets one declaration answer both
+    /// Alt+F and Alt+Shift+F.
+    pub fn mnemonic_index(&self, letter: char) -> Option<usize> {
+        let wanted = letter.to_ascii_lowercase();
+        self.items.iter().position(|item| {
+            item.is_selectable() && item.mnemonic().map(|m| m.to_ascii_lowercase()) == Some(wanted)
+        })
+    }
+
+    /// Runs the entry whose mnemonic is `letter`, exactly as a click on it would.
+    ///
+    /// Returns `false` when no enabled entry carries that mnemonic. A branch opens its
+    /// nested panel instead of committing, so an accelerator cannot fire a command the
+    /// user did not choose.
+    pub fn activate_mnemonic(&mut self, letter: char) -> bool {
+        let Some(index) = self.mnemonic_index(letter) else {
+            return false;
+        };
+        self.hovered_index = Some(index);
+        self.activate_hovered()
+    }
+
+    /// The entry whose nested panel is open, if any.
+    pub fn open_submenu_index(&self) -> Option<usize> {
+        self.submenu_open
+    }
+
+    /// Opens the nested panel of `index`, when that entry owns children.
+    ///
+    /// Returns `false` for a leaf, an out-of-range index, or a disabled entry, and
+    /// leaves any panel that is already open untouched in that case.
+    pub fn open_submenu(&mut self, index: usize) -> bool {
+        let Some(item) = self.items.get(index) else {
+            return false;
+        };
+        if !item.is_selectable() || item.submenu().is_none_or(<[MenuEntry]>::is_empty) {
+            return false;
+        }
+        self.submenu_open = Some(index);
+        self.submenu_hovered =
+            item.submenu().and_then(|children| children.iter().position(MenuEntry::is_selectable));
+        self.base.request_redraw();
+        true
+    }
+
+    /// Closes the nested panel, if one is open. Returns whether anything changed.
+    pub fn close_submenu(&mut self) -> bool {
+        if self.submenu_open.is_none() {
+            return false;
+        }
+        self.submenu_open = None;
+        self.submenu_hovered = None;
+        self.base.request_redraw();
+        true
+    }
+
+    /// The children of the open nested panel.
+    fn open_submenu_children(&self) -> Option<&[MenuEntry]> {
+        let index = self.submenu_open?;
+        self.items.get(index)?.submenu()
+    }
+
+    /// The highlighted row inside the open nested panel.
+    pub fn submenu_hovered_index(&self) -> Option<usize> {
+        self.submenu_hovered
+    }
+
+    /// The nested panel's rectangle, in the menu's own coordinate space.
+    ///
+    /// It hangs from the parent row's top edge and its right edge, one level deep. The
+    /// panel width is fixed at [`Self::submenu_panel_width`] so the panel cannot shrink
+    /// around a short child label.
+    pub fn submenu_panel_rect(&self) -> Option<Rect> {
+        let index = self.submenu_open?;
+        let children = self.open_submenu_children()?;
+        let row = *self.item_bands().get(index)?;
+        let rect = self.geometry();
+        let x = rect.x + rect.width as i32 - 6;
+        let y = self.body_top() + row.y;
+        Some(Rect::new(x, y, Self::submenu_panel_width(), Self::submenu_panel_height(children)))
+    }
+
+    /// The width the nested panel paints at.
+    pub fn submenu_panel_width() -> u32 {
+        180
+    }
+
+    /// The height a nested panel needs for `children`.
+    fn submenu_panel_height(children: &[MenuEntry]) -> u32 {
+        children
+            .iter()
+            .map(|child| {
+                if child.is_separator() || child.is_section() {
+                    Self::separator_height() as u32
+                } else {
+                    Self::item_height() as u32
+                }
+            })
+            .sum::<u32>()
+            + 4
+    }
+
+    /// The child row at `pos`, when the nested panel is open and the point is inside it.
+    pub fn submenu_index_at(&self, pos: Point) -> Option<usize> {
+        let panel = self.submenu_panel_rect()?;
+        if pos.x < panel.x
+            || pos.x >= panel.x + panel.width as i32
+            || pos.y < panel.y
+            || pos.y >= panel.y + panel.height as i32
+        {
+            return None;
+        }
+        let children = self.open_submenu_children()?;
+        let mut y = panel.y + 2;
+        for (index, child) in children.iter().enumerate() {
+            let height = if child.is_separator() || child.is_section() {
+                Self::separator_height() as i32
+            } else {
+                Self::item_height() as i32
+            };
+            if pos.y >= y && pos.y < y + height {
+                return Some(index);
+            }
+            y += height;
+        }
+        None
+    }
+
+    /// Moves the nested panel's highlight by `delta`, skipping unselectable rows.
+    fn move_submenu_hovered(&mut self, delta: i32) -> bool {
+        let Some(children) = self.open_submenu_children() else {
+            return false;
+        };
+        let count = children.len();
+        if count == 0 || delta == 0 {
+            return false;
+        }
+        let start = match self.submenu_hovered {
+            Some(index) => index as i32,
+            None if delta > 0 => -1,
+            None => count as i32,
+        };
+        let mut index = start;
+        for _ in 0..count {
+            index += delta;
+            if index < 0 {
+                index = count as i32 - 1;
+            } else if index >= count as i32 {
+                index = 0;
+            }
+            if children[index as usize].is_selectable() {
+                self.submenu_hovered = Some(index as usize);
+                self.base.request_redraw();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Commits the highlighted child row, or reports a nested branch it cannot open.
+    fn activate_submenu_hovered(&mut self) -> bool {
+        let Some(children) = self.open_submenu_children() else {
+            return false;
+        };
+        let Some(index) = self.submenu_hovered else {
+            return false;
+        };
+        let Some(child) = children.get(index) else {
+            return false;
+        };
+        if !child.is_selectable() {
+            return false;
+        }
+        if child.has_submenu() {
+            let text = child.text().to_string();
+            self.submenu_requested.emit(text);
+            return true;
+        }
+        let text = child.text().to_string();
+        self.triggered.emit(text);
+        self.triggered_index.emit(index);
+        self.hide();
+        true
+    }
+
+    /// Paints the open nested panel.
+    ///
+    /// One level deep, hung from the parent row's right edge. The rows use the same
+    /// indicator/label/trailing derivations as the parent, so a child row aligns with a
+    /// parent row even though the panel is narrower.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_submenu_panel(
+        &self,
+        context: &mut RenderContext,
+        font: &crate::core::Font,
+        ink: Color,
+        secondary: Color,
+        primary: Color,
+        border: Color,
+        face: Color,
+    ) {
+        let Some(panel) = self.submenu_panel_rect() else {
+            return;
+        };
+        let Some(children) = self.open_submenu_children() else {
+            return;
+        };
+        context.fill_rect(panel, face.blend(&ink, 0.16));
+        context.draw_rect(panel, border);
+        let mut y = panel.y + 2;
+        for (index, child) in children.iter().enumerate() {
+            let height = if child.is_separator() || child.is_section() {
+                Self::separator_height() as u32
+            } else {
+                Self::item_height() as u32
+            };
+            let row = Rect::new(panel.x + 2, y, panel.width.saturating_sub(4), height);
+            if child.is_separator() {
+                context.draw_line(
+                    Point::new(row.x + 2, y + height as i32 / 2),
+                    Point::new(row.x + row.width as i32 - 2, y + height as i32 / 2),
+                    border,
+                );
+                y += height as i32;
+                continue;
+            }
+            if child.is_section() {
+                let band = Rect::new(row.x + 8, row.y, row.width.saturating_sub(8), row.height);
+                context.draw_text_fitted_cow(
+                    context.text_line(band, font),
+                    child.text(),
+                    font,
+                    secondary,
+                    HorizontalAlignment::Left,
+                );
+                y += height as i32;
+                continue;
+            }
+            let hovered = self.submenu_hovered == Some(index);
+            if hovered {
+                context.fill_rect(row, primary);
+            }
+            let fg = if !child.is_enabled() {
+                self.base.disabled_ink_on(ink, face)
+            } else if hovered {
+                primary.contrast_color()
+            } else {
+                ink
+            };
+            let indicator = self.indicator_box(row);
+            let label = self.label_box(row, indicator);
+            if let Some(source) = child.icon() {
+                let line = context.text_line(indicator, font);
+                let side = line.height.max(1).min(indicator.width.max(1));
+                let icon_rect = Rect::new(
+                    indicator.x + (indicator.width as i32 - side as i32) / 2,
+                    line.y,
+                    side,
+                    side,
+                );
+                if let Err(error) = crate::widget::paint_icon(context, source.into(), icon_rect, fg)
+                {
+                    log::warn!("submenu entry icon could not be painted: {error:?}");
+                }
+            } else if child.is_checkable() && child.is_checked() {
+                let line = context.text_line(indicator, font);
+                let side = line.height.max(1);
+                let tick = Rect::new(
+                    indicator.x + (indicator.width as i32 - side as i32) / 2,
+                    line.y,
+                    side,
+                    side,
+                );
+                crate::widget::draw_icon_at(context, tick, fg, IconName::Check);
+            }
+            context.draw_text_fitted_cow(
+                context.text_line(label, font),
+                child.text(),
+                font,
+                fg,
+                HorizontalAlignment::Left,
+            );
+            if child.has_submenu() {
+                let arrow_box = self.submenu_arrow_box(row, label);
+                let side = arrow_box.width.min(arrow_box.height).min(16);
+                crate::widget::draw_icon_centered(
+                    context,
+                    arrow_box,
+                    side,
+                    fg,
+                    IconName::ChevronRight,
+                );
+            }
+            y += height as i32;
+        }
     }
     fn separator_height() -> f32 {
         6.0
@@ -861,6 +1359,7 @@ impl Menu {
             )
             .sum::<f32>()
             + 4.0
+            + self.tearoff_band_height() as f32
     }
 
     /// Paints the popup's elevation shadow.
@@ -931,6 +1430,8 @@ impl Widget for Menu {
         // leaving it set would make a reopened menu report a stale origin.
         self.invoker_position = None;
         self.hovered_index = None;
+        self.submenu_open = None;
+        self.submenu_hovered = None;
         self.about_to_hide.emit();
     }
 
@@ -1066,30 +1567,44 @@ impl EventHandler for Menu {
         }
         match event {
             Event::MouseMove { pos } => {
-                if let Some(index) = self.item_index_at(*pos) {
-                    if !self.items[index].is_separator() {
+                if let Some(index) = self.submenu_index_at(*pos) {
+                    if let Some(children) = self.open_submenu_children() {
+                        if children.get(index).is_some_and(MenuEntry::is_selectable) {
+                            self.submenu_hovered = Some(index);
+                            self.base.request_redraw();
+                        }
+                    }
+                } else if let Some(index) = self.item_index_at(*pos) {
+                    if self.items[index].is_selectable() {
                         self.hovered_index = Some(index);
                     }
                 }
             }
             Event::MousePress { pos, button: 1, .. } => {
+                // The nested panel is outside the parent's own rectangle, so it is hit
+                // tested first: otherwise a click on a child row would read as "outside
+                // the popup" and dismiss the whole menu.
+                if self.submenu_index_at(*pos).is_some() {
+                    self.activate_submenu_hovered();
+                    return;
+                }
+                let tearoff_band = self.tearoff_band_height();
+                if tearoff_band > 0 {
+                    let top = self.body_top();
+                    if pos.y >= top && pos.y < top + tearoff_band as i32 {
+                        self.tearoff_requested.emit();
+                        return;
+                    }
+                }
                 if let Some(index) = self.item_index_at(*pos) {
                     let item = &self.items[index];
-                    if !item.is_separator() && item.is_enabled() {
+                    if item.is_selectable() {
+                        self.hovered_index = Some(index);
                         // A submenu parent is a branch, not a leaf: report it as one and leave the
                         // popup open rather than firing a command the user did not choose (G-3).
                         // A click is the *first* way a user meets this defect -- they click `Cut >`
                         // and the `Cut` action runs -- so this arm matters more than the key one.
-                        if item.has_submenu() {
-                            let text = item.text().to_string();
-                            self.submenu_requested.emit(text);
-                            self.base.request_redraw();
-                        } else {
-                            let text = item.text().to_string();
-                            self.triggered.emit(text);
-                            self.triggered_index.emit(index);
-                            self.hide();
-                        }
+                        self.activate_hovered();
                     }
                 }
                 // A press inside the popup that missed every entry still belongs to
@@ -1106,19 +1621,17 @@ impl EventHandler for Menu {
             }
             #[cfg(feature = "touch")]
             Event::Tap { pos } => {
-                if let Some(index) = self.item_index_at(*pos) {
-                    let item = &self.items[index];
-                    if !item.is_separator() && item.is_enabled() {
-                        if item.has_submenu() {
-                            let text = item.text().to_string();
-                            self.submenu_requested.emit(text);
-                            self.base.request_redraw();
-                        } else {
-                            let text = item.text().to_string();
-                            self.triggered.emit(text);
-                            self.triggered_index.emit(index);
-                            self.hide();
+                if let Some(index) = self.submenu_index_at(*pos) {
+                    if let Some(children) = self.open_submenu_children() {
+                        if children.get(index).is_some_and(MenuEntry::is_selectable) {
+                            self.submenu_hovered = Some(index);
+                            self.activate_submenu_hovered();
                         }
+                    }
+                } else if let Some(index) = self.item_index_at(*pos) {
+                    if self.items[index].is_selectable() {
+                        self.hovered_index = Some(index);
+                        self.activate_hovered();
                     }
                 }
                 // Touch has no outside-press event: a tap outside the popup is the
@@ -1137,30 +1650,70 @@ impl EventHandler for Menu {
                     self.base.request_redraw();
                 }
             }
-            Event::KeyPress { key, .. } => {
+            Event::KeyPress { key, modifiers } => {
                 // Key codes are the framework convention (see `Key::from_key_code`): 27 Escape,
                 // 13/10 Enter, 38 Up, 40 Down, 37 Left, 39 Right, 36 Home, 35 End.
+                // Alt+letter is the mnemonic path; bit 2 is Alt in the event convention.
+                if modifiers & 0b0100 != 0 {
+                    if let Some(letter) = mnemonic_letter(*key) {
+                        self.activate_mnemonic(letter);
+                        return;
+                    }
+                }
                 match *key {
-                    27 => self.hide(),
+                    27 => {
+                        // Escape unwinds one level: an open nested panel closes before the
+                        // menu itself does, which is the only order that makes Escape feel
+                        // like "back" instead of "dismiss".
+                        if self.close_submenu() {
+                            return;
+                        }
+                        self.hide();
+                    }
                     10 | 13 => {
                         // Enter chooses the highlighted entry. An empty highlight (or one that
                         // cannot be chosen) leaves the menu open, which is what makes a stray Enter
                         // harmless rather than a dismissal with no selection.
-                        self.activate_hovered();
+                        if self.submenu_open.is_some() {
+                            self.activate_submenu_hovered();
+                        } else {
+                            self.activate_hovered();
+                        }
                     }
                     38 => {
-                        self.move_hovered_vertically(-1);
+                        if self.submenu_open.is_some() {
+                            self.move_submenu_hovered(-1);
+                        } else {
+                            self.move_hovered_vertically(-1);
+                        }
                     }
                     40 => {
-                        self.move_hovered_vertically(1);
+                        if self.submenu_open.is_some() {
+                            self.move_submenu_hovered(1);
+                        } else {
+                            self.move_hovered_vertically(1);
+                        }
                     }
                     // The horizontal pair is the only part of the navigation that follows the
                     // writing direction; see the `direction` field.
                     39 => {
-                        self.move_hovered_horizontally(true);
+                        // Right opens a branch (or moves inside an open panel). It only
+                        // falls back to stepping the parent list when there is no branch, so
+                        // a menu of leaves keeps its original behaviour.
+                        if self.submenu_open.is_some() {
+                            self.move_submenu_hovered(1);
+                        } else if self.hovered_index.is_some_and(|index| {
+                            self.items.get(index).is_some_and(MenuEntry::has_submenu)
+                        }) {
+                            self.activate_hovered();
+                        } else {
+                            self.move_hovered_horizontally(true);
+                        }
                     }
                     37 => {
-                        self.move_hovered_horizontally(false);
+                        if !self.close_submenu() {
+                            self.move_hovered_horizontally(false);
+                        }
                     }
                     36 => {
                         // Home/End jump to the ends of the *list*, which is a vertical walk, so they
@@ -1247,11 +1800,7 @@ impl Draw for Menu {
         // heading" contract true, which it previously was not: nothing on this type drew it.
         let heading_h = self.drawn_heading_height();
         if heading_h > 0.0 {
-            let heading_fill = if effects.transparency {
-                face.blend(&ink, 0.10).with_alpha(230)
-            } else {
-                face.blend(&ink, 0.10)
-            };
+            let heading_fill = super::effects::popup_face(face.blend(&ink, 0.10), &effects);
             context
                 .fill_rect(Rect::new(rect.x, rect.y, rect.width, heading_h as u32), heading_fill);
             // The origin is the glyph's **top** edge, so the heading's vertical centre is half the
@@ -1316,13 +1865,21 @@ impl Draw for Menu {
         // The clip is unconditional now: with scrolling a row can sit outside the body even
         // when the reveal has settled, and the clip is what keeps it invisible.
         context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
-        let body_fill = if effects.transparency {
-            face.blend(&ink, 0.22).with_alpha(230)
-        } else {
-            face.blend(&ink, 0.22)
-        };
+        let body_fill = super::effects::popup_face(face.blend(&ink, 0.22), &effects);
         context.fill_rect(Rect::new(rect.x, popup_y, rect.width, popup_h as u32), body_fill);
         context.draw_rect(Rect::new(rect.x, popup_y, rect.width, popup_h as u32), border);
+        // The tear-off strip is a row of dots: the drag affordance a detached menu shows at
+        // its top edge. It is painted only when the caller asked for it.
+        let tearoff_band = self.tearoff_band_height();
+        if tearoff_band > 0 {
+            let y = popup_y + tearoff_band as i32 / 2;
+            let mut x = rect.x + 6;
+            let right = rect.x + rect.width as i32 - 6;
+            while x + 2 <= right {
+                context.fill_rect(Rect::new(x, y, 2, 1), border);
+                x += 4;
+            }
+        }
         // The run of rows, placed by the layout. `bands` is in popup coordinates, so it is offset by
         // the popup's own top edge once here rather than accumulated per row.
         let bands = self.item_bands();
@@ -1330,13 +1887,27 @@ impl Draw for Menu {
             let Some(item) = self.items.get(i) else { continue };
             let Some(row) = bands.get(i).copied() else { continue };
             let row = Rect::new(rect.x + row.x, popup_y + row.y, row.width, row.height);
-            if item.is_separator() {
-                let sep_y = row.y + row.height as i32 / 2;
-                context.draw_line(
-                    Point::new(rect.x + 4, sep_y),
-                    Point::new(rect.x + rect.width as i32 - 4, sep_y),
-                    border,
-                );
+            if item.is_separator() || item.is_section() {
+                if item.is_separator() {
+                    let sep_y = row.y + row.height as i32 / 2;
+                    context.draw_line(
+                        Point::new(rect.x + 4, sep_y),
+                        Point::new(rect.x + rect.width as i32 - 4, sep_y),
+                        border,
+                    );
+                } else {
+                    // A section caption is a quiet label, not a choice, so it is drawn in the
+                    // secondary ink and never takes the highlight fill.
+                    let band =
+                        Rect::new(row.x + 10, row.y, row.width.saturating_sub(20), row.height);
+                    context.draw_text_fitted_cow(
+                        context.text_line(band, font),
+                        item.text(),
+                        font,
+                        secondary,
+                        HorizontalAlignment::Left,
+                    );
+                }
                 continue;
             }
             let is_hovered = self.hovered_index == Some(i);
@@ -1369,7 +1940,22 @@ impl Draw for Menu {
             // The row's own box comes from `item_bands`, so this loop no longer carries a `y`.
             let indicator = self.indicator_box(row);
             let label = self.label_box(row, indicator);
-            if item.is_checkable() {
+            if let Some(source) = item.icon() {
+                // An icon occupies the indicator column, so a checkable row that also carries
+                // an icon shows the icon rather than two marks competing for one box.
+                let line = context.text_line(indicator, font);
+                let side = line.height.max(1).min(indicator.width.max(1));
+                let icon_rect = Rect::new(
+                    indicator.x + (indicator.width as i32 - side as i32) / 2,
+                    line.y,
+                    side,
+                    side,
+                );
+                if let Err(error) = crate::widget::paint_icon(context, source.into(), icon_rect, fg)
+                {
+                    log::warn!("menu entry icon could not be painted: {error:?}");
+                }
+            } else if item.is_checkable() {
                 // The tick is the `Check` **icon outline**, not the `✓` text glyph (U+2713 is
                 // covered by no bundled face, so it drew as an 8x8 bitmap block). An unchecked row
                 // draws nothing, which is what the old blank-space string achieved.
@@ -1385,13 +1971,38 @@ impl Draw for Menu {
                     crate::widget::draw_icon_at(context, tick, fg, IconName::Check);
                 }
             }
-            context.draw_text_fitted_cow(
-                context.text_line(label, font),
-                item.text(),
-                font,
-                fg,
-                HorizontalAlignment::Left,
-            );
+            // Mnemonic markers are metadata until the caller asks for them: with the flag
+            // off the raw label is drawn, byte for byte as before.
+            let stripped;
+            let label_text = if self.show_mnemonics {
+                stripped = strip_menu_mnemonic(item.text());
+                stripped.as_str()
+            } else {
+                item.text()
+            };
+            let line = context.text_line(label, font);
+            context.draw_text_fitted_cow(line, label_text, font, fg, HorizontalAlignment::Left);
+            if self.show_mnemonics {
+                if let Some(mnemonic) = item.mnemonic() {
+                    // The underline is placed from the measured prefix, so it tracks the
+                    // glyph the marker names rather than the character's index in the
+                    // string (which a wide or combining glyph would miss).
+                    if let Some((byte, ch)) =
+                        label_text.char_indices().find(|(_, ch)| ch.eq_ignore_ascii_case(&mnemonic))
+                    {
+                        let prefix = estimate_text_width(&label_text[..byte], font, 1.0);
+                        let through =
+                            estimate_text_width(&label_text[..byte + ch.len_utf8()], font, 1.0);
+                        let underline = Rect::new(
+                            line.x + prefix as i32,
+                            line.y + line.height as i32 - 1,
+                            through.saturating_sub(prefix).max(1),
+                            1,
+                        );
+                        context.fill_rect(underline, fg);
+                    }
+                }
+            }
             if self.row_shows_shortcut(item) {
                 // One line box for the shortcut and the arrow: they occupy one trailing column,
                 // so they cannot disagree about where that column's midline is — and only one of
@@ -1430,6 +2041,11 @@ impl Draw for Menu {
         // Popped on the same path it was pushed, so the reveal cannot leak a clip onto whatever
         // the host draws after this menu.
         context.pop_clip();
+        // The nested panel is painted after the parent's clip is popped: it hangs outside the
+        // parent rectangle by design, so clipping it to the parent would hide all of it.
+        if self.is_visible() || !self.reveal.is_closed() {
+            self.draw_submenu_panel(context, font, ink, secondary, primary, border, face);
+        }
     }
 }
 
@@ -2243,5 +2859,130 @@ mod tests {
             let hit = menu.item_index_at(Point::new(menu.geometry().x + 4, first_row_y));
             assert_eq!(hit, Some(7), "the hit test must follow the scrolled window");
         });
+    }
+
+    /// A row that owns children opens a real nested panel, and the child row commits.
+    #[test]
+    fn a_nested_panel_opens_and_its_child_row_commits() {
+        let mut menu = Menu::new("Edit", Rect::new(0, 0, 180, 120));
+        let branch = MenuEntry::new("Select")
+            .with_submenu(vec![MenuEntry::new("All"), MenuEntry::new("None")]);
+        menu.add_item(branch);
+        menu.add_item(MenuEntry::new("Copy"));
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 600, 600));
+
+        let row_y = menu.body_top() + 4;
+        menu.handle_event(&Event::MousePress {
+            pos: Point::new(20, row_y),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(menu.open_submenu_index(), Some(0), "the branch must open its children");
+        let panel = menu.submenu_panel_rect().expect("an open panel has a rectangle");
+        assert!(
+            panel.x >= menu.geometry().x + menu.geometry().width as i32 - 8,
+            "the panel hangs to the right of the parent: {panel:?}"
+        );
+
+        let chosen = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&chosen);
+        menu.triggered.connect(move |_: Arc<String>| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        let child_y = panel.y + 2 + 4;
+        menu.handle_event(&Event::MousePress {
+            pos: Point::new(panel.x + 20, child_y),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(chosen.load(Ordering::SeqCst), 1, "a child row must commit");
+        assert!(!menu.is_visible(), "committing a child dismisses the menu");
+        assert_eq!(menu.open_submenu_index(), None, "hide clears the open panel");
+    }
+
+    /// Escape and Left unwind the nested panel before the menu itself.
+    #[test]
+    fn escape_closes_the_nested_panel_first() {
+        let mut menu = Menu::new("Edit", Rect::new(0, 0, 180, 120));
+        menu.add_item(
+            MenuEntry::new("Select")
+                .with_submenu(vec![MenuEntry::new("All"), MenuEntry::new("None")]),
+        );
+        menu.add_item(MenuEntry::new("Copy"));
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 600, 600));
+        assert!(menu.open_submenu(0));
+        assert!(menu.is_visible());
+
+        menu.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert_eq!(menu.open_submenu_index(), None, "Escape closes one level");
+        assert!(menu.is_visible(), "the menu itself stays open after one Escape");
+        menu.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert!(!menu.is_visible(), "the second Escape dismisses the menu");
+    }
+
+    /// `&` markers parse to a mnemonic, strip from the drawn label, and answer Alt+letter.
+    #[test]
+    fn mnemonic_markers_parse_strip_and_activate() {
+        use super::{menu_mnemonic, strip_menu_mnemonic};
+
+        assert_eq!(menu_mnemonic("&File"), Some('F'));
+        assert_eq!(menu_mnemonic("Save && Exit"), None, "a doubled marker is a literal ampersand");
+        assert_eq!(strip_menu_mnemonic("&File"), "File");
+        assert_eq!(strip_menu_mnemonic("Save && Exit"), "Save & Exit");
+        assert_eq!(strip_menu_mnemonic("Plain"), "Plain");
+
+        let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+        menu.add_item(MenuEntry::new("&Open"));
+        menu.add_item(MenuEntry::new("&Close"));
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 600, 600));
+
+        let chosen = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&chosen);
+        menu.triggered.connect(move |_: Arc<String>| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        // Alt is bit 2 in the event modifier convention.
+        menu.handle_event(&Event::KeyPress { key: 79, modifiers: 0b0100 });
+        assert_eq!(chosen.load(Ordering::SeqCst), 1, "Alt+O must run the &Open entry");
+        assert!(!menu.is_visible());
+    }
+
+    /// A section caption is painted but never highlighted or chosen.
+    #[test]
+    fn section_captions_are_not_selectable() {
+        let mut menu = Menu::new("File", Rect::new(0, 0, 200, 160));
+        menu.add_item(MenuEntry::section("Recent"));
+        menu.add_item(MenuEntry::new("One"));
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 600, 600));
+        assert!(menu.items()[0].is_section());
+        assert!(!menu.items()[0].is_selectable());
+
+        menu.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(menu.hovered_index(), Some(1), "Down must skip the caption");
+        assert_eq!(menu.mnemonic_index('r'), None, "a caption's letter is not an accelerator");
+    }
+
+    /// The tear-off strip occupies its own band and reports a press without dismissing.
+    #[test]
+    fn the_tearoff_strip_reports_a_press_and_keeps_the_menu_open() {
+        let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+        menu.add_item(MenuEntry::new("Open"));
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 600, 600));
+        let without = menu.popup_height();
+        menu.set_tearoff(true);
+        assert_eq!(menu.popup_height(), without + 8.0, "the strip adds its own band");
+
+        let torn = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&torn);
+        menu.tearoff_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        menu.handle_event(&Event::MousePress {
+            pos: Point::new(40, menu.body_top() + 4),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(torn.load(Ordering::SeqCst), 1);
+        assert!(menu.is_visible(), "tearing off must not dismiss the source menu");
     }
 }

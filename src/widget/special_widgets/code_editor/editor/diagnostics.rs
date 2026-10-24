@@ -15,6 +15,7 @@ impl CodeEditor {
     /// Replaces the diagnostic markers.
     pub fn set_markers(&mut self, markers: Vec<DiagnosticMarker>) {
         self.markers = markers;
+        self.bump_layout_generation();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -22,6 +23,7 @@ impl CodeEditor {
     /// Appends one diagnostic marker.
     pub fn add_marker(&mut self, marker: DiagnosticMarker) {
         self.markers.push(marker);
+        self.bump_layout_generation();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -32,6 +34,7 @@ impl CodeEditor {
         self.markers.retain(|marker| marker.line != line);
         let removed = before - self.markers.len();
         if removed > 0 {
+            self.bump_layout_generation();
             self.base.request_layout();
             self.base.request_redraw();
         }
@@ -56,6 +59,7 @@ impl CodeEditor {
                 .then_with(|| a.severity.rank().cmp(&b.severity.rank()))
                 .then_with(|| a.start_column().cmp(&b.start_column()))
         });
+        self.bump_layout_generation();
         self.base.request_redraw();
     }
 
@@ -80,9 +84,18 @@ impl CodeEditor {
                 // whole document on every frame for no reason.
                 self.markers.iter().map(|marker| (marker.line, marker)).collect()
             } else {
+                // The line-to-row table is cached by the derived-layout generation:
+                // rebuilding it was a full document pass on every frame while
+                // wrapping was on, even when neither the text nor the markers moved.
+                let generation = self.layout_generation;
+                let cached = self.diagnostic_rows.borrow();
+                if let Some((key, rows_by_line)) = cached.as_ref() {
+                    if *key == generation {
+                        return Self::markers_by_row(&self.markers, rows_by_line);
+                    }
+                }
+                drop(cached);
                 let columns = self.text_columns().max(1);
-                // Distinct marker lines ascend once, then one walk accumulates the
-                // visual rows; each marker looks its line up by binary search.
                 let mut lines: Vec<usize> = self.markers.iter().map(|marker| marker.line).collect();
                 lines.sort_unstable();
                 lines.dedup();
@@ -96,15 +109,10 @@ impl CodeEditor {
                     previous = line;
                     rows_by_line.push((line, row));
                 }
-                self.markers
-                    .iter()
-                    .filter_map(|marker| {
-                        rows_by_line
-                            .binary_search_by_key(&marker.line, |(line, _)| *line)
-                            .ok()
-                            .map(|index| (rows_by_line[index].1, marker))
-                    })
-                    .collect()
+                #[cfg(test)]
+                self.diagnostic_cache_builds.set(self.diagnostic_cache_builds.get() + 1);
+                *self.diagnostic_rows.borrow_mut() = Some((generation, rows_by_line.clone()));
+                Self::markers_by_row(&self.markers, &rows_by_line)
             }
         } else {
             // `visible_lines()` ascends, so the table is searchable in place.
@@ -114,17 +122,25 @@ impl CodeEditor {
                 rows_by_line.push((line, row));
                 row += self.wrap_segments(line);
             }
-            self.markers
-                .iter()
-                .filter_map(|marker| {
-                    rows_by_line
-                        .binary_search_by_key(&marker.line, |(line, _)| *line)
-                        .ok()
-                        .map(|index| (rows_by_line[index].1, marker))
-                })
-                .collect()
+            Self::markers_by_row(&self.markers, &rows_by_line)
         };
         result.sort_by_key(|(row, marker)| (*row, marker.severity.rank(), marker.start_column()));
         result
+    }
+
+    /// Maps markers onto the visual rows in `rows_by_line` by binary search.
+    fn markers_by_row<'a>(
+        markers: &'a [DiagnosticMarker],
+        rows_by_line: &[(usize, usize)],
+    ) -> Vec<InlineDiagnostic<'a>> {
+        markers
+            .iter()
+            .filter_map(|marker| {
+                rows_by_line
+                    .binary_search_by_key(&marker.line, |(line, _)| *line)
+                    .ok()
+                    .map(|index| (rows_by_line[index].1, marker))
+            })
+            .collect()
     }
 }

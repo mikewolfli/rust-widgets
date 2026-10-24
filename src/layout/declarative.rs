@@ -55,6 +55,155 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static LAYOUT_MAP: RefCell<HashMap<ObjectId, Box<dyn Layout>>> =
         RefCell::new(HashMap::new());
+    /// Parents whose layout has been invalidated since its last application.
+    ///
+    /// A `Vec` rather than a set: a UI tree has tens of containers, and the linear scan
+    /// is cheaper than hashing an `ObjectId` on every call.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static DIRTY_LAYOUTS: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Marks `parent_id`'s stored layout as needing a fresh application.
+///
+/// Returns `false` when no layout is stored for the parent. Invalidation is merged: a
+/// second call before [`apply_layout_if_dirty`] is a no-op, which is the "many edits, one
+/// recompute" behaviour a layout pass wants.
+pub fn invalidate_layout(parent_id: ObjectId) -> bool {
+    if !has_layout(parent_id) {
+        return false;
+    }
+    DIRTY_LAYOUTS.with(|dirty| {
+        let mut dirty = dirty.borrow_mut();
+        if !dirty.contains(&parent_id) {
+            dirty.push(parent_id);
+        }
+    });
+    true
+}
+
+/// Whether `parent_id` has been invalidated and not yet re-applied.
+pub fn is_layout_dirty(parent_id: ObjectId) -> bool {
+    DIRTY_LAYOUTS.with(|dirty| dirty.borrow().contains(&parent_id))
+}
+
+/// Applies the layout only when it has been invalidated.
+///
+/// Returns `None` when the layout is clean or absent, so a caller can skip the whole
+/// arrangement (and the geometry writes) for an unchanged tree.
+pub fn apply_layout_if_dirty(parent_id: ObjectId, rect: Rect) -> Option<Vec<(ObjectId, Rect)>> {
+    if !is_layout_dirty(parent_id) {
+        return None;
+    }
+    DIRTY_LAYOUTS.with(|dirty| dirty.borrow_mut().retain(|id| *id != parent_id));
+    Some(apply_layout(parent_id, rect))
+}
+
+/// A layout registry that may be shared across threads.
+///
+/// The default registry is thread-local by design (see the module docs), which makes a
+/// declarative tree owned by a worker thread invisible to the UI thread. This type is the
+/// opt-in alternative: a caller that owns the tree on one thread can hand the registry to
+/// the UI thread and still apply its layouts.
+///
+/// A layout stored here must be `Send`; the thread-local registry keeps accepting every
+/// `Layout`, so this is a widening of the API rather than a new requirement on existing
+/// layouts.
+#[derive(Default)]
+pub struct SharedLayoutRegistry {
+    layouts: std::sync::Mutex<HashMap<ObjectId, Box<dyn Layout + Send>>>,
+    dirty: std::sync::Mutex<Vec<ObjectId>>,
+}
+
+impl SharedLayoutRegistry {
+    /// Creates an empty shared registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Stores a layout, replacing any previous one for the parent.
+    pub fn store(&self, parent_id: ObjectId, layout: Box<dyn Layout + Send>) {
+        if let Ok(mut layouts) = self.layouts.lock() {
+            layouts.insert(parent_id, layout);
+        }
+        if let Ok(mut dirty) = self.dirty.lock() {
+            if !dirty.contains(&parent_id) {
+                dirty.push(parent_id);
+            }
+        }
+    }
+
+    /// Removes a layout, returning whether one was present.
+    pub fn forget(&self, parent_id: ObjectId) -> bool {
+        let removed = self
+            .layouts
+            .lock()
+            .map(|mut layouts| layouts.remove(&parent_id).is_some())
+            .unwrap_or(false);
+        if let Ok(mut dirty) = self.dirty.lock() {
+            dirty.retain(|id| *id != parent_id);
+        }
+        removed
+    }
+
+    /// Whether a layout is stored for the parent.
+    pub fn has(&self, parent_id: ObjectId) -> bool {
+        self.layouts.lock().map(|layouts| layouts.contains_key(&parent_id)).unwrap_or(false)
+    }
+
+    /// Number of stored layouts.
+    pub fn len(&self) -> usize {
+        self.layouts.lock().map(|layouts| layouts.len()).unwrap_or(0)
+    }
+
+    /// Whether the registry is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Marks a stored layout as dirty, returning whether it exists.
+    pub fn invalidate(&self, parent_id: ObjectId) -> bool {
+        if !self.has(parent_id) {
+            return false;
+        }
+        if let Ok(mut dirty) = self.dirty.lock() {
+            if !dirty.contains(&parent_id) {
+                dirty.push(parent_id);
+            }
+        }
+        true
+    }
+
+    /// Applies a stored layout, clearing its dirty flag.
+    pub fn apply(&self, parent_id: ObjectId, rect: Rect) -> Vec<(ObjectId, Rect)> {
+        let geometries = match self.layouts.lock() {
+            Ok(layouts) => match layouts.get(&parent_id) {
+                Some(layout) => {
+                    let mut geometries = Vec::new();
+                    layout.update(rect, &mut |child_id, child_rect| {
+                        if child_id != SPACER_ID {
+                            geometries.push((child_id, child_rect));
+                        }
+                    });
+                    geometries
+                }
+                None => Vec::new(),
+            },
+            Err(_) => Vec::new(),
+        };
+        if let Ok(mut dirty) = self.dirty.lock() {
+            dirty.retain(|id| *id != parent_id);
+        }
+        geometries
+    }
+
+    /// Applies the layout only when it is dirty.
+    pub fn apply_if_dirty(&self, parent_id: ObjectId, rect: Rect) -> Option<Vec<(ObjectId, Rect)>> {
+        let dirty = self.dirty.lock().map(|dirty| dirty.contains(&parent_id)).unwrap_or(false);
+        if !dirty {
+            return None;
+        }
+        Some(self.apply(parent_id, rect))
+    }
 }
 
 /// Stores a layout manager for a parent widget, replacing any previous one.
@@ -66,6 +215,7 @@ pub fn store_layout(parent_id: ObjectId, layout: Box<dyn Layout>) {
     LAYOUT_MAP.with(|map| {
         map.borrow_mut().insert(parent_id, layout);
     });
+    let _ = invalidate_layout(parent_id);
 }
 
 /// Removes the layout stored for `parent_id`.
@@ -74,7 +224,9 @@ pub fn store_layout(parent_id: ObjectId, layout: Box<dyn Layout>) {
 /// registry keeps a layout whose children no longer exist and whose ids may later be
 /// reused.
 pub fn forget_layout(parent_id: ObjectId) -> bool {
-    LAYOUT_MAP.with(|map| map.borrow_mut().remove(&parent_id).is_some())
+    let removed = LAYOUT_MAP.with(|map| map.borrow_mut().remove(&parent_id).is_some());
+    DIRTY_LAYOUTS.with(|dirty| dirty.borrow_mut().retain(|id| *id != parent_id));
+    removed
 }
 
 /// Whether a layout is stored for `parent_id`.
@@ -500,5 +652,51 @@ mod tests {
 
         assert!(!remove_widget_from_layout(301, 0xDEAD_BEEF));
         assert!(forget_layout(PARENT));
+    }
+
+    /// Invalidation is merged and an unchanged layout is not recomputed.
+    #[test]
+    fn dirty_layouts_apply_once_and_then_stay_clean() {
+        const PARENT: ObjectId = 0x5EF3;
+        store_layout(PARENT, box_layout());
+        add_widget_to_layout(401, 0, PARENT);
+        assert!(is_layout_dirty(PARENT));
+        assert!(invalidate_layout(PARENT));
+        let first = apply_layout_if_dirty(PARENT, Rect::new(0, 0, 80, 20));
+        assert_eq!(first.map(|entries| entries.len()), Some(1));
+        assert!(!is_layout_dirty(PARENT));
+        assert!(apply_layout_if_dirty(PARENT, Rect::new(0, 0, 80, 20)).is_none());
+        assert!(!invalidate_layout(0xDEAD_BEEF));
+        assert!(forget_layout(PARENT));
+    }
+
+    /// The shared registry carries a layout across threads, which the thread-local
+    /// default deliberately cannot do.
+    #[test]
+    fn the_shared_registry_is_usable_from_another_thread() {
+        struct OneChild;
+        impl Layout for OneChild {
+            fn add_widget(&mut self, _widget_id: ObjectId, _stretch: u32) {}
+            fn remove_widget(&mut self, _widget_id: ObjectId) {}
+            fn update(&self, rect: Rect, out: &mut dyn FnMut(ObjectId, Rect)) {
+                out(501, rect);
+            }
+            fn as_any(&self) -> &dyn crate::compat::Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn crate::compat::Any {
+                self
+            }
+        }
+
+        let registry = std::sync::Arc::new(SharedLayoutRegistry::new());
+        registry.store(0x5EF4, Box::new(OneChild));
+        let other = std::sync::Arc::clone(&registry);
+        let placed =
+            std::thread::spawn(move || other.apply_if_dirty(0x5EF4, Rect::new(1, 2, 30, 40)))
+                .join()
+                .expect("the worker thread finishes");
+        assert_eq!(placed, Some(vec![(501, Rect::new(1, 2, 30, 40))]));
+        assert!(registry.apply_if_dirty(0x5EF4, Rect::new(0, 0, 1, 1)).is_none());
     }
 }

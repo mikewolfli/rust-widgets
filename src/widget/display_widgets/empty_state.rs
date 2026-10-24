@@ -17,6 +17,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
+use crate::widget::text_utils::wrap_to_width;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -43,6 +44,12 @@ pub struct EmptyState {
     title: String,
     message: String,
     action_text: String,
+    /// Whether the action button is currently armed by a left press.
+    ///
+    /// A press arms the button and paints it pressed; the release decides whether
+    /// the action fires. This is the same press/release pair the crate's binary
+    /// controls use, so a press alone never commits.
+    pressed: bool,
     /// Emitted when the action button is clicked.
     pub action_pressed: GenericSignal,
 }
@@ -62,6 +69,7 @@ impl EmptyState {
             title: DEFAULT_TITLE.to_string(),
             message: DEFAULT_MESSAGE.to_string(),
             action_text: String::new(),
+            pressed: false,
             action_pressed: GenericSignal::new(),
         }
     }
@@ -399,7 +407,17 @@ impl Draw for EmptyState {
             let corner_radius = btn_rect.height / 2;
 
             // Button background
-            let btn_bg = if !is_enabled { ink.blend(&surface, 0.8) } else { action_fill };
+            //
+            // A pressed action is a step toward the ink, the same direction every other
+            // pressed surface in the crate moves. The resting fill is unchanged, so a
+            // control that is never pressed paints exactly as it did.
+            let btn_bg = if !is_enabled {
+                ink.blend(&surface, 0.8)
+            } else if self.pressed {
+                action_fill.blend(&ink, 0.18)
+            } else {
+                action_fill
+            };
             context.fill_rounded_rect(btn_rect, corner_radius, btn_bg);
 
             // Button text
@@ -431,6 +449,12 @@ impl Draw for EmptyState {
 }
 
 impl EventHandler for EmptyState {
+    /// Arms the action button on a press and commits it on a release inside.
+    ///
+    /// The action used to fire on the press, so a gesture that began on the button
+    /// and was dragged off still committed, and no release was ever consulted. A
+    /// press now only arms (and paints) the button; a release inside it emits
+    /// [`Self::action_pressed`], while a release outside clears the arm and cancels.
     fn handle_event(&mut self, event: &Event) {
         if !self.base.is_enabled() {
             return;
@@ -441,7 +465,10 @@ impl EventHandler for EmptyState {
                     // Check if the click is on the action button
                     if let Some(btn_rect) = self.action_button_rect() {
                         if btn_rect.contains_point(*pos) {
-                            self.action_pressed.emit();
+                            if !self.pressed {
+                                self.pressed = true;
+                                self.base.request_redraw();
+                            }
                             return;
                         }
                     }
@@ -451,9 +478,15 @@ impl EventHandler for EmptyState {
                     }
                 }
             }
-            Event::MouseRelease { pos: _, button } => {
-                if *button == 1 {
-                    // No special handling needed
+            Event::MouseRelease { pos, button } => {
+                if *button == 1 && self.pressed {
+                    self.pressed = false;
+                    // A release inside commits; anywhere else abandons the press, which is
+                    // the platform convention for a button the pointer was dragged off.
+                    if self.action_button_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                        self.action_pressed.emit();
+                    }
+                    self.base.request_redraw();
                 }
             }
             _ => {
@@ -463,45 +496,20 @@ impl EventHandler for EmptyState {
     }
 }
 
-/// Wraps a text string into multiple lines at word boundaries to fit within
-/// `max_width` pixels. Returns a vector of wrapped line strings.
+/// Wraps `text` into lines no wider than `max_width` pixels.
+///
+/// Delegates to the shared [`wrap_to_width`], so the message breaks by exactly the rule a
+/// label, a tooltip body or a dialog paragraph breaks by: a word that does not fit moves to
+/// the next line whole, a single word wider than the line is split on character boundaries
+/// instead of running past the control, and the trailing space at a break is not part of the
+/// emitted range. Returns the line strings, each copied once out of the caller's text.
 fn wrap_text(context: &RenderContext, text: &str, font: &Font, max_width: usize) -> Vec<String> {
-    if text.is_empty() {
-        return vec![String::new()];
-    }
-
-    let words: Vec<&str> = text.split(' ').collect();
-    let mut lines: Vec<String> = Vec::new();
-    let mut current_line = String::new();
-
-    for word in words {
-        // Built in place: the candidate was a fresh `String` per word (`to_string` or
-        // `format!`), so a paragraph of *n* words allocated O(n) times per draw. Appending
-        // the word to the live buffer and truncating back on overflow touches no memory it
-        // does not keep.
-        let line_start = current_line.len();
-        if line_start > 0 {
-            current_line.push(' ');
-        }
-        current_line.push_str(word);
-        let metrics = context.measure_text(&current_line, font);
-        if metrics.width as usize <= max_width || line_start == 0 {
-            // Fits, or the line is a single word that overflows on its own — the old
-            // code kept such a word as the line body rather than looping forever.
-        } else {
-            current_line.truncate(line_start);
-            lines.push(core::mem::take(&mut current_line));
-            current_line.push_str(word);
-        }
-    }
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
+    let mut measure = |candidate: &str| context.measure_text(candidate, font).width;
+    let max_width = max_width.min(u32::MAX as usize) as u32;
+    wrap_to_width(text, max_width, &mut measure)
+        .into_iter()
+        .map(|range| text[range].to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -545,6 +553,34 @@ mod tests {
         let mut es = EmptyState::new(Rect::new(0, 0, 300, 200));
         es.set_message("Your search did not match any items.");
         assert_eq!(es.message(), "Your search did not match any items.");
+    }
+
+    #[test]
+    fn the_message_wraps_at_the_shared_word_boundaries() {
+        let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 120));
+        let context = RenderContext::new(&mut backend);
+        let font = Font::with_weight("Sans", 14.0, 400, false);
+
+        // A budget one word wide puts each word on its own line, without inventing breaks.
+        // The widest word sets the budget, so every word fits on a line by itself.
+        let one_word = context.measure_text("gamma", &font).width as usize;
+        assert_eq!(
+            wrap_text(&context, "alpha beta gamma", &font, one_word),
+            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+        );
+
+        // A word wider than the budget is split on character boundaries rather than left to
+        // run past the control: every emitted line either fits or is a single glyph.
+        let narrow = (context.measure_text("MM", &font).width / 2) as usize;
+        let lines = wrap_text(&context, "abcdefgh", &font, narrow);
+        assert!(lines.len() > 1, "an over-long word must be split: {lines:?}");
+        for line in &lines {
+            assert!(
+                context.measure_text(line, &font).width as usize <= narrow
+                    || line.chars().count() == 1,
+                "{line:?} neither fits nor is a single glyph"
+            );
+        }
     }
 
     #[test]
@@ -597,7 +633,56 @@ mod tests {
         let click_x = btn_rect.x + btn_rect.width as i32 / 2;
         let click_y = btn_rect.y + btn_rect.height as i32 / 2;
         es.handle_event(&Event::mouse_press(click_x, click_y, 1));
-        assert!(*fired.lock().unwrap());
+        assert!(!*fired.lock().unwrap(), "a press arms the button but does not commit");
+        es.handle_event(&Event::mouse_release(click_x, click_y, 1));
+        assert!(*fired.lock().unwrap(), "a release inside commits the action");
+    }
+
+    /// A release outside the button cancels the armed press.
+    #[test]
+    fn empty_state_release_outside_cancels_the_action() {
+        let mut es = EmptyState::new(Rect::new(0, 0, 300, 200));
+        es.set_action_text("Retry");
+        let fired = Arc::new(Mutex::new(false));
+        es.action_pressed.connect({
+            let fired = Arc::clone(&fired);
+            move || {
+                *fired.lock().unwrap() = true;
+            }
+        });
+
+        let btn_rect = es.action_button_rect().unwrap();
+        let inside_x = btn_rect.x + btn_rect.width as i32 / 2;
+        let inside_y = btn_rect.y + btn_rect.height as i32 / 2;
+        es.handle_event(&Event::mouse_press(inside_x, inside_y, 1));
+        // Dragged off the button before release: the gesture is abandoned.
+        es.handle_event(&Event::mouse_release(1, 1, 1));
+        assert!(!*fired.lock().unwrap(), "a release outside must not commit");
+        assert!(!es.pressed, "the arm is cleared either way");
+
+        // A release that was never armed does not commit either.
+        es.handle_event(&Event::mouse_release(inside_x, inside_y, 1));
+        assert!(!*fired.lock().unwrap());
+    }
+
+    /// A press paints a pressed button; committing restores the resting drawing.
+    #[test]
+    fn empty_state_press_paints_a_pressed_button() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut es = EmptyState::new(Rect::new(0, 0, 300, 200));
+        es.set_action_text("Retry");
+        let resting = crate::widget::svg::render_to_svg(&mut es);
+
+        let btn_rect = es.action_button_rect().unwrap();
+        let click_x = btn_rect.x + btn_rect.width as i32 / 2;
+        let click_y = btn_rect.y + btn_rect.height as i32 / 2;
+        es.handle_event(&Event::mouse_press(click_x, click_y, 1));
+        let pressed = crate::widget::svg::render_to_svg(&mut es);
+        assert_ne!(resting, pressed, "a press must paint a pressed state");
+
+        es.handle_event(&Event::mouse_release(click_x, click_y, 1));
+        let released = crate::widget::svg::render_to_svg(&mut es);
+        assert_eq!(resting, released, "the resting drawing returns after the release");
     }
 
     #[test]

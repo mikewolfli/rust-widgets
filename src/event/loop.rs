@@ -15,6 +15,8 @@ use crate::core::ObjectId;
 #[cfg(all(feature = "touch", not(alloc_frugal)))]
 use crate::gesture::GestureEngine;
 use alloc::sync::Arc;
+#[cfg(all(not(alloc_frugal), declarative_view))]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
@@ -26,6 +28,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Type alias for event dispatch function.
 pub type EventDispatchFn = Arc<dyn Fn(ObjectId, &Event) + Send + Sync>;
+
+/// The idle-task id [`EventLoop::install_reactive_idle_pump`] registers under.
+///
+/// A fixed id gives the registration replace-on-re-register semantics (the same id removes the
+/// previous task), which is what a host that switches scenes wants: one pump, never two.
+pub const REACTIVE_PUMP_TASK_ID: u64 = 0x7265_6163_7469_7665;
 
 /// Returns the current timestamp in milliseconds since UNIX epoch.
 #[cfg(all(feature = "touch", not(alloc_frugal)))]
@@ -97,7 +105,7 @@ impl GestureRegistry {
     /// second tap of a double-tap is never swept, with headroom for the loop's own wake
     /// cadence.
     fn idle_grace() -> u64 {
-        crate::gesture::DOUBLE_TAP_TIMEOUT_MS + 600
+        crate::gesture::tuning().double_tap_timeout_ms + 600
     }
 
     /// Routes `event` to `target`'s engine, creating it on demand, and returns any derived
@@ -288,6 +296,47 @@ pub struct AnimationFrameRequest {
     pub id: u64,
 }
 
+/// Delivers `event` to `target` and, when a parent resolver is installed, through the
+/// capture/target/bubble route.
+///
+/// # Why a helper rather than inline code
+///
+/// Both loop profiles (the threaded loop and `pump_once`) deliver events, and the gesture path
+/// delivers a derived event after the raw one. One helper means the propagation rule cannot
+/// exist in one profile and not the other — the drift that previously made `pump_once` ignore
+/// priorities that the threaded loop honoured.
+fn deliver_event(
+    dispatch: Option<&EventDispatchFn>,
+    parents: Option<&Arc<dyn Fn(ObjectId) -> Option<ObjectId> + Send + Sync>>,
+    target: ObjectId,
+    event: &Event,
+) {
+    let Some(dispatch) = dispatch else {
+        log::warn!(
+            "[event-loop] No dispatch_fn set — dropping event {event:?} for target {target:?}"
+        );
+        return;
+    };
+    let deliver_one = |node: ObjectId, ev: &Event| {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(node, ev)));
+        if let Err(error) = result {
+            log::error!("[event-loop] Dispatch panicked: {error:?}");
+        }
+    };
+    match parents {
+        None => deliver_one(target, event),
+        Some(lookup) => {
+            let ancestors = crate::event::propagation::ancestor_chain(target, lookup.as_ref());
+            let _ = crate::event::propagation::route_event(
+                target,
+                &ancestors,
+                event,
+                &mut |node, ev, _phase| deliver_one(node, ev),
+            );
+        }
+    }
+}
+
 /// Main event loop for processing events.
 pub struct EventLoop {
     /// Event queue for processing.
@@ -317,6 +366,16 @@ pub struct EventLoop {
     thread_handle: Option<()>,
     /// Optional dispatch callback invoked for each event.
     dispatch_fn: Option<EventDispatchFn>,
+    /// Resolves a control's parent, enabling capture/bubble propagation.
+    ///
+    /// # Why propagation is opt-in
+    ///
+    /// A flat dispatch is the honest behaviour when the loop has no tree: a test that posts an
+    /// event to an id expects one delivery, not a walk over a parent map that may not exist.
+    /// Installing a resolver turns on the three-phase route
+    /// ([`crate::event::propagation::route_event`]) for every event, so a host that owns a widget
+    /// tree gets bubbling by providing one closure.
+    parent_lookup: Option<Arc<dyn Fn(ObjectId) -> Option<ObjectId> + Send + Sync>>,
     /// Runtime timer manager emitting `Event::Timer` into this loop queue.
     timer_manager: TimerManager,
     /// Next animation frame request ID.
@@ -332,6 +391,22 @@ pub struct EventLoop {
     /// [`IdleTask::tick`] documented itself as "called each frame by the event loop"
     /// while nothing ever called it.
     idle_tasks: Vec<IdleTask>,
+    /// The loop's built-in animation-frame driver.
+    ///
+    /// # Why the loop owns this
+    ///
+    /// An animation needs one **measured** frame delta, not a `now()` read per animation: a
+    /// host that advanced each control on its own would let two controls that started on the
+    /// same frame drift apart by however long their `advance` calls took. The loop already sees
+    /// every [`Event::AnimationFrame`] and the moment it dispatches it, so it is the only place
+    /// that can measure the delta once.
+    ///
+    /// The driver is `Send` because it runs on the loop thread; it takes the **delta in
+    /// milliseconds** rather than a timestamp so an implementation cannot disagree with the
+    /// loop about where the clock started. `start` consumes it, so a restart needs a fresh
+    /// driver — the same honest state `idle_tasks` has.
+    #[cfg(not(alloc_frugal))]
+    frame_driver: Option<Box<dyn FnMut(u32) + Send>>,
     /// Ids of [`EventLoop::request_animation_frame`] requests that have been cancelled.
     ///
     /// # Why this exists
@@ -395,10 +470,13 @@ impl EventLoop {
             running: Arc::new(Mutex::new(false)),
             thread_handle: None,
             dispatch_fn: None,
+            parent_lookup: None,
             timer_manager,
             next_anim_frame_id: AtomicU64::new(1),
             native_pump: None,
             idle_tasks: Vec::new(),
+            #[cfg(not(alloc_frugal))]
+            frame_driver: None,
             idle_task_cursor: Arc::new(AtomicUsize::new(0)),
             #[cfg(all(feature = "touch", not(alloc_frugal)))]
             gesture_releases: Arc::new(Mutex::new(Vec::new())),
@@ -453,6 +531,7 @@ impl EventLoop {
         let running = Arc::clone(&self.running);
         let queue = Arc::clone(&self.queue);
         let dispatch_fn = self.dispatch_fn.clone();
+        let parent_lookup = self.parent_lookup.clone();
         #[cfg(feature = "touch")]
         let mut gesture_engines = GestureRegistry::new();
         let native_pump = self.native_pump.clone();
@@ -460,6 +539,13 @@ impl EventLoop {
         // field empty; a restart after `stop()` therefore begins with none, which is the
         // honest state — the caller re-registers what it still wants.
         let mut idle_tasks = core::mem::take(&mut self.idle_tasks);
+        // The frame driver runs on the loop thread, so it moves with it. `take` leaves the field
+        // empty: a restart begins with no driver, which the caller re-registers explicitly
+        // rather than inheriting a closure that captured a scene it no longer describes.
+        #[cfg(not(alloc_frugal))]
+        let mut frame_driver = self.frame_driver.take();
+        #[cfg(not(alloc_frugal))]
+        let mut last_frame_at: Option<std::time::Instant> = None;
         // The loop thread consults this state at dispatch time; it is shared rather than moved so
         // `cancel_animation_frame` (called from the host's thread) mutates the same one.
         let cancelled_anim_frames = Arc::clone(&self.cancelled_anim_frames);
@@ -537,6 +623,26 @@ impl EventLoop {
                             return;
                         }
 
+                        // One measured delta per animation frame, before dispatch, so an
+                        // animation advanced by the default clock and one advanced by the
+                        // control's own tick see the same elapsed time for this frame.
+                        #[cfg(not(alloc_frugal))]
+                        if matches!(event, Event::AnimationFrame(_)) {
+                            let now = std::time::Instant::now();
+                            let delta = last_frame_at
+                                .map(|previous| {
+                                    now.duration_since(previous)
+                                        .as_millis()
+                                        .min(u128::from(u32::MAX))
+                                        as u32
+                                })
+                                .unwrap_or(0);
+                            last_frame_at = Some(now);
+                            if let Some(driver) = frame_driver.as_mut() {
+                                driver(delta);
+                            }
+                        }
+
                         #[cfg(feature = "touch")]
                         let maybe_gesture_event =
                             if feeds_the_gesture_engine(event) || is_touch_cancel(event) {
@@ -545,17 +651,21 @@ impl EventLoop {
                                 None
                             };
 
-                        if let Some(dispatch) = dispatch_fn_ref {
-                            let result =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    dispatch(target, event);
-                                    #[cfg(feature = "touch")]
-                                    if let Some(ref gesture) = maybe_gesture_event {
-                                        dispatch(target, gesture);
-                                    }
-                                }));
-                            if let Err(e) = result {
-                                log::error!("[event-loop] Dispatch panicked: {e:?}");
+                        if let Some(_dispatch) = dispatch_fn_ref {
+                            deliver_event(
+                                dispatch_fn_ref.as_ref(),
+                                parent_lookup.as_ref(),
+                                target,
+                                event,
+                            );
+                            #[cfg(feature = "touch")]
+                            if let Some(ref gesture) = maybe_gesture_event {
+                                deliver_event(
+                                    dispatch_fn_ref.as_ref(),
+                                    parent_lookup.as_ref(),
+                                    target,
+                                    gesture,
+                                );
                             }
                         } else {
                             log::warn!(
@@ -766,9 +876,7 @@ impl EventLoop {
             // The frame was cancelled: treat it as consumed work, not a dispatch.
             return true;
         }
-        if let Some(dispatch) = &self.dispatch_fn {
-            dispatch(target, &event);
-        }
+        deliver_event(self.dispatch_fn.as_ref(), self.parent_lookup.as_ref(), target, &event);
         true
     }
 
@@ -882,6 +990,82 @@ impl EventLoop {
     /// Sets the dispatch callback invoked for each dequeued event.
     pub fn set_dispatch_fn(&mut self, f: EventDispatchFn) {
         self.dispatch_fn = Some(f);
+    }
+
+    /// Installs a parent resolver, which turns on capture/target/bubble propagation.
+    ///
+    /// The resolver answers "who is this control's parent?" and is expected to walk the same
+    /// tree the host built. With it installed, every event is offered to the ancestors as a
+    /// capture pass, then to the target, then to the ancestors as a bubble pass; a handler that
+    /// calls [`crate::event::consume_event`] stops the route. Without it, dispatch stays flat —
+    /// one delivery per event — which is what a host with no tree or a test asserting a single
+    /// callback relies on.
+    ///
+    /// Must be called before [`Self::start`]: the closure moves onto the loop thread.
+    pub fn set_parent_lookup(
+        &mut self,
+        lookup: Box<dyn Fn(ObjectId) -> Option<ObjectId> + Send + Sync>,
+    ) {
+        self.parent_lookup = Some(Arc::from(lookup));
+    }
+
+    /// Installs the loop's animation-frame driver.
+    ///
+    /// The driver is called once per [`Event::AnimationFrame`] with the milliseconds elapsed
+    /// since the previous frame; the first frame reports `0` because there is no previous
+    /// timestamp to measure from. It must be set **before** [`Self::start`], which moves it onto
+    /// the loop thread and leaves the field empty.
+    ///
+    /// This is the loop half of the unified animation clock: the loop decides *when* a frame's
+    /// delta is known, and the driver decides what advances. See
+    /// [`Self::drive_default_animation_clock`] for the ready-made pairing with the crate's
+    /// thread-local clock.
+    #[cfg(not(alloc_frugal))]
+    pub fn set_frame_driver(&mut self, driver: Box<dyn FnMut(u32) + Send>) {
+        self.frame_driver = Some(driver);
+    }
+
+    /// Drives the crate's default animation clock from this loop's animation frames.
+    ///
+    /// After this call, every animation added through
+    /// [`with_default_animation_clock`](crate::style::animation::with_default_animation_clock)
+    /// — and every named group attached to that clock — advances once per frame with the delta
+    /// the loop measured. The closure captures nothing, so it is `Send` even though the clock it
+    /// reaches is thread-local: it runs on the loop thread, which is the thread the controls and
+    /// their clock live on.
+    #[cfg(not(alloc_frugal))]
+    pub fn drive_default_animation_clock(&mut self) {
+        self.set_frame_driver(Box::new(|delta_ms| {
+            crate::style::animation::advance_default_animation_clock(delta_ms);
+        }));
+    }
+
+    /// Registers an idle task that asks a reactive host to pump during the loop's idle phase.
+    ///
+    /// `pending` is the host's
+    /// [`idle_flag`](crate::view::ReactiveHost::idle_flag): the task posts
+    /// [`REACTIVE_PUMP_EVENT`](crate::view::REACTIVE_PUMP_EVENT) to `target` **only while the
+    /// flag is set**. Without that check the task would post every turn by itself and the loop
+    /// would never go idle. The host's dispatch callback hands each occurrence to
+    /// [`ReactiveHost::pump_if`](crate::view::ReactiveHost::pump_if), which coalesces the queued
+    /// binding changes into one rebuild and clears the flag. The indirection is what keeps a
+    /// `!Send` engine off the loop thread while still letting the loop choose *when* the rebuild
+    /// runs.
+    ///
+    /// Returns `false` when the loop is already running (an idle task registered after `start`
+    /// would never run) or when the profile has no idle phase.
+    #[cfg(all(not(alloc_frugal), declarative_view))]
+    pub fn install_reactive_idle_pump(
+        &mut self,
+        target: ObjectId,
+        pending: Arc<AtomicBool>,
+    ) -> bool {
+        let sender = self.sender.clone();
+        self.add_idle_task(IdleTask::new(REACTIVE_PUMP_TASK_ID, 1, move || {
+            if pending.load(Ordering::SeqCst) {
+                let _ = sender.post(target, crate::view::reactive_pump_event());
+            }
+        }))
     }
 
     /// Set a native platform event pump function.

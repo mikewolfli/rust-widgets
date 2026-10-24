@@ -4,6 +4,7 @@
 //! Rich text editor widget.
 use crate::core::HorizontalAlignment;
 use crate::core::Rect;
+use crate::event::wheel::WheelScroll;
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
@@ -18,6 +19,34 @@ use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// A styled run of a [`RichEdit`] document.
+///
+/// The range is a byte range into the value and the format applies to every character it covers.
+/// Spans may overlap (a later span wins) and need not cover the whole document.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextSpan {
+    /// The byte range the format applies to.
+    pub range: core::ops::Range<usize>,
+    /// The format painted over that range.
+    pub format: CharFormat,
+}
+
+/// The character attributes a [`TextSpan`] can carry.
+///
+/// The default inherits the editor's own style; an empty span list therefore paints exactly as
+/// an unstyled document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CharFormat {
+    /// Paint the run in a bold face.
+    pub bold: bool,
+    /// Paint the run in an italic face.
+    pub italic: bool,
+    /// Draw a line under the run.
+    pub underline: bool,
+    /// Override the run's ink; `None` keeps the editor's text colour.
+    pub color: Option<crate::core::Color>,
+}
 
 /// Rich text/code editor baseline widget contract.
 ///
@@ -70,6 +99,16 @@ pub struct RichEdit {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// Styled runs painted over the value; empty by default.
+    spans: Vec<TextSpan>,
+    /// The first document line the viewport paints.
+    ///
+    /// Zero until the user scrolls, so a document that fits moves exactly as it did.
+    first_visible_line: usize,
+    /// Whether a pointer drag is extending the selection.
+    dragging_selection: bool,
+    /// The byte offset where the pointer drag began.
+    drag_anchor: usize,
 }
 impl RichEdit {
     /// Creates an empty rich editor.
@@ -88,6 +127,10 @@ impl RichEdit {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            spans: Vec::new(),
+            first_visible_line: 0,
+            dragging_selection: false,
+            drag_anchor: 0,
         }
     }
     /// Returns current editor text.
@@ -121,10 +164,148 @@ impl RichEdit {
             )));
         }
         self.selection = None;
+        self.first_visible_line = 0;
         self.text_changed.emit(self.text.clone());
         self.cursor_position_changed.emit(self.text.len());
         self.base.request_redraw();
     }
+
+    /// Replaces the document for an edit, keeping the viewport where the user left it.
+    ///
+    /// [`Self::set_text`] is the *programmatic* replacement and opens the new document at its
+    /// top; an edit at the caret must not jump the view back to the first line.
+    fn set_text_for_edit(&mut self, next: String) {
+        let scroll = self.first_visible_line;
+        self.set_text(next);
+        self.first_visible_line = scroll;
+        self.scroll_caret_into_view();
+    }
+
+    /// The styled runs painted over the document.
+    pub fn spans(&self) -> &[TextSpan] {
+        &self.spans
+    }
+
+    /// Replaces the styled runs.
+    ///
+    /// Ranges are clamped to the current document and empty or reversed ranges are dropped. An
+    /// empty list returns the control to its unstyled paint path.
+    pub fn set_spans(&mut self, spans: Vec<TextSpan>) {
+        let len = self.text.len();
+        let next: Vec<TextSpan> = spans
+            .into_iter()
+            .filter_map(|mut span| {
+                span.range.start = floor_char_boundary(&self.text, span.range.start.min(len));
+                span.range.end = floor_char_boundary(&self.text, span.range.end.min(len));
+                (span.range.start < span.range.end).then_some(span)
+            })
+            .collect();
+        if self.spans == next {
+            return;
+        }
+        self.spans = next;
+        self.base.request_redraw();
+    }
+
+    /// The format that applies at `offset`, taken from the last span covering it.
+    pub fn format_at(&self, offset: usize) -> CharFormat {
+        self.spans
+            .iter()
+            .rev()
+            .find(|span| span.range.contains(&offset))
+            .map_or(CharFormat::default(), |span| span.format)
+    }
+
+    /// The first document line the viewport paints.
+    pub fn first_visible_line(&self) -> usize {
+        self.first_visible_line
+    }
+
+    /// Sets the first painted line, clamped to the document.
+    pub fn set_first_visible_line(&mut self, line: usize) {
+        let max = self.text.lines().count().saturating_sub(1);
+        let line = line.min(max);
+        if self.first_visible_line == line {
+            return;
+        }
+        self.first_visible_line = line;
+        self.base.request_redraw();
+    }
+
+    /// The document's lines, as the painter and the hit test both count them.
+    fn line_count(&self) -> usize {
+        self.text.lines().count().max(1)
+    }
+
+    /// How many whole lines fit in the interior at the current font.
+    fn visible_line_count(&self) -> usize {
+        let rect = self.geometry();
+        let line_height = effective_font(self.style()).effective_line_height().max(1.0) as i32;
+        let usable = (rect.height as i32 - 8).max(line_height);
+        (usable / line_height).max(1) as usize
+    }
+
+    /// Scrolls by `lines` document rows toward the end of the value.
+    fn scroll_lines(&mut self, lines: i32) -> bool {
+        if lines == 0 {
+            return false;
+        }
+        let max_first = self.line_count().saturating_sub(self.visible_line_count());
+        let next =
+            (self.first_visible_line as i64 + lines as i64).clamp(0, max_first as i64) as usize;
+        if next == self.first_visible_line {
+            return false;
+        }
+        self.first_visible_line = next;
+        true
+    }
+
+    /// Scrolls the viewport the minimum amount that brings `offset`'s line into view.
+    fn scroll_caret_into_view(&mut self) {
+        let Some((line, _)) = self.byte_offset_to_line_col(self.extend_caret) else {
+            return;
+        };
+        let visible = self.visible_line_count();
+        if line < self.first_visible_line {
+            self.first_visible_line = line;
+        } else if line >= self.first_visible_line + visible {
+            self.first_visible_line = line + 1 - visible;
+        }
+    }
+
+    /// Copies the selected text to the platform clipboard, returning it.
+    #[cfg(not(alloc_frugal))]
+    fn copy_selection_to_clipboard(&self) -> Option<String> {
+        let (start, end) = self.selection?;
+        if start == end {
+            return None;
+        }
+        let (lo, hi) = if start < end { (start, end) } else { (end, start) };
+        let lo = floor_char_boundary(&self.text, lo.min(self.text.len()));
+        let hi = floor_char_boundary(&self.text, hi.min(self.text.len()));
+        let selected = self.text[lo..hi].to_string();
+        crate::set_clipboard_text(&selected);
+        Some(selected)
+    }
+
+    /// The allocation-frugal build has no clipboard integration.
+    #[cfg(alloc_frugal)]
+    fn copy_selection_to_clipboard(&self) -> Option<String> {
+        None
+    }
+
+    /// Inserts the platform clipboard's text at the caret.
+    #[cfg(not(alloc_frugal))]
+    fn paste_from_clipboard(&mut self) {
+        let text = crate::get_clipboard_text();
+        if !text.is_empty() {
+            self.insert_committed_text(&text);
+        }
+    }
+
+    /// The allocation-frugal build has no clipboard integration.
+    #[cfg(alloc_frugal)]
+    fn paste_from_clipboard(&mut self) {}
 
     /// Inserts committed text at the caret, replacing the selection when one is active
     /// (D09-INPUT-01).
@@ -158,10 +339,11 @@ impl RichEdit {
         let mut next = self.text.clone();
         next.replace_range(start..end, &filtered);
         let new_caret = start + filtered.len();
-        self.set_text(next);
+        self.set_text_for_edit(next);
         self.selection = Some((new_caret, new_caret));
         self.extend_caret = new_caret;
         self.cursor_position_changed.emit(new_caret);
+        self.scroll_caret_into_view();
         self.base.request_redraw();
     }
 
@@ -204,6 +386,7 @@ impl RichEdit {
         self.restoring_history = true;
         self.text = text;
         self.selection = Some((self.text.len(), self.text.len()));
+        self.first_visible_line = 0;
         self.restoring_history = false;
         self.text_changed.emit(self.text.clone());
         self.cursor_position_changed.emit(self.text.len());
@@ -246,7 +429,8 @@ impl RichEdit {
         let font = effective_font(self.style());
         let line_height = font.effective_line_height().max(1.0) as i32;
         let first_line_y = rect.y + padding + line_height;
-        let row = ((pos.y - first_line_y).max(0) / line_height.max(1)) as usize;
+        let row =
+            self.first_visible_line + ((pos.y - first_line_y).max(0) / line_height.max(1)) as usize;
 
         // Walk the value's own line splitting, so the answer is derived from the text rather than
         // rebuilt from a second model of where the newlines are.
@@ -332,6 +516,7 @@ impl RichEdit {
         self.extend_caret = target;
         self.cursor_position_changed.emit(target);
         self.selection_changed.emit(self.selection);
+        self.scroll_caret_into_view();
         self.base.request_redraw();
     }
 
@@ -641,7 +826,6 @@ impl Draw for RichEdit {
         let font = effective_font(self.style());
         let line_height = 16i32;
         let padding = 2i32;
-        let mut line_y = rect.y + padding + line_height;
         let cursor_before = self.selection.map_or(0, |(start, _)| start);
         // Compute (line, col) for cursor
         let cursor_coord = self.byte_offset_to_line_col(cursor_before);
@@ -661,6 +845,13 @@ impl Draw for RichEdit {
         // apart would have reproduced the caret defect twice more.
         let selection = self.selection.filter(|(start, end)| start != end);
         for (line_idx, line) in self.text.lines().enumerate() {
+            // The viewport starts at `first_visible_line`; lines above it are skipped without
+            // consuming a row of the paint grid, which is what makes the scroll offset real.
+            if line_idx < self.first_visible_line {
+                continue;
+            }
+            let line_y =
+                rect.y + padding + line_height * ((line_idx - self.first_visible_line) as i32 + 1);
             if line_y > rect.y + rect.height as i32 {
                 break;
             }
@@ -698,13 +889,18 @@ impl Draw for RichEdit {
                 }
             }
             // Draw the line text
-            context.draw_text(
-                crate::core::Point::new(rect.x + padding, line_y),
-                line,
-                font,
-                ink,
-                HorizontalAlignment::Left,
-            );
+            if self.spans.is_empty() {
+                context.draw_text(
+                    crate::core::Point::new(rect.x + padding, line_y),
+                    line,
+                    font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            } else {
+                let line_start = self.line_start_offset(line_idx);
+                self.draw_rich_line(context, line, line_start, rect.x + padding, line_y, font, ink);
+            }
             // Draw cursor on this line if not read-only
             if !self.read_only && Some(line_idx) == cursor_coord.map(|(l, _)| l) {
                 if let Some((_, col)) = cursor_coord {
@@ -740,7 +936,72 @@ impl Draw for RichEdit {
                     );
                 }
             }
-            line_y += line_height;
+        }
+    }
+}
+
+impl RichEdit {
+    /// Paints one line as a sequence of formatted runs.
+    ///
+    /// Each run is measured with its own face, so a bold run advances further than the same text
+    /// in the regular face. The unstyled path in [`Draw`] is untouched, which is what keeps a
+    /// document without spans pixel-identical to its pre-span rendering.
+    fn draw_rich_line(
+        &self,
+        context: &mut RenderContext,
+        line: &str,
+        line_start: usize,
+        origin_x: i32,
+        baseline_y: i32,
+        font: &crate::core::Font,
+        ink: crate::core::Color,
+    ) {
+        let mut runs: Vec<(usize, usize, CharFormat)> = Vec::new();
+        let mut run_start = 0usize;
+        let mut run_format = self.format_at(line_start);
+        for (index, _) in line.char_indices() {
+            let format = self.format_at(line_start + index);
+            if format != run_format {
+                if run_start < index {
+                    runs.push((run_start, index, run_format));
+                }
+                run_start = index;
+                run_format = format;
+            }
+        }
+        runs.push((run_start, line.len(), run_format));
+
+        let mut pen_x = origin_x;
+        for (start, end, format) in runs {
+            if start >= end {
+                continue;
+            }
+            let mut face = font.clone();
+            if format.bold {
+                face = face.with_bold(true);
+            }
+            if format.italic {
+                face = face.with_italic(true);
+            }
+            let run = &line[start..end];
+            let run_ink = format.color.unwrap_or(ink);
+            context.draw_text(
+                crate::core::Point::new(pen_x, baseline_y),
+                run,
+                &face,
+                run_ink,
+                HorizontalAlignment::Left,
+            );
+            let advance = crate::widget::metrics::estimate_text_width(run, &face, 1.0) as i32;
+            if format.underline {
+                let underline_y = baseline_y + 1;
+                context.draw_line(
+                    crate::core::Point::new(pen_x, underline_y),
+                    crate::core::Point::new(pen_x + advance, underline_y),
+                    run_ink,
+                );
+            }
+            pen_x += advance;
         }
     }
 }
@@ -758,6 +1019,15 @@ impl crate::event::EventHandler for RichEdit {
         if let crate::event::Event::KeyPress { key: 89, modifiers: 2 } = event {
             let _ = self.redo();
             return;
+        }
+        // Copying is the one edit gesture a read-only document still supports.
+        if let crate::event::Event::KeyPress { key: 67, modifiers } = event {
+            if crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                .contains(crate::shortcut::Modifiers::PRIMARY)
+            {
+                let _ = self.copy_selection_to_clipboard();
+                return;
+            }
         }
         if self.read_only {
             return;
@@ -781,9 +1051,34 @@ impl crate::event::EventHandler for RichEdit {
                 // middle of the value.
                 let index = self.byte_offset_at_point(*pos);
                 self.set_selection(index, index);
+                self.drag_anchor = index;
+                self.dragging_selection = true;
+            }
+            // Moving with the button down extends the selection the press began. A bare hover
+            // still does nothing, because `dragging_selection` is only set by a press.
+            crate::event::Event::MouseMove { pos } => {
+                if self.dragging_selection {
+                    let index = self.byte_offset_at_point(*pos);
+                    let (start, end) = if self.drag_anchor <= index {
+                        (self.drag_anchor, index)
+                    } else {
+                        (index, self.drag_anchor)
+                    };
+                    self.set_selection(start, end);
+                    // The caret is the moving end, whichever end of the ordered pair that is.
+                    self.extend_caret = index;
+                }
             }
             crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
+                self.dragging_selection = false;
+            }
+            // Wheel: scroll the viewport by the shared three-line desktop notch.
+            crate::event::Event::Wheel { delta, modifiers, .. } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 3);
+                if self.scroll_lines(-scroll.lines_y) {
+                    self.base.request_redraw();
+                }
             }
             // Platform-committed text (D09-INPUT-01). The desktop backends deliver a printable
             // character or an IME commit as `TextInput`/`ImeCommit`, so this is the branch that
@@ -822,8 +1117,9 @@ impl crate::event::EventHandler for RichEdit {
                         let mut next = self.text.clone();
                         next.drain(boundary..cursor);
                         let new_cursor = boundary;
-                        self.set_text(next);
+                        self.set_text_for_edit(next);
                         self.selection = Some((new_cursor, new_cursor));
+                        self.extend_caret = new_cursor;
                         self.cursor_position_changed.emit(new_cursor);
                     }
                     127 if cursor < self.text.len() => {
@@ -841,17 +1137,19 @@ impl crate::event::EventHandler for RichEdit {
                             .unwrap_or(self.text.len());
                         let mut next = self.text.clone();
                         next.drain(cursor..end.min(self.text.len()));
-                        self.set_text(next);
+                        self.set_text_for_edit(next);
                         self.selection = Some((cursor, cursor));
+                        self.extend_caret = cursor;
                         self.cursor_position_changed.emit(cursor);
                     }
                     13 => {
                         // Enter — insert newline at cursor
                         let mut next = self.text.clone();
                         next.insert(cursor, '\n');
-                        self.set_text(next);
+                        self.set_text_for_edit(next);
                         let new_cursor = cursor + 1;
                         self.selection = Some((new_cursor, new_cursor));
+                        self.extend_caret = new_cursor;
                         self.text_changed.emit(self.text.clone());
                         self.cursor_position_changed.emit(new_cursor);
                     }
@@ -930,6 +1228,27 @@ impl crate::event::EventHandler for RichEdit {
                     65 if primary => {
                         // Primary+A: select the whole value.
                         self.set_selection(0, self.text.len());
+                    }
+                    88 if primary => {
+                        // Primary+X: copy, then remove the selection.
+                        let _ = self.copy_selection_to_clipboard();
+                        if let Some((start, end)) = self.selection.filter(|(s, e)| s != e) {
+                            let (lo, hi) = if start < end { (start, end) } else { (end, start) };
+                            let (lo, hi) = (
+                                floor_char_boundary(&self.text, lo.min(self.text.len())),
+                                floor_char_boundary(&self.text, hi.min(self.text.len())),
+                            );
+                            let mut next = self.text.clone();
+                            next.replace_range(lo..hi, "");
+                            self.set_text_for_edit(next);
+                            self.selection = Some((lo, lo));
+                            self.extend_caret = lo;
+                            self.cursor_position_changed.emit(lo);
+                        }
+                    }
+                    86 if primary => {
+                        // Primary+V: paste at the caret.
+                        self.paste_from_clipboard();
                     }
                     _ if *key >= 32 && *key <= 126 => {
                         // Printable ASCII — insert at the caret through the shared entry point, so
@@ -1462,5 +1781,72 @@ mod tests {
         });
         re.handle_event(&crate::event::Event::TextInput { text: "abc".to_string() });
         assert_eq!(*last.lock().unwrap(), "abc");
+    }
+
+    /// Styled spans are addressable and change the painted document.
+    #[test]
+    fn spans_format_the_named_run() {
+        use crate::widget::svg::render_to_svg;
+        let mut re = RichEdit::new(Rect::new(0, 0, 300, 200));
+        re.set_text("bold and plain".to_string());
+        let plain = render_to_svg(&mut re);
+        re.set_spans(vec![TextSpan {
+            range: 0..4,
+            format: CharFormat { bold: true, ..CharFormat::default() },
+        }]);
+        assert!(re.format_at(0).bold);
+        assert!(!re.format_at(6).bold);
+        assert_ne!(plain, render_to_svg(&mut re), "a bold run must change the ink");
+    }
+
+    /// A press followed by a drag selects the swept range.
+    #[test]
+    fn a_drag_extends_the_selection() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 300, 200));
+        re.set_text("alpha beta".to_string());
+        re.handle_event(&crate::event::Event::MousePress {
+            pos: crate::core::Point::new(6, 12),
+            button: 1,
+            modifiers: 0,
+        });
+        re.handle_event(&crate::event::Event::MouseMove { pos: crate::core::Point::new(60, 12) });
+        re.handle_event(&crate::event::Event::MouseRelease {
+            pos: crate::core::Point::new(60, 12),
+            button: 1,
+        });
+        let (start, end) = re.selection().expect("a drag must select");
+        assert!(end > start, "the swept range must have width: {start}..{end}");
+    }
+
+    /// Primary+C and Primary+V move selected text through the clipboard.
+    #[test]
+    fn clipboard_shortcuts_copy_and_paste() {
+        let _clipboard = crate::clipboard::clipboard_test_guard();
+        let mut source = focused(RichEdit::new(Rect::new(0, 0, 300, 200)));
+        source.set_text("copy me".to_string());
+        source.set_selection(0, source.text().len());
+        source.handle_event(&crate::event::Event::KeyPress { key: 67, modifiers: 0b1000 });
+        assert_eq!(crate::get_clipboard_text(), "copy me");
+
+        let mut target = focused(RichEdit::new(Rect::new(0, 0, 300, 200)));
+        target.handle_event(&crate::event::Event::KeyPress { key: 86, modifiers: 0b1000 });
+        assert_eq!(target.text(), "copy me");
+    }
+
+    /// The wheel scrolls the viewport and clamps it to the document.
+    #[test]
+    fn the_wheel_scrolls_and_clamps() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 200, 60));
+        re.set_text((0..30).map(|n| format!("line {n}\n")).collect::<String>());
+        assert_eq!(re.first_visible_line(), 0);
+        let notch = crate::core::Point::new(0, -1);
+        re.handle_event(&crate::event::Event::Wheel { delta: notch, modifiers: 0 });
+        let scrolled = re.first_visible_line();
+        assert!(scrolled > 0, "a wheel notch must scroll the viewport");
+        for _ in 0..40 {
+            re.handle_event(&crate::event::Event::Wheel { delta: notch, modifiers: 0 });
+        }
+        let max_first = re.line_count().saturating_sub(re.visible_line_count());
+        assert_eq!(re.first_visible_line(), max_first, "the viewport clamps at the last window");
     }
 }

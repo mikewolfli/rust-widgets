@@ -243,6 +243,16 @@ impl WidgetFactory {
             self.register(editable_combo_box_capability(), create_editable_combo_box);
             self.register(date_range_picker_capability(), create_date_range_picker);
 
+            // ── macOS (desktop) component set ──────────────────────────
+            // Registered beside the `cupertino` (touch) set so a desktop application can
+            // build its own surface from the factory by name, and so every one of these
+            // controls is measured by the rendering census and reachable from a manifest.
+            self.register(mac_segmented_control_capability(), create_mac_segmented_control);
+            self.register(mac_stepper_capability(), create_mac_stepper);
+            self.register(mac_toolbar_capability(), create_mac_toolbar);
+            self.register(mac_source_list_capability(), create_mac_source_list);
+            self.register(mac_window_chrome_capability(), create_mac_window_chrome);
+
             // ── New widgets ────────────────────────────────────────────
             self.register(rich_edit_capability(), create_rich_edit);
             self.register(carousel_capability(), create_carousel);

@@ -9,7 +9,7 @@
 //! highlighted.
 
 use crate::core::{Color, Point, Rect};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{
@@ -60,6 +60,10 @@ pub struct RangeSlider {
     pub range_changed: Signal1<(f64, f64)>,
     /// Which handle is currently being dragged: None, Some(true) for lower, Some(false) for upper.
     dragging: Option<bool>,
+    /// Whether the control owns keyboard focus, which is what a focus ring means.
+    focused: bool,
+    /// The handle keyboard input acts on. Defaults to the lower handle.
+    active_handle: bool,
 }
 
 /// The radius of a range slider's handle, in logical pixels.
@@ -98,12 +102,65 @@ impl RangeSlider {
             direction: crate::core::TextDirection::default(),
             range_changed: Signal1::new(),
             dragging: None,
+            focused: false,
+            active_handle: true,
         }
     }
 
     /// Returns the current lower value.
     pub fn lower_value(&self) -> f64 {
         self.lower_value
+    }
+
+    /// Returns whether this slider currently has keyboard focus.
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Sets the focused state, which controls whether the active handle draws a ring.
+    pub fn set_focused(&mut self, focused: bool) {
+        if self.focused == focused {
+            return;
+        }
+        self.focused = focused;
+        if focused {
+            self.base.focus_gained.emit();
+        } else {
+            self.base.focus_lost.emit();
+        }
+        self.base.request_redraw();
+    }
+
+    /// The handle keyboard input acts on: `true` for the lower handle, `false` for the upper one.
+    pub fn active_handle(&self) -> bool {
+        self.active_handle
+    }
+
+    /// Chooses the handle keyboard input acts on.
+    ///
+    /// The choice is also what the focus ring marks, so a caller that moves focus
+    /// programmatically can say which of the two handles it means.
+    pub fn set_active_handle(&mut self, lower: bool) {
+        if self.active_handle == lower {
+            return;
+        }
+        self.active_handle = lower;
+        self.base.request_redraw();
+    }
+
+    /// Moves the active handle by `steps` grid steps.
+    ///
+    /// Returns whether the range changed. The lower handle is bounded above by the upper
+    /// handle (and `min_range`), and the upper one below by the lower handle, so both
+    /// constraints stay in force through the ordinary setters.
+    pub fn step_active_handle(&mut self, steps: f64) -> bool {
+        let before = (self.lower_value, self.upper_value);
+        if self.active_handle {
+            self.set_lower_value(self.lower_value + steps * self.step);
+        } else {
+            self.set_upper_value(self.upper_value + steps * self.step);
+        }
+        before != (self.lower_value, self.upper_value)
     }
 
     /// The largest `min_range` the current `[min, max]` span can honour.
@@ -820,6 +877,8 @@ enum HandleInteraction {
     Resting,
     /// The pointer is over the control, but not on this handle.
     Idle,
+    /// This handle is the keyboard's active handle, marked by a focus ring.
+    Focused,
     /// This handle is the one being dragged.
     Dragging,
 }
@@ -837,6 +896,11 @@ impl RangeSlider {
     fn handle_state(&self, is_lower: bool) -> HandleInteraction {
         if self.dragging == Some(is_lower) {
             HandleInteraction::Dragging
+        } else if self.focused && self.active_handle == is_lower && self.base.draws_focus_ring() {
+            // Keyboard focus marks one handle so the arrow keys have a visible target. Without
+            // it the pair looked identical whether or not the control had focus, and a user
+            // navigating by keyboard could not tell which bound would move.
+            HandleInteraction::Focused
         } else if self.base.is_hovered() {
             // The pointer being over the control at all is enough to say "these are grabbable":
             // which of the two it is over is already answered by the hover value, and making the
@@ -874,6 +938,13 @@ impl RangeSlider {
                 context.fill_circle(center, radius, fill);
                 context.draw_circle_stroke(center, radius, border, 2);
             }
+            HandleInteraction::Focused => {
+                context.fill_circle(center, radius, fill);
+                context.draw_circle_stroke(center, radius, border, 2);
+                // One step outside the disc, so the ring reads as focus rather than as a
+                // thicker handle outline.
+                context.draw_circle_stroke(center, radius + 3, border.with_alpha(160), 1);
+            }
             HandleInteraction::Resting => {
                 context.fill_circle(center, radius, fill);
                 context.draw_circle_stroke(center, radius, border, 2);
@@ -890,12 +961,36 @@ impl EventHandler for RangeSlider {
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
-                // Check which handle is hit (upper first to give it priority)
+                // A press inside the track commits the nearest handle to that point and starts
+                // dragging it. Without this arm a click away from a handle did nothing, so the
+                // control had no way to jump a bound to a position — every move required
+                // grabbing an 8 px disc first.
                 if self.is_handle_hit(*pos, &rect, false) {
                     self.dragging = Some(false); // upper handle
+                    self.set_active_handle(false);
                 } else if self.is_handle_hit(*pos, &rect, true) {
                     self.dragging = Some(true); // lower handle
+                    self.set_active_handle(true);
+                } else {
+                    let pixel = match self.orientation {
+                        RangeSliderOrientation::Horizontal => pos.x,
+                        RangeSliderOrientation::Vertical => pos.y,
+                    };
+                    let raw_value = self.pixel_to_value(pixel, &rect);
+                    let lower_distance = (raw_value - self.lower_value).abs();
+                    let upper_distance = (raw_value - self.upper_value).abs();
+                    let lower = lower_distance <= upper_distance;
+                    // The handle that is nearer is the one a user means, and it is the one the
+                    // subsequent drag moves.
+                    if lower {
+                        self.set_lower_value(raw_value);
+                    } else {
+                        self.set_upper_value(raw_value);
+                    }
+                    self.set_active_handle(lower);
+                    self.dragging = Some(lower);
                 }
+                self.set_focused(true);
             }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.dragging = None;
@@ -927,6 +1022,78 @@ impl EventHandler for RangeSlider {
                         self.set_upper_value(raw_value);
                     }
                 }
+            }
+            Event::FocusGained { .. } => {
+                self.base.handle_event(event);
+                self.set_focused(true);
+            }
+            Event::FocusLost => {
+                self.base.handle_event(event);
+                self.set_focused(false);
+            }
+            Event::KeyPress { key, modifiers } => {
+                // Tab moves the keyboard target between the two handles; the arrow keys then act
+                // on the marked one. A modifier-held arrow is a different binding elsewhere in the
+                // crate, so it is left alone here.
+                if *modifiers == 0 {
+                    match *key {
+                        9 => {
+                            let next = !self.active_handle;
+                            self.set_active_handle(next);
+                        }
+                        // Left / Down.
+                        37 | 40 => {
+                            let forward = match self.orientation {
+                                RangeSliderOrientation::Horizontal => {
+                                    self.direction == crate::core::TextDirection::LeftToRight
+                                }
+                                RangeSliderOrientation::Vertical => false,
+                            };
+                            let steps = if forward { -1.0 } else { 1.0 };
+                            self.step_active_handle(steps);
+                        }
+                        // Right / Up.
+                        38 | 39 => {
+                            let forward = match self.orientation {
+                                RangeSliderOrientation::Horizontal => {
+                                    self.direction == crate::core::TextDirection::LeftToRight
+                                }
+                                RangeSliderOrientation::Vertical => true,
+                            };
+                            let steps = if forward { 1.0 } else { -1.0 };
+                            self.step_active_handle(steps);
+                        }
+                        33 => {
+                            self.step_active_handle(10.0);
+                        }
+                        34 => {
+                            self.step_active_handle(-10.0);
+                        }
+                        36 => {
+                            if self.active_handle {
+                                self.set_lower_value(self.min_value);
+                            } else {
+                                self.set_upper_value(self.min_value);
+                            }
+                        }
+                        35 => {
+                            if self.active_handle {
+                                self.set_lower_value(self.max_value);
+                            } else {
+                                self.set_upper_value(self.max_value);
+                            }
+                        }
+                        _ => self.base.handle_event(event),
+                    }
+                } else {
+                    self.base.handle_event(event);
+                }
+            }
+            // A notch moves the active handle by one step, matching the arrows. The event's
+            // positive y reveals lower values, hence the negation.
+            Event::Wheel { delta, modifiers } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                self.step_active_handle(-(scroll.lines_y as f64));
             }
             _ => {
                 self.base.handle_event(event);
@@ -1517,5 +1684,65 @@ mod tests {
             }
             rs.handle_event(&Event::MouseRelease { pos: lower_centre, button: 1 });
         }
+    }
+
+    /// Keyboard, wheel and track-jump give the control a non-pointer path.
+    ///
+    /// The control used to ignore every key and the wheel, and a press away from a handle was
+    /// dropped: a bound could only be moved by grabbing an 8 px disc.
+    #[test]
+    fn keyboard_wheel_and_track_jump_move_the_active_handle() {
+        let rect = Rect::new(0, 0, 200, 40);
+        let mut rs = RangeSlider::new(rect);
+        rs.set_active_handle(true);
+
+        // Right raises the lower bound by one step.
+        rs.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        rs.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        assert!((rs.lower_value() - 26.0).abs() < f64::EPSILON);
+
+        // Tab moves the keyboard target to the upper handle.
+        rs.handle_event(&Event::KeyPress { key: 9, modifiers: 0 });
+        assert!(!rs.active_handle());
+        rs.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        assert!((rs.upper_value() - 76.0).abs() < f64::EPSILON);
+
+        // Home / End jump the active handle to the bounds.
+        rs.handle_event(&Event::KeyPress { key: 36, modifiers: 0 });
+        assert!((rs.upper_value() - 26.0).abs() < f64::EPSILON);
+
+        // The wheel steps the active handle.
+        let before = rs.upper_value();
+        rs.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_ne!(rs.upper_value(), before, "a wheel notch steps the active handle");
+
+        // A press on the track moves the nearer handle there and arms the drag.
+        let mut fresh = RangeSlider::new(rect);
+        fresh.set_lower_value(20.0);
+        fresh.set_upper_value(80.0);
+        let target = fresh.value_to_pixel(60.0, &rect);
+        fresh.handle_event(&Event::MousePress {
+            pos: Point::new(target, 20),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(fresh.is_dragging(), "a track press arms a drag");
+        assert!(!fresh.active_handle(), "the nearer (upper) handle was chosen");
+        assert!((fresh.upper_value() - 60.0).abs() < 1.5);
+    }
+
+    /// Focus marks the active handle so the keyboard target is visible.
+    #[test]
+    fn focus_marks_the_active_handle() {
+        let rect = Rect::new(0, 0, 200, 40);
+        let mut rs = RangeSlider::new(rect);
+        let resting = crate::widget::svg::render_to_svg(&mut rs);
+        rs.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        let focused = crate::widget::svg::render_to_svg(&mut rs);
+        assert!(rs.is_focused());
+        assert_ne!(focused, resting, "a focused slider must mark its keyboard handle");
+
+        rs.handle_event(&Event::FocusLost);
+        assert!(!rs.is_focused());
     }
 }

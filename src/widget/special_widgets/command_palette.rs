@@ -25,12 +25,20 @@ pub struct CommandEntry {
     pub category: String,
     /// Optional keywords used by query matching.
     pub keywords: Vec<String>,
+    /// The keyboard shortcut shown at the row's trailing edge.
+    pub shortcut: Option<String>,
 }
 
 impl CommandEntry {
     /// Creates a command entry with id and title.
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
-        Self { id: id.into(), title: title.into(), category: String::new(), keywords: Vec::new() }
+        Self {
+            id: id.into(),
+            title: title.into(),
+            category: String::new(),
+            keywords: Vec::new(),
+            shortcut: None,
+        }
     }
 
     /// Sets command category.
@@ -44,6 +52,12 @@ impl CommandEntry {
         self.keywords = keywords.into_iter().map(Into::into).collect();
         self
     }
+
+    /// Sets the shortcut label shown at the row's trailing edge.
+    pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.shortcut = Some(shortcut.into());
+        self
+    }
 }
 
 /// Palette-style command launcher with query filtering and keyboard navigation.
@@ -53,6 +67,10 @@ pub struct CommandPalette {
     query: String,
     filtered_indices: Vec<usize>,
     highlighted_index: Option<usize>,
+    /// The first filtered row drawn; keeps the highlight reachable past the visible rows.
+    scroll_offset: usize,
+    /// Command ids in most-recently-used order, boosting their match score.
+    mru: Vec<String>,
     row_height: u32,
     /// Emitted when command is activated. Payload is command id.
     pub command_activated: Signal1<String>,
@@ -69,6 +87,8 @@ impl CommandPalette {
             query: String::new(),
             filtered_indices: Vec::new(),
             highlighted_index: None,
+            scroll_offset: 0,
+            mru: Vec::new(),
             row_height: 24,
             command_activated: Signal1::new(),
             query_changed: Signal1::new(),
@@ -153,6 +173,64 @@ impl CommandPalette {
         let max = self.filtered_indices.len().saturating_sub(1) as isize;
         let next = (current + delta).clamp(0, max) as usize;
         self.highlighted_index = Some(next);
+        // Keep the highlighted row inside the visible window.
+        let visible = self.visible_rows().max(1);
+        self.scroll_offset = self.scroll_offset.min(next);
+        if next >= self.scroll_offset + visible {
+            self.scroll_offset = next + 1 - visible;
+        }
+        self.base.request_redraw();
+    }
+
+    /// How many result rows fit under the query header.
+    fn visible_rows(&self) -> usize {
+        let rect = self.geometry();
+        ((rect.height.saturating_sub(self.row_height + self.header_height()))
+            / self.row_height.max(1)) as usize
+    }
+
+    /// The header band's height.
+    fn header_height(&self) -> u32 {
+        self.row_height
+    }
+
+    /// The number of filtered rows scrolled out of view.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Records that `id` was activated, so it sorts first next time.
+    pub fn record_use(&mut self, id: impl Into<String>) {
+        let id = id.into();
+        self.mru.retain(|existing| existing != &id);
+        self.mru.insert(0, id);
+        self.refresh_filter();
+        self.base.request_redraw();
+    }
+
+    /// Replaces the most-recently-used list.
+    pub fn set_mru(&mut self, ids: Vec<String>) {
+        if self.mru == ids {
+            return;
+        }
+        self.mru = ids;
+        self.refresh_filter();
+        self.base.request_redraw();
+    }
+
+    /// Returns the most-recently-used ids.
+    pub fn mru(&self) -> &[String] {
+        &self.mru
+    }
+
+    /// Appends host-committed text (from an IME or a keyboard layout) to the query.
+    pub fn push_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.query.push_str(text);
+        self.refresh_filter();
+        self.query_changed.emit(self.query.clone());
         self.base.request_redraw();
     }
 
@@ -181,6 +259,18 @@ impl CommandPalette {
 
         scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         self.filtered_indices = scored.into_iter().map(|(index, _)| index).collect();
+        // A most-recently-used command outranks an equal-scoring one. The sort is stable, so
+        // this only separates ties and never puts a worse textual match above a better one.
+        if self.filtered_indices.len() > 1 {
+            let rank = |index: usize| {
+                self.entries
+                    .get(index)
+                    .and_then(|entry| self.mru.iter().position(|id| id == &entry.id))
+                    .unwrap_or(usize::MAX)
+            };
+            self.filtered_indices.sort_by_key(|index| rank(*index));
+        }
+        self.scroll_offset = 0;
 
         if self.filtered_indices.is_empty() {
             self.highlighted_index = None;
@@ -398,16 +488,44 @@ impl EventHandler for CommandPalette {
                 self.pick_at_position(*pos);
                 let _ = self.activate_highlighted();
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                38 => self.move_highlight(-1),
-                40 => self.move_highlight(1),
-                13 => {
-                    let _ = self.activate_highlighted();
+            Event::KeyPress { key, modifiers } => {
+                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let key_value = crate::shortcut::Key::from_key_code(*key);
+                match key_value {
+                    Some(crate::shortcut::Key::Up) => self.move_highlight(-1),
+                    Some(crate::shortcut::Key::Down) => self.move_highlight(1),
+                    Some(crate::shortcut::Key::Enter) => {
+                        let _ = self.activate_highlighted();
+                    }
+                    Some(crate::shortcut::Key::Escape) => self.clear_query(),
+                    Some(crate::shortcut::Key::Backspace) => self.backspace_query(),
+                    Some(crate::shortcut::Key::N)
+                        if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) =>
+                    {
+                        self.move_highlight(1);
+                    }
+                    Some(crate::shortcut::Key::P)
+                        if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) =>
+                    {
+                        self.move_highlight(-1);
+                    }
+                    _ => self.append_query_char(*key),
                 }
-                27 => self.clear_query(),
-                8 => self.backspace_query(),
-                key => self.append_query_char(key),
-            },
+            }
+            Event::TextInput { text } | Event::ImeCommit { text } => self.push_text(text),
+            Event::ImePreedit { .. } => {}
+            Event::Wheel { delta, .. } if delta.y != 0 => {
+                let max = self.filtered_indices.len().saturating_sub(1);
+                let next = if delta.y > 0 {
+                    (self.scroll_offset + 1).min(max)
+                } else {
+                    self.scroll_offset.saturating_sub(1)
+                };
+                if self.scroll_offset != next {
+                    self.scroll_offset = next;
+                    self.base.request_redraw();
+                }
+            }
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -477,7 +595,7 @@ impl Draw for CommandPalette {
 
         let mut y = rect.y + self.row_height as i32;
         let limit = rect.y + rect.height as i32;
-        for filtered_index in 0..self.filtered_indices.len() {
+        for filtered_index in self.scroll_offset..self.filtered_indices.len() {
             if y + self.row_height as i32 > limit {
                 break;
             }
@@ -490,27 +608,60 @@ impl Draw for CommandPalette {
             }
 
             if let Some(entry) = self.filtered_entry(filtered_index) {
-                let band = Rect::new(rect.x + 8, y, rect.width.saturating_sub(16), self.row_height);
+                let trailing = if entry.shortcut.is_some() { 64 } else { 0 };
+                let band = Rect::new(
+                    rect.x + 8,
+                    y,
+                    rect.width.saturating_sub(16 + trailing),
+                    self.row_height,
+                );
                 let font = effective_font(style);
                 let line_box = context.text_line(band, font);
                 // Fitted to the row and centred by its line box. The old origin was the row's
                 // midpoint used as a glyph top edge, so every result sat half a line low.
-                if entry.category.is_empty() {
-                    context.draw_text_fitted_cow(
-                        line_box,
-                        &entry.title,
-                        font,
-                        text_color,
-                        HorizontalAlignment::Left,
-                    );
+                let text = if entry.category.is_empty() {
+                    entry.title.clone()
                 } else {
-                    let joined = format!("{} · {}", entry.category, entry.title);
-                    context.draw_text_fitted_cow(
-                        line_box,
-                        &joined,
+                    format!("{} · {}", entry.category, entry.title)
+                };
+                context.draw_text_fitted_cow(
+                    line_box,
+                    &text,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+                // Match highlight: a tinted box behind the matched run. The prefix is
+                // measured with the same font the row is drawn in, so the highlight lands on
+                // the glyphs rather than near them.
+                if !self.query.is_empty() {
+                    let folded_text = text.to_lowercase();
+                    let folded_query = self.query.to_lowercase();
+                    if let Some(offset) = folded_text.find(&folded_query) {
+                        let prefix: String = text.chars().take(offset).collect();
+                        let matched: String =
+                            text.chars().skip(offset).take(self.query.chars().count()).collect();
+                        let start_x = band.x + context.measure_text(&prefix, font).width as i32;
+                        let width = context.measure_text(&matched, font).width as u32;
+                        context.fill_rect(
+                            Rect::new(start_x, y, width.max(1), self.row_height),
+                            highlight,
+                        );
+                    }
+                }
+                if let Some(shortcut) = entry.shortcut.as_deref() {
+                    let key_box = Rect::new(
+                        rect.x + rect.width as i32 - 60,
+                        y + 2,
+                        52,
+                        self.row_height.saturating_sub(4),
+                    );
+                    context.draw_text_line_cow(
+                        key_box,
+                        shortcut,
                         font,
                         text_color,
-                        HorizontalAlignment::Left,
+                        HorizontalAlignment::Right,
                     );
                 }
             }

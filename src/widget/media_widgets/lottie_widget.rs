@@ -48,6 +48,56 @@ pub struct LottieKeyFrame {
     /// Value(s) at this keyframe. The vector holds multiple components
     /// (e.g. [x, y] for position, [r, g, b, a] for color).
     pub s: Vec<f64>,
+    /// Outgoing temporal easing handle `(x, y)`, both normalised to `0.0..=1.0`.
+    ///
+    /// This is the `o` object Lottie writes on the keyframe the segment starts at. `None`
+    /// means the segment leaves this keyframe linearly.
+    pub out_tangent: Option<(f64, f64)>,
+    /// Incoming temporal easing handle `(x, y)` from the next keyframe's `i` object.
+    pub in_tangent: Option<(f64, f64)>,
+}
+
+/// Reads a Lottie easing handle (`o`/`i`) as `(x, y)`.
+///
+/// Lottie encodes the handle as `{"x": [..], "y": [..]}`; only the first component of each
+/// array is used, which is the temporal handle for every property this renderer samples.
+fn easing_handle(value: Option<&serde_json::Value>) -> Option<(f64, f64)> {
+    let value = value?;
+    let x = value.get("x")?.as_array()?.first()?.as_f64()?;
+    let y = value.get("y")?.as_array()?.first()?.as_f64()?;
+    if x.is_finite() && y.is_finite() {
+        Some((x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)))
+    } else {
+        None
+    }
+}
+
+/// Maps a normalised time through the cubic-bezier segment `(0,0)-(p1)-(p2)-(1,1)`.
+///
+/// The result is the curve's `y` at the time where its `x` equals `t`. Bisection is used
+/// rather than Newton's method: the handles are clamped, so the curve is monotone in `x`,
+/// and twenty iterations are exact to well below a pixel.
+fn cubic_bezier_ease(t: f64, p1: (f64, f64), p2: (f64, f64)) -> f64 {
+    let bezier = |a: f64, b: f64, u: f64| {
+        let v = 1.0 - u;
+        3.0 * v * v * u * a + 3.0 * v * u * u * b + u * u * u
+    };
+    let mut low = 0.0;
+    let mut high = 1.0;
+    let mut u = t.clamp(0.0, 1.0);
+    for _ in 0..20 {
+        let x = bezier(p1.0, p2.0, u);
+        if (x - t).abs() < 1.0e-6 {
+            break;
+        }
+        if x < t {
+            low = u;
+        } else {
+            high = u;
+        }
+        u = (low + high) / 2.0;
+    }
+    bezier(p1.1, p2.1, u)
 }
 
 /// An animated property that may have keyframes or a static value.
@@ -78,7 +128,9 @@ impl LottieAnimated {
                         let t = kf.get("t")?.as_f64()?;
                         let s =
                             kf.get("s")?.as_array()?.iter().filter_map(|n| n.as_f64()).collect();
-                        Some(LottieKeyFrame { t, s })
+                        let out_tangent = easing_handle(kf.get("o"));
+                        let in_tangent = easing_handle(kf.get("i"));
+                        Some(LottieKeyFrame { t, s, out_tangent, in_tangent })
                     })
                     .collect();
                 return Self { base, keyframes };
@@ -118,7 +170,14 @@ impl LottieAnimated {
             return Some((prev, None, 0.0));
         };
         let range = (next.t - prev.t).max(1.0);
-        let t = ((frame - prev.t) / range).clamp(0.0, 1.0);
+        let mut t = ((frame - prev.t) / range).clamp(0.0, 1.0);
+        // A segment with both handles eases between the two keyframes. The outgoing handle
+        // belongs to the keyframe the segment starts at, the incoming one to the keyframe it
+        // ends at — that is Lottie's own pairing, and reading them the other way round is a
+        // common source of a backwards-looking ease.
+        if let (Some(p1), Some(p2)) = (prev.out_tangent, next.in_tangent) {
+            t = cubic_bezier_ease(t, p1, p2);
+        }
         Some((prev, Some(next), t))
     }
 
@@ -692,7 +751,10 @@ impl LottieWidget {
     }
 
     /// Loads Lottie JSON data, parses it, and counts frames.
-    /// Returns Ok(()) on success, or an error string if parsing fails.
+    ///
+    /// Parsing is synchronous. A host that loads a large composition on a worker thread can
+    /// parse it there with [`serde_json::from_str`] and hand the value to
+    /// [`Self::load_parsed_json`], which skips the parse on the UI thread.
     pub fn load_json(&mut self, data: &str) -> Result<(), String> {
         if data.is_empty() {
             return Err(format!(
@@ -701,12 +763,19 @@ impl LottieWidget {
                 data.len()
             ));
         }
-
-        // Attempt to parse the data as JSON and extract frame-related fields.
-        // Lottie JSON has "op" (out point / last frame) and "ip" (in point / first frame).
         let parsed: serde_json::Value =
             serde_json::from_str(data).map_err(|e| format!("Invalid Lottie JSON: {e}"))?;
+        self.load_parsed_json(parsed)?;
+        self.json_data = Some(data.to_string());
+        Ok(())
+    }
 
+    /// Loads an already-parsed Lottie document.
+    ///
+    /// This is the async-friendly half of [`Self::load_json`]: a host may run
+    /// [`serde_json::from_str`] off the UI thread and hand the value over, so a large document's
+    /// parse does not block a frame.
+    pub fn load_parsed_json(&mut self, parsed: serde_json::Value) -> Result<(), String> {
         let op = parsed
             .get("op")
             .and_then(|v| v.as_f64())
@@ -776,6 +845,34 @@ impl LottieWidget {
         } else {
             Vec::new()
         };
+        // Layer-level features this renderer does not implement are reported alongside the
+        // unsupported shape types. A matte, a mask, or a text/image layer changes what a
+        // composition *means*, so silently drawing the layer without it would be a lie rather
+        // than a simplification.
+        let mut unsupported = Vec::new();
+        if let Some(layers_arr) = parsed.get("layers").and_then(|v| v.as_array()) {
+            for layer in layers_arr {
+                let layer_type = layer.get("ty").and_then(|v| v.as_i64()).unwrap_or(4);
+                // 4 is a shape layer, the only kind this renderer draws.
+                if layer_type != 4 {
+                    let tag = format!("layer:{layer_type}");
+                    if !unsupported.contains(&tag) {
+                        unsupported.push(tag);
+                    }
+                }
+                if layer.get("tt").and_then(|v| v.as_i64()).is_some_and(|matte| matte != 0) {
+                    Self::push_unique(&mut unsupported, "matte");
+                }
+                let has_mask = layer.get("hasMask").and_then(|v| v.as_bool()).unwrap_or(false)
+                    || layer
+                        .get("masksProperties")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|masks| !masks.is_empty());
+                if has_mask {
+                    Self::push_unique(&mut unsupported, "mask");
+                }
+            }
+        }
         // The paint order is fixed by the document, so it is resolved here rather than per frame.
         // Lower `index` is lower in the stack, which is the order `render_layers` draws in.
         self.layer_order = (0..self.layers.len()).collect();
@@ -785,13 +882,11 @@ impl LottieWidget {
         // diagnostic that replaces the old silent skip: a caller can now tell that
         // a composition is only partially renderable (D09-LOT-01).
         self.unsupported_shapes.clear();
-        let mut unsupported = Vec::new();
         for layer in &self.layers {
             Self::collect_unsupported_shapes(&layer.shapes, &mut unsupported);
         }
         self.unsupported_shapes = unsupported;
 
-        self.json_data = Some(data.to_string());
         self.total_frames = total;
         self.current_frame = 0;
         self.frame_timer_us = 0;
@@ -1019,13 +1114,18 @@ impl LottieWidget {
         for shape in shapes {
             match shape {
                 LottieShape::Other(name) => {
-                    if !out.iter().any(|seen| seen == name) {
-                        out.push(name.clone());
-                    }
+                    Self::push_unique(out, name);
                 }
                 LottieShape::Group(group) => Self::collect_unsupported_shapes(&group.items, out),
                 _ => {}
             }
+        }
+    }
+
+    /// Appends `tag` to `out` once, preserving first-seen order.
+    fn push_unique(out: &mut Vec<String>, tag: &str) {
+        if !out.iter().any(|seen| seen == tag) {
+            out.push(tag.to_string());
         }
     }
 
@@ -2607,5 +2707,42 @@ mod tests {
             "a reload must not leave the previous document's diagnostic behind: {:?}",
             lottie.unsupported_shapes()
         );
+    }
+
+    #[test]
+    fn a_mat_and_a_mask_are_reported_rather_than_ignored() {
+        let json = r#"{"op":10,"ip":0,"fr":30,"w":100,"h":100,
+            "layers":[{"ind":0,"ty":4,"tt":1,"hasMask":true,"ks":{},"shapes":[]}]}"#;
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 100, 100));
+        lottie.load_json(json).unwrap();
+        assert!(lottie.unsupported_shapes().contains(&"matte".to_string()));
+        assert!(lottie.unsupported_shapes().contains(&"mask".to_string()));
+    }
+
+    #[test]
+    fn a_text_layer_is_reported_as_the_layer_type_it_is() {
+        let json = r#"{"op":10,"ip":0,"fr":30,"w":100,"h":100,
+            "layers":[{"ind":0,"ty":5,"ks":{},"shapes":[]}]}"#;
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 100, 100));
+        lottie.load_json(json).unwrap();
+        assert!(
+            lottie.unsupported_shapes().iter().any(|tag| tag == "layer:5"),
+            "an unrendered text layer must be named: {:?}",
+            lottie.unsupported_shapes()
+        );
+    }
+
+    #[test]
+    fn a_keyframe_pair_with_handles_eases_between_the_two_values() {
+        let property: serde_json::Value = serde_json::from_str(
+            r#"[{"t":0,"s":[0],"o":{"x":[0.42],"y":[0]}},
+              {"t":10,"s":[10],"i":{"x":[0.58],"y":[1]}}]"#,
+        )
+        .unwrap();
+        let animated = LottieAnimated::from_json(&property);
+        let linear = animated.at_frame_scalar(2.5);
+        // With an ease-in handle the value at a quarter of the segment is below the linear
+        // interpolation of 2.5.
+        assert!(linear < 2.5, "the handle must shape the interpolation: {linear}");
     }
 }

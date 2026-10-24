@@ -9,7 +9,8 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
-use crate::widget::capability::coercion::{expect_i64, expect_string};
+use crate::style::{MotionSlot, PropertyDriver};
+use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -36,6 +37,23 @@ pub struct ProgressDialog {
     auto_close: bool,
     auto_reset: bool,
     modal: bool,
+    /// Whether the Cancel button is painted (and hit-tested). Defaults to `true`.
+    show_cancel_button: bool,
+    /// Whether the progress bar is painted. Defaults to `true`.
+    show_bar: bool,
+    /// The delay below which the dialog should not be shown, in milliseconds.
+    ///
+    /// This control owns no timer: the host decides when to show it and can consult
+    /// [`ProgressDialog::should_show_after`] with the operation's own elapsed time. That is
+    /// the decision the delay exists for, kept as a pure function rather than as a clock
+    /// this widget would have to guess at.
+    minimum_duration_ms: u64,
+    /// Whether the painted fill eases toward a new value instead of jumping.
+    animated: bool,
+    /// The fraction the bar currently paints, driven by [`animated`](Self::animated).
+    displayed: PropertyDriver,
+    /// Whether the fill reads the theme's action colour instead of the success token.
+    accent_fill: bool,
     /// Signal emitted when the user cancels, either by pressing Escape while
     /// the dialog is enabled or by calling [`ProgressDialog::cancel`] directly.
     ///
@@ -64,6 +82,12 @@ impl ProgressDialog {
             auto_close: true,
             auto_reset: true,
             modal: true,
+            show_cancel_button: true,
+            show_bar: true,
+            minimum_duration_ms: 0,
+            animated: false,
+            displayed: PropertyDriver::at(0.0, MotionSlot::Normal),
+            accent_fill: false,
             canceled: GenericSignal::new(),
         }
     }
@@ -137,6 +161,7 @@ impl ProgressDialog {
             return;
         }
         self.minimum = min;
+        self.sync_displayed();
         self.base.request_redraw();
     }
     /// Sets the upper bound of the progress range. As with
@@ -147,6 +172,7 @@ impl ProgressDialog {
             return;
         }
         self.maximum = max;
+        self.sync_displayed();
         self.base.request_redraw();
     }
     /// Sets both minimum and maximum in one call.
@@ -157,6 +183,7 @@ impl ProgressDialog {
         }
         self.minimum = min;
         self.maximum = max;
+        self.sync_displayed();
         self.base.request_redraw();
     }
     /// Toggles automatic hiding at completion; requests a redraw. See
@@ -171,15 +198,109 @@ impl ProgressDialog {
     /// Toggles automatic reset on restart; requests a redraw. See
     /// [`ProgressDialog::auto_reset`].
     ///
-    /// Note the flag is stored but not consulted anywhere in this type:
-    /// [`ProgressDialog::cancel`] never resets the value, and
-    /// [`ProgressDialog::reset`] is an explicit call. The intended consumer is a
-    /// caller coordinating restarts.
+    /// The flag is consulted by [`ProgressDialog::cancel`]: with it on (the default) a
+    /// cancellation returns the value to the range's minimum, so a dialog that is shown
+    /// again starts from the beginning. With it off, the value the user cancelled at is
+    /// preserved. Completion keeps the value at the maximum in either mode, which is the
+    /// contract [`ProgressDialog::set_value`] documents.
     pub fn set_auto_reset(&mut self, v: bool) {
         if self.auto_reset == v {
             return;
         }
         self.auto_reset = v;
+        self.base.request_redraw();
+    }
+    /// Returns whether the Cancel button is painted. Defaults to `true`.
+    pub fn is_cancel_button_visible(&self) -> bool {
+        self.show_cancel_button
+    }
+    /// Shows or hides the Cancel button.
+    ///
+    /// Hiding it also removes its hit target, so a click in that band cannot cancel an
+    /// operation the caller chose to make non-cancellable.
+    pub fn set_cancel_button_visible(&mut self, visible: bool) {
+        if self.show_cancel_button == visible {
+            return;
+        }
+        self.show_cancel_button = visible;
+        self.base.request_redraw();
+    }
+    /// Returns whether the progress bar is painted. Defaults to `true`.
+    pub fn is_bar_visible(&self) -> bool {
+        self.show_bar
+    }
+    /// Shows or hides the progress bar.
+    ///
+    /// A dialog without a bar is the "busy" form: the label and the cancel affordance
+    /// remain, and the value still advances so `progress_fraction` keeps reporting.
+    pub fn set_bar_visible(&mut self, visible: bool) {
+        if self.show_bar == visible {
+            return;
+        }
+        self.show_bar = visible;
+        self.base.request_redraw();
+    }
+    /// Returns the minimum duration below which the dialog should stay hidden, in ms.
+    pub fn minimum_duration(&self) -> u64 {
+        self.minimum_duration_ms
+    }
+    /// Sets the minimum duration below which the dialog should stay hidden. See
+    /// [`ProgressDialog::should_show_after`].
+    pub fn set_minimum_duration(&mut self, ms: u64) {
+        if self.minimum_duration_ms == ms {
+            return;
+        }
+        self.minimum_duration_ms = ms;
+        self.base.request_redraw();
+    }
+    /// Whether an operation that has run for `elapsed_ms` merits showing the dialog.
+    ///
+    /// The answer is `elapsed_ms >= minimum_duration()`, so a zero duration (the default)
+    /// always shows. A host that shows the dialog after this returns `true` avoids a flash
+    /// for an operation that completed almost immediately.
+    pub fn should_show_after(&self, elapsed_ms: u64) -> bool {
+        elapsed_ms >= self.minimum_duration_ms
+    }
+    /// Shows the dialog immediately, bypassing [`minimum_duration`](Self::minimum_duration).
+    ///
+    /// This is the explicit override for the case the delay exists to suppress: the host
+    /// already knows the operation is long-running.
+    pub fn force_show(&mut self) {
+        self.show();
+        self.base.request_redraw();
+    }
+    /// Returns whether the bar's fill eases toward a new value.
+    pub fn is_animated(&self) -> bool {
+        self.animated
+    }
+    /// Enables or disables the bar's easing and requests a redraw.
+    ///
+    /// Off by default, so `set_value` paints the exact fraction it always did. Turning it
+    /// on snaps the driver to the current fraction, so enabling it mid-operation cannot
+    /// replay the bar from zero.
+    pub fn set_animated(&mut self, animated: bool) {
+        if self.animated == animated {
+            return;
+        }
+        self.animated = animated;
+        let fraction = self.progress_fraction();
+        self.displayed.jump_to(fraction);
+        self.base.request_redraw();
+    }
+    /// Returns whether the fill uses the theme's action colour rather than the success token.
+    pub fn uses_accent_fill(&self) -> bool {
+        self.accent_fill
+    }
+    /// Selects the action colour for the bar's fill instead of the success token.
+    ///
+    /// Off by default: the success colour is the progress dialog's documented semantic
+    /// ("the operation completed"). An accent fill is the alternative convention where the
+    /// bar is an affordance rather than a state, and this is the switch for it.
+    pub fn set_accent_fill(&mut self, accent: bool) {
+        if self.accent_fill == accent {
+            return;
+        }
+        self.accent_fill = accent;
         self.base.request_redraw();
     }
     /// Sets the caption of the cancel button and requests a redraw.
@@ -219,27 +340,53 @@ impl ProgressDialog {
             return;
         }
         self.value = value;
+        self.sync_displayed();
         if self.auto_close && self.value >= self.maximum {
             self.hide();
         }
         self.base.request_redraw();
     }
+
+    /// Aims the displayed fraction at the model's current value.
+    ///
+    /// Easing is the only thing that makes this different from a jump: with animation off
+    /// the driver is placed exactly on the fraction the draw would have computed anyway.
+    fn sync_displayed(&mut self) {
+        let fraction = self.progress_fraction();
+        if self.animated {
+            self.displayed.set_target(fraction);
+        } else {
+            self.displayed.jump_to(fraction);
+        }
+    }
     /// Resets the value to the minimum and clears the cancelled flag.
     ///
     /// Does not show the dialog: combine with [`Widget::show`] when reusing a
-    /// hidden dialog. The `auto_reset` flag is not consulted here.
+    /// hidden dialog. The `auto_reset` flag is not consulted here; it is consulted by
+    /// [`ProgressDialog::cancel`] and this method is the explicit unconditional reset.
     pub fn reset(&mut self) {
         self.value = self.minimum;
         self.was_canceled = false;
+        let fraction = self.progress_fraction();
+        self.displayed.jump_to(fraction);
+        self.base.request_redraw();
     }
     /// Marks the dialog as cancelled, emits `canceled`, and hides the dialog.
     ///
     /// The signal is emitted **before** the dialog is hidden, so a slot that
-    /// reads geometry still sees the visible state. Calling `cancel` twice
-    /// emits the signal twice.
+    /// reads geometry still sees the visible state. When [`auto_reset`](Self::auto_reset)
+    /// is on (the default) the value returns to the minimum, so a dialog that is shown
+    /// again for a different operation does not start at the cancelled position. Calling
+    /// `cancel` twice emits the signal twice.
     pub fn cancel(&mut self) {
         self.was_canceled = true;
         self.canceled.emit();
+        if self.auto_reset {
+            self.value = self.minimum;
+            let fraction = self.progress_fraction();
+            self.displayed.jump_to(fraction);
+            self.base.request_redraw();
+        }
         self.hide();
     }
     /// Returns progress as a fraction in `0.0..=1.0`, where `0.0` is the
@@ -273,6 +420,16 @@ impl Widget for ProgressDialog {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(350, 120)
+    }
+
+    /// Advances the bar's easing, returning whether another frame is owed.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.displayed.tick(delta_ms)
+    }
+
+    /// Whether the bar's fill is mid-transition.
+    fn is_animating(&self) -> bool {
+        self.displayed.is_moving()
     }
 
     /// Reports this widget as the object that paints it.
@@ -315,6 +472,12 @@ impl WidgetProperties for ProgressDialog {
             "value" => Ok(CapabilityValue::Int(i64::from(self.value()))),
             "minimum" => Ok(CapabilityValue::Int(i64::from(self.minimum()))),
             "maximum" => Ok(CapabilityValue::Int(i64::from(self.maximum()))),
+            "auto_reset" => Ok(CapabilityValue::Bool(self.auto_reset())),
+            "show_cancel_button" => Ok(CapabilityValue::Bool(self.is_cancel_button_visible())),
+            "show_bar" => Ok(CapabilityValue::Bool(self.is_bar_visible())),
+            "minimum_duration" => Ok(CapabilityValue::UInt(self.minimum_duration())),
+            "animated" => Ok(CapabilityValue::Bool(self.is_animated())),
+            "accent_fill" => Ok(CapabilityValue::Bool(self.uses_accent_fill())),
             _ => base_property_get(self, name),
         }
     }
@@ -356,6 +519,30 @@ impl WidgetProperties for ProgressDialog {
                 );
                 Ok(())
             }
+            "auto_reset" => {
+                self.set_auto_reset(expect_bool(value)?);
+                Ok(())
+            }
+            "show_cancel_button" => {
+                self.set_cancel_button_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "show_bar" => {
+                self.set_bar_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "minimum_duration" => {
+                self.set_minimum_duration(u64::from(expect_u32(value)?));
+                Ok(())
+            }
+            "animated" => {
+                self.set_animated(expect_bool(value)?);
+                Ok(())
+            }
+            "accent_fill" => {
+                self.set_accent_fill(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -367,6 +554,12 @@ impl WidgetProperties for ProgressDialog {
             "value",
             "minimum",
             "maximum",
+            "auto_reset",
+            "show_cancel_button",
+            "show_bar",
+            "minimum_duration",
+            "animated",
+            "accent_fill",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -474,6 +667,9 @@ impl ProgressDialog {
 
     /// The index of the action button under `pos`, or `None`.
     fn button_at(&self, pos: Point) -> Option<usize> {
+        if !self.show_cancel_button {
+            return None;
+        }
         if self.cancel_button_rect().contains_point(pos) {
             Some(0)
         } else {
@@ -539,9 +735,17 @@ impl Draw for ProgressDialog {
         // The filled portion of the bar encodes "complete" rather than a surface
         // appearance, so it reads the theme's semantic `success` token instead of the
         // literal green it used to carry. `semantic_color` takes its own lock and returns an
-        // owned `Color`, so no guard outlives the call.
-        let progress_fill = crate::style::semantic_color(crate::style::SemanticColor::Success)
-            .unwrap_or(Color::rgb(6, 176, 37));
+        // owned `Color`, so no guard outlives the call. A caller can opt into the action
+        // colour instead, for the convention where the bar is an affordance.
+        let progress_fill = if self.accent_fill {
+            crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.primary)
+                .unwrap_or(Color::rgb(6, 176, 37))
+        } else {
+            crate::style::semantic_color(crate::style::SemanticColor::Success)
+                .unwrap_or(Color::rgb(6, 176, 37))
+        };
 
         // Rounded by [`dimensions::DIALOG_RADIUS`]; the radius is clamped to the frame so a
         // box smaller than its own corner is not drawn with an inverted one.
@@ -618,7 +822,7 @@ impl Draw for ProgressDialog {
         // a zero-height band is an element the SVG backend emits and the rasteriser skips.
         let bar_row = ControlMetrics::content_below_top_band(content, label_line_h);
         let bar_h = 20u32.min(bar_row.height);
-        if bar_row.height > 0 && bar_row.width > 20 {
+        if self.show_bar && bar_row.height > 0 && bar_row.width > 20 {
             let bar_band = ControlMetrics::centered_band(
                 Rect::new(
                     bar_row.x + 10,
@@ -630,7 +834,12 @@ impl Draw for ProgressDialog {
             );
             context.fill_rect(bar_band, track);
             context.draw_rect(bar_band, border);
-            let fill_w = (bar_band.width as f32 * self.progress_fraction()) as i32;
+            // The painted fraction is the driver's when easing is on, so a step in `value`
+            // is a smooth move rather than a jump. At rest the driver holds the fraction
+            // itself, so the static frame is unchanged.
+            let fraction =
+                if self.animated { self.displayed.value() } else { self.progress_fraction() };
+            let fill_w = (bar_band.width as f32 * fraction) as i32;
             if fill_w > 0 {
                 context.fill_rect(
                     Rect::new(bar_band.x, bar_band.y, fill_w as u32, bar_band.height),
@@ -658,10 +867,18 @@ impl Draw for ProgressDialog {
         // trailing-anchored; the helper still owns the *size*, which is the part that was
         // duplicated.
         let labels = self.action_labels();
-        let btn_rect = self.cancel_button_rect_for(rect, context, &labels);
-        context.fill_rect(btn_rect, button_fill);
-        context.draw_rect(btn_rect, border);
-        context.draw_text_line_cow(btn_rect, &labels[0], font, ink, HorizontalAlignment::Center);
+        if self.show_cancel_button {
+            let btn_rect = self.cancel_button_rect_for(rect, context, &labels);
+            context.fill_rect(btn_rect, button_fill);
+            context.draw_rect(btn_rect, border);
+            context.draw_text_line_cow(
+                btn_rect,
+                &labels[0],
+                font,
+                ink,
+                HorizontalAlignment::Center,
+            );
+        }
     }
 }
 
@@ -731,5 +948,114 @@ mod tests {
         assert!(dialog.was_canceled());
         assert_eq!(*canceled.lock().expect("canceled lock"), 1);
         assert!(!dialog.is_visible());
+    }
+
+    /// `auto_reset` has a consumer: cancellation returns the value to the minimum.
+    #[test]
+    fn auto_reset_clears_the_value_on_cancel() {
+        let mut resetting = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        resetting.set_range(10, 90);
+        resetting.set_value(50);
+        resetting.cancel();
+        assert_eq!(resetting.value(), 10, "auto_reset returns to the minimum");
+
+        let mut keeping = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        keeping.set_auto_reset(false);
+        keeping.set_range(10, 90);
+        keeping.set_value(50);
+        keeping.cancel();
+        assert_eq!(keeping.value(), 50, "with auto_reset off the position is kept");
+    }
+
+    /// Hiding the Cancel button removes its hit target, not just its paint.
+    #[test]
+    fn the_cancel_button_can_be_hidden() {
+        let mut dialog = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        dialog.show();
+        dialog.set_cancel_button_visible(false);
+        assert!(!dialog.is_cancel_button_visible());
+        let cancel = dialog.cancel_button_rect().center();
+        dialog.handle_event(&Event::mouse_press(cancel.x, cancel.y, 1));
+        assert!(!dialog.was_canceled(), "a hidden button must not be clickable");
+        assert!(dialog.is_visible());
+    }
+
+    /// The bar can be hidden without losing the value bookkeeping.
+    #[test]
+    fn the_bar_can_be_hidden() {
+        let _guard = crate::style::theme_test_guard();
+        let mut with_bar = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        with_bar.set_value(40);
+        let painted = crate::widget::svg::render_to_svg(&mut with_bar);
+
+        with_bar.set_bar_visible(false);
+        assert!(!with_bar.is_bar_visible());
+        let busy = crate::widget::svg::render_to_svg(&mut with_bar);
+        assert_ne!(painted, busy, "hiding the bar must change the picture");
+        assert_eq!(with_bar.value(), 40, "the value is still tracked");
+    }
+
+    /// The minimum duration is a decision function; `force_show` is the explicit override.
+    #[test]
+    fn the_minimum_duration_gates_showing() {
+        let mut dialog = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        assert!(dialog.should_show_after(0), "a zero delay always shows");
+
+        dialog.set_minimum_duration(500);
+        assert!(!dialog.should_show_after(499));
+        assert!(dialog.should_show_after(500));
+
+        dialog.hide();
+        assert!(!dialog.is_visible());
+        dialog.force_show();
+        assert!(dialog.is_visible(), "force_show bypasses the delay");
+    }
+
+    /// The bar's easing is opt-in and passes through interior fractions.
+    #[test]
+    fn the_bar_easing_is_opt_in() {
+        let mut dialog = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        dialog.set_value(50);
+        assert_eq!(dialog.displayed.value(), 0.5, "a static bar holds the exact fraction");
+        assert!(!dialog.is_animating());
+
+        dialog.set_animated(true);
+        assert_eq!(dialog.displayed.value(), 0.5, "enabling snaps to the current fraction");
+        dialog.set_value(90);
+        assert!(dialog.is_animating());
+        assert!(dialog.tick(16));
+        let mid = dialog.displayed.value();
+        assert!(mid > 0.5 && mid < 0.9, "the fill must pass through an interior value, got {mid}");
+        while dialog.tick(1000) {}
+        assert!((dialog.displayed.value() - 0.9).abs() < 0.001);
+        assert!(!dialog.is_animating());
+    }
+
+    /// The accent fill is opt-in and paints the theme's action colour instead of the
+    /// success token.
+    #[test]
+    fn the_accent_fill_is_opt_in() {
+        let _guard = crate::style::theme_test_guard();
+        let mut dialog = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        dialog.set_value(50);
+        let semantic = crate::widget::svg::render_to_svg(&mut dialog);
+
+        let primary = crate::style::theme_manager()
+            .current_theme()
+            .map(|theme| theme.colors.primary)
+            .expect("a preset is active");
+        let primary_fill = format!("rgba({},{},{},", primary.r, primary.g, primary.b);
+        let success = crate::style::semantic_color(crate::style::SemanticColor::Success)
+            .expect("the theme declares the success token");
+        let success_fill = format!("rgba({},{},{},", success.r, success.g, success.b);
+
+        assert!(semantic.contains(&success_fill), "the default fill is the success token");
+        assert!(!semantic.contains(&primary_fill));
+
+        dialog.set_accent_fill(true);
+        assert!(dialog.uses_accent_fill());
+        let accent = crate::widget::svg::render_to_svg(&mut dialog);
+        assert!(accent.contains(&primary_fill), "the accent fill is the theme's action colour");
+        assert_ne!(semantic, accent);
     }
 }

@@ -10,8 +10,35 @@
 use crate::core::{Color, Rect};
 use crate::render::RenderContext;
 
+/// The built-in English labels for the dialog catalogue keys.
+///
+/// # Why a table in addition to the catalogue
+///
+/// The catalogue is the translation resource table: when it is initialised it wins, and the
+/// embedded English file is loaded on first use. A build without the `i18n` capability has no
+/// catalogue at all, so this table is the resource table for that build — the labels live in
+/// one place instead of being restated at each `localized_label` call site, which is how two
+/// dialogs came to spell "OK" differently.
+const DIALOG_RESOURCE_FALLBACKS: &[(&str, &str)] = &[
+    ("common.button.ok", "OK"),
+    ("common.button.cancel", "Cancel"),
+    ("common.button.open", "Open"),
+    ("common.button.save", "Save"),
+    ("common.button.close", "Close"),
+    ("dialog.ok", "OK"),
+    ("dialog.cancel", "Cancel"),
+];
+
+/// The English label this module ships for `key`, if it has one.
+fn resource_fallback(key: &str) -> Option<&'static str> {
+    DIALOG_RESOURCE_FALLBACKS
+        .iter()
+        .find(|(candidate, _)| *candidate == key)
+        .map(|(_, label)| *label)
+}
+
 /// Resolves a dialog label for **display**: the catalogue's translation when it has one, the
-/// English label otherwise.
+/// built-in resource label for the key, and the English label otherwise.
 ///
 /// # Why the key is not an acceptable fallback
 ///
@@ -32,18 +59,18 @@ pub(crate) fn localized_label(key: &str, english: &str) -> crate::compat::String
     {
         let translated = crate::i18n::translate(key);
         if translated.is_empty() || translated == key {
-            crate::compat::String::from(english)
+            crate::compat::String::from(resource_fallback(key).unwrap_or(english))
         } else {
             translated
         }
     }
     #[cfg(not(feature = "i18n"))]
     {
-        // No catalogue exists in this build, so the English label is the whole answer. Going
-        // through `translate` here would log a warning on every frame for a case that is not a
-        // failure.
+        // No catalogue exists in this build, so the built-in resource table and then the
+        // caller's English label are the whole answer. Going through `translate` here would
+        // log a warning on every frame for a case that is not a failure.
         let _ = key;
-        crate::compat::String::from(english)
+        crate::compat::String::from(resource_fallback(key).unwrap_or(english))
     }
 }
 
@@ -108,4 +135,30 @@ pub(crate) fn scale_about_centre(rect: Rect, scale: f32) -> Rect {
     let dx = (rect.width.saturating_sub(width) / 2) as i32;
     let dy = (rect.height.saturating_sub(height) / 2) as i32;
     Rect::new(rect.x + dx, rect.y + dy, width, height)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_known_key_uses_the_shipped_resource_label() {
+        // The embedded catalogue is loaded on first use, so this is the resource-table path:
+        // an explicitly different English argument must not leak past a known key.
+        assert_eq!(localized_label("common.button.ok", "Wrong"), "OK");
+    }
+
+    #[test]
+    fn an_unknown_key_falls_back_to_the_callers_english() {
+        assert_eq!(localized_label("no.such.dialog.key", "Custom"), "Custom");
+    }
+
+    #[test]
+    fn the_resource_table_covers_every_shipped_key_with_a_label() {
+        for (key, label) in DIALOG_RESOURCE_FALLBACKS {
+            assert!(!key.is_empty(), "a resource key cannot be empty");
+            assert!(!label.is_empty(), "{key} must have a label");
+            assert_eq!(resource_fallback(key), Some(*label));
+        }
+    }
 }

@@ -731,9 +731,9 @@ pub struct ShortcutEntry {
 /// tests do not need a Windows or a Mac to assert what Windows or macOS shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlatformShortcutStyle {
-    /// `⌘`, `⌥`, `⌃`, `⇧` — macOS AppKit convention.
+    /// `⌘`, `⌥`, `⌃`, `⇧` — the macOS convention.
     Mac,
-    /// `Ctrl+`, `Alt+`, `Shift+` — Windows Win32 / GTK convention.
+    /// `Ctrl+`, `Alt+`, `Shift+` — the desktop convention.
     Desktop,
 }
 
@@ -760,7 +760,7 @@ impl PlatformShortcutStyle {
         let key = shortcut.key.format_key();
         match self {
             Self::Mac => {
-                // AppKit orders modifiers as Control, Option, Shift, Command.
+                // macOS orders modifiers as Control, Option, Shift, Command.
                 let mut rendered = String::new();
                 if modifiers.contains(Modifiers::CTRL) {
                     rendered.push('⌃');

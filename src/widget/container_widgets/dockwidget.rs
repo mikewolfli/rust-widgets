@@ -47,6 +47,16 @@ pub struct DockWidget {
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Offset from mouse cursor to widget top-left, set when drag begins.
     drag_offset: (i32, i32),
+    /// The surface the host offers for edge docking, if it declared one.
+    ///
+    /// Without it a drag can only move the widget; with it, a drag that reaches an edge previews
+    /// and then takes that edge. `None` is the default, which is what keeps every existing
+    /// placement and rendering byte-identical.
+    dock_area: Option<Rect>,
+    /// The edge a drag is currently hovering, drawn as a preview.
+    dock_hint: Option<DockWidgetArea>,
+    /// An optional child that replaces the built-in title bar chrome.
+    title_bar_widget: Option<ObjectId>,
 }
 /// Dock widget features.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +243,38 @@ const ALL_DOCK_AREAS: [DockWidgetArea; 4] = [
     DockWidgetArea::BottomDockWidgetArea,
 ];
 
+/// How close to a surface edge a drag must come to preview that edge, in logical pixels.
+const DOCK_EDGE_BAND: i32 = 24;
+
+/// A snapped dock takes one part in this many of the surface along its docked axis.
+const DOCK_SNAP_DIVISOR: u32 = 3;
+
+/// Version tag of the blob produced by [`DockWidget::save_state`].
+const DOCK_STATE_VERSION: u8 = 1;
+
+/// The byte a saved blob stores for `area`.
+fn area_tag(area: DockWidgetArea) -> u8 {
+    match area {
+        DockWidgetArea::NoDockWidgetArea => 0,
+        DockWidgetArea::LeftDockWidgetArea => 1,
+        DockWidgetArea::RightDockWidgetArea => 2,
+        DockWidgetArea::TopDockWidgetArea => 3,
+        DockWidgetArea::BottomDockWidgetArea => 4,
+    }
+}
+
+/// The inverse of [`area_tag`].
+fn area_from_tag(tag: u8) -> Option<DockWidgetArea> {
+    match tag {
+        0 => Some(DockWidgetArea::NoDockWidgetArea),
+        1 => Some(DockWidgetArea::LeftDockWidgetArea),
+        2 => Some(DockWidgetArea::RightDockWidgetArea),
+        3 => Some(DockWidgetArea::TopDockWidgetArea),
+        4 => Some(DockWidgetArea::BottomDockWidgetArea),
+        _ => None,
+    }
+}
+
 /// Which edge a dock widget's title bar runs along, and therefore which way its chrome faces.
 ///
 /// A title bar on the left edge is a *column* with vertical text, not a *row* with horizontal text;
@@ -279,17 +321,189 @@ impl DockWidget {
             top_level_changed: Signal1::new(),
             registry: None,
             drag_offset: (0, 0),
+            dock_area: None,
+            dock_hint: None,
+            title_bar_widget: None,
         }
     }
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
         self.place_content();
+        self.place_title_bar_widget();
         self.base.request_redraw();
     }
     /// Returns the shared widget registry, if set.
     pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
         self.registry.as_ref()
+    }
+
+    /// Declares the surface the host offers for edge docking.
+    ///
+    /// A drag that reaches an edge of this rectangle previews the edge and, on release, docks
+    /// there. Without a surface a drag only moves the widget, which is the behaviour every
+    /// existing caller already has.
+    pub fn set_dock_area(&mut self, area: Option<Rect>) {
+        if self.dock_area == area {
+            return;
+        }
+        self.dock_area = area;
+        if self.dock_hint.is_some() {
+            self.dock_hint = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the surface edge docking was declared against, if any.
+    pub fn dock_area(&self) -> Option<Rect> {
+        self.dock_area
+    }
+
+    /// Returns the edge a drag is currently hovering, if any.
+    pub fn dock_hint(&self) -> Option<DockWidgetArea> {
+        self.dock_hint
+    }
+
+    /// The rectangle the widget would take if the current hint were committed.
+    ///
+    /// The preview the painter draws and the geometry a release applies are both read from here,
+    /// so what the user sees is exactly what they get.
+    pub fn snap_preview_rect(&self) -> Option<Rect> {
+        let area = self.dock_area?;
+        self.dock_hint.map(|hint| self.snap_rect(area, hint))
+    }
+
+    /// The rectangle a snap to `area` on `edge` occupies: a third of the surface along the
+    /// docked axis and the whole extent across it.
+    fn snap_rect(&self, area: Rect, edge: DockWidgetArea) -> Rect {
+        let third_width = (area.width / DOCK_SNAP_DIVISOR).max(1);
+        let third_height = (area.height / DOCK_SNAP_DIVISOR).max(1);
+        match edge {
+            DockWidgetArea::LeftDockWidgetArea => {
+                Rect::new(area.x, area.y, third_width, area.height)
+            }
+            DockWidgetArea::RightDockWidgetArea => Rect::new(
+                area.x + area.width as i32 - third_width as i32,
+                area.y,
+                third_width,
+                area.height,
+            ),
+            DockWidgetArea::TopDockWidgetArea => {
+                Rect::new(area.x, area.y, area.width, third_height)
+            }
+            DockWidgetArea::BottomDockWidgetArea => Rect::new(
+                area.x,
+                area.y + area.height as i32 - third_height as i32,
+                area.width,
+                third_height,
+            ),
+            DockWidgetArea::NoDockWidgetArea => area,
+        }
+    }
+
+    /// The edge `pos` is hovering within [`DOCK_EDGE_BAND`] of, if it is allowed.
+    fn dock_hint_at(&self, pos: Point) -> Option<DockWidgetArea> {
+        if !self.features.dock_widget_movable {
+            return None;
+        }
+        let area = self.dock_area?;
+        if !area.contains_point(pos) {
+            return None;
+        }
+        let distances = [
+            (pos.x - area.x, DockWidgetArea::LeftDockWidgetArea),
+            (area.x + area.width as i32 - pos.x, DockWidgetArea::RightDockWidgetArea),
+            (pos.y - area.y, DockWidgetArea::TopDockWidgetArea),
+            (area.y + area.height as i32 - pos.y, DockWidgetArea::BottomDockWidgetArea),
+        ];
+        distances
+            .into_iter()
+            .filter(|(distance, edge)| {
+                *distance <= DOCK_EDGE_BAND && self.allowed_areas.contains(*edge)
+            })
+            .min_by_key(|(distance, _)| *distance)
+            .map(|(_, edge)| edge)
+    }
+
+    /// Replaces the built-in title bar chrome with a child widget, or restores it.
+    ///
+    /// While a child is installed it occupies the whole title bar: the title text and the built-in
+    /// close/float buttons are not drawn or hit-tested, because the child is expected to provide
+    /// its own chrome. Passing `None` restores the built-in bar.
+    pub fn set_title_bar_widget(&mut self, widget: Option<ObjectId>) {
+        if self.title_bar_widget == widget {
+            return;
+        }
+        if let Some(previous) = self.title_bar_widget {
+            self.base.remove_child_linked(previous);
+            crate::set_widget_visible(previous, false);
+        }
+        self.title_bar_widget = widget;
+        if let Some(widget_id) = widget {
+            self.base.add_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, true);
+        }
+        self.place_title_bar_widget();
+        self.base.request_redraw();
+    }
+
+    /// Returns the child installed as the title bar, if any.
+    pub fn title_bar_widget(&self) -> Option<ObjectId> {
+        self.title_bar_widget
+    }
+
+    /// Places the title-bar child in the bar's rectangle.
+    fn place_title_bar_widget(&self) {
+        #[cfg(not(alloc_frugal))]
+        if let Some(widget_id) = self.title_bar_widget {
+            let rect = self.title_bar_rect();
+            if let Some(ref registry) = self.registry {
+                registry.borrow_mut().set_widget_geometry(widget_id, rect);
+            }
+            crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+        }
+    }
+
+    /// Serialises the persistent state: geometry, dock edge and top-level flags.
+    pub fn save_state(&self) -> Vec<u8> {
+        let rect = self.geometry();
+        let mut state = Vec::with_capacity(20);
+        state.push(DOCK_STATE_VERSION);
+        state.push(area_tag(self.dock_location));
+        state.push(u8::from(self.floating));
+        state.push(u8::from(self.docked));
+        state.extend_from_slice(&rect.x.to_le_bytes());
+        state.extend_from_slice(&rect.y.to_le_bytes());
+        state.extend_from_slice(&rect.width.to_le_bytes());
+        state.extend_from_slice(&rect.height.to_le_bytes());
+        state
+    }
+
+    /// Restores a state produced by [`Self::save_state`].
+    ///
+    /// Returns `false` for a malformed blob, leaving the widget untouched. The stored location is
+    /// applied directly rather than through [`Self::set_dock_location`], because a saved state
+    /// describes where the widget *is*, not a request to move it: refusing a location the caller
+    /// has since disallowed would silently drop the geometry that goes with it.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if state.len() != 20 || state[0] != DOCK_STATE_VERSION {
+            return false;
+        }
+        let Some(dock_location) = area_from_tag(state[1]) else {
+            return false;
+        };
+        let x = i32::from_le_bytes([state[4], state[5], state[6], state[7]]);
+        let y = i32::from_le_bytes([state[8], state[9], state[10], state[11]]);
+        let width = u32::from_le_bytes([state[12], state[13], state[14], state[15]]);
+        let height = u32::from_le_bytes([state[16], state[17], state[18], state[19]]);
+        self.dock_location = dock_location;
+        self.floating = state[2] != 0;
+        self.docked = state[3] != 0;
+        self.base.set_geometry(Rect::new(x, y, width, height));
+        self.place_content();
+        self.place_title_bar_widget();
+        self.base.request_redraw();
+        true
     }
     /// Returns title.
     pub fn title(&self) -> &str {
@@ -401,6 +615,7 @@ impl DockWidget {
         self.docked = area != DockWidgetArea::NoDockWidgetArea;
         // A left/right dock takes a vertical title bar, which changes the content box.
         self.place_content();
+        self.place_title_bar_widget();
         self.dock_location_changed.emit(area);
         self.base.request_redraw();
     }
@@ -582,6 +797,9 @@ impl DockWidget {
     }
     /// Returns whether point is in close button.
     fn is_in_close_button(&self, pos: Point) -> bool {
+        if self.title_bar_widget.is_some() {
+            return false;
+        }
         if let Some(close_rect) = self.close_button_rect() {
             close_rect.contains(pos)
         } else {
@@ -590,6 +808,9 @@ impl DockWidget {
     }
     /// Returns whether point is in float button.
     fn is_in_float_button(&self, pos: Point) -> bool {
+        if self.title_bar_widget.is_some() {
+            return false;
+        }
         if let Some(float_rect) = self.float_button_rect() {
             float_rect.contains(pos)
         } else {
@@ -621,6 +842,7 @@ impl Widget for DockWidget {
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
         self.place_content();
+        self.place_title_bar_widget();
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -746,6 +968,16 @@ impl EventHandler for DockWidget {
             }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
+                if let Some(hint) = self.dock_hint.take() {
+                    // Commit exactly the preview the user was shown: the rect is derived from the
+                    // same `snap_rect` the painter used, so the edge and geometry cannot disagree.
+                    if let Some(area) = self.dock_area {
+                        self.set_dock_location(hint);
+                        let snapped = self.snap_rect(area, hint);
+                        self.set_geometry(snapped);
+                    }
+                    self.base.request_redraw();
+                }
             }
             Event::MouseMove { pos }
                 if self.base.is_mouse_pressed() && self.features.dock_widget_movable =>
@@ -758,6 +990,11 @@ impl EventHandler for DockWidget {
                     rect.width,
                     rect.height,
                 ));
+                let hint = self.dock_hint_at(*pos);
+                if hint != self.dock_hint {
+                    self.dock_hint = hint;
+                    self.base.request_redraw();
+                }
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -847,127 +1084,141 @@ impl Draw for DockWidget {
         context.fill_rect(title_bar, title_bar_color);
         // Draw title bar border
         context.draw_rect(title_bar, border);
-        // Draw title text. The origin is the glyph's **top** edge, so the title is centred by
-        // half the difference between the bar and the line box. Using the bar's midline put a
-        // 14 px title at 12..26 in a 24 px bar — two pixels onto the border below it.
-        //
-        // On a vertical bar the label runs *down* the strip, one glyph per line: the renderer has no
-        // rotated-text primitive, and a horizontal label inside a 24 px column is truncated to its
-        // first glyph, which is what made a left-docked panel unreadable. The label's leading edge is
-        // the bar's leading end, so it starts at the top of the column exactly as it starts at the
-        // left of the row.
-        // The **effective font** — the resolved theme/caller font — so the title honours the theme
-        // body font and the user's text scale (D09-STYLE-01).
-        let title_font = effective_font(style);
-        // The line box is measured in the *device* scale, so it is used at its own width; the
-        // centring arithmetic below casts once, here, rather than at each of the two bands.
-        let title_h = context.measure_text("M", title_font).height.max(1) as i32;
-        let title_color = self.base.disabled_ink_on(ink, title_bar_color);
-        // The trailing end is where the buttons live, so the label is bounded by however many are
-        // actually shown -- one gap before the first, one after each button.
-        let shown = u32::from(self.features.dock_widget_closable)
-            + u32::from(self.features.dock_widget_floatable);
-        let buttons =
-            if shown == 0 { 0 } else { shown * TITLE_BUTTON_SIZE + (shown + 1) * TITLE_BUTTON_GAP };
-        match self.dock_location.title_bar_axis() {
-            TitleBarAxis::Horizontal => {
-                context.draw_text_fitted_cow(
-                    Rect::new(
-                        title_bar.x + TITLE_BUTTON_GAP as i32,
-                        title_bar.y + (title_bar.height as i32 - title_h) / 2,
-                        title_bar.width.saturating_sub(buttons + TITLE_BUTTON_GAP),
+        if let Some(widget_id) = self.title_bar_widget {
+            // A caller-supplied title bar owns the whole strip: the built-in title and buttons
+            // are not drawn beside it, because the child is expected to provide its own chrome.
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().set_widget_geometry(widget_id, title_bar);
+                context.push_clip(title_bar.x, title_bar.y, title_bar.width, title_bar.height);
+                reg.borrow_mut().draw_widget(widget_id, context);
+                context.pop_clip();
+            }
+        } else {
+            // Draw title text. The origin is the glyph's **top** edge, so the title is centred by
+            // half the difference between the bar and the line box. Using the bar's midline put a
+            // 14 px title at 12..26 in a 24 px bar — two pixels onto the border below it.
+            //
+            // On a vertical bar the label runs *down* the strip, one glyph per line: the renderer has no
+            // rotated-text primitive, and a horizontal label inside a 24 px column is truncated to its
+            // first glyph, which is what made a left-docked panel unreadable. The label's leading edge is
+            // the bar's leading end, so it starts at the top of the column exactly as it starts at the
+            // left of the row.
+            // The **effective font** — the resolved theme/caller font — so the title honours the theme
+            // body font and the user's text scale (D09-STYLE-01).
+            let title_font = effective_font(style);
+            // The line box is measured in the *device* scale, so it is used at its own width; the
+            // centring arithmetic below casts once, here, rather than at each of the two bands.
+            let title_h = context.measure_text("M", title_font).height.max(1) as i32;
+            let title_color = self.base.disabled_ink_on(ink, title_bar_color);
+            // The trailing end is where the buttons live, so the label is bounded by however many are
+            // actually shown -- one gap before the first, one after each button.
+            let shown = u32::from(self.features.dock_widget_closable)
+                + u32::from(self.features.dock_widget_floatable);
+            let buttons = if shown == 0 {
+                0
+            } else {
+                shown * TITLE_BUTTON_SIZE + (shown + 1) * TITLE_BUTTON_GAP
+            };
+            match self.dock_location.title_bar_axis() {
+                TitleBarAxis::Horizontal => {
+                    context.draw_text_fitted_cow(
+                        Rect::new(
+                            title_bar.x + TITLE_BUTTON_GAP as i32,
+                            title_bar.y + (title_bar.height as i32 - title_h) / 2,
+                            title_bar.width.saturating_sub(buttons + TITLE_BUTTON_GAP),
+                            title_h as u32,
+                        ),
+                        &self.title,
+                        title_font,
+                        title_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
+                TitleBarAxis::Vertical => {
+                    let label = Rect::new(
+                        title_bar.x + (title_bar.width as i32 - title_h) / 2,
+                        title_bar.y + TITLE_BUTTON_GAP as i32,
                         title_h as u32,
-                    ),
-                    &self.title,
-                    title_font,
-                    title_color,
-                    HorizontalAlignment::Left,
-                );
+                        title_bar.height.saturating_sub(buttons + TITLE_BUTTON_GAP),
+                    );
+                    self.draw_vertical_title(context, label, title_font, title_color);
+                }
             }
-            TitleBarAxis::Vertical => {
-                let label = Rect::new(
-                    title_bar.x + (title_bar.width as i32 - title_h) / 2,
-                    title_bar.y + TITLE_BUTTON_GAP as i32,
-                    title_h as u32,
-                    title_bar.height.saturating_sub(buttons + TITLE_BUTTON_GAP),
-                );
-                self.draw_vertical_title(context, label, title_font, title_color);
+            // Draw close button if enabled
+            if self.features.dock_widget_closable {
+                if let Some(close_rect) = self.close_button_rect() {
+                    context.draw_line(
+                        Point::new(close_rect.x, close_rect.y),
+                        Point::new(
+                            close_rect.x + close_rect.width as i32,
+                            close_rect.y + close_rect.height as i32,
+                        ),
+                        button_color,
+                    );
+                    context.draw_line(
+                        Point::new(close_rect.x + close_rect.width as i32, close_rect.y),
+                        Point::new(close_rect.x, close_rect.y + close_rect.height as i32),
+                        button_color,
+                    );
+                }
             }
-        }
-        // Draw close button if enabled
-        if self.features.dock_widget_closable {
-            if let Some(close_rect) = self.close_button_rect() {
-                context.draw_line(
-                    Point::new(close_rect.x, close_rect.y),
-                    Point::new(
-                        close_rect.x + close_rect.width as i32,
-                        close_rect.y + close_rect.height as i32,
-                    ),
-                    button_color,
-                );
-                context.draw_line(
-                    Point::new(close_rect.x + close_rect.width as i32, close_rect.y),
-                    Point::new(close_rect.x, close_rect.y + close_rect.height as i32),
-                    button_color,
-                );
-            }
-        }
-        // Draw float button if enabled
-        if self.features.dock_widget_floatable {
-            if let Some(float_rect) = self.float_button_rect() {
-                // Draw float icon (four arrows)
-                let center_x = float_rect.x + float_rect.width as i32 / 2;
-                let center_y = float_rect.y + float_rect.height as i32 / 2;
-                let arrow_size = 4;
-                // Use integer coordinates for drawing
-                let y0 = float_rect.y + 2;
-                // Up arrow
-                context.draw_line(
-                    Point::new(center_x, y0),
-                    Point::new(center_x, y0 + arrow_size),
-                    float_color,
-                );
-                context.draw_line(
-                    Point::new(center_x - arrow_size / 2, y0 + arrow_size / 2),
-                    Point::new(center_x + arrow_size / 2, y0 + arrow_size / 2),
-                    float_color,
-                );
-                // Down arrow
-                let y1 = float_rect.y + float_rect.height as i32 - 2;
-                context.draw_line(
-                    Point::new(center_x, y1 - arrow_size),
-                    Point::new(center_x, y1),
-                    float_color,
-                );
-                context.draw_line(
-                    Point::new(center_x - arrow_size / 2, y1 - arrow_size / 2),
-                    Point::new(center_x + arrow_size / 2, y1 - arrow_size / 2),
-                    float_color,
-                );
-                // Left arrow
-                let x0 = float_rect.x + 2;
-                context.draw_line(
-                    Point::new(x0, center_y),
-                    Point::new(x0 + arrow_size, center_y),
-                    float_color,
-                );
-                context.draw_line(
-                    Point::new(x0 + arrow_size / 2, center_y - arrow_size / 2),
-                    Point::new(x0 + arrow_size / 2, center_y + arrow_size / 2),
-                    float_color,
-                );
-                // Right arrow
-                let x1 = float_rect.x + float_rect.width as i32 - 2;
-                context.draw_line(
-                    Point::new(x1 - arrow_size, center_y),
-                    Point::new(x1, center_y),
-                    float_color,
-                );
-                context.draw_line(
-                    Point::new(x1 - arrow_size / 2, center_y - arrow_size / 2),
-                    Point::new(x1 - arrow_size / 2, center_y + arrow_size / 2),
-                    float_color,
-                );
+            // Draw float button if enabled
+            if self.features.dock_widget_floatable {
+                if let Some(float_rect) = self.float_button_rect() {
+                    // Draw float icon (four arrows)
+                    let center_x = float_rect.x + float_rect.width as i32 / 2;
+                    let center_y = float_rect.y + float_rect.height as i32 / 2;
+                    let arrow_size = 4;
+                    // Use integer coordinates for drawing
+                    let y0 = float_rect.y + 2;
+                    // Up arrow
+                    context.draw_line(
+                        Point::new(center_x, y0),
+                        Point::new(center_x, y0 + arrow_size),
+                        float_color,
+                    );
+                    context.draw_line(
+                        Point::new(center_x - arrow_size / 2, y0 + arrow_size / 2),
+                        Point::new(center_x + arrow_size / 2, y0 + arrow_size / 2),
+                        float_color,
+                    );
+                    // Down arrow
+                    let y1 = float_rect.y + float_rect.height as i32 - 2;
+                    context.draw_line(
+                        Point::new(center_x, y1 - arrow_size),
+                        Point::new(center_x, y1),
+                        float_color,
+                    );
+                    context.draw_line(
+                        Point::new(center_x - arrow_size / 2, y1 - arrow_size / 2),
+                        Point::new(center_x + arrow_size / 2, y1 - arrow_size / 2),
+                        float_color,
+                    );
+                    // Left arrow
+                    let x0 = float_rect.x + 2;
+                    context.draw_line(
+                        Point::new(x0, center_y),
+                        Point::new(x0 + arrow_size, center_y),
+                        float_color,
+                    );
+                    context.draw_line(
+                        Point::new(x0 + arrow_size / 2, center_y - arrow_size / 2),
+                        Point::new(x0 + arrow_size / 2, center_y + arrow_size / 2),
+                        float_color,
+                    );
+                    // Right arrow
+                    let x1 = float_rect.x + float_rect.width as i32 - 2;
+                    context.draw_line(
+                        Point::new(x1 - arrow_size, center_y),
+                        Point::new(x1, center_y),
+                        float_color,
+                    );
+                    context.draw_line(
+                        Point::new(x1 - arrow_size / 2, center_y - arrow_size / 2),
+                        Point::new(x1 - arrow_size / 2, center_y + arrow_size / 2),
+                        float_color,
+                    );
+                }
             }
         }
         // Draw content background
@@ -982,6 +1233,12 @@ impl Draw for DockWidget {
                 reg.borrow_mut().draw_widget(widget_id, context);
                 context.pop_clip();
             }
+        }
+        // A drag that is hovering an edge previews the rectangle a release would take. Nothing is
+        // drawn unless a hint is live, so the resting rendering is unchanged.
+        if let Some(preview) = self.snap_preview_rect() {
+            context.fill_rect(preview, panel.blend(&ink, 0.12));
+            context.draw_rect(preview, border);
         }
     }
 }
@@ -1040,6 +1297,397 @@ impl DockWidget {
             return Cow::Borrowed("");
         }
         elide_end(&self.title, rows)
+    }
+}
+
+/// One dock registered with a [`DockArea`].
+#[derive(Debug, Clone, Copy)]
+struct DockEntry {
+    /// The dock widget's id.
+    widget: ObjectId,
+    /// The edge it is docked to.
+    area: DockWidgetArea,
+    /// Docks sharing a group are tabbed: one rectangle, one visible member.
+    group: usize,
+    /// Whether this member is the visible one in its group.
+    active: bool,
+}
+
+/// Version tag of the blob produced by [`DockArea::save_state`].
+const DOCK_AREA_STATE_VERSION: u8 = 1;
+
+/// A host surface that arranges [`DockWidget`]s around a central widget.
+///
+/// # Why this exists
+///
+/// A dock widget knows how to draw and drag **itself**, but nothing owned the surface it
+/// docks into. Without a host, a drag could only move a window and every dock edge was a
+/// number with no rectangle behind it. This type is that owner: it splits the surface into
+/// edge bands, gives each dock the band for its edge, lets several docks share a band as
+/// tabs, and gives the centre whatever is left.
+///
+/// It is a layout owner rather than a `Widget`: it holds child ids, not their state, so it
+/// can arrange docks that live in any registry and cannot paint over them. Call
+/// [`Self::arrange`] after a change to push the computed rectangles into the widgets.
+pub struct DockArea {
+    /// The whole surface, including the bands and the centre.
+    area: Rect,
+    /// Registered docks in insertion order.
+    docks: Vec<DockEntry>,
+    /// The widget that takes the remaining centre, if any.
+    central: Option<ObjectId>,
+    /// Next group number to hand out.
+    next_group: usize,
+    /// Optional registry used to place children through the shared widget table.
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
+    /// Thickness of one edge band in logical pixels.
+    edge_extent: u32,
+}
+
+impl DockArea {
+    /// Creates an empty host for `area` with a third of the shorter side as each band.
+    pub fn new(area: Rect) -> Self {
+        let edge_extent = (area.width.min(area.height) / DOCK_SNAP_DIVISOR).max(1);
+        Self { area, docks: Vec::new(), central: None, next_group: 1, registry: None, edge_extent }
+    }
+
+    /// The surface every child is arranged in.
+    pub fn area(&self) -> Rect {
+        self.area
+    }
+
+    /// Moves and resizes the surface.
+    pub fn set_area(&mut self, area: Rect) {
+        if self.area == area {
+            return;
+        }
+        self.area = area;
+        self.arrange();
+    }
+
+    /// The thickness of one edge band.
+    pub fn edge_extent(&self) -> u32 {
+        self.edge_extent
+    }
+
+    /// Sets the thickness of one edge band. Zero is clamped to one pixel.
+    pub fn set_edge_extent(&mut self, extent: u32) {
+        let extent = extent.max(1);
+        if self.edge_extent == extent {
+            return;
+        }
+        self.edge_extent = extent;
+        self.arrange();
+    }
+
+    /// Uses `registry` to place and show children in addition to the global helpers.
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+        self.arrange();
+    }
+
+    /// Registers `widget` on `area` as its own tab group.
+    ///
+    /// Returns `false` for [`DockWidgetArea::NoDockWidgetArea`] and for a widget that is
+    /// already registered, so a repeated call cannot create a duplicate band.
+    pub fn add_dock(&mut self, widget: ObjectId, area: DockWidgetArea) -> bool {
+        if area == DockWidgetArea::NoDockWidgetArea
+            || self.docks.iter().any(|dock| dock.widget == widget)
+        {
+            return false;
+        }
+        let group = self.next_group;
+        self.next_group = self.next_group.saturating_add(1);
+        self.docks.push(DockEntry { widget, area, group, active: true });
+        self.arrange();
+        true
+    }
+
+    /// Removes `widget` from the host, returning whether it was registered.
+    pub fn remove_dock(&mut self, widget: ObjectId) -> bool {
+        let before = self.docks.len();
+        self.docks.retain(|dock| dock.widget != widget);
+        let removed = self.docks.len() != before;
+        if removed {
+            self.arrange();
+        }
+        removed
+    }
+
+    /// The registered dock ids, in insertion order.
+    pub fn dock_ids(&self) -> Vec<ObjectId> {
+        self.docks.iter().map(|dock| dock.widget).collect()
+    }
+
+    /// The edge `widget` is docked to, if it is registered.
+    pub fn dock_area_of(&self, widget: ObjectId) -> Option<DockWidgetArea> {
+        self.docks.iter().find(|dock| dock.widget == widget).map(|dock| dock.area)
+    }
+
+    /// Sets the widget that occupies the centre, or clears it with `None`.
+    pub fn set_central_widget(&mut self, widget: Option<ObjectId>) {
+        if self.central == widget {
+            return;
+        }
+        self.central = widget;
+        self.arrange();
+    }
+
+    /// The centre widget, if any.
+    pub fn central_widget(&self) -> Option<ObjectId> {
+        self.central
+    }
+
+    /// Puts `other` in `into`'s tab group.
+    ///
+    /// Both must be registered. `other` moves to `into`'s edge when the two were on
+    /// different edges, and `into` becomes the visible tab. A widget cannot be tabbed with
+    /// itself. Returns whether the grouping changed.
+    pub fn tabify(&mut self, into: ObjectId, other: ObjectId) -> bool {
+        if into == other {
+            return false;
+        }
+        let Some(anchor) = self.docks.iter().find(|dock| dock.widget == into).copied() else {
+            return false;
+        };
+        let Some(index) = self.docks.iter().position(|dock| dock.widget == other) else {
+            return false;
+        };
+        if self.docks[index].group == anchor.group && self.docks[index].area == anchor.area {
+            return false;
+        }
+        self.docks[index].group = anchor.group;
+        self.docks[index].area = anchor.area;
+        self.docks[index].active = false;
+        for dock in self.docks.iter_mut().filter(|dock| dock.group == anchor.group) {
+            dock.active = dock.widget == into;
+        }
+        self.arrange();
+        true
+    }
+
+    /// Splits `widget` out of its tab group into a group of its own.
+    ///
+    /// Returns `false` when the widget is not registered or already alone.
+    pub fn untabify(&mut self, widget: ObjectId) -> bool {
+        let Some(index) = self.docks.iter().position(|dock| dock.widget == widget) else {
+            return false;
+        };
+        let group = self.docks[index].group;
+        if self.docks.iter().filter(|dock| dock.group == group).count() < 2 {
+            return false;
+        }
+        let new_group = self.next_group;
+        self.next_group = self.next_group.saturating_add(1);
+        self.docks[index].group = new_group;
+        self.docks[index].active = true;
+        self.arrange();
+        true
+    }
+
+    /// Makes `widget` the visible member of its tab group.
+    ///
+    /// Returns `false` when the widget is not registered or is already visible.
+    pub fn activate_dock(&mut self, widget: ObjectId) -> bool {
+        let Some(index) = self.docks.iter().position(|dock| dock.widget == widget) else {
+            return false;
+        };
+        if self.docks[index].active {
+            return false;
+        }
+        let group = self.docks[index].group;
+        for dock in self.docks.iter_mut().filter(|dock| dock.group == group) {
+            dock.active = dock.widget == widget;
+        }
+        self.arrange();
+        true
+    }
+
+    /// Whether `widget` shares its band with at least one other dock.
+    pub fn is_tabbed(&self, widget: ObjectId) -> bool {
+        let Some(group) = self.group_of(widget) else {
+            return false;
+        };
+        self.docks.iter().filter(|dock| dock.group == group).count() > 1
+    }
+
+    /// The visible member of `widget`'s tab group, if the widget is registered.
+    pub fn active_dock(&self, widget: ObjectId) -> Option<ObjectId> {
+        let group = self.group_of(widget)?;
+        self.docks
+            .iter()
+            .find(|dock| dock.group == group && dock.active)
+            .map(|dock| dock.widget)
+            .or_else(|| self.docks.iter().find(|dock| dock.group == group).map(|dock| dock.widget))
+    }
+
+    /// The group number of `widget`, if it is registered.
+    fn group_of(&self, widget: ObjectId) -> Option<usize> {
+        self.docks.iter().find(|dock| dock.widget == widget).map(|dock| dock.group)
+    }
+
+    /// Computes every child rectangle: the edge bands first, the centre from what is left.
+    ///
+    /// Members of one tab group share a rectangle. The result is in edge order
+    /// (left, right, top, bottom) and then group order, with the centre last, so a caller
+    /// can zip it with ids without assuming insertion order.
+    pub fn layout(&self) -> Vec<(ObjectId, Rect)> {
+        let mut out = Vec::new();
+        let mut remaining = self.area;
+        for edge in ALL_DOCK_AREAS {
+            let mut groups: Vec<usize> = Vec::new();
+            for dock in self.docks.iter().filter(|dock| dock.area == edge) {
+                if !groups.contains(&dock.group) {
+                    groups.push(dock.group);
+                }
+            }
+            if groups.is_empty() {
+                continue;
+            }
+            match edge {
+                DockWidgetArea::LeftDockWidgetArea => {
+                    let thickness = self.edge_extent.min(remaining.width);
+                    let band = Rect::new(remaining.x, remaining.y, thickness, remaining.height);
+                    self.place_groups(&mut out, &groups, band, false);
+                    remaining.x = remaining.x.saturating_add(thickness as i32);
+                    remaining.width = remaining.width.saturating_sub(thickness);
+                }
+                DockWidgetArea::RightDockWidgetArea => {
+                    let thickness = self.edge_extent.min(remaining.width);
+                    let band = Rect::new(
+                        remaining.x + remaining.width as i32 - thickness as i32,
+                        remaining.y,
+                        thickness,
+                        remaining.height,
+                    );
+                    self.place_groups(&mut out, &groups, band, false);
+                    remaining.width = remaining.width.saturating_sub(thickness);
+                }
+                DockWidgetArea::TopDockWidgetArea => {
+                    let thickness = self.edge_extent.min(remaining.height);
+                    let band = Rect::new(remaining.x, remaining.y, remaining.width, thickness);
+                    self.place_groups(&mut out, &groups, band, true);
+                    remaining.y = remaining.y.saturating_add(thickness as i32);
+                    remaining.height = remaining.height.saturating_sub(thickness);
+                }
+                DockWidgetArea::BottomDockWidgetArea => {
+                    let thickness = self.edge_extent.min(remaining.height);
+                    let band = Rect::new(
+                        remaining.x,
+                        remaining.y + remaining.height as i32 - thickness as i32,
+                        remaining.width,
+                        thickness,
+                    );
+                    self.place_groups(&mut out, &groups, band, true);
+                    remaining.height = remaining.height.saturating_sub(thickness);
+                }
+                DockWidgetArea::NoDockWidgetArea => {}
+            }
+        }
+        if let Some(central) = self.central {
+            out.push((central, remaining));
+        }
+        out
+    }
+
+    /// Splits `band` evenly between `groups` along its long axis and emits every member.
+    fn place_groups(
+        &self,
+        out: &mut Vec<(ObjectId, Rect)>,
+        groups: &[usize],
+        band: Rect,
+        horizontal: bool,
+    ) {
+        let total = if horizontal { band.width } else { band.height };
+        let count = groups.len() as u32;
+        let mut cursor = 0u32;
+        for (index, group) in groups.iter().enumerate() {
+            let extent = if index + 1 == groups.len() {
+                total.saturating_sub(cursor)
+            } else {
+                total / count
+            };
+            let rect = if horizontal {
+                Rect::new(band.x + cursor as i32, band.y, extent, band.height)
+            } else {
+                Rect::new(band.x, band.y + cursor as i32, band.width, extent)
+            };
+            for dock in self.docks.iter().filter(|dock| dock.group == *group) {
+                out.push((dock.widget, rect));
+            }
+            cursor = cursor.saturating_add(extent);
+        }
+    }
+
+    /// Pushes the computed rectangles into the widgets and hides inactive tabs.
+    pub fn arrange(&self) {
+        for (widget, rect) in self.layout() {
+            let visible = self.docks.iter().all(|dock| dock.widget != widget || dock.active);
+            crate::set_widget_geometry(widget, rect.x, rect.y, rect.width, rect.height);
+            crate::set_widget_visible(widget, visible);
+            if let Some(ref registry) = self.registry {
+                let mut registry = registry.borrow_mut();
+                registry.set_widget_geometry(widget, rect);
+            }
+        }
+    }
+
+    /// Serialises the dock arrangement: each dock's edge, tab group and active flag.
+    ///
+    /// Docks are stored in registration order and their ids are not written, so a restored
+    /// blob describes the layout a host should rebuild rather than binding it to ids that
+    /// may differ between sessions.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut state = Vec::with_capacity(6 + self.docks.len() * 6);
+        state.push(DOCK_AREA_STATE_VERSION);
+        state.extend_from_slice(&(self.docks.len() as u32).to_le_bytes());
+        for dock in &self.docks {
+            state.push(area_tag(dock.area));
+            state.extend_from_slice(&(dock.group as u32).to_le_bytes());
+            state.push(u8::from(dock.active));
+        }
+        state
+    }
+
+    /// Restores a state produced by [`Self::save_state`].
+    ///
+    /// Returns `false` for a malformed blob or a dock count that does not match this host's,
+    /// leaving the current arrangement untouched. The next group number is advanced past
+    /// every restored group so a later [`Self::add_dock`] cannot join one by accident.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        const HEADER: usize = 5;
+        if state.len() < HEADER || state[0] != DOCK_AREA_STATE_VERSION {
+            return false;
+        }
+        let count = u32::from_le_bytes([state[1], state[2], state[3], state[4]]) as usize;
+        if count != self.docks.len() || state.len() != HEADER + count * 6 {
+            return false;
+        }
+        let mut cursor = HEADER;
+        for dock in self.docks.iter_mut() {
+            let Some(area) = area_from_tag(state[cursor]) else {
+                return false;
+            };
+            let group = u32::from_le_bytes([
+                state[cursor + 1],
+                state[cursor + 2],
+                state[cursor + 3],
+                state[cursor + 4],
+            ]) as usize;
+            dock.area = area;
+            dock.group = group;
+            dock.active = state[cursor + 5] != 0;
+            cursor += 6;
+        }
+        self.next_group = self
+            .docks
+            .iter()
+            .map(|dock| dock.group.saturating_add(1))
+            .max()
+            .unwrap_or(1)
+            .max(self.next_group);
+        self.arrange();
+        true
     }
 }
 
@@ -1786,5 +2434,116 @@ mod tests {
         let mut dw = DockWidget::new(Rect::new(0, 0, 160, 120));
         dw.set_title("Panel".to_string());
         assert!(matches!(dw.vertical_title(120, 14), crate::compat::Cow::Borrowed("Panel")));
+    }
+
+    /// A drag within the declared surface previews and then takes the nearest allowed edge.
+    #[test]
+    fn dragging_to_an_edge_previews_and_snaps() {
+        let mut dw = DockWidget::new(Rect::new(100, 100, 200, 100));
+        dw.set_dock_area(Some(Rect::new(0, 0, 600, 400)));
+
+        // Start the drag on the title bar.
+        dw.handle_event(&Event::MousePress { pos: Point::new(110, 110), button: 1, modifiers: 0 });
+        // Move toward the left edge of the surface.
+        dw.handle_event(&Event::MouseMove { pos: Point::new(6, 200) });
+        assert_eq!(dw.dock_hint(), Some(DockWidgetArea::LeftDockWidgetArea));
+        let preview = dw.snap_preview_rect().expect("preview");
+        assert_eq!(preview, Rect::new(0, 0, 200, 400));
+
+        dw.handle_event(&Event::MouseRelease { pos: Point::new(6, 200), button: 1 });
+        assert_eq!(dw.dock_location(), DockWidgetArea::LeftDockWidgetArea, "the hint is applied");
+        assert_eq!(dw.geometry(), preview, "the committed rect is the previewed rect");
+        assert_eq!(dw.dock_hint(), None, "a committed drag leaves no hint behind");
+    }
+
+    /// Geometry, edge and top-level flags round-trip through a saved blob.
+    #[test]
+    fn the_dock_state_round_trips_through_a_saved_blob() {
+        let mut dw = DockWidget::new(Rect::new(10, 20, 200, 100));
+        dw.set_dock_location(DockWidgetArea::RightDockWidgetArea);
+        let state = dw.save_state();
+
+        let mut restored = DockWidget::new(Rect::new(0, 0, 10, 10));
+        assert!(restored.restore_state(&state));
+        assert_eq!(restored.dock_location(), DockWidgetArea::RightDockWidgetArea);
+        assert_eq!(restored.geometry(), Rect::new(10, 20, 200, 100));
+        assert!(restored.is_docked());
+        assert!(!restored.is_floating());
+
+        assert!(!restored.restore_state(&[]), "an empty blob is refused");
+        let mut corrupt = state.clone();
+        corrupt[1] = 99;
+        assert!(!restored.restore_state(&corrupt), "an unknown edge tag is refused");
+    }
+
+    /// A custom title-bar child takes the bar as its box and suppresses the built-in buttons.
+    #[test]
+    fn a_title_bar_widget_replaces_the_builtin_chrome() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        assert_eq!(dw.title_bar_widget(), None);
+        dw.set_title_bar_widget(Some(9100));
+        assert_eq!(dw.title_bar_widget(), Some(9100));
+        assert!(
+            !dw.is_in_close_button(Point::new(179, 12)),
+            "the built-in close button is not hit while a child owns the bar"
+        );
+        dw.set_title_bar_widget(None);
+        assert!(dw.is_in_close_button(Point::new(179, 12)), "removing it restores the chrome");
+    }
+
+    /// The host arranges each edge around the centre, tabs two docks into one band, and
+    /// round-trips the arrangement through a saved blob.
+    #[test]
+    fn dock_area_arranges_edges_tabs_and_round_trips_state() {
+        let mut host = DockArea::new(Rect::new(0, 0, 300, 200));
+        assert!(host.add_dock(1, DockWidgetArea::LeftDockWidgetArea));
+        assert!(host.add_dock(2, DockWidgetArea::LeftDockWidgetArea));
+        assert!(host.add_dock(3, DockWidgetArea::RightDockWidgetArea));
+        assert!(host.add_dock(4, DockWidgetArea::BottomDockWidgetArea));
+        assert!(!host.add_dock(1, DockWidgetArea::LeftDockWidgetArea), "no duplicates");
+        assert!(!host.add_dock(5, DockWidgetArea::NoDockWidgetArea));
+        assert_eq!(host.dock_ids(), vec![1, 2, 3, 4]);
+
+        host.set_central_widget(Some(9));
+        host.set_edge_extent(30);
+        assert!(host.tabify(2, 1));
+        assert!(host.is_tabbed(1));
+        assert_eq!(host.active_dock(1), Some(2));
+        assert!(host.activate_dock(1));
+        assert_eq!(host.active_dock(1), Some(1));
+        assert!(!host.activate_dock(1), "already visible");
+
+        let rects: std::collections::HashMap<ObjectId, Rect> = host.layout().into_iter().collect();
+        assert_eq!(rects[&1], Rect::new(0, 0, 30, 200), "the left band spans the full height");
+        assert_eq!(rects[&1], rects[&2], "tabbed docks share one rectangle");
+        assert_eq!(rects[&3], Rect::new(270, 0, 30, 200), "the right band hugs the right edge");
+        assert_eq!(
+            rects[&4],
+            Rect::new(30, 170, 240, 30),
+            "the bottom band spans what the side bands left"
+        );
+        assert_eq!(rects[&9], Rect::new(30, 0, 240, 170), "the centre takes the remainder");
+
+        let state = host.save_state();
+        let mut restored = DockArea::new(Rect::new(0, 0, 300, 200));
+        for (id, area) in [
+            (1, DockWidgetArea::LeftDockWidgetArea),
+            (2, DockWidgetArea::LeftDockWidgetArea),
+            (3, DockWidgetArea::RightDockWidgetArea),
+            (4, DockWidgetArea::BottomDockWidgetArea),
+        ] {
+            assert!(restored.add_dock(id, area));
+        }
+        assert!(restored.restore_state(&state));
+        assert!(restored.is_tabbed(1));
+        assert_eq!(restored.active_dock(1), Some(1));
+        assert_eq!(restored.dock_area_of(3), Some(DockWidgetArea::RightDockWidgetArea));
+        assert!(!restored.restore_state(b"bad"), "a malformed blob is refused");
+
+        assert!(host.untabify(1));
+        assert!(!host.is_tabbed(1));
+        assert!(host.remove_dock(4));
+        assert!(!host.remove_dock(4));
+        assert_eq!(host.dock_area_of(4), None);
     }
 }

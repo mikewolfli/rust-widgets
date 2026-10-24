@@ -61,6 +61,16 @@ pub struct BottomNavigationBar {
     slide: PropertyDriver,
     /// The tab the current slide started from, so `slide`'s fraction has a left endpoint.
     slide_from: usize,
+    /// Per-item badge text, parallel to `items`.
+    badges: Vec<Option<String>>,
+    /// Whether an unselected item still draws its label.
+    show_unselected_labels: bool,
+    /// Material's upper bound on destinations, when the host opts into it.
+    max_items: Option<usize>,
+    /// Whether scrolling down hides the whole bar.
+    hide_on_scroll: bool,
+    /// How much of the bar is visible, `0.0` hidden to `1.0` shown.
+    visibility: PropertyDriver,
     /// Emitted when the selected tab changes. The payload is the new index.
     pub selected_changed: Signal1<usize>,
 }
@@ -77,6 +87,11 @@ impl BottomNavigationBar {
             selected_index: 0,
             slide: PropertyDriver::at(1.0, MotionSlot::Normal),
             slide_from: 0,
+            badges: Vec::new(),
+            show_unselected_labels: true,
+            max_items: None,
+            hide_on_scroll: false,
+            visibility: PropertyDriver::at(1.0, MotionSlot::Normal),
             selected_changed: Signal1::new(),
         }
     }
@@ -88,9 +103,101 @@ impl BottomNavigationBar {
     /// * `icon` — A single-character icon string (e.g., `"★"`, `"☰"`, `"✉"`, `"⌂"`).
     /// * `label` — Text label displayed below the icon.
     pub fn add_item(&mut self, icon: &str, label: &str) {
+        let _ = self.try_add_item(icon, label);
+    }
+
+    /// Adds an item when the optional destination limit allows it.
+    ///
+    /// Returns `false` when [`Self::set_max_items`] has installed a bound and the bar is already
+    /// at it. The check lives here so a host that cares can report the refusal instead of
+    /// silently ending up with a list longer than the bar can present.
+    pub fn try_add_item(&mut self, icon: &str, label: &str) -> bool {
+        if self.max_items.is_some_and(|limit| self.items.len() >= limit) {
+            return false;
+        }
         self.items.push(NavItem { icon: icon.to_string(), label: label.to_string() });
         self.item_icon_sources.push(None);
+        self.badges.push(None);
         self.base.request_redraw();
+        true
+    }
+
+    /// Sets a badge on an existing item, or clears it with `None`.
+    ///
+    /// Returns `false` for an index that is not on the bar.
+    pub fn set_badge(&mut self, index: usize, badge: Option<impl Into<String>>) -> bool {
+        let Some(slot) = self.badges.get_mut(index) else {
+            return false;
+        };
+        let badge = badge.map(Into::into);
+        if *slot == badge {
+            return true;
+        }
+        *slot = badge;
+        self.base.request_redraw();
+        true
+    }
+
+    /// Returns the badge on `index`, when there is one.
+    pub fn badge(&self, index: usize) -> Option<&str> {
+        self.badges.get(index).and_then(|badge| badge.as_deref())
+    }
+
+    /// Whether unselected items still draw their labels.
+    pub fn show_unselected_labels(&self) -> bool {
+        self.show_unselected_labels
+    }
+
+    /// Sets whether unselected items draw their labels.
+    ///
+    /// Hiding them is the compact Material shape: the selected destination is named, the rest
+    /// are read from their icons.
+    pub fn set_show_unselected_labels(&mut self, show: bool) {
+        if self.show_unselected_labels == show {
+            return;
+        }
+        self.show_unselected_labels = show;
+        self.base.request_redraw();
+    }
+
+    /// The optional destination limit, if one is installed.
+    pub fn max_items(&self) -> Option<usize> {
+        self.max_items
+    }
+
+    /// Installs an upper bound on the number of destinations.
+    ///
+    /// Material's bottom bar is specified for three to five destinations; a host that wants
+    /// that rule enforced can install the bound and use [`Self::try_add_item`]. `None` removes
+    /// the bound and keeps the historical unbounded list.
+    pub fn set_max_items(&mut self, limit: Option<usize>) {
+        if self.max_items == limit {
+            return;
+        }
+        self.max_items = limit;
+    }
+
+    /// Enables hiding the bar while the page scrolls down.
+    pub fn set_hide_on_scroll(&mut self, hide: bool) {
+        if self.hide_on_scroll == hide {
+            return;
+        }
+        self.hide_on_scroll = hide;
+        self.base.request_redraw();
+    }
+
+    /// Reports a scroll in wheel notches: downward hides, upward shows.
+    pub fn report_scroll(&mut self, delta_y: i32) {
+        if !self.hide_on_scroll || delta_y == 0 {
+            return;
+        }
+        self.visibility.set_target(if delta_y > 0 { 0.0 } else { 1.0 });
+        self.base.request_redraw();
+    }
+
+    /// How much of the bar is currently shown, `0.0` to `1.0`.
+    pub fn visibility_progress(&self) -> f32 {
+        self.visibility.value()
     }
 
     /// Assigns a typed icon source to an existing item index.
@@ -162,6 +269,7 @@ impl BottomNavigationBar {
     pub fn clear_items(&mut self) {
         self.items.clear();
         self.item_icon_sources.clear();
+        self.badges.clear();
         self.selected_index = 0;
         self.base.request_redraw();
     }
@@ -188,13 +296,15 @@ impl Widget for BottomNavigationBar {
         crate::core::Size::new(400, 48)
     }
 
-    /// Advances the selection pill's slide; `true` while it still owes frames.
+    /// Advances the selection pill and the hide-on-scroll fade; `true` while either moves.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        self.slide.tick(delta_ms)
+        let sliding = self.slide.tick(delta_ms);
+        let fading = self.visibility.tick(delta_ms);
+        sliding || fading
     }
 
     fn is_animating(&self) -> bool {
-        self.slide.is_moving()
+        self.slide.is_moving() || self.visibility.is_moving()
     }
 
     impl_draw_bridge!();
@@ -259,6 +369,14 @@ impl WidgetProperties for BottomNavigationBar {
 impl Draw for BottomNavigationBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        // The hide-on-scroll transition moves the whole bar out of its own band. At rest the
+        // fraction is exactly one, so the shift is zero and the picture is unchanged.
+        let visibility = self.visibility.value().clamp(0.0, 1.0);
+        if visibility <= 0.001 {
+            return;
+        }
+        let hide_shift = ((1.0 - visibility) * rect.height as f32) as i32;
+        let rect = Rect::new(rect.x, rect.y + hide_shift, rect.width, rect.height);
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The theme step is what makes an appearance
@@ -358,10 +476,13 @@ impl Draw for BottomNavigationBar {
             if typed_source.is_some() {
                 icon_metrics.width = icon_metrics.height.max(1);
             }
+            let show_label = is_selected || self.show_unselected_labels;
             let label_metrics = context.measure_text(&item.label, &label_font);
 
-            // Vertical layout: icon centered vertically with label below
-            let total_content_height = icon_metrics.height + label_metrics.height + 4;
+            // Vertical layout: icon centered vertically with label below. A hidden label does
+            // not reserve room, so the icon centres on the bar's middle line.
+            let total_content_height =
+                icon_metrics.height + if show_label { label_metrics.height + 4 } else { 0 };
             let content_y = tab_rect.y + (tab_rect.height as i32 - total_content_height as i32) / 2;
 
             // The selected tab's indicator is Material M3's **pill**: a 64×32 rounded capsule
@@ -431,16 +552,46 @@ impl Draw for BottomNavigationBar {
                 );
             }
 
+            // Badge: a small capsule at the icon's trailing-top corner. It is data, not chrome,
+            // so it reads the theme's error colour (the semantic "attention" tone) with a
+            // legible ink chosen against the fill it actually paints.
+            if let Some(badge) = self.badges.get(i).and_then(|badge| badge.as_deref()) {
+                if !badge.is_empty() {
+                    let metrics = context.measure_text(badge, &label_font);
+                    let badge_height = label_font.size().max(10.0) as u32 + 4;
+                    let badge_width = (metrics.width + 8).max(badge_height);
+                    let badge_rect = Rect::new(
+                        icon_box.x + icon_box.width as i32 - badge_width as i32 / 2,
+                        icon_box.y - 2,
+                        badge_width,
+                        badge_height,
+                    );
+                    let badge_fill =
+                        crate::style::semantic_color(crate::style::SemanticColor::Error)
+                            .unwrap_or(accent);
+                    context.fill_rounded_rect(badge_rect, badge_height / 2, badge_fill);
+                    context.draw_text(
+                        Point::new(badge_rect.x + 4, context.text_line(badge_rect, &label_font).y),
+                        badge,
+                        &label_font,
+                        badge_fill.contrast_color(),
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
+
             // Draw label
-            let label_x = tab_rect.x + (tab_rect.width as i32 - label_metrics.width as i32) / 2;
-            let label_y = content_y + icon_metrics.height as i32 + 4;
-            context.draw_text(
-                Point::new(label_x, label_y),
-                &item.label,
-                &label_font,
-                label_color,
-                HorizontalAlignment::Left,
-            );
+            if show_label {
+                let label_x = tab_rect.x + (tab_rect.width as i32 - label_metrics.width as i32) / 2;
+                let label_y = content_y + icon_metrics.height as i32 + 4;
+                context.draw_text(
+                    Point::new(label_x, label_y),
+                    &item.label,
+                    &label_font,
+                    label_color,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
     }
 }
@@ -806,5 +957,51 @@ mod tests {
 
         bar.set_selected_index(1);
         assert!(redraw_count.load(Ordering::SeqCst) > 0);
+    }
+
+    #[test]
+    fn a_badge_belongs_to_one_item_and_survives_clearing() {
+        let mut bar = make_bar();
+        assert!(bar.set_badge(1, Some("3")));
+        assert_eq!(bar.badge(1), Some("3"));
+        assert!(!bar.set_badge(9, Some("3")));
+        bar.clear_items();
+        assert_eq!(bar.badge(1), None);
+    }
+
+    #[test]
+    fn unselected_labels_can_be_hidden() {
+        let mut bar = make_bar();
+        assert!(bar.show_unselected_labels());
+        bar.set_show_unselected_labels(false);
+        assert!(!bar.show_unselected_labels());
+        let svg = crate::widget::svg::render_to_svg(&mut bar);
+        assert!(svg.starts_with("<svg"));
+    }
+
+    #[test]
+    fn the_destination_limit_is_opt_in() {
+        let mut bar = BottomNavigationBar::new(Rect::new(0, 0, 320, 48));
+        bar.add_item("a", "A");
+        bar.add_item("b", "B");
+        bar.set_max_items(Some(2));
+        assert!(!bar.try_add_item("c", "C"));
+        assert_eq!(bar.item_count(), 2);
+        bar.set_max_items(None);
+        assert!(bar.try_add_item("c", "C"));
+    }
+
+    #[test]
+    fn scrolling_hides_the_bar_only_when_asked() {
+        let mut bar = make_bar();
+        bar.report_scroll(2);
+        assert_eq!(bar.visibility_progress(), 1.0);
+        bar.set_hide_on_scroll(true);
+        bar.report_scroll(2);
+        while bar.tick(16) {}
+        assert_eq!(bar.visibility_progress(), 0.0);
+        bar.report_scroll(-2);
+        while bar.tick(16) {}
+        assert_eq!(bar.visibility_progress(), 1.0);
     }
 }

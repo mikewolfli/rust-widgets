@@ -54,6 +54,11 @@ pub struct GanttTask {
     /// predecessors", which is the common case and what every task built through
     /// [`GanttTask::new`] gets.
     pub depends_on: Vec<String>,
+    /// Typed dependencies, carrying the relationship kind.
+    ///
+    /// `depends_on` is the finish-to-start spelling kept for callers that predate the typed
+    /// form; both are resolved when the elbows are drawn.
+    pub dependencies: Vec<GanttDependency>,
     /// Whether this row is a **milestone** rather than a bar.
     ///
     /// A milestone is a single instant, so it is drawn as a diamond at [`start`](Self::start) rather
@@ -82,6 +87,7 @@ impl GanttTask {
             end: e,
             progress: progress.min(100),
             depends_on: Vec::new(),
+            dependencies: Vec::new(),
             milestone: false,
         }
     }
@@ -98,6 +104,7 @@ impl GanttTask {
             end: at,
             progress: 0,
             depends_on: Vec::new(),
+            dependencies: Vec::new(),
             milestone: true,
         }
     }
@@ -111,6 +118,33 @@ impl GanttTask {
         self.depends_on = predecessors.into_iter().map(Into::into).collect();
         self
     }
+
+    /// Declares a typed dependency on `id`.
+    pub fn with_dependency(mut self, id: impl Into<String>, kind: DependencyKind) -> Self {
+        self.dependencies.push(GanttDependency { id: id.into(), kind });
+        self
+    }
+}
+
+/// How one task waits on another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DependencyKind {
+    /// The successor starts when the predecessor finishes; the default elbow.
+    #[default]
+    FinishToStart,
+    /// Both start together, so the elbow leaves the predecessor's left edge.
+    StartToStart,
+    /// Both finish together, so the elbow enters the successor's right edge.
+    FinishToFinish,
+}
+
+/// One typed dependency edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GanttDependency {
+    /// The predecessor's task id.
+    pub id: String,
+    /// The relationship kind.
+    pub kind: DependencyKind,
 }
 
 /// Basic gantt widget with selectable task rows and zoomable viewport.
@@ -128,8 +162,18 @@ pub struct GanttWidget {
     /// the caller's (days since epoch, sprint numbers, …) — the widget cannot invent "now" on an
     /// axis it cannot interpret, so it draws the line only when told where now is.
     today: Option<i64>,
+    /// Rows scrolled out of view at the top.
+    scroll_offset: usize,
+    /// Whether the time axis header is drawn.
+    show_time_axis: bool,
+    /// The number of ticks on that axis.
+    time_axis_ticks: u32,
+    /// An in-flight bar drag: `(task index, press origin, original start, original end)`.
+    drag: Option<(usize, Point, i64, i64)>,
     /// Emitted when task selected. Payload is task id.
     pub task_selected: Signal1<String>,
+    /// Emitted when a task's dates change through a drag. Payload is task id.
+    pub task_rescheduled: Signal1<String>,
 }
 
 impl GanttWidget {
@@ -144,8 +188,103 @@ impl GanttWidget {
             row_height: 24,
             // No "now" until the caller says where it is: the axis unit is theirs.
             today: None,
+            scroll_offset: 0,
+            show_time_axis: false,
+            time_axis_ticks: 4,
+            drag: None,
             task_selected: Signal1::new(),
+            task_rescheduled: Signal1::new(),
         }
+    }
+
+    /// Shows or hides the time axis header.
+    ///
+    /// The header is opt-in because it shifts the lanes down by its own height; a schedule that
+    /// sits in a fixed-height card keeps its previous pixel layout until it asks for the axis.
+    pub fn set_show_time_axis(&mut self, show: bool) {
+        if self.show_time_axis == show {
+            return;
+        }
+        self.show_time_axis = show;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the time axis header is shown.
+    pub fn show_time_axis(&self) -> bool {
+        self.show_time_axis
+    }
+
+    /// Sets the number of time-axis ticks.
+    pub fn set_time_axis_ticks(&mut self, ticks: u32) {
+        let ticks = ticks.clamp(2, 12);
+        if self.time_axis_ticks == ticks {
+            return;
+        }
+        self.time_axis_ticks = ticks;
+        self.base.request_redraw();
+    }
+
+    /// Returns the number of time-axis ticks.
+    pub fn time_axis_ticks(&self) -> u32 {
+        self.time_axis_ticks
+    }
+
+    /// The header height the time axis reserves.
+    fn axis_height(&self) -> i32 {
+        if self.show_time_axis {
+            18
+        } else {
+            0
+        }
+    }
+
+    /// The lane rectangle for a task row.
+    fn lane_rect(&self, visible_row: usize) -> Rect {
+        let rect = self.geometry();
+        Rect::new(
+            rect.x,
+            rect.y + self.axis_height() + visible_row as i32 * self.row_height as i32,
+            rect.width,
+            self.row_height,
+        )
+    }
+
+    /// How many task lanes fit under the axis.
+    fn visible_row_count(&self) -> usize {
+        let height = self.geometry().height.saturating_sub(self.axis_height().max(0) as u32);
+        (height / self.row_height.max(1)) as usize
+    }
+
+    /// Returns how many rows are scrolled out of view.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Scrolls the task lanes by `delta`.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let max = self.tasks.len().saturating_sub(self.visible_row_count());
+        let next = (self.scroll_offset as isize + delta).clamp(0, max as isize) as usize;
+        if self.scroll_offset == next {
+            return;
+        }
+        self.scroll_offset = next;
+        self.base.request_redraw();
+    }
+
+    /// Maps a pointer x to an axis position.
+    fn axis_value_at(&self, x: i32) -> i64 {
+        let rect = self.geometry();
+        let track_x = rect.x + dimensions::CHART_LABEL_GUTTER;
+        let track_w = rect
+            .width
+            .saturating_sub(
+                dimensions::CHART_LABEL_GUTTER as u32 + dimensions::CHART_TRACK_MARGIN as u32,
+            )
+            .max(1);
+        let ratio = ((x - track_x) as f64 / track_w as f64).clamp(0.0, 1.0);
+        let span = (self.viewport_end - self.viewport_start).max(1);
+        self.viewport_start + (ratio * span as f64).round() as i64
     }
 
     /// Sets tasks.
@@ -252,8 +391,13 @@ impl GanttWidget {
         {
             return None;
         }
-        let idx = ((pos.y - rect.y) / self.row_height as i32) as usize;
-        (idx < self.tasks.len()).then_some(idx)
+        let idx = ((pos.y - rect.y - self.axis_height()) / self.row_height as i32) as usize
+            + self.scroll_offset;
+        (idx < self.tasks.len()
+            && pos.y >= rect.y + self.axis_height()
+            && ((pos.y - rect.y - self.axis_height()) / self.row_height as i32)
+                < self.visible_row_count() as i32)
+            .then_some(idx)
     }
 
     fn project_x(&self, value: i64, track_x: i32, track_w: u32) -> i32 {
@@ -394,15 +538,86 @@ impl EventHandler for GanttWidget {
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.row_at(*pos) {
                     let _ = self.select_index(index);
+                    let task = &self.tasks[index];
+                    let rect = self.geometry();
+                    let track_x = rect.x + dimensions::CHART_LABEL_GUTTER;
+                    let track_w = rect
+                        .width
+                        .saturating_sub(
+                            dimensions::CHART_LABEL_GUTTER as u32
+                                + dimensions::CHART_TRACK_MARGIN as u32,
+                        )
+                        .max(1);
+                    let x0 = self.project_x(task.start, track_x, track_w);
+                    let x1 = self.project_x(task.end, track_x, track_w).max(x0 + 2);
+                    if pos.x >= x0 && pos.x <= x1 && !task.milestone {
+                        self.drag = Some((index, *pos, task.start, task.end));
+                    }
                 }
             }
-            Event::Wheel { delta, .. } => {
-                if delta.y < 0 {
+            Event::MouseMove { pos } => {
+                let Some((index, origin, start, end)) = self.drag else {
+                    return;
+                };
+                if index >= self.tasks.len() {
+                    return;
+                }
+                // The delta is converted through the axis rather than a pixels-per-unit
+                // constant, so the bar tracks the pointer at any zoom level.
+                let from = self.axis_value_at(origin.x);
+                let now = self.axis_value_at(pos.x);
+                let shift = now - from;
+                if shift == 0 {
+                    return;
+                }
+                let task = &mut self.tasks[index];
+                if task.start + shift >= 0 || start + shift >= 0 {
+                    task.start = start + shift;
+                    task.end = end + shift;
+                    self.drag = Some((index, *pos, start, end));
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseRelease { button: 1, .. } => {
+                if let Some((index, _, start, end)) = self.drag.take() {
+                    if let Some(task) = self.tasks.get(index) {
+                        if task.start != start || task.end != end {
+                            let id = task.id.clone();
+                            self.task_rescheduled.emit(id);
+                        }
+                    }
+                    self.base.request_redraw();
+                }
+            }
+            Event::Wheel { delta, modifiers } => {
+                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                if modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
+                    if delta.y != 0 {
+                        self.scroll_by(if delta.y > 0 { 1 } else { -1 });
+                    }
+                } else if delta.y < 0 {
                     self.zoom(1.2);
                 } else if delta.y > 0 {
                     self.zoom(0.8);
                 }
             }
+            Event::KeyPress { key, .. } => match *key {
+                38 => {
+                    let index = self.selected_index.map_or(0, |index| index.saturating_sub(1));
+                    let _ = self.select_index(index);
+                }
+                40 => {
+                    if !self.tasks.is_empty() {
+                        let index = self
+                            .selected_index
+                            .map_or(0, |index| (index + 1).min(self.tasks.len() - 1));
+                        let _ = self.select_index(index);
+                    }
+                }
+                33 => self.scroll_by(-(self.visible_row_count().max(1) as isize)),
+                34 => self.scroll_by(self.visible_row_count().max(1) as isize),
+                _ => {}
+            },
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -481,8 +696,43 @@ impl Draw for GanttWidget {
             dimensions::CHART_LABEL_GUTTER as u32 + dimensions::CHART_TRACK_MARGIN as u32,
         );
 
-        for (index, task) in self.tasks.iter().take(12).enumerate() {
-            let y = rect.y + index as i32 * self.row_height as i32;
+        // ── Time axis header ──
+        //
+        // Opt-in because it shifts the lanes down. Ticks are evenly spaced across the track and
+        // labelled with their axis position, so the bars can be read against a scale instead of
+        // only against each other.
+        if self.show_time_axis {
+            let header = Rect::new(rect.x, rect.y, rect.width, self.axis_height().max(1) as u32);
+            context.draw_line(
+                Point::new(header.x, header.y + header.height as i32 - 1),
+                Point::new(header.x + header.width as i32, header.y + header.height as i32 - 1),
+                separator,
+            );
+            let ticks = self.time_axis_ticks.max(2);
+            let span = self.viewport_end - self.viewport_start;
+            for tick in 0..=ticks {
+                let ratio = tick as f64 / f64::from(ticks);
+                let value = self.viewport_start + (span as f64 * ratio).round() as i64;
+                let x = track_x + (track_w as f64 * ratio) as i32;
+                let band = Rect::new((x - 24).max(rect.x), header.y, 48, header.height);
+                context.draw_text_line_cow(
+                    band,
+                    &value.to_string(),
+                    effective_font(style),
+                    text_color.blend(&background, 0.3),
+                    HorizontalAlignment::Center,
+                );
+            }
+        }
+
+        let first_visible = self.scroll_offset;
+        let visible_rows = self.visible_row_count();
+        for visible_row in 0..visible_rows {
+            let index = first_visible + visible_row;
+            let Some(task) = self.tasks.get(index) else {
+                break;
+            };
+            let y = self.lane_rect(visible_row).y;
             if y + self.row_height as i32 > rect.y + rect.height as i32 {
                 break;
             }
@@ -566,27 +816,57 @@ impl Draw for GanttWidget {
         // right or left, then into the successor's left edge -- two segments and an arrow head, which
         // is the minimum that still says "this one waits for that one" rather than "these two happen
         // to be near each other".
-        for (index, task) in self.tasks.iter().enumerate().take(12) {
-            let y = rect.y + index as i32 * self.row_height as i32;
+        for visible_row in 0..visible_rows {
+            let index = first_visible + visible_row;
+            let Some(task) = self.tasks.get(index) else {
+                break;
+            };
+            let y = self.lane_rect(visible_row).y;
             if y + self.row_height as i32 > rect.y + rect.height as i32 {
                 break;
             }
-            for predecessor_id in &task.depends_on {
-                let Some(pred_index) = self.tasks.iter().position(|t| &t.id == predecessor_id)
+            let predecessors = task
+                .depends_on
+                .iter()
+                .map(|id| (id.as_str(), DependencyKind::FinishToStart))
+                .chain(
+                    task.dependencies
+                        .iter()
+                        .map(|dependency| (dependency.id.as_str(), dependency.kind)),
+                );
+            for (predecessor_id, kind) in predecessors {
+                let Some(pred_index) = self.tasks.iter().position(|t| t.id == predecessor_id)
                 else {
                     // A dangling id is skipped rather than reported: a caller editing a schedule
                     // transiently holds them, and a chart is not the place to complain.
                     continue;
                 };
-                if pred_index >= 12 {
+                if pred_index < first_visible || pred_index >= first_visible + visible_rows {
                     // The predecessor's lane is not on screen, so its bar's right edge is unknown.
                     continue;
                 }
                 let pred = &self.tasks[pred_index];
-                let pred_y = rect.y + pred_index as i32 * self.row_height as i32;
-                let from_x = self.project_x(pred.end.max(pred.start + 1), track_x, track_w);
+                let pred_y = self.lane_rect(pred_index - first_visible).y;
+                // The three relationship kinds differ in which edges the elbow joins: a
+                // finish-to-start link leaves the predecessor's end and enters the successor's
+                // start, start-to-start joins the two left edges, finish-to-finish the two right
+                // edges. Routing each with its own pair of edges is what makes the arrow state the
+                // relationship instead of only the dependency.
+                let (from_x, to_x) = match kind {
+                    DependencyKind::FinishToStart => (
+                        self.project_x(pred.end.max(pred.start + 1), track_x, track_w),
+                        self.project_x(task.start, track_x, track_w),
+                    ),
+                    DependencyKind::StartToStart => (
+                        self.project_x(pred.start, track_x, track_w),
+                        self.project_x(task.start, track_x, track_w),
+                    ),
+                    DependencyKind::FinishToFinish => (
+                        self.project_x(pred.end.max(pred.start + 1), track_x, track_w),
+                        self.project_x(task.end.max(task.start + 1), track_x, track_w),
+                    ),
+                };
                 let from_y = pred_y + self.row_height as i32 / 2;
-                let to_x = self.project_x(task.start, track_x, track_w);
                 let to_y = y + self.row_height as i32 / 2;
                 // The elbow's vertical segment sits a short step past the predecessor's right edge,
                 // so a forward link and a backward one both read as an elbow rather than as a

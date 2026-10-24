@@ -24,6 +24,44 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 
+/// A subtitle cue for the simulated player.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubtitleCue {
+    /// Start time in seconds.
+    pub start: f64,
+    /// End time in seconds.
+    pub end: f64,
+    /// Text shown while `start <= t < end`.
+    pub text: String,
+}
+
+impl SubtitleCue {
+    /// A cue covering `[start, end)` with `text`.
+    pub fn new(start: f64, end: f64, text: impl Into<String>) -> Self {
+        Self { start, end, text: text.into() }
+    }
+}
+
+/// The player's reported media state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaStatus {
+    /// No source is loaded.
+    #[default]
+    Idle,
+    /// The source is loading.
+    Loading,
+    /// Playback is stalled waiting for data.
+    Buffering,
+    /// Frames are being presented.
+    Playing,
+    /// Playback is paused.
+    Paused,
+    /// The end of the media was reached.
+    Ended,
+    /// The host reported an error.
+    Error,
+}
+
 /// VideoPlayer — simulated video player widget with playback controls.
 ///
 /// Self-drawn UI only: no media is decoded or rendered. State (play/pause,
@@ -54,6 +92,30 @@ pub struct VideoPlayer {
     pub playback_ended: GenericSignal,
     /// Emitted when the current playback time updates. Passes the new time.
     pub time_updated: Signal1<f64>,
+    /// Subtitle cues, sorted by start time when set.
+    subtitles: Vec<SubtitleCue>,
+    /// Whether cues are painted.
+    subtitles_enabled: bool,
+    /// Whether the player is in fullscreen presentation.
+    fullscreen: bool,
+    /// Bytes or seconds buffered ahead, as reported by the host.
+    buffered: f64,
+    /// The reported media state.
+    status: MediaStatus,
+    /// Emitted when fullscreen is entered or left.
+    pub fullscreen_changed: Signal1<bool>,
+    /// Emitted when the reported media status changes.
+    pub media_status_changed: Signal1<MediaStatus>,
+    /// Emitted with the buffered amount whenever the host reports more data.
+    pub buffering_progress_changed: Signal1<f64>,
+    /// Emitted when the host reports a playback failure.
+    pub error_occurred: Signal1<String>,
+    /// Emitted when the volume changes, so a host with an audio output path can mirror it.
+    pub volume_changed: Signal1<f32>,
+    /// Emitted when mute changes.
+    pub mute_changed: Signal1<bool>,
+    /// Emitted when the playback rate changes.
+    pub playback_rate_changed: Signal1<f32>,
 }
 
 impl VideoPlayer {
@@ -73,6 +135,18 @@ impl VideoPlayer {
             playback_paused: GenericSignal::new(),
             playback_ended: GenericSignal::new(),
             time_updated: Signal1::new(),
+            subtitles: Vec::new(),
+            subtitles_enabled: true,
+            fullscreen: false,
+            buffered: 0.0,
+            status: MediaStatus::Idle,
+            fullscreen_changed: Signal1::new(),
+            media_status_changed: Signal1::new(),
+            buffering_progress_changed: Signal1::new(),
+            error_occurred: Signal1::new(),
+            volume_changed: Signal1::new(),
+            mute_changed: Signal1::new(),
+            playback_rate_changed: Signal1::new(),
         }
     }
 
@@ -84,7 +158,124 @@ impl VideoPlayer {
         self.source = source.to_string();
         self.current_time = 0.0;
         self.is_playing = false;
+        self.set_status(if source.is_empty() { MediaStatus::Idle } else { MediaStatus::Paused });
         self.base.request_redraw();
+    }
+
+    /// Changes the reported media status, emitting only on a real change.
+    fn set_status(&mut self, status: MediaStatus) {
+        if self.status != status {
+            self.status = status;
+            self.media_status_changed.emit(status);
+        }
+    }
+
+    /// Returns the reported media status.
+    pub fn media_status(&self) -> MediaStatus {
+        self.status
+    }
+
+    /// Replaces the subtitle cue list.
+    ///
+    /// Cues are sorted by start time here, so a host may append them in any order. Emptying the
+    /// list removes the subtitle layer entirely.
+    pub fn set_subtitles(&mut self, mut cues: Vec<SubtitleCue>) {
+        cues.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(core::cmp::Ordering::Equal));
+        self.subtitles = cues;
+        self.base.request_redraw();
+    }
+
+    /// Appends a subtitle cue.
+    pub fn add_subtitle(&mut self, cue: SubtitleCue) {
+        self.subtitles.push(cue);
+        self.subtitles
+            .sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(core::cmp::Ordering::Equal));
+        self.base.request_redraw();
+    }
+
+    /// Removes every subtitle cue.
+    pub fn clear_subtitles(&mut self) {
+        if self.subtitles.is_empty() {
+            return;
+        }
+        self.subtitles.clear();
+        self.base.request_redraw();
+    }
+
+    /// Returns the cue visible at `time`, if any.
+    pub fn subtitle_at(&self, time: f64) -> Option<&SubtitleCue> {
+        self.subtitles.iter().find(|cue| time >= cue.start && time < cue.end)
+    }
+
+    /// Whether subtitle cues are painted.
+    pub fn subtitles_enabled(&self) -> bool {
+        self.subtitles_enabled
+    }
+
+    /// Enables or disables subtitle painting.
+    pub fn set_subtitles_enabled(&mut self, enabled: bool) {
+        if self.subtitles_enabled == enabled {
+            return;
+        }
+        self.subtitles_enabled = enabled;
+        self.base.request_redraw();
+    }
+
+    /// Whether the player is in fullscreen presentation.
+    pub fn is_fullscreen(&self) -> bool {
+        self.fullscreen
+    }
+
+    /// Enters or leaves fullscreen presentation, emitting `fullscreen_changed`.
+    pub fn set_fullscreen(&mut self, fullscreen: bool) {
+        if self.fullscreen == fullscreen {
+            return;
+        }
+        self.fullscreen = fullscreen;
+        self.fullscreen_changed.emit(fullscreen);
+        self.base.request_redraw();
+    }
+
+    /// Toggles fullscreen presentation.
+    pub fn toggle_fullscreen(&mut self) {
+        self.set_fullscreen(!self.fullscreen);
+    }
+
+    /// The buffered position reported by the host, in the same unit as the clock.
+    pub fn buffered(&self) -> f64 {
+        self.buffered
+    }
+
+    /// Reports how much of the media is buffered.
+    ///
+    /// The player does no network I/O, so this is host-supplied. It is clamped into the timeline
+    /// and painted as a second, quieter segment of the seek bar.
+    pub fn set_buffered(&mut self, buffered: f64) {
+        if !buffered.is_finite() {
+            return;
+        }
+        let buffered = buffered.clamp(0.0, self.duration.max(0.0));
+        if self.buffered == buffered {
+            return;
+        }
+        self.buffered = buffered;
+        self.buffering_progress_changed.emit(buffered);
+        self.base.request_redraw();
+    }
+
+    /// The buffered fraction, `0.0..=1.0`.
+    pub fn buffering_progress(&self) -> f64 {
+        if self.duration > 0.0 {
+            (self.buffered / self.duration).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// Reports a playback failure, moving the status to [`MediaStatus::Error`].
+    pub fn report_error(&mut self, message: impl Into<String>) {
+        self.set_status(MediaStatus::Error);
+        self.error_occurred.emit(message.into());
     }
 
     /// Returns the source URI.
@@ -124,6 +315,7 @@ impl VideoPlayer {
         }
         if !self.is_playing {
             self.is_playing = true;
+            self.set_status(MediaStatus::Playing);
             self.playback_started.emit();
             self.base.request_redraw();
         }
@@ -133,6 +325,7 @@ impl VideoPlayer {
     pub fn pause(&mut self) {
         if self.is_playing {
             self.is_playing = false;
+            self.set_status(MediaStatus::Paused);
             self.playback_paused.emit();
             self.base.request_redraw();
         }
@@ -183,6 +376,7 @@ impl VideoPlayer {
             return;
         }
         self.volume = volume;
+        self.volume_changed.emit(volume);
         self.base.request_redraw();
     }
 
@@ -197,6 +391,7 @@ impl VideoPlayer {
             return;
         }
         self.muted = muted;
+        self.mute_changed.emit(muted);
         self.base.request_redraw();
     }
 
@@ -215,6 +410,7 @@ impl VideoPlayer {
             return;
         }
         self.playback_rate = rate;
+        self.playback_rate_changed.emit(rate);
         self.base.request_redraw();
     }
 
@@ -263,6 +459,7 @@ impl VideoPlayer {
         if self.current_time >= self.duration {
             self.current_time = self.duration;
             self.is_playing = false;
+            self.set_status(MediaStatus::Ended);
             self.playback_ended.emit();
             self.time_updated.emit(self.current_time);
             self.base.request_redraw();
@@ -505,6 +702,34 @@ impl Draw for VideoPlayer {
             );
         }
 
+        // ── Subtitle layer ──
+        let control_bar_top =
+            ControlMetrics::bottom_band(rect, dimensions::VIDEO_CONTROL_BAR_HEIGHT).y;
+        //
+        // Drawn above the transport bar so a cue never sits under the controls. The band is
+        // fitted to the player's width, and a cue outside its own time range draws nothing.
+        if self.subtitles_enabled {
+            if let Some(cue) = self.subtitle_at(self.current_time) {
+                let band_height = (rect.height as f32 * 0.16).clamp(18.0, 40.0) as u32;
+                let band = Rect::new(
+                    rect.x + 8,
+                    control_bar_top - band_height as i32 - 8,
+                    rect.width.saturating_sub(16),
+                    band_height,
+                );
+                if band.y > rect.y {
+                    context.fill_rounded_rect(band, 4, Color::rgba(0, 0, 0, 150));
+                    context.draw_text_fitted_cow(
+                        context.text_line(band, font),
+                        &cue.text,
+                        font,
+                        Color::WHITE,
+                        HorizontalAlignment::Center,
+                    );
+                }
+            }
+        }
+
         // ── Control bar ─────────────────────────────────────────────────
         if !self.controls_visible {
             return;
@@ -579,6 +804,17 @@ impl Draw for VideoPlayer {
             seek_bar_height / 2,
             Color::rgba(100, 100, 100, 200),
         );
+
+        // The buffered segment sits between the track and the played fill. Its default is zero,
+        // so a player whose host reports nothing paints exactly the bar it always did.
+        let buffered_width = (seek_bar_full.width as f64 * self.buffering_progress()) as u32;
+        if buffered_width > 0 {
+            context.fill_rounded_rect(
+                Rect::new(seek_bar_full.x, seek_bar_full.y, buffered_width, seek_bar_full.height),
+                seek_bar_height / 2,
+                Color::rgba(160, 160, 160, 220),
+            );
+        }
 
         let fill_width = (seek_bar_full.width as f64 * self.progress()) as u32;
         if fill_width > 0 {
@@ -658,6 +894,17 @@ impl EventHandler for VideoPlayer {
                             self.toggle_play();
                             return;
                         }
+                        // Fullscreen button, in the slot the draw path reserves for it.
+                        let fs_box = Rect::new(
+                            rect.x + rect.width as i32 - 16 - 8 - 16 - 24,
+                            control_bar_y,
+                            16,
+                            control_bar_height,
+                        );
+                        if fs_box.contains_point(*pos) {
+                            self.toggle_fullscreen();
+                            return;
+                        }
                     }
 
                     // Click on video area toggles controls visibility or play/pause.
@@ -695,6 +942,10 @@ impl EventHandler for VideoPlayer {
                     // M key toggles mute.
                     (109, _) | (77, _) => {
                         self.set_muted(!self.muted);
+                    }
+                    // F key toggles fullscreen.
+                    (102, _) | (70, _) => {
+                        self.toggle_fullscreen();
                     }
                     _ => {}
                 }
@@ -1036,5 +1287,60 @@ mod tests {
 
         vp.pause();
         assert!(*paused.lock().unwrap());
+    }
+
+    #[test]
+    fn subtitles_are_painted_only_inside_their_own_window() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.set_subtitles(vec![SubtitleCue::new(1.0, 3.0, "hello")]);
+        assert_eq!(vp.subtitle_at(2.0).map(|cue| cue.text.as_str()), Some("hello"));
+        assert!(vp.subtitle_at(3.5).is_none());
+        vp.set_subtitles_enabled(false);
+        assert!(!vp.subtitles_enabled());
+    }
+
+    #[test]
+    fn the_fullscreen_button_is_clickable() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("movie.mp4");
+        let fs_x = 320 - 16 - 8 - 16 - 24;
+        vp.handle_event(&Event::MousePress {
+            pos: Point::new(fs_x + 4, 240 - 18),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(vp.is_fullscreen());
+    }
+
+    #[test]
+    fn buffered_progress_and_status_are_reported() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("movie.mp4");
+        vp.set_duration(100.0);
+        vp.set_buffered(25.0);
+        assert!((vp.buffering_progress() - 0.25).abs() < 1e-6);
+        vp.play();
+        assert_eq!(vp.media_status(), MediaStatus::Playing);
+        vp.report_error("decode failed");
+        assert_eq!(vp.media_status(), MediaStatus::Error);
+    }
+
+    #[test]
+    fn audio_settings_are_announced_for_a_host_output_path() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        let volume = std::sync::Arc::new(std::sync::Mutex::new(-1.0f32));
+        let v = volume.clone();
+        vp.volume_changed.connect(move |value: std::sync::Arc<f32>| {
+            *v.lock().unwrap() = *value;
+        });
+        vp.set_volume(0.4);
+        assert!((*volume.lock().unwrap() - 0.4).abs() < 1e-6);
+        let muted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let m = muted.clone();
+        vp.mute_changed.connect(move |value: std::sync::Arc<bool>| {
+            m.store(*value, std::sync::atomic::Ordering::SeqCst);
+        });
+        vp.set_muted(true);
+        assert!(muted.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

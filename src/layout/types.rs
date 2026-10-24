@@ -15,6 +15,14 @@ pub enum SizePolicy {
     Preferred,
     /// Expand to consume remaining space.
     Expanding,
+    /// Never shrink below the natural size, but may grow.
+    Minimum,
+    /// Never grow beyond the natural size, but may shrink.
+    Maximum,
+    /// Like [`Self::Expanding`], but the natural size is a hard floor.
+    MinimumExpanding,
+    /// The widget's natural size is ignored and the layout owns the extent.
+    Ignored,
 }
 /// Min/max limits applied during layout calculation.
 ///
@@ -112,7 +120,46 @@ impl Default for LayoutContext {
 
 /// Common interface implemented by all layout managers.
 pub trait Layout {
-    /// Add widget into layout with optional stretch factor.
+    /// The smallest size this layout needs to place its children.
+    ///
+    /// The trait used to have no upward channel at all, so a window's minimum size could
+    /// only be set by the platform. A layout that knows its children's floors answers
+    /// here; the default is zero, which preserves every existing implementor.
+    fn minimum_size(&self) -> Size {
+        Size::new(0, 0)
+    }
+
+    /// The preferred size this layout wants for its children.
+    ///
+    /// The default is zero ("no opinion"), which keeps layouts that have not adopted the
+    /// channel behaving exactly as before.
+    fn size_hint(&self) -> Size {
+        Size::new(0, 0)
+    }
+
+    /// Whether the layout would consume extra room on each axis.
+    ///
+    /// `(horizontal, vertical)`. The default `(false, false)` is the conservative answer;
+    /// a box layout overrides it with its own axis.
+    fn expanding_directions(&self) -> (bool, bool) {
+        (false, false)
+    }
+
+    /// Discards any cached arrangement.
+    ///
+    /// A layout that caches (the flex solver does) overrides this; the default is a no-op
+    /// because a stateless layout has nothing to discard.
+    fn invalidate(&mut self) {}
+
+    /// The height this layout needs for a given width.
+    ///
+    /// The default returns `height` unchanged, which is the "no height-for-width
+    /// negotiation" behaviour every existing layout had. A wrapping layout overrides it.
+    fn height_for_width(&self, _width: u32, height: u32) -> u32 {
+        height
+    }
+
+    /// Adds widget into layout with optional stretch factor.
     fn add_widget(&mut self, widget_id: ObjectId, stretch: u32);
     /// Remove widget from layout.
     fn remove_widget(&mut self, widget_id: ObjectId);

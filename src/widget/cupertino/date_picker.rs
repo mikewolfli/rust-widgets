@@ -12,6 +12,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -42,6 +43,28 @@ fn parse_iso_date(text: &str) -> Option<(i32, u32, u32)> {
     Some((year, month, day))
 }
 
+/// The order the three date columns are drawn in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DateColumnOrder {
+    /// Year, month, day.
+    #[default]
+    YearMonthDay,
+    /// Day, month, year (common in much of Europe).
+    DayMonthYear,
+    /// Month, day, year (common in the United States).
+    MonthDayYear,
+}
+
+/// Whether the picker edits a calendar date or a time of day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CupertinoDatePickerMode {
+    /// Three date columns.
+    #[default]
+    Date,
+    /// Two time columns, hour and minute.
+    Time,
+}
+
 /// A valid date range for year generation.
 #[derive(Clone, Debug)]
 struct DateConstraint {
@@ -62,8 +85,30 @@ pub struct CupertinoDatePicker {
     selected_day: u32,
     min_date: Option<(i32, u32, u32)>,
     max_date: Option<(i32, u32, u32)>,
+    /// Which kind of value the wheel edits.
+    mode: CupertinoDatePickerMode,
+    /// The order of the date columns.
+    column_order: DateColumnOrder,
+    /// Selected hour, `0..=23`, used by [`CupertinoDatePickerMode::Time`].
+    selected_hour: u32,
+    /// Selected minute, `0..=59`, used by [`CupertinoDatePickerMode::Time`].
+    selected_minute: u32,
+    /// An in-flight wheel drag: accumulated pixels since the last whole row.
+    drag_accum: f32,
+    /// The pointer y of the previous drag sample, for velocity estimation.
+    drag_last_y: Option<f32>,
+    /// The column the current drag began on.
+    drag_column: usize,
+    /// Estimated drag velocity in rows per frame, applied on release as inertia.
+    drag_velocity: f32,
+    /// How far the rows are rolled by the step animation, `0.0` settled to `1.0` just stepped.
+    roll: PropertyDriver,
+    /// The direction (`-1` or `1`) of the last step, so the roll travels the same way.
+    roll_direction: i32,
     /// Emitted with a `(year, month, day)` tuple when the date changes.
     pub date_changed: Signal1<(i32, u32, u32)>,
+    /// Emitted with `(hour, minute)` when the time changes in time mode.
+    pub time_changed: Signal1<(u32, u32)>,
 }
 
 impl CupertinoDatePicker {
@@ -78,7 +123,18 @@ impl CupertinoDatePicker {
             selected_day: 1,
             min_date: None,
             max_date: None,
+            mode: CupertinoDatePickerMode::Date,
+            column_order: DateColumnOrder::YearMonthDay,
+            selected_hour: 12,
+            selected_minute: 0,
+            drag_accum: 0.0,
+            drag_last_y: None,
+            drag_column: 0,
+            drag_velocity: 0.0,
+            roll: PropertyDriver::at(0.0, MotionSlot::Normal),
+            roll_direction: 1,
             date_changed: Signal1::new(),
+            time_changed: Signal1::new(),
         }
     }
 
@@ -126,6 +182,83 @@ impl CupertinoDatePicker {
         self.max_date
     }
 
+    /// Returns whether the picker edits a date or a time of day.
+    pub fn mode(&self) -> CupertinoDatePickerMode {
+        self.mode
+    }
+
+    /// Selects date or time mode.
+    pub fn set_mode(&mut self, mode: CupertinoDatePickerMode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        self.base.request_redraw();
+    }
+
+    /// Returns the column order used in date mode.
+    pub fn column_order(&self) -> DateColumnOrder {
+        self.column_order
+    }
+
+    /// Sets the column order used in date mode.
+    pub fn set_column_order(&mut self, order: DateColumnOrder) {
+        if self.column_order == order {
+            return;
+        }
+        self.column_order = order;
+        self.base.request_redraw();
+    }
+
+    /// Returns the selected time as `(hour, minute)`.
+    pub fn selected_time(&self) -> (u32, u32) {
+        (self.selected_hour, self.selected_minute)
+    }
+
+    /// Sets the selected time, clamping each field into its own range.
+    pub fn set_selected_time(&mut self, hour: u32, minute: u32) {
+        let hour = hour.min(23);
+        let minute = minute.min(59);
+        if self.selected_hour == hour && self.selected_minute == minute {
+            return;
+        }
+        self.selected_hour = hour;
+        self.selected_minute = minute;
+        self.time_changed.emit((hour, minute));
+        self.base.request_redraw();
+    }
+
+    /// Advances the roll animation; `true` while it is still moving.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.roll.tick(delta_ms)
+    }
+
+    /// Whether the roll animation is between two positions.
+    pub fn is_animating(&self) -> bool {
+        self.roll.is_moving()
+    }
+
+    /// Starts a roll in `direction` (`-1` or `1`) after a step.
+    fn start_roll(&mut self, direction: i32) {
+        self.roll_direction = direction;
+        self.roll.jump_to(1.0);
+        self.roll.set_target(0.0);
+    }
+
+    /// Applies one step to `(hour, minute)`, wrapping within its own field.
+    fn step_time(hour: u32, minute: u32, column: usize, direction: i32) -> (u32, u32) {
+        match column {
+            0 => {
+                let next = (hour as i32 + direction).rem_euclid(24) as u32;
+                (next, minute)
+            }
+            _ => {
+                let next = (minute as i32 + direction).rem_euclid(60) as u32;
+                (hour, next)
+            }
+        }
+    }
+
     /// Clamps a date to the configured min/max range.
     fn clamp_to_date_range(&self, year: i32, month: u32, day: u32) -> (i32, u32, u32) {
         let (y, m, d) = (year, month, day);
@@ -160,6 +293,22 @@ impl CupertinoDatePicker {
         (col as usize).min(2)
     }
 
+    /// Maps a physical column position to the logical column it edits.
+    ///
+    /// The locale order changes where a column is *drawn*, so the hit test must translate the
+    /// pointer's position back to the field before stepping it; otherwise a `DayMonthYear`
+    /// picker would change the year when the user taps the day column.
+    fn logical_column(&self, physical: usize) -> usize {
+        if self.mode == CupertinoDatePickerMode::Time {
+            return physical.min(1);
+        }
+        match self.column_order {
+            DateColumnOrder::YearMonthDay => physical.min(2),
+            DateColumnOrder::DayMonthYear => [2, 1, 0][physical.min(2)],
+            DateColumnOrder::MonthDayYear => [1, 2, 0][physical.min(2)],
+        }
+    }
+
     /// Returns the range of years available for selection.
     ///
     /// Returns the constraint for the current selection context.
@@ -187,6 +336,15 @@ impl Widget for CupertinoDatePicker {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(300, 200)
+    }
+
+    /// Advances the roll animation.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        CupertinoDatePicker::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        CupertinoDatePicker::is_animating(self)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -367,56 +525,66 @@ impl Draw for CupertinoDatePicker {
         // it is what the font must follow: deriving the font from the nominal 32 px row while
         // the band drew 24 px rows put a 15.8 px arrow inside a 24 px row and pushed the first
         // and last visible values off the wheel in the census cell.
-        let col_width = wheel_rect.width / 3;
+        let col_count = if self.mode == CupertinoDatePickerMode::Time { 2 } else { 3 };
+        let col_width = wheel_rect.width / col_count;
         let row_height = (wheel_rect.height / dimensions::PICKER_VISIBLE_ROWS).max(1);
         let font_size = (row_height as f32 * 0.38).clamp(9.0, 15.0);
         let font = role_font(style, font_size);
-        let arrow_font = role_font(style, (font_size * 1.3).max(10.0)).with_bold(true);
+        // The rows roll by the step animation's fraction; at rest the fraction is exactly zero,
+        // so the settled wheel is byte-identical to the un-animated one.
+        let roll_shift =
+            (self.roll.value() * row_height as f32 * self.roll_direction as f32) as i32;
 
-        // Build visible column items (reuse static arrays — no per-draw Vec<String>)
         let constraint = self.date_constraint();
+        let (columns, order): (Vec<(i32, Vec<String>)>, Vec<usize>) = if self.mode
+            == CupertinoDatePickerMode::Time
+        {
+            let hours: Vec<String> = (0..24).map(|hour| format!("{hour:02}")).collect();
+            let minutes: Vec<String> = (0..60).map(|minute| format!("{minute:02}")).collect();
+            (
+                vec![(self.selected_hour as i32, hours), (self.selected_minute as i32, minutes)],
+                vec![0, 1],
+            )
+        } else {
+            let years: Vec<String> = (0..dimensions::PICKER_VISIBLE_ROWS)
+                .map(|row| {
+                    let offset = row as i32 - 2;
+                    let year = self.selected_year + offset;
+                    if year >= constraint.min_year && year <= constraint.max_year {
+                        year.to_string()
+                    } else {
+                        String::new()
+                    }
+                })
+                .collect();
+            let months: Vec<String> = MONTH_NAMES.iter().map(|name| (*name).to_string()).collect();
+            let max_days = days_in_month(self.selected_year, self.selected_month);
+            let days: Vec<String> =
+                DAY_STRINGS[..max_days as usize].iter().map(|day| (*day).to_string()).collect();
+            let logical = vec![
+                (2, years),
+                (self.selected_month as i32 - 1, months),
+                (self.selected_day as i32 - 1, days),
+            ];
+            let order = match self.column_order {
+                DateColumnOrder::YearMonthDay => vec![0, 1, 2],
+                DateColumnOrder::DayMonthYear => vec![2, 1, 0],
+                DateColumnOrder::MonthDayYear => vec![1, 2, 0],
+            };
+            (logical, order)
+        };
 
-        // Months: reference the static array directly (no allocation)
-        let month_items: &[&str] = MONTH_NAMES;
-        let month_sel_idx = (self.selected_month as usize - 1) as i32;
-
-        // Days: reference the static DAY_STRINGS array directly (no allocation)
-        let max_days = days_in_month(self.selected_year, self.selected_month);
-        let day_items: &[&str] = &DAY_STRINGS[..max_days as usize];
-        let day_sel_idx = (self.selected_day as usize - 1) as i32;
-
-        // Columns as (&[&str], ...) — borrow from static data.
-        //
-        // Years are dynamic, but only the five rows the wheel shows are needed. This used to
-        // materialise the whole default range (1900..=2100): 201 `String`s plus two 201-entry
-        // vectors, per frame, to paint five labels.
-        let year_items: [String; dimensions::PICKER_VISIBLE_ROWS as usize] =
-            core::array::from_fn(|row| {
-                let offset = row as i32 - 2;
-                let year = self.selected_year + offset;
-                if year >= constraint.min_year && year <= constraint.max_year {
-                    year.to_string()
-                } else {
-                    String::new()
-                }
-            });
-        let year_refs: [&str; dimensions::PICKER_VISIBLE_ROWS as usize] =
-            core::array::from_fn(|row| year_items[row].as_str());
-        let columns: [(i32, &[&str], &str); 3] = [
-            // The selected row is the middle of the five, by construction above.
-            (2, &year_refs, "Year"),
-            (month_sel_idx, month_items, "Month"),
-            (day_sel_idx, day_items, "Day"),
-        ];
-
-        for (col_idx, (sel_offset, items, _label)) in columns.iter().enumerate() {
-            let col_x = wheel_rect.x + (col_idx as u32 * col_width) as i32;
+        for (position, &logical_index) in order.iter().enumerate() {
+            let Some((sel_offset, items)) = columns.get(logical_index) else {
+                continue;
+            };
+            let col_x = wheel_rect.x + (position as u32 * col_width) as i32;
 
             // Vertical rule between columns. Drawn as a *line* rather than a 1 px wide
             // rectangle: `draw_rect_stroke` on a 1-wide rect emits a degenerate element
             // (`width="1"` in the SVG) that the two strokes of its own outline overdraw, so the
             // division was both wider than a divider and indistinguishable from a module.
-            if col_idx > 0 {
+            if position > 0 {
                 context.draw_line(
                     Point::new(col_x, wheel_rect.y),
                     Point::new(col_x, wheel_rect.y + wheel_rect.height as i32),
@@ -439,7 +607,7 @@ impl Draw for CupertinoDatePicker {
 
                 let text = &items[item_idx as usize];
                 let is_selected = row == 2;
-                let item_y = wheel_rect.y + (row * row_height) as i32;
+                let item_y = wheel_rect.y + (row * row_height) as i32 + roll_shift;
 
                 let metrics = context.measure_text(text, &font);
                 // Centred inside the row's own band. The old origin added `ascent` on top of
@@ -472,26 +640,32 @@ impl Draw for CupertinoDatePicker {
                 );
             }
 
-            // Up arrow indicator (top of column)
+            // Chevron indicators drawn as strokes: a `^`/`v` glyph depends on the face having
+            // those characters and reads as text rather than as a control affordance.
             let arrow_color = if is_enabled { arrow } else { disabled_arrow };
-            let up_y = wheel_rect.y + 2;
-            context.draw_text(
-                Point::new(col_x + (col_width as i32 - 8) / 2, up_y),
-                "^",
-                &arrow_font,
+            let center_x = col_x + col_width as i32 / 2;
+            let up_y = wheel_rect.y + 3;
+            context.draw_line(
+                Point::new(center_x - 4, up_y + 4),
+                Point::new(center_x, up_y),
                 arrow_color,
-                HorizontalAlignment::Left,
             );
-
-            // Down arrow indicator (bottom of column), on the wheel rather than on the
-            // control's own bottom edge, which sat half a row below the last visible row.
-            let down_y = wheel_rect.y + wheel_rect.height as i32 - row_height as i32 + 2;
-            context.draw_text(
-                Point::new(col_x + (col_width as i32 - 8) / 2, down_y),
-                "v",
-                &arrow_font,
+            context.draw_line(
+                Point::new(center_x, up_y),
+                Point::new(center_x + 4, up_y + 4),
                 arrow_color,
-                HorizontalAlignment::Left,
+            );
+            // Down chevron, on the wheel rather than on the control's own bottom edge.
+            let down_y = wheel_rect.y + wheel_rect.height as i32 - row_height as i32 + 3;
+            context.draw_line(
+                Point::new(center_x - 4, down_y + 4),
+                Point::new(center_x, down_y + 8),
+                arrow_color,
+            );
+            context.draw_line(
+                Point::new(center_x, down_y + 8),
+                Point::new(center_x + 4, down_y + 4),
+                arrow_color,
             );
         }
     }
@@ -504,62 +678,114 @@ impl EventHandler for CupertinoDatePicker {
             return;
         }
 
-        if let Event::MousePress { pos, button: 1, .. } = event {
-            let col = self.column_at(pos.x);
-            let rect = self.geometry();
-            // The row is resolved against the same fixed-height wheel the rows are painted in,
-            // so a click maps to the value under the pointer rather than to a fraction of the
-            // control's height — which picked the wrong row on every non-200 px panel.
-            let wheel_rect = ControlMetrics::center_in(
-                rect,
-                Size::new(
-                    rect.width,
-                    dimensions::PICKER_ROW_HEIGHT * dimensions::PICKER_VISIBLE_ROWS,
-                ),
-            );
-            let row_height = (wheel_rect.height / dimensions::PICKER_VISIBLE_ROWS).max(1) as i32;
-            let rel_y = pos.y - wheel_rect.y;
-            let row = rel_y / row_height;
-            // Upper half (row 0-2) = increment, lower half (row 3-4) = decrement
-            let increment = row <= 2;
+        let rect = self.geometry();
+        let wheel_rect = ControlMetrics::center_in(
+            rect,
+            Size::new(rect.width, dimensions::PICKER_ROW_HEIGHT * dimensions::PICKER_VISIBLE_ROWS),
+        );
+        let row_height = (wheel_rect.height / dimensions::PICKER_VISIBLE_ROWS).max(1) as f32;
 
-            match col {
-                0 => {
-                    // Year column: cycle through available years
-                    let constraint = self.date_constraint();
-                    let new_year = if increment {
-                        (self.selected_year + 1).min(constraint.max_year)
-                    } else {
-                        (self.selected_year - 1).max(constraint.min_year)
-                    };
-                    let max_day = days_in_month(new_year, self.selected_month);
-                    let clamped_day = self.selected_day.min(max_day);
-                    self.set_selected_date(new_year, self.selected_month, clamped_day);
+        match event {
+            Event::MousePress { pos, button: 1, .. } => {
+                self.drag_accum = 0.0;
+                self.drag_last_y = Some(pos.y as f32);
+                self.drag_column = self.column_at(pos.x);
+                self.drag_velocity = 0.0;
+                if !wheel_rect.contains_point(*pos) {
+                    return;
                 }
-                1 => {
-                    // Month column
-                    let new_month = if increment {
-                        (self.selected_month as i32 + 1).clamp(1, 12) as u32
-                    } else {
-                        (self.selected_month as i32 - 1).clamp(1, 12) as u32
-                    };
-                    let max_day = days_in_month(self.selected_year, new_month);
-                    let clamped_day = self.selected_day.min(max_day);
-                    self.set_selected_date(self.selected_year, new_month, clamped_day);
+                // A click on the upper half of a column steps forward, the lower half back.
+                let col = self.logical_column(self.column_at(pos.x));
+                let rel_y = pos.y - wheel_rect.y;
+                let row = rel_y / row_height as i32;
+                self.apply_step(col, row <= 2);
+            }
+            Event::MouseMove { pos } => {
+                let Some(last) = self.drag_last_y else {
+                    return;
+                };
+                let delta = pos.y as f32 - last;
+                self.drag_last_y = Some(pos.y as f32);
+                self.drag_velocity = delta / 16.0;
+                self.drag_accum += delta;
+                // Whole rows only: the remainder stays accumulated, so a slow drag still
+                // advances once it has covered a full row.
+                let mut steps = (self.drag_accum / row_height) as i32;
+                if steps != 0 {
+                    self.drag_accum -= steps as f32 * row_height;
+                    while steps != 0 {
+                        // Dragging down reveals the previous value, so the wheel follows the
+                        // finger rather than fighting it.
+                        self.apply_step(self.logical_column(self.drag_column), steps < 0);
+                        steps += if steps > 0 { -1 } else { 1 };
+                    }
                 }
-                2 => {
-                    // Day column
-                    let max_days = days_in_month(self.selected_year, self.selected_month) as i32;
-                    let new_day = if increment {
-                        (self.selected_day as i32 + 1).clamp(1, max_days) as u32
-                    } else {
-                        (self.selected_day as i32 - 1).clamp(1, max_days) as u32
-                    };
-                    self.set_selected_date(self.selected_year, self.selected_month, new_day);
+            }
+            Event::MouseRelease { button: 1, .. } => {
+                self.drag_last_y = None;
+                self.drag_accum = 0.0;
+                // Inertia: a fast flick keeps stepping a little after release. The estimate is
+                // per nominal 16 ms frame, so it is independent of the host's actual rate.
+                let extra = (self.drag_velocity.abs() as i32).min(3);
+                if extra > 0 {
+                    for _ in 0..extra {
+                        self.apply_step(
+                            self.logical_column(self.drag_column),
+                            self.drag_velocity < 0.0,
+                        );
+                    }
                 }
-                _ => {}
+                self.drag_velocity = 0.0;
+            }
+            _ => {}
+        }
+    }
+}
+
+impl CupertinoDatePicker {
+    /// Applies one selection step to `column`, where `forward` means a later value.
+    fn apply_step(&mut self, column: usize, forward: bool) {
+        let direction = if forward { 1 } else { -1 };
+        if self.mode == CupertinoDatePickerMode::Time {
+            let (hour, minute) =
+                Self::step_time(self.selected_hour, self.selected_minute, column, direction);
+            self.set_selected_time(hour, minute);
+            self.start_roll(direction);
+            return;
+        }
+        match column {
+            0 => {
+                let constraint = self.date_constraint();
+                let new_year = if forward {
+                    (self.selected_year + 1).min(constraint.max_year)
+                } else {
+                    (self.selected_year - 1).max(constraint.min_year)
+                };
+                let max_day = days_in_month(new_year, self.selected_month);
+                let clamped_day = self.selected_day.min(max_day);
+                self.set_selected_date(new_year, self.selected_month, clamped_day);
+            }
+            1 => {
+                let new_month = if forward {
+                    (self.selected_month as i32 + 1).clamp(1, 12) as u32
+                } else {
+                    (self.selected_month as i32 - 1).clamp(1, 12) as u32
+                };
+                let max_day = days_in_month(self.selected_year, new_month);
+                let clamped_day = self.selected_day.min(max_day);
+                self.set_selected_date(self.selected_year, new_month, clamped_day);
+            }
+            _ => {
+                let max_days = days_in_month(self.selected_year, self.selected_month) as i32;
+                let new_day = if forward {
+                    (self.selected_day as i32 + 1).clamp(1, max_days) as u32
+                } else {
+                    (self.selected_day as i32 - 1).clamp(1, max_days) as u32
+                };
+                self.set_selected_date(self.selected_year, self.selected_month, new_day);
             }
         }
+        self.start_roll(direction);
     }
 }
 
@@ -753,5 +979,49 @@ mod tests {
         // Reaching here without a panic is the assertion; the control also still renders.
         let svg = crate::widget::svg::render_to_svg(&mut picker);
         assert!(svg.starts_with("<svg"));
+    }
+
+    #[test]
+    fn time_mode_has_two_wheels_and_emits_a_time() {
+        let mut picker = CupertinoDatePicker::new(Rect::new(0, 0, 300, 200));
+        picker.set_mode(CupertinoDatePickerMode::Time);
+        assert_eq!(picker.mode(), CupertinoDatePickerMode::Time);
+        assert_eq!(picker.selected_time(), (12, 0));
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let f = fired.clone();
+        picker.time_changed.connect(move |_: std::sync::Arc<(u32, u32)>| {
+            f.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        // Upper half of the first column increments the hour.
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(20, 40),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(picker.selected_time().0, 13);
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_locale_can_put_the_day_before_the_month() {
+        let mut picker = CupertinoDatePicker::new(Rect::new(0, 0, 300, 200));
+        picker.set_column_order(DateColumnOrder::DayMonthYear);
+        assert_eq!(picker.column_order(), DateColumnOrder::DayMonthYear);
+        let svg = crate::widget::svg::render_to_svg(&mut picker);
+        assert!(svg.starts_with("<svg"));
+    }
+
+    #[test]
+    fn dragging_a_wheel_steps_through_whole_rows() {
+        let mut picker = CupertinoDatePicker::new(Rect::new(0, 0, 300, 200));
+        let start = picker.selected_date();
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(20, 80),
+            button: 1,
+            modifiers: 0,
+        });
+        picker.handle_event(&Event::MouseMove { pos: Point::new(20, 130) });
+        picker.handle_event(&Event::MouseRelease { pos: Point::new(20, 130), button: 1 });
+        assert!(picker.selected_date() != start, "dragging past a row steps the wheel");
     }
 }

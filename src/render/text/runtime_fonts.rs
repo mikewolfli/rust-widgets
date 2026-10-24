@@ -209,10 +209,11 @@ mod tests {
         crate::render::text::font_assets::active_faces().first().map(|face| face.bytes)
     }
 
-    /// The registry is process-global, so this test holds [`test_lock`] for the whole sequence.
+    /// The registry is process-global, so this test holds [`runtime_fonts_test_guard`] for the
+    /// whole sequence.
     #[test]
     fn registration_refuses_junk_and_honours_the_capacity_and_the_order() {
-        let _guard = test_lock();
+        let _guard = runtime_fonts_test_guard();
         // Start from a known state whatever the process did before this test.
         clear_faces();
         assert_eq!(registered_face_count(), 0);

@@ -7,6 +7,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -145,6 +146,10 @@ fn chip_item_from_record(
 const CHIP_ICON_SIDE: u32 = 14;
 /// Gap between that slot and the chip's label.
 const CHIP_ICON_GAP: u32 = 4;
+/// Width reserved for a chip's close affordance, including its gap.
+const CHIP_CLOSE_SLOT: i32 = 14;
+/// Width of the `+N` summary cell that stands in for chips that do not fit.
+const CHIP_OVERFLOW_WIDTH: i32 = 34;
 
 /// Horizontal chip list with single or multi select mode.
 pub struct Chip {
@@ -163,6 +168,24 @@ pub struct Chip {
     item_icon_sources: Vec<(String, IconSource)>,
     /// Emitted when chip selection changes. Payload is chip id.
     pub chip_toggled: Signal1<String>,
+    /// Emitted with the id of a chip removed through its close affordance.
+    pub chip_removed: Signal1<String>,
+    /// Emitted with the id of a chip whose position the user changed.
+    pub chip_reordered: Signal1<String>,
+    /// The chip under the pointer.
+    hovered_index: Option<usize>,
+    /// Whether each chip paints a close affordance.
+    show_close: bool,
+    /// Whether a chip can be dragged to a new position.
+    reorder_enabled: bool,
+    /// The chip being dragged, and the slot it would land in.
+    drag_source: Option<usize>,
+    drag_target: Option<usize>,
+    /// Whether a selection change slides the pill between chips.
+    animate_selection: bool,
+    /// The sliding pill's progress and the chip it started from.
+    pill_slide: PropertyDriver,
+    pill_from: usize,
 }
 
 impl Chip {
@@ -177,7 +200,104 @@ impl Chip {
             chip_spacing: 6,
             item_icon_sources: Vec::new(),
             chip_toggled: Signal1::new(),
+            chip_removed: Signal1::new(),
+            chip_reordered: Signal1::new(),
+            hovered_index: None,
+            show_close: false,
+            reorder_enabled: false,
+            drag_source: None,
+            drag_target: None,
+            animate_selection: false,
+            pill_slide: PropertyDriver::at(1.0, MotionSlot::Normal),
+            pill_from: 0,
         }
+    }
+
+    /// Shows or hides the per-chip close affordance.
+    pub fn set_show_close(&mut self, show: bool) {
+        if self.show_close == show {
+            return;
+        }
+        self.show_close = show;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns whether chips paint a close affordance.
+    pub fn show_close(&self) -> bool {
+        self.show_close
+    }
+
+    /// Enables pointer dragging of chips.
+    pub fn set_reorder_enabled(&mut self, enabled: bool) {
+        if self.reorder_enabled == enabled {
+            return;
+        }
+        self.reorder_enabled = enabled;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether chips can be reordered by dragging.
+    pub fn reorder_enabled(&self) -> bool {
+        self.reorder_enabled
+    }
+
+    /// Enables the sliding selection pill.
+    pub fn set_animate_selection(&mut self, animate: bool) {
+        if self.animate_selection == animate {
+            return;
+        }
+        self.animate_selection = animate;
+        if !animate {
+            self.pill_slide.jump_to(1.0);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the selection pill animates between chips.
+    pub fn animate_selection(&self) -> bool {
+        self.animate_selection
+    }
+
+    /// The chip under the pointer, if any.
+    pub fn hovered_index(&self) -> Option<usize> {
+        self.hovered_index
+    }
+
+    /// Removes the chip at `index`, publishing its id.
+    ///
+    /// Returns `false` when the index is out of bounds. The close affordance and a host calling
+    /// this method share the same path, so keyboard and pointer removal cannot diverge.
+    pub fn remove_index(&mut self, index: usize) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        let removed = self.items.remove(index);
+        self.item_icon_sources.retain(|(id, _)| id != &removed.id);
+        self.focused_index =
+            if self.items.is_empty() { None } else { Some(index.min(self.items.len() - 1)) };
+        self.hovered_index = None;
+        crate::style::reapply_active_theme_state(self);
+        self.chip_removed.emit(removed.id);
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Moves the chip at `from` into position `to`, publishing its id.
+    ///
+    /// Both indices are item positions; an out-of-range index is a no-op that returns `false`.
+    pub fn move_item(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.items.len() || to >= self.items.len() || from == to {
+            return false;
+        }
+        let item = self.items.remove(from);
+        let id = item.id.clone();
+        self.items.insert(to, item);
+        self.focused_index = Some(to);
+        self.chip_reordered.emit(id);
+        self.base.request_redraw();
+        true
     }
 
     /// Replaces all chip items.
@@ -325,6 +445,9 @@ impl Chip {
             return false;
         }
 
+        // Captured before the mutation: the pill slides *from* the chip that was selected,
+        // and asking afterwards would always answer with the chip just chosen.
+        let previous_selected = self.items.iter().position(|item| item.selected);
         if self.multi_select {
             self.items[index].selected = !self.items[index].selected;
         } else {
@@ -337,6 +460,15 @@ impl Chip {
 
         crate::style::reapply_active_theme_state(self);
         let id = self.items[index].id.clone();
+        if self.animate_selection && self.items[index].selected {
+            if let Some(previous) = previous_selected {
+                if previous != index {
+                    self.pill_from = previous;
+                    self.pill_slide.jump_to(0.0);
+                    self.pill_slide.set_target(1.0);
+                }
+            }
+        }
         self.chip_toggled.emit(id);
         self.base.request_redraw();
         true
@@ -369,9 +501,11 @@ impl Chip {
         // measured with the same font the row paints with (D09-STYLE-01 / D09-STYLE-02).
         let icon =
             if self.icon_source_of(item).is_some() { CHIP_ICON_SIDE + CHIP_ICON_GAP } else { 0 };
+        let close = if self.show_close { CHIP_CLOSE_SLOT } else { 0 };
         estimate_text_width(&item.label, effective_font(self.style()), 1.0) as i32
             + padding * 2
             + icon as i32
+            + close
     }
 
     /// The band the chip row occupies: full width, `CHIP_HEIGHT` tall, centred in the
@@ -396,20 +530,50 @@ impl Chip {
     /// linear strip, so a single pass is enough. Chips that would start past the band's right edge
     /// are omitted rather than painted outside the control.
     fn chip_layout(&self) -> Vec<(usize, Rect)> {
+        self.chip_layout_with_overflow().0
+    }
+
+    /// The laid-out chips plus, when the row overflows, the trailing `+N` cell.
+    ///
+    /// A chips row is a linear strip, so the chips that do not fit are folded into one summary
+    /// cell rather than being silently dropped: the previous layout stopped at the right edge,
+    /// so an item past it existed in the model and was unpaintable and unclickable. The summary
+    /// cell is returned separately because it is not an item index.
+    fn chip_layout_with_overflow(&self) -> (Vec<(usize, Rect)>, Option<(Rect, usize)>) {
         let band = self.row_band();
         let mut layout = Vec::with_capacity(self.items.len());
         let mut x = band.x + dimensions::CHIP_PADDING_H as i32;
         let right = band.x + band.width as i32;
+        let mut overflow = None;
         for (index, item) in self.items.iter().enumerate() {
-            if x >= right {
+            let width = (self.chip_width(item, self.chip_padding).max(10) as u32).min(band.width);
+            if x + width as i32 > right {
+                overflow = Some((index, (right - x).max(0) as u32));
                 break;
             }
-            let width = (self.chip_width(item, self.chip_padding).max(10) as u32).min(band.width);
             let available = (right - x).max(1) as u32;
             layout.push((index, Rect::new(x, band.y, width.min(available), band.height)));
             x += width as i32 + self.chip_spacing;
         }
-        layout
+        let overflow_cell = overflow.and_then(|(first_hidden, room)| {
+            let hidden = self.items.len() - first_hidden;
+            if hidden == 0 || room < 18 {
+                return None;
+            }
+            // Fold the last visible chip back into the summary when there is no room for it.
+            if let Some((_, last)) = layout.last().copied() {
+                if last.x + last.width as i32 + 6 > right {
+                    layout.pop();
+                }
+            }
+            let start = layout.last().map_or(band.x, |(_, rect)| rect.x + rect.width as i32);
+            let start = start + self.chip_spacing;
+            let available = (right - start).max(1) as u32;
+            let width = (CHIP_OVERFLOW_WIDTH as u32).min(available);
+            let hidden = self.items.len() - layout.len();
+            Some((Rect::new(start, band.y, width, band.height), hidden))
+        });
+        (layout, overflow_cell)
     }
 
     #[cfg(test)]
@@ -427,6 +591,36 @@ impl Chip {
                     && pos.y < chip.y + chip.height as i32
             })
             .map(|(index, _)| index)
+    }
+
+    /// Returns the chip whose close affordance is under the pointer.
+    fn hit_close(&self, pos: Point) -> Option<usize> {
+        if !self.show_close {
+            return None;
+        }
+        self.chip_layout().into_iter().find_map(|(index, chip)| {
+            let close = Rect::new(
+                chip.x + chip.width as i32 - CHIP_CLOSE_SLOT,
+                chip.y,
+                CHIP_CLOSE_SLOT as u32,
+                chip.height,
+            );
+            (close.contains_point(pos) && chip.contains_point(pos)).then_some(index)
+        })
+    }
+
+    /// Returns the item position the pointer would drop a dragged chip into.
+    fn drop_target(&self, pos: Point) -> Option<usize> {
+        let layout = self.chip_layout();
+        if layout.is_empty() {
+            return None;
+        }
+        for (index, chip) in &layout {
+            if pos.x < chip.x + chip.width as i32 / 2 {
+                return Some(*index);
+            }
+        }
+        Some(layout.len().saturating_sub(1))
     }
 }
 
@@ -449,6 +643,23 @@ impl Widget for Chip {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(80, 24)
+    }
+
+    /// Advances the sliding selection pill.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.animate_selection {
+            return false;
+        }
+        let moving = self.pill_slide.tick(delta_ms);
+        if moving {
+            self.base.request_redraw();
+        }
+        moving
+    }
+
+    /// Whether the selection pill still owes frames.
+    fn is_animating(&self) -> bool {
+        self.animate_selection && self.pill_slide.is_moving()
     }
 
     /// Reports `Selected` when at least one chip is chosen.
@@ -636,10 +847,56 @@ impl EventHandler for Chip {
         }
 
         match event {
+            Event::MouseMove { pos } => {
+                let next = self.hit_index(*pos);
+                if next != self.hovered_index {
+                    self.hovered_index = next;
+                    self.base.request_redraw();
+                }
+                if let Some(source) = self.drag_source {
+                    if let Some(target) = self.drop_target(*pos) {
+                        if Some(target) != self.drag_target {
+                            self.drag_target = Some(target);
+                            self.base.request_redraw();
+                        }
+                    }
+                    let _ = source;
+                }
+            }
+            Event::MouseLeave { .. } => {
+                let changed =
+                    self.hovered_index.take().is_some() || self.drag_target.take().is_some();
+                if changed {
+                    self.base.request_redraw();
+                }
+            }
             Event::MousePress { pos, button: 1, .. } => {
+                if let Some(index) = self.hit_close(*pos) {
+                    let _ = self.remove_index(index);
+                    return;
+                }
                 if let Some(index) = self.hit_index(*pos) {
                     self.focused_index = Some(index);
-                    let _ = self.toggle_index(index);
+                    if self.reorder_enabled {
+                        self.drag_source = Some(index);
+                        self.drag_target = Some(index);
+                    } else {
+                        let _ = self.toggle_index(index);
+                    }
+                }
+            }
+            Event::MouseRelease { pos, button: 1 } => {
+                if let Some(source) = self.drag_source.take() {
+                    if let Some(target) = self.drop_target(*pos) {
+                        if target != source {
+                            let _ = self.move_item(source, target);
+                        } else {
+                            self.focused_index = Some(source);
+                            let _ = self.toggle_index(source);
+                        }
+                    }
+                    self.drag_target = None;
+                    self.base.request_redraw();
                 }
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
@@ -648,6 +905,13 @@ impl EventHandler for Chip {
                 13 | 32 => {
                     if let Some(index) = self.focused_index() {
                         let _ = self.toggle_index(index);
+                    }
+                }
+                46 | 8 => {
+                    // Delete/Backspace removes the focused chip through the same path as
+                    // its close affordance.
+                    if let Some(index) = self.focused_index() {
+                        let _ = self.remove_index(index);
                     }
                 }
                 // Unknown key; ignore
@@ -718,7 +982,7 @@ impl Draw for Chip {
         // child, which is not what a chip row looks like. Each chip paints its own pill instead;
         // a chip is a rounded pill by definition, and a square box read as a table cell.
 
-        for (index, chip_rect) in self.chip_layout() {
+        for (index, chip_rect) in self.chip_layout_with_overflow().0 {
             let Some(item) = self.items.get(index) else {
                 continue;
             };
@@ -735,6 +999,8 @@ impl Draw for Chip {
                 background.blend(&text_color, 0.22)
             } else if self.focused_index == Some(index) {
                 background.blend(&text_color, 0.12)
+            } else if self.hovered_index == Some(index) {
+                background.blend(&text_color, 0.10)
             } else {
                 background.blend(&text_color, 0.06)
             };
@@ -797,6 +1063,80 @@ impl Draw for Chip {
                 label_ink,
                 HorizontalAlignment::Left,
             );
+
+            // ── Close affordance ──
+            //
+            // Two strokes forming an ×, in the ink of the pill it sits on. The slot is charged
+            // in `chip_width`, so the label was fitted into the room that is actually left.
+            if self.show_close {
+                let cx = chip_rect.x + chip_rect.width as i32 - CHIP_CLOSE_SLOT / 2;
+                let cy = chip_rect.y + chip_rect.height as i32 / 2;
+                let arm = 3;
+                let close_ink = label_ink.with_alpha(190);
+                context.draw_line_stroke(
+                    Point::new(cx - arm, cy - arm),
+                    Point::new(cx + arm, cy + arm),
+                    close_ink,
+                    1,
+                );
+                context.draw_line_stroke(
+                    Point::new(cx + arm, cy - arm),
+                    Point::new(cx - arm, cy + arm),
+                    close_ink,
+                    1,
+                );
+            }
+        }
+
+        // ── Overflow summary ──
+        if let Some((cell, hidden)) = self.chip_layout_with_overflow().1 {
+            let radius = (cell.height / 2).max(1);
+            let fill = background.blend(&text_color, 0.06);
+            context.fill_rounded_rect(cell, radius, fill);
+            context.draw_rounded_rect_stroke(cell, radius, border, 1);
+            let font = effective_font(style);
+            let text = format!("+{hidden}");
+            context.draw_text_line_cow(cell, &text, font, text_color, HorizontalAlignment::Center);
+        }
+
+        // ── Drag insertion marker ──
+        if let Some(target) = self.drag_target {
+            if let Some((_, rect)) = self.chip_layout().into_iter().find(|(i, _)| *i == target) {
+                let marker = Rect::new(rect.x.saturating_sub(2), rect.y, 2, rect.height);
+                context.fill_rect(marker, text_color.with_alpha(200));
+            }
+        }
+
+        // ── Sliding selection pill ──
+        //
+        // The motion is a *travelling highlight*, drawn under no chip (it is painted after
+        // them, so it reads as an outline). It exists only between the moment a selection
+        // moves and the frame its progress settles, which is why it can never alter a resting
+        // snapshot.
+        if self.animate_selection && self.pill_slide.is_moving() {
+            let layout = self.chip_layout();
+            let selected = self.items.iter().position(|item| item.selected);
+            if let (Some(from), Some(to)) = (
+                layout.iter().find(|(i, _)| *i == self.pill_from),
+                selected.and_then(|index| layout.iter().find(|(i, _)| *i == index)),
+            ) {
+                let t = self.pill_slide.value();
+                let x = from.1.x as f32 + (to.1.x - from.1.x) as f32 * t;
+                let y = from.1.y as f32 + (to.1.y - from.1.y) as f32 * t;
+                let w = from.1.width as f32 + (to.1.width as f32 - from.1.width as f32) * t;
+                let pill = Rect::new(
+                    x.round() as i32,
+                    y.round() as i32,
+                    w.round().max(1.0) as u32,
+                    to.1.height,
+                );
+                context.draw_rounded_rect_stroke(
+                    pill,
+                    (pill.height / 2).max(1),
+                    text_color.with_alpha(120),
+                    1,
+                );
+            }
         }
     }
 }
@@ -1462,5 +1802,43 @@ mod tests {
         // The click target is that same box, so a press in its right-hand part still hits.
         let inside = Point::new(rect.x + rect.width as i32 - 1, rect.y + rect.height as i32 / 2);
         assert_eq!(chip.hit_index(inside), Some(0));
+    }
+
+    #[test]
+    fn overflow_folds_into_a_summary_cell() {
+        let mut chip = Chip::new(Rect::new(0, 0, 120, 36));
+        chip.set_items(vec![
+            ChipItem::new("a", "A very long chip label"),
+            ChipItem::new("b", "Another very long chip label"),
+            ChipItem::new("c", "Third"),
+        ]);
+        let (layout, overflow) = chip.chip_layout_with_overflow();
+        assert!(overflow.is_some(), "the third chip must fold into a summary");
+        assert!(layout.len() < 3);
+    }
+
+    #[test]
+    fn close_removes_the_chip_through_the_same_path_as_delete() {
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 36));
+        chip.set_items(sample_items());
+        chip.set_show_close(true);
+        let rect = chip.chip_rect(0).expect("the first chip is laid out");
+        let close = Point::new(rect.x + rect.width as i32 - 2, rect.y + rect.height as i32 / 2);
+        chip.handle_event(&Event::MousePress { pos: close, button: 1, modifiers: 0 });
+        assert_eq!(chip.items().len(), 2);
+        assert_eq!(chip.items()[0].id, "feature");
+    }
+
+    #[test]
+    fn reordering_moves_the_chip_and_publishes_its_id() {
+        use std::sync::{Arc, Mutex};
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 36));
+        chip.set_items(sample_items());
+        let moved = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&moved);
+        chip.chip_reordered.connect(move |id| sink.lock().unwrap().push(id.to_string()));
+        assert!(chip.move_item(0, 2));
+        assert_eq!(chip.items()[2].id, "bug");
+        assert_eq!(*moved.lock().unwrap(), vec!["bug".to_string()]);
     }
 }

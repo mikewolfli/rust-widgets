@@ -64,6 +64,11 @@
 // `desktop`, `embedded`, `mini` and `--all-features` builds alike, and CI's clippy
 // job runs with `-D warnings`, so a new undocumented public item fails the build.
 #![deny(missing_docs)]
+// The OpenHarmony cross target expands `thread_local!` through a std shim whose const path the
+// lint cannot see, so every already-`const` initialiser there is reported as "can be made const".
+// The lint is accurate on the host targets (where it stays enabled); scoping the allow to the
+// OHOS environment keeps that coverage without silencing the check everywhere.
+#![cfg_attr(target_env = "ohos", allow(clippy::missing_const_for_thread_local))]
 // `mini` is the no-std-oriented profile: it compiles against `core` + `alloc` only.
 // Every shared type is imported through `compat`, so this attribute is the switch
 // that turns the abstraction into an enforced contract.

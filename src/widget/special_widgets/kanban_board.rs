@@ -179,6 +179,12 @@ pub struct KanbanBoard {
     drag_origin: Option<CardPosition>,
     /// The column the pointer is currently over, for the drop preview.
     hovered_column: Option<usize>,
+    /// The card under the pointer, when no drag is in progress.
+    hovered_card: Option<CardPosition>,
+    /// The card keyboard navigation has reached.
+    focused_card: Option<CardPosition>,
+    /// Per-column scroll offsets, in cards.
+    column_scroll: Vec<usize>,
     /// Emitted after a card moves, with the card's id and its new position.
     pub card_moved: Signal1<(String, CardPosition)>,
     /// Emitted when a card is activated (clicked without dragging), with its id.
@@ -199,6 +205,9 @@ impl KanbanBoard {
             drag: None,
             drag_origin: None,
             hovered_column: None,
+            hovered_card: None,
+            focused_card: None,
+            column_scroll: Vec::new(),
             card_moved: Signal1::new(),
             card_activated: Signal1::new(),
         }
@@ -364,9 +373,13 @@ impl KanbanBoard {
             return None;
         }
         let column_rect = self.column_rect(position.column)?;
+        let scroll = self.column_scroll.get(position.column).copied().unwrap_or(0);
         let y = column_rect.y
             + HEADER_HEIGHT as i32
-            + (position.card as i32) * (CARD_HEIGHT as i32 + CARD_GAP);
+            + ((position.card.saturating_sub(scroll)) as i32) * (CARD_HEIGHT as i32 + CARD_GAP);
+        if position.card < scroll {
+            return None;
+        }
         Some(Rect::new(column_rect.x, y, COLUMN_WIDTH, CARD_HEIGHT))
     }
 
@@ -414,6 +427,76 @@ impl KanbanBoard {
         let index = (offset + stride / 2) / stride;
         // Clamped to the column's length: a pointer below the last card appends.
         (index as usize).min(entries.cards.len())
+    }
+
+    // ── Keyboard and column scrolling ──────────────────────────────────────
+
+    /// The card keyboard navigation has reached.
+    pub fn focused_card(&self) -> Option<CardPosition> {
+        self.focused_card
+    }
+
+    /// The card under the pointer, when no drag is in progress.
+    pub fn hovered_card(&self) -> Option<CardPosition> {
+        self.hovered_card
+    }
+
+    /// Moves keyboard focus to `position`, scrolling its column when needed.
+    pub fn set_focused_card(&mut self, position: Option<CardPosition>) {
+        if let Some(position) = position {
+            if position.column >= self.columns.len()
+                || position.card >= self.columns[position.column].cards.len()
+            {
+                return;
+            }
+        }
+        if self.focused_card == position {
+            return;
+        }
+        self.focused_card = position;
+        self.ensure_focused_visible();
+        self.base.request_redraw();
+    }
+
+    /// Scrolls the focused card's column so the card's lane is visible.
+    fn ensure_focused_visible(&mut self) {
+        let Some(position) = self.focused_card else {
+            return;
+        };
+        let visible = self.visible_cards_per_column();
+        if self.column_scroll.len() <= position.column {
+            self.column_scroll.resize(position.column + 1, 0);
+        }
+        let scroll = self.column_scroll[position.column];
+        if position.card < scroll {
+            self.column_scroll[position.column] = position.card;
+        } else if position.card >= scroll + visible {
+            self.column_scroll[position.column] = position.card + 1 - visible;
+        }
+    }
+
+    /// The number of cards a column shows at once.
+    fn visible_cards_per_column(&self) -> usize {
+        let rect = self.geometry();
+        ((rect.height.saturating_sub(HEADER_HEIGHT)) / (CARD_HEIGHT + CARD_GAP as u32)).max(1)
+            as usize
+    }
+
+    /// Scrolls `column` by `delta` cards.
+    pub fn scroll_column(&mut self, column: usize, delta: isize) {
+        let Some(entry) = self.columns.get(column) else {
+            return;
+        };
+        let max = entry.cards.len().saturating_sub(self.visible_cards_per_column());
+        if self.column_scroll.len() <= column {
+            self.column_scroll.resize(column + 1, 0);
+        }
+        let next = (self.column_scroll[column] as isize + delta).clamp(0, max as isize) as usize;
+        if self.column_scroll[column] == next {
+            return;
+        }
+        self.column_scroll[column] = next;
+        self.base.request_redraw();
     }
 
     // ── Drag handling ───────────────────────────────────────────────────────
@@ -763,18 +846,109 @@ impl EventHandler for KanbanBoard {
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 if let Some(position) = self.card_at(*pos) {
+                    self.focused_card = Some(position);
                     self.begin_card_drag(position, *pos);
                 }
             }
             Event::MouseMove { pos } if self.drag.is_some() => {
                 self.update_card_drag(*pos);
             }
+            Event::MouseMove { pos } => {
+                let hovered = self.card_at(*pos);
+                let column = self.column_at(*pos);
+                let changed = hovered != self.hovered_card || column != self.hovered_column;
+                self.hovered_card = hovered;
+                self.hovered_column = column;
+                if changed {
+                    self.base.request_redraw();
+                }
+            }
             Event::MouseRelease { pos, button } if *button == 1 && self.drag.is_some() => {
                 self.finish_card_drag(*pos);
             }
+            Event::Wheel { delta, .. } => {
+                if delta.y != 0 {
+                    let pos = self.geometry().position();
+                    let _ = pos;
+                    // Scroll the column under the pointer when one is known, otherwise the
+                    // first column: a board with several columns scrolls them independently.
+                    let column = self.hovered_column.unwrap_or(0);
+                    self.scroll_column(column, if delta.y > 0 { 1 } else { -1 });
+                }
+            }
+            Event::KeyPress { key, .. } => {
+                let key = crate::shortcut::Key::from_key_code(*key);
+                let current = self.focused_card.or_else(|| {
+                    self.columns
+                        .iter()
+                        .position(|column| !column.cards.is_empty())
+                        .map(|column| CardPosition { column, card: 0 })
+                });
+                let Some(current) = current else {
+                    return;
+                };
+                match key {
+                    Some(crate::shortcut::Key::Left) => {
+                        let mut column = current.column;
+                        while column > 0 {
+                            column -= 1;
+                            if !self.columns[column].cards.is_empty() {
+                                let card = current.card.min(self.columns[column].cards.len() - 1);
+                                self.set_focused_card(Some(CardPosition { column, card }));
+                                break;
+                            }
+                        }
+                    }
+                    Some(crate::shortcut::Key::Right) => {
+                        let mut column = current.column;
+                        while column + 1 < self.columns.len() {
+                            column += 1;
+                            if !self.columns[column].cards.is_empty() {
+                                let card = current.card.min(self.columns[column].cards.len() - 1);
+                                self.set_focused_card(Some(CardPosition { column, card }));
+                                break;
+                            }
+                        }
+                    }
+                    Some(crate::shortcut::Key::Up) => {
+                        if current.card > 0 {
+                            self.set_focused_card(Some(CardPosition {
+                                column: current.column,
+                                card: current.card - 1,
+                            }));
+                        }
+                    }
+                    Some(crate::shortcut::Key::Down) => {
+                        if current.card + 1 < self.columns[current.column].cards.len() {
+                            self.set_focused_card(Some(CardPosition {
+                                column: current.column,
+                                card: current.card + 1,
+                            }));
+                        }
+                    }
+                    Some(crate::shortcut::Key::PageUp) => self.scroll_column(current.column, -1),
+                    Some(crate::shortcut::Key::PageDown) => self.scroll_column(current.column, 1),
+                    Some(crate::shortcut::Key::Enter) | Some(crate::shortcut::Key::Space) => {
+                        if let Some(card) = self
+                            .columns
+                            .get(current.column)
+                            .and_then(|column| column.cards.get(current.card))
+                        {
+                            let id = card.id.clone();
+                            self.card_activated.emit(id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             // A drag that loses the pointer (the window lost focus, the pointer left
             // the surface) must not leave a card half-attached to the cursor.
-            Event::MouseLeave { .. } => self.cancel_drag(),
+            Event::MouseLeave { .. } => {
+                self.cancel_drag();
+                if self.hovered_card.take().is_some() {
+                    self.base.request_redraw();
+                }
+            }
             _ => {}
         }
     }
@@ -1065,11 +1239,23 @@ impl KanbanBoard {
         desc_font: &Font,
     ) {
         let is_dragged = self.drag_origin == Some(position) && self.is_dragging_card();
+        // A hovered card lifts off the column with a small shadow, so the pointer's target
+        // reads as a raised object before it is dragged. The shadow is drawn first and the
+        // card keeps its rectangle, which is what keeps the layout (and the hit test) still.
+        if self.hovered_card == Some(position) && !self.is_dragging_card() {
+            context.draw_box_shadow(card_rect, Color::BLACK.with_alpha(40), 0, 3, 6, 0);
+        }
         // The dragged card stays drawn in place but faded, so the user can see both
         // where it came from and where it is going.
         let alpha = if is_dragged { 90 } else { 255 };
         context.fill_rounded_rect(card_rect, 6, chrome.card().with_alpha(alpha));
-        context.draw_rounded_rect_stroke(card_rect, 6, chrome.border.with_alpha(alpha), 1);
+        let focused = self.focused_card == Some(position);
+        context.draw_rounded_rect_stroke(
+            card_rect,
+            6,
+            if focused { chrome.text().with_alpha(alpha) } else { chrome.border.with_alpha(alpha) },
+            if focused { 2 } else { 1 },
+        );
 
         let title_color = if card.done {
             chrome.done_text().with_alpha(alpha)

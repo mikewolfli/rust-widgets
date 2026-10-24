@@ -24,6 +24,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -178,6 +179,13 @@ pub struct Banner {
     /// Emitted when `dismiss()` succeeds. Not emitted for a rejected dismiss, so
     /// a listener only ever observes acknowledgements that actually happened.
     pub dismissed: GenericSignal,
+    /// How much of the bar is shown, `0.0` slid out to `1.0` fully in.
+    ///
+    /// A freshly built banner is already fully in, so the resting picture is unchanged: the
+    /// driver only moves when `dismiss` aims it at zero or `show` re-aims it at one. Laying the
+    /// reveal over the existing draw is what makes an acknowledged banner leave rather than
+    /// disappear between two frames.
+    reveal: PropertyDriver,
 }
 
 impl Banner {
@@ -193,6 +201,7 @@ impl Banner {
             hovered_action: None,
             action_clicked: Signal1::new(),
             dismissed: GenericSignal::new(),
+            reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
         }
     }
 
@@ -254,6 +263,8 @@ impl Banner {
             return false;
         }
         self.is_dismissed = true;
+        // Slide out over frames; the flag above is the logical state, the driver is the picture.
+        self.reveal.set_target(0.0);
         self.dismissed_signal();
         self.base.request_redraw();
         true
@@ -266,7 +277,25 @@ impl Banner {
     pub fn show(&mut self) {
         self.is_dismissed = false;
         self.hovered_action = None;
+        // A shown banner slides back in from its own leading edge rather than appearing whole.
+        self.reveal.jump_to(0.0);
+        self.reveal.set_target(1.0);
         self.base.request_redraw();
+    }
+
+    /// How much of the bar is currently drawn, `0.0` to `1.0`.
+    pub fn reveal_progress(&self) -> f32 {
+        self.reveal.value()
+    }
+
+    /// Advances the reveal by `delta_ms`; `true` while it is still moving.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.reveal.tick(delta_ms)
+    }
+
+    /// Whether the reveal is between two values.
+    pub fn is_animating(&self) -> bool {
+        self.reveal.is_moving()
     }
 
     /// Returns the action labels.
@@ -390,6 +419,15 @@ impl Widget for Banner {
     /// give it while the height is one text row plus padding.
     fn size_hint(&self) -> Size {
         Size::new(360, 48)
+    }
+
+    /// Advances the reveal; `true` while it is still moving.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        Banner::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        Banner::is_animating(self)
     }
 
     impl_draw_bridge!();
@@ -531,15 +569,21 @@ impl EventHandler for Banner {
 
 impl Draw for Banner {
     fn draw(&mut self, context: &mut RenderContext) {
-        // A dismissed banner is gone: drawing a backdrop or a border here would
-        // leave a strip of the notice behind after the user acknowledged it.
-        if self.is_dismissed() {
+        // A fully dismissed banner is gone: its reveal has reached zero, so nothing of the
+        // notice is left. While the reveal is still on its way there the bar is drawn, slid
+        // out by the fraction it has left, which is what makes the acknowledgement a movement
+        // rather than a disappearance.
+        let reveal = self.reveal.value();
+        if self.is_dismissed() && reveal <= f32::EPSILON {
             return;
         }
         let rect = self.base.geometry();
         if rect.width == 0 || rect.height == 0 {
             return;
         }
+        let reveal = reveal.clamp(0.0, 1.0);
+        let slide = ((1.0 - reveal) * rect.height as f32) as i32;
+        let rect = Rect::new(rect.x, rect.y - slide, rect.width, rect.height);
 
         let style = self.base.style();
         // The fill layers two facts, in this order:
@@ -980,5 +1024,29 @@ mod tests {
         assert_eq!(banner.actions(), ["C".to_string()]);
         assert_eq!(banner.action_rect(1), None);
         assert!(banner.action_rect(0).is_some());
+    }
+
+    #[test]
+    fn a_dismissed_banner_slides_out_before_it_vanishes() {
+        let mut banner = banner();
+        assert_eq!(banner.reveal_progress(), 1.0);
+        assert!(banner.dismiss());
+        assert!(banner.is_animating(), "the acknowledgement is a movement");
+        assert!(banner.tick(16));
+        assert!(banner.reveal_progress() < 1.0);
+        while banner.tick(1000) {}
+        assert!(!banner.is_animating());
+        assert_eq!(banner.reveal_progress(), 0.0);
+    }
+
+    #[test]
+    fn showing_a_banner_again_animates_it_back_in() {
+        let mut banner = banner();
+        banner.dismiss();
+        while banner.tick(1000) {}
+        banner.show();
+        assert!(banner.is_animating());
+        while banner.tick(1000) {}
+        assert_eq!(banner.reveal_progress(), 1.0);
     }
 }

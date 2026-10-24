@@ -121,7 +121,7 @@
 
 | Backend | Directory | Status |
 |---------|-----------|--------|
-| macOS (cocoa-legacy) | `macos/` | ✅ Native widgets (NSWindow, NSButton, etc.) |
+| macOS (cocoa-legacy) | `macos/` | ✅ Native widgets (the reference window, the reference button, etc.) |
 | macOS (objc2) | `macos_objc2/` | ✅ Native widgets (objc2 bindings) |
 | Windows | `windows/` | ✅ Win32 API |
 | Linux (GTK) | `linux/` | ✅ GTK3 |

@@ -38,6 +38,13 @@ pub enum Host {
     /// Create the control into the engine's **overlay layer** — the engine-owned sibling of
     /// the root, above every page — while the node keeps its declared identity.
     Overlay,
+    /// Create the control into a **named** engine layer.
+    ///
+    /// Layers stack in the order they are first needed, so `tooltip` declared after `popup` draws
+    /// above it. The name is opaque to the engine: it creates one host control per distinct name,
+    /// which is what lets a host draw a modal stack, a tooltip rail and a drag ghost as separate
+    /// z-ordered surfaces without inventing a depth number per node.
+    Layer(String),
 }
 
 /// A single node in a declarative tree.
@@ -188,6 +195,16 @@ impl Node {
     /// the declaration and an overlay on screen, and a pure tree cannot express both.
     pub fn portal(mut self) -> Self {
         self.host = Host::Overlay;
+        self
+    }
+
+    /// Create the control into the **named** layer `name` instead of under its declared parent.
+    ///
+    /// The layer is created on first use and kept for the life of the engine, so every node that
+    /// names it shares one host. Layers stack in first-use order (see [`Host::Layer`]); the
+    /// conventional names a host may special-case are its own choice, not the engine's.
+    pub fn layer(mut self, name: impl Into<String>) -> Self {
+        self.host = Host::Layer(name.into());
         self
     }
 

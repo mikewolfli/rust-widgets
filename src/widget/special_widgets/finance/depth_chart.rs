@@ -21,7 +21,7 @@
 
 use alloc::vec::Vec;
 
-use crate::core::{Color, Rect};
+use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::render::RenderContext;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -69,6 +69,8 @@ pub struct DepthChart {
     ask_color: Color,
     /// Emitted with the price level under the pointer.
     pub level_hovered: crate::signal::Signal1<f64>,
+    /// The price of the level the pointer is nearest, once snapped.
+    hovered_level: Option<f64>,
 }
 
 impl DepthChart {
@@ -81,6 +83,7 @@ impl DepthChart {
             bid_color: Color::rgb(38, 166, 91),
             ask_color: Color::rgb(220, 68, 70),
             level_hovered: crate::signal::Signal1::new(),
+            hovered_level: None,
         }
     }
 
@@ -165,6 +168,35 @@ impl DepthChart {
             });
         }
         points
+    }
+
+    /// The price of the level the pointer is currently nearest, if any.
+    pub fn hovered_level(&self) -> Option<f64> {
+        self.hovered_level
+    }
+
+    /// The level price nearest `price`, across both sides of the book.
+    ///
+    /// The chart's hover used to report the interpolated pointer position, which is not a
+    /// price any order rests at: a caller highlighting the reported level had to search the
+    /// book for an approximate match. Snapping answers the question the signal asks.
+    fn nearest_level(&self, price: f64) -> Option<f64> {
+        let mut best: Option<(f64, f64)> = None;
+        for point in self.curve() {
+            let distance = (point.price - price).abs();
+            if best.is_none_or(|(_, near)| distance < near) {
+                best = Some((point.price, distance));
+            }
+        }
+        best.map(|(price, _)| price)
+    }
+
+    /// The spread between the best bid and best ask, if the book has both sides.
+    fn spread(&self) -> Option<(f64, f64)> {
+        let bid =
+            self.book.bids().iter().map(|level| level.price).fold(f64::NEG_INFINITY, f64::max);
+        let ask = self.book.asks().iter().map(|level| level.price).fold(f64::INFINITY, f64::min);
+        (bid.is_finite() && ask.is_finite() && ask > bid).then_some((bid, ask))
     }
 
     /// The levels to plot on one side, honouring the depth limit.
@@ -402,7 +434,16 @@ impl crate::event::EventHandler for DepthChart {
             if high > low && area.rect.width > 0 {
                 let fraction = (pos.x - area.rect.x) as f64 / area.rect.width as f64;
                 if (0.0..=1.0).contains(&fraction) {
-                    self.level_hovered.emit(low + fraction * (high - low));
+                    let pointer = low + fraction * (high - low);
+                    // Snap to a resting level: the signal names an order's price, not an
+                    // arbitrary coordinate between two of them.
+                    if let Some(level) = self.nearest_level(pointer) {
+                        if self.hovered_level != Some(level) {
+                            self.hovered_level = Some(level);
+                            self.level_hovered.emit(level);
+                            self.base.request_redraw();
+                        }
+                    }
                 }
             }
         }
@@ -460,6 +501,21 @@ impl Draw for DepthChart {
                     chrome.crosshair,
                     1,
                 );
+                // The spread annotation: the bid, the ask and their distance, on the mid line.
+                // A mid line alone says where the price is but not how wide the market is.
+                if let Some((bid, ask)) = self.spread() {
+                    let text = format!("{:.2} / {:.2}  spread {:.2}", bid, ask, ask - bid);
+                    let font = role_font(self.style(), 10.0);
+                    let width = context.measure_text(&text, &font).width as i32;
+                    let x_text = (x + 4).min(area.right() - width).max(area.rect.x);
+                    context.draw_text(
+                        crate::core::Point { x: x_text, y: area.rect.y + 2 },
+                        &text,
+                        &font,
+                        chrome.ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
         }
     }

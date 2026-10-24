@@ -5,6 +5,7 @@
 use crate::core::Color;
 use crate::core::HorizontalAlignment;
 use crate::core::Rect;
+use crate::event::WheelScroll;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::widget::capability::access::selection_mode_to_str;
@@ -82,6 +83,39 @@ pub trait ItemDelegate: Send + Sync {
     fn set_editor_data(&self, editor: &mut dyn Widget, row: usize, column: usize);
     /// Gets editor data.
     fn get_editor_data(&self, editor: &dyn Widget, row: usize, column: usize) -> Option<String>;
+
+    /// Paints a cell, returning whether the delegate took over the cell.
+    ///
+    /// The three-method trait could only supply an editor, so a checkbox column, a
+    /// progress-bar cell or rich text had no place to draw. A delegate now owns the cell's
+    /// ink when it answers `true`; `false` keeps the table's own text rendering.
+    fn paint(
+        &self,
+        context: &mut RenderContext,
+        cell: Rect,
+        row: usize,
+        column: usize,
+        text: Option<&str>,
+    ) -> bool {
+        let _ = (context, cell, row, column, text);
+        false
+    }
+
+    /// The size a cell would like to be, if the delegate has an opinion.
+    fn size_hint(&self, row: usize, column: usize) -> Option<crate::core::Size> {
+        let _ = (row, column);
+        None
+    }
+
+    /// Places `editor` over `cell`.
+    fn update_editor_geometry(&self, editor: &mut dyn Widget, cell: Rect) {
+        editor.set_geometry(cell);
+    }
+
+    /// Called when an edit ends, so a delegate can commit or discard its own state.
+    fn close_editor(&self, editor: &dyn Widget) {
+        let _ = editor;
+    }
 }
 /// Table widget with model/view helpers and selection state.
 pub struct TableWidget {
@@ -116,7 +150,42 @@ pub struct TableWidget {
     pub selection_changed: Signal1<usize>,
     /// Emitted when focused row changes.
     pub focused_row_changed: Signal1<Option<usize>>,
+    /// First content row shown; wheel, keyboard and programmatic scrolling move it.
+    scroll_row: usize,
+    /// What gestures start an edit.
+    edit_triggers: TableEditTriggers,
+    /// Emitted when an edit is requested for `(row, column)`.
+    pub edit_requested: Signal1<(usize, usize)>,
+    /// Emitted when a row is double-clicked.
+    pub row_activated: Signal1<usize>,
+    /// Emitted when the context menu is requested at a point.
+    pub context_menu_requested: Signal1<crate::core::Point>,
 }
+/// Gestures that start an in-place edit in a [`TableWidget`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TableEditTriggers(u8);
+
+impl TableEditTriggers {
+    /// No gesture starts an edit.
+    pub const NONE: Self = Self(0);
+    /// A double-click starts an edit.
+    pub const DOUBLE_CLICKED: Self = Self(1 << 0);
+    /// The edit key (Enter) starts an edit on the focused row.
+    pub const EDIT_KEY: Self = Self(1 << 1);
+    /// Any of the above.
+    pub const ALL: Self = Self(0b11);
+
+    /// Whether `other`'s flags are all present.
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The union of two sets.
+    pub fn or(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
 impl TableWidget {
     /// Creates an empty table widget.
     pub fn new(geometry: Rect) -> Self {
@@ -133,6 +202,11 @@ impl TableWidget {
             editing: None,
             selection_changed: Signal1::new(),
             focused_row_changed: Signal1::new(),
+            scroll_row: 0,
+            edit_triggers: TableEditTriggers::NONE,
+            edit_requested: Signal1::new(),
+            row_activated: Signal1::new(),
+            context_menu_requested: Signal1::new(),
         }
     }
     /// Binds an external table model.
@@ -198,7 +272,16 @@ impl TableWidget {
     /// overrides must lay out exactly as it did before this existed — which is the property its
     /// snapshot and the hit-test tests pin.
     fn resolved_row_height(&self, index: usize) -> u32 {
-        self.row_heights.get(&index).copied().unwrap_or(TABLE_ROW_HEIGHT)
+        if let Some(height) = self.row_heights.get(&index) {
+            return *height;
+        }
+        // A delegate that wants a taller row (a two-line cell, an editor, a thumbnail) says so
+        // through its size hint. Without a delegate, and without a hint, the default stands.
+        self.delegate
+            .as_ref()
+            .and_then(|delegate| delegate.size_hint(index, 0))
+            .map(|size| size.height)
+            .unwrap_or(TABLE_ROW_HEIGHT)
     }
 
     /// The y offset of content row `index` from the top of the rows band.
@@ -267,13 +350,47 @@ impl TableWidget {
     fn row_rect(&self, index: usize) -> Option<Rect> {
         let band = self.rows_band();
         let height = self.resolved_row_height(index);
-        let y = band.y + self.row_offset(index) as i32;
+        let y = band.y + self.row_offset(index) as i32 - self.scroll_offset_px() as i32;
         // A row that would extend past the content box is not painted at all rather than painted
-        // truncated: a half-height row reads as a rendering error.
-        if y + height as i32 > band.y + band.height as i32 {
+        // truncated: a half-height row reads as a rendering error. A row scrolled partly above
+        // the band is hidden for the same reason.
+        if y + height as i32 > band.y + band.height as i32 || y < band.y {
             return None;
         }
         Some(Rect::new(band.x, y, band.width, height))
+    }
+
+    /// The pixel offset the first visible row starts at.
+    fn scroll_offset_px(&self) -> u32 {
+        self.row_offset(self.scroll_row.min(self.row_count()))
+    }
+
+    /// The first visible content row.
+    pub fn scroll_row(&self) -> usize {
+        self.scroll_row
+    }
+
+    /// Sets the first visible content row, clamped to the model.
+    pub fn set_scroll_row(&mut self, row: usize) {
+        let next = row.min(self.row_count().saturating_sub(1));
+        if next == self.scroll_row {
+            return;
+        }
+        self.scroll_row = next;
+        self.base.request_redraw();
+    }
+
+    /// The gestures that start an edit.
+    pub fn edit_triggers(&self) -> TableEditTriggers {
+        self.edit_triggers
+    }
+
+    /// Sets the gestures that start an edit.
+    pub fn set_edit_triggers(&mut self, triggers: TableEditTriggers) {
+        if self.edit_triggers == triggers {
+            return;
+        }
+        self.edit_triggers = triggers;
     }
 
     /// The content row a point falls on, if it falls on a visible one.
@@ -292,9 +409,10 @@ impl TableWidget {
         // by the band's height, so it cannot run away on a long table.
         let mut y = 0u32;
         let mut index = 0usize;
+        let target = offset + self.scroll_offset_px();
         while index < self.row_count() {
             let height = self.resolved_row_height(index);
-            if offset < y + height {
+            if target < y + height {
                 break;
             }
             y += height;
@@ -448,6 +566,19 @@ impl TableWidget {
         // a cell value and an editor's own text form (a number's units, a date's spelling), and asking
         // the model for a `String` here would bypass exactly the customisation the delegate exists for.
         delegate.set_editor_data(editor.as_mut(), row, column);
+        // The editor is a real widget; its geometry is the cell it edits, derived from the same
+        // row/column composition the paint loop uses.
+        let band = self.rows_band();
+        let scroll = self.scroll_offset_px();
+        let y = band.y + self.row_offset(row) as i32 - scroll as i32;
+        let content = ControlMetrics::band_inset(self.base.geometry(), TABLE_INSET);
+        let x: i32 = (0..column)
+            .map(|index| self.resolved_column_width(index, content.width) as i32)
+            .sum::<i32>()
+            + content.x;
+        let width = self.resolved_column_width(column, content.width);
+        let height = self.resolved_row_height(row);
+        delegate.update_editor_geometry(editor.as_mut(), Rect::new(x, y, width, height));
         self.editing = Some((row, column));
         self.base.request_redraw();
         Some(editor)
@@ -463,6 +594,7 @@ impl TableWidget {
         let delegate = self.delegate.clone()?;
         let (row, column) = self.editing?;
         let text = delegate.get_editor_data(editor, row, column);
+        delegate.close_editor(editor);
         self.editing = None;
         self.base.request_redraw();
         text
@@ -735,15 +867,17 @@ impl Draw for TableWidget {
             // lookups; the accumulation below is exactly what those accessors compute, in one
             // pass, and gives the same geometry.
             let band = self.rows_band();
-            let mut row_top = band.y;
-            for r in 0..row_count {
+            let scroll = self.scroll_offset_px();
+            for r in self.scroll_row..row_count {
                 let row_h = self.resolved_row_height(r) as i32;
-                if row_top + row_h > band.y + band.height as i32 {
+                let y = band.y + self.row_offset(r) as i32 - scroll as i32;
+                if y + row_h > band.y + band.height as i32 {
                     break;
                 }
-                let row_box = crate::core::Rect::new(band.x, row_top, band.width, row_h as u32);
-                row_top += row_h;
-                let (y, row_h) = (row_box.y, row_box.height as i32);
+                if y < band.y {
+                    continue;
+                }
+                let row_box = crate::core::Rect::new(band.x, y, band.width, row_h as u32);
                 if Some(r) == current_row {
                     context.fill_rect(row_box, focused_bg);
                 } else if Some(r) == self.hovered_row {
@@ -758,7 +892,19 @@ impl Draw for TableWidget {
                     let x = col_x;
                     col_x += col_w as i32;
                     cell_text.clear();
-                    if model.fill_data(r, c, &mut cell_text) {
+                    let mut painted_by_delegate = false;
+                    if let Some(delegate) = self.delegate.as_ref() {
+                        let cell = crate::core::Rect::new(x, y, col_w, row_h as u32);
+                        let has = model.fill_data(r, c, &mut cell_text);
+                        painted_by_delegate = delegate.paint(
+                            context,
+                            cell,
+                            r,
+                            c,
+                            if has { Some(cell_text.as_str()) } else { None },
+                        );
+                    }
+                    if !painted_by_delegate && model.fill_data(r, c, &mut cell_text) {
                         // The cell is the band: a text origin of `y + row_h / 2` would put the
                         // glyph box's *top* edge on the row's middle line and draw every label
                         // half a line low. `text_line` derives the centred line box instead, and
@@ -830,6 +976,74 @@ impl crate::event::EventHandler for TableWidget {
                     self.base.request_redraw();
                 }
             }
+            crate::event::Event::MouseDoubleClick { pos, button: 1 } => {
+                if let Some(index) = self.row_at_point(*pos) {
+                    self.select_row(index);
+                    self.row_activated.emit(index);
+                    if self.edit_triggers.contains(TableEditTriggers::DOUBLE_CLICKED) {
+                        let column = 0;
+                        self.edit_requested.emit((index, column));
+                    }
+                }
+            }
+            crate::event::Event::ContextMenu { pos } => {
+                self.context_menu_requested.emit(*pos);
+            }
+            crate::event::Event::Wheel { delta, modifiers } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                let row = self.scroll_row as isize - scroll.lines_y as isize;
+                self.set_scroll_row(row.max(0) as usize);
+            }
+            crate::event::Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => {
+                let page = (self.rows_band().height / TABLE_ROW_HEIGHT.max(1)).max(1) as usize;
+                let last = self.row_count().saturating_sub(1);
+                match *key {
+                    crate::event::key_codes::UP => {
+                        let next = self.focused_row.unwrap_or(0).saturating_sub(1);
+                        self.select_row(next);
+                        self.set_scroll_row(next);
+                    }
+                    crate::event::key_codes::DOWN => {
+                        let next = self
+                            .focused_row
+                            .map(|row| row.saturating_add(1))
+                            .unwrap_or(0)
+                            .min(last);
+                        self.select_row(next);
+                        self.set_scroll_row(next);
+                    }
+                    crate::event::key_codes::HOME => {
+                        self.select_row(0);
+                        self.set_scroll_row(0);
+                    }
+                    crate::event::key_codes::END => {
+                        self.select_row(last);
+                        self.set_scroll_row(last);
+                    }
+                    crate::event::key_codes::PAGE_UP => {
+                        let next = self.focused_row.unwrap_or(0).saturating_sub(page);
+                        self.select_row(next);
+                        self.set_scroll_row(next);
+                    }
+                    crate::event::key_codes::PAGE_DOWN => {
+                        let next = self
+                            .focused_row
+                            .map(|row| row.saturating_add(page))
+                            .unwrap_or(0)
+                            .min(last);
+                        self.select_row(next);
+                        self.set_scroll_row(next);
+                    }
+                    crate::event::key_codes::ENTER
+                        if self.edit_triggers.contains(TableEditTriggers::EDIT_KEY) =>
+                    {
+                        if let Some(row) = self.focused_row {
+                            self.edit_requested.emit((row, 0));
+                        }
+                    }
+                    _ => {}
+                }
+            }
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -840,6 +1054,7 @@ mod tests {
     use super::*;
     use crate::core::Point;
     use crate::event::types::EventHandler;
+    use crate::event::Event;
     use std::sync::Arc;
     use std::sync::Mutex;
 
@@ -1540,5 +1755,45 @@ mod tests {
         let _editor = tv.begin_edit(0, 0).expect("a second edit opens");
         tv.cancel_edit();
         assert_eq!(tv.editing_cell(), None, "cancelling closes it");
+    }
+
+    /// Scrolling, wheel paging, keyboard navigation and edit triggers are wired.
+    #[test]
+    fn scrolling_keyboard_and_edit_triggers_are_wired() {
+        use crate::event::types::EventHandler;
+        struct ManyRows;
+        impl TableModel for ManyRows {
+            fn row_count(&self) -> usize {
+                40
+            }
+            fn column_count(&self) -> usize {
+                2
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                Some(std::format!("{row}-{column}"))
+            }
+        }
+        let mut table = TableWidget::new(Rect::new(0, 0, 300, 120));
+        table.set_model(Arc::new(ManyRows));
+        table.handle_event(&Event::wheel(0, -1, 0));
+        assert_eq!(table.scroll_row(), 1, "one notch is one row");
+        table.set_edit_triggers(TableEditTriggers::DOUBLE_CLICKED.or(TableEditTriggers::EDIT_KEY));
+        assert!(table.edit_triggers().contains(TableEditTriggers::DOUBLE_CLICKED));
+        let requested = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&requested);
+        table.edit_requested.connect(move |cell| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*cell);
+            }
+        });
+        table.handle_event(&Event::MouseDoubleClick { pos: Point::new(20, 40), button: 1 });
+        assert!(
+            requested.lock().map(|slot| slot.is_some()).unwrap_or(false),
+            "a double-click requests an edit"
+        );
+
+        table.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        table.handle_event(&Event::KeyPress { key: crate::event::key_codes::END, modifiers: 0 });
+        assert!(table.scroll_row() > 1, "End reaches the last row");
     }
 }

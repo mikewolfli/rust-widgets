@@ -6,9 +6,7 @@ use super::commands::WgpuDrawCommand;
 use super::raster::{align_to, rasterize_draw_commands_rgba8};
 use super::shaders::ShaderModule;
 use super::types::Rgba8;
-use crate::core::Size;
 use crate::render::gpu::{GpuCapability, GpuRenderer};
-use crate::render::{PaintBackend, RenderCommand, SoftwarePaintBackend};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -57,6 +55,24 @@ struct ReadbackCache {
     size: u64,
 }
 
+/// The two ping-pong targets and per-direction bind groups of the blur pass.
+///
+/// The pass reads a texture and writes one that is not also bound as its attachment, so two
+/// textures are required. Both are `RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_*`: the first is
+/// uploaded into and read back from, the second is only ever the horizontal pass's target. Cached
+/// per `(width, height)` and rebuilt when the size changes (REND-02's reuse rule).
+struct BlurTargets {
+    width: u32,
+    height: u32,
+    source: wgpu::Texture,
+    source_view: wgpu::TextureView,
+    scratch_view: wgpu::TextureView,
+    horizontal: wgpu::BindGroup,
+    vertical: wgpu::BindGroup,
+    horizontal_params: wgpu::Buffer,
+    vertical_params: wgpu::Buffer,
+}
+
 /// The model-view-projection uniform used by the `3d` transform pipeline.
 ///
 /// One matrix serves a whole call, so this is not a dynamic-offset arena. The 64-byte size is
@@ -90,6 +106,8 @@ struct RenderCache {
     upload_target: Option<TargetCache>,
     vertices: Option<VertexCache>,
     readback: Option<ReadbackCache>,
+    /// Ping-pong targets and bind groups for the separable blur pass.
+    blur: Option<BlurTargets>,
     /// Mvp uniform and bind group for the `3d` transform pipeline.
     #[cfg(feature = "3d")]
     transformed_uniform: Option<TransformedUniform>,
@@ -221,6 +239,86 @@ impl RenderCache {
         }
     }
 
+    /// Ensures the blur ping-pong targets and both directional bind groups match `width × height`.
+    fn ensure_blur_targets(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        width: u32,
+        height: u32,
+    ) {
+        let matches = self
+            .blur
+            .as_ref()
+            .map(|targets| targets.width == width && targets.height == height)
+            .unwrap_or(false);
+        if matches {
+            return;
+        }
+        let make_texture = |label: &str| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let source = make_texture("wgpu_blur_source");
+        let scratch = make_texture("wgpu_blur_scratch");
+        let source_view = source.create_view(&wgpu::TextureViewDescriptor::default());
+        let scratch_view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
+        let make_params = |label: &str| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: 16,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let horizontal_params = make_params("wgpu_blur_horizontal_params");
+        let vertical_params = make_params("wgpu_blur_vertical_params");
+        let make_bind_group = |label: &str, view: &wgpu::TextureView, buffer: &wgpu::Buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(16),
+                        }),
+                    },
+                ],
+            })
+        };
+        let horizontal = make_bind_group("wgpu_blur_horizontal", &source_view, &horizontal_params);
+        let vertical = make_bind_group("wgpu_blur_vertical", &scratch_view, &vertical_params);
+        self.blur = Some(BlurTargets {
+            width,
+            height,
+            source,
+            source_view,
+            scratch_view,
+            horizontal,
+            vertical,
+            horizontal_params,
+            vertical_params,
+        });
+    }
+
     /// Ensures the `3d` mvp uniform and its bind group exist.
     ///
     /// The buffer never grows: every call writes one 64-byte matrix. It is created once per
@@ -313,7 +411,7 @@ fn tint_blurred_frame(frame: &mut [u8], tint: Rgba8, weight: f32) {
         return;
     }
     let tint_rgb = [tint.r as f32 / 255.0, tint.g as f32 / 255.0, tint.b as f32 / 255.0];
-    for pixel in frame.chunks_exact_mut(4) {
+    for pixel in frame.as_chunks_mut::<4>().0 {
         let dst_alpha = pixel[3] as f32 / 255.0;
         let out_alpha = tint_alpha + dst_alpha * (1.0 - tint_alpha);
         if out_alpha <= f32::EPSILON {
@@ -397,7 +495,13 @@ pub struct WgpuRenderer {
     /// matrix pipeline instead, so the field is only read by the default 2D path.
     #[cfg_attr(feature = "3d", allow(dead_code))]
     rect_pipeline: wgpu::RenderPipeline,
+    /// The separable-blur pipeline: one full-screen triangle, no vertex buffer, two directional
+    /// passes. A 2D effect, so it is compiled in every build rather than behind `3d`.
+    blur_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    /// Bind group layout of the blur pass: a non-filterable input texture and a 16-byte uniform
+    /// (`direction`, `radius`).
+    blur_bind_group_layout: wgpu::BindGroupLayout,
     /// Instanced matrix pipeline for the `3d` feature. It is compiled only when that feature is
     /// on, so the default 2D renderer creates and carries nothing extra.
     #[cfg(feature = "3d")]
@@ -506,6 +610,14 @@ impl WgpuRenderer {
         let instanced_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rect_fs_instanced"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::FILL_RECT_INSTANCED_FS.into()),
+        });
+        let blur_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("blur_vs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::BLUR_VS.into()),
+        });
+        let blur_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("blur_fs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::BLUR_FS.into()),
         });
 
         // Create bind group layout for uniform color (shared between clear and rect pipelines)
@@ -643,6 +755,81 @@ impl WgpuRenderer {
             cache: None,
         });
 
+        // ── Create the separable blur pipeline ──
+        //
+        // The input is read with `textureLoad`, so its sample type is non-filterable and no
+        // sampler is bound. One draw call per direction filters the whole target; the two
+        // bind groups differ only in the uniform that names the axis and in which texture is
+        // the source.
+        let blur_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("blur_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(wgpu::BufferSize::new(16).unwrap()),
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let blur_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("blur_pipeline_layout"),
+            bind_group_layouts: &[Some(&blur_bind_group_layout)],
+            immediate_size: 0,
+        });
+        let blur_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("blur_pipeline"),
+            layout: Some(&blur_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &blur_vs_module,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &blur_fs_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
         // ── Create the instanced `3d` matrix pipeline ──
         //
         // One instance carries the four corners and the colour, so a whole run of quads is a
@@ -724,6 +911,8 @@ impl WgpuRenderer {
         shader_cache.insert("clear_fs".to_string(), clear_fs_module);
         shader_cache.insert("rect_vs".to_string(), rect_vs_module);
         shader_cache.insert("rect_fs".to_string(), rect_fs_module);
+        shader_cache.insert("blur_vs".to_string(), blur_vs_module);
+        shader_cache.insert("blur_fs".to_string(), blur_fs_module);
         #[cfg(feature = "3d")]
         shader_cache.insert("rect_vs_transformed".to_string(), transformed_vs_module);
         #[cfg(feature = "3d")]
@@ -734,7 +923,9 @@ impl WgpuRenderer {
             queue,
             clear_pipeline,
             rect_pipeline,
+            blur_pipeline,
             bind_group_layout,
+            blur_bind_group_layout,
             #[cfg(feature = "3d")]
             transformed_pipeline,
             #[cfg(feature = "3d")]
@@ -1397,6 +1588,120 @@ impl WgpuRenderer {
         let pixels = rasterize_draw_commands_rgba8(width, height, commands)?;
         self.upload_and_readback_rgba8(width, height, &pixels)
     }
+    /// Applies a separable Gaussian blur to an RGBA8 image on the GPU.
+    ///
+    /// # Why two passes
+    ///
+    /// A Gaussian kernel is separable: blurring rows and then columns costs `O(radius)` per pixel
+    /// instead of `O(radius²)`. Each pass is one full-screen draw through [`super::shaders::BLUR_FS`],
+    /// ping-ponging between two cached textures. The input is uploaded once, the result read back
+    /// once, and every intermediate stage stays on the GPU.
+    ///
+    /// `radius` is the Gaussian's 2-sigma point, matching [`crate::render::RenderCommand::Blur`], and is clamped
+    /// to the same 100-pixel ceiling the software path uses. A zero radius is an identity and
+    /// returns the input bytes unchanged (no GPU round trip).
+    ///
+    /// This is the hardware path the backdrop-blur layer uses. It is a 2D effect, so it is compiled
+    /// in every build rather than behind the `3d` feature.
+    pub fn render_blur_rgba8(
+        &self,
+        width: u32,
+        height: u32,
+        rgba8: &[u8],
+        radius: u32,
+    ) -> Result<Vec<u8>, String> {
+        let expected_len = rgba_buffer_len(width, height)?;
+        if rgba8.len() != expected_len {
+            return Err(format!(
+                "rgba8 input is {} bytes but a {width}x{height} image needs {expected_len} bytes",
+                rgba8.len(),
+            ));
+        }
+        let radius = radius.min(100);
+        if radius == 0 {
+            return Ok(rgba8.to_vec());
+        }
+        let padded_bytes_per_row = padded_row_bytes(width)?;
+        let output_buffer_size = readback_frame_bytes(width, height)?;
+        let mut cache = self.cache.borrow_mut();
+        cache.ensure_blur_targets(&self.device, &self.blur_bind_group_layout, width, height);
+        cache.ensure_readback(&self.device, output_buffer_size);
+        let targets = cache.blur.as_ref().expect("the blur targets were just ensured");
+        let readback = cache.readback.as_ref().expect("the readback was just ensured");
+
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &targets.source,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba8,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        let write_params = |buffer: &wgpu::Buffer, direction: [f32; 2]| {
+            let mut bytes = [0u8; 16];
+            bytes[0..4].copy_from_slice(&direction[0].to_ne_bytes());
+            bytes[4..8].copy_from_slice(&direction[1].to_ne_bytes());
+            bytes[8..12].copy_from_slice(&(radius as f32).to_ne_bytes());
+            self.queue.write_buffer(buffer, 0, &bytes);
+        };
+        write_params(&targets.horizontal_params, [1.0, 0.0]);
+        write_params(&targets.vertical_params, [0.0, 1.0]);
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("wgpu_blur_encoder"),
+        });
+        let mut blur_pass = |view: &wgpu::TextureView, group: &wgpu::BindGroup, label: &str| {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(label),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.blur_pipeline);
+            pass.set_bind_group(0, group, &[]);
+            pass.draw(0..3, 0..1);
+        };
+        blur_pass(&targets.scratch_view, &targets.horizontal, "wgpu_blur_horizontal");
+        blur_pass(&targets.source_view, &targets.vertical, "wgpu_blur_vertical");
+
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &targets.source,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(Some(encoder.finish()));
+        self.read_back(&readback.buffer, width, height, expected_len)
+    }
+
     /// Applies one backdrop-blur pass to a frame that has already been composed.
     ///
     /// # Where the pass runs
@@ -1411,7 +1716,7 @@ impl WgpuRenderer {
     /// no picture difference, so the offscreen round trip is the GPU half and the kernel is
     /// shared.
     ///
-    /// `radius` is the Gaussian's 2-sigma point, matching [`RenderCommand::Blur`]. A zero
+    /// `radius` is the Gaussian's 2-sigma point, matching [`crate::render::RenderCommand::Blur`]. A zero
     /// radius returns the round-tripped frame unchanged; `tint` is applied afterwards so the
     /// tint sits on the blurred backdrop, as it does in the software layer composition.
     pub fn render_backdrop_blur_rgba8(
@@ -1422,19 +1727,9 @@ impl WgpuRenderer {
         radius: u32,
         tint: Option<(Rgba8, f32)>,
     ) -> Result<Vec<u8>, String> {
-        let mut frame = self.upload_rgba8_and_readback(width, height, backdrop)?;
-        if radius > 0 {
-            let mut backend = SoftwarePaintBackend::new(Size::new(width, height), 1.0);
-            if !backend.seed_from(&frame) {
-                return Err(format!(
-                    "backdrop frame is {} bytes but a {width}x{height} layer needs {}",
-                    frame.len(),
-                    rgba_buffer_len(width, height)?
-                ));
-            }
-            backend.execute_command(&RenderCommand::Blur { radius });
-            frame = backend.into_frame_rgba();
-        }
+        let frame = self.upload_rgba8_and_readback(width, height, backdrop)?;
+        let mut frame =
+            if radius > 0 { self.render_blur_rgba8(width, height, &frame, radius)? } else { frame };
         if let Some((tint, weight)) = tint {
             tint_blurred_frame(&mut frame, tint, weight);
         }
@@ -1583,7 +1878,6 @@ impl GpuRenderer for WgpuRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     /// A renderer on this host, or `None` when no adapter can be reached.
     ///
     /// The GPU tests are real: they submit work and read the pixels back. A host with no
@@ -1695,7 +1989,7 @@ mod tests {
     #[cfg(feature = "3d")]
     #[test]
     fn a_45_degree_rotated_rect_agrees_with_the_software_path() {
-        use crate::core::{Color, Point, Size};
+        use crate::core::{Color, Point};
         use crate::render::math3d::Mat3;
         use crate::render::SoftwareSurface;
 
@@ -1710,7 +2004,7 @@ mod tests {
             .expect("the matrix pipeline must render");
 
         let mapped = local.map(|point| affine.map_point(point));
-        let mut surface = SoftwareSurface::new(Size::new(32, 32), 1.0);
+        let mut surface = SoftwareSurface::new(crate::core::Size::new(32, 32), 1.0);
         surface.begin_frame(Color::TRANSPARENT);
         surface.draw_path(&mapped[..], true, Color::RED, true, 0);
         surface.end_frame();
@@ -1771,7 +2065,7 @@ mod tests {
     #[cfg(feature = "3d")]
     #[test]
     fn instanced_run_matches_the_software_reference() {
-        use crate::core::{Color, Point, Size};
+        use crate::core::{Color, Point};
         use crate::render::math3d::Mat3;
         use crate::render::SoftwareSurface;
 
@@ -1789,7 +2083,7 @@ mod tests {
             .render_fill_quads_gpu(18, 18, &Mat3::IDENTITY, &quads)
             .expect("the instanced run must render");
 
-        let mut surface = SoftwareSurface::new(Size::new(18, 18), 1.0);
+        let mut surface = SoftwareSurface::new(crate::core::Size::new(18, 18), 1.0);
         surface.begin_frame(Color::TRANSPARENT);
         for (corners, colour) in run {
             surface.draw_path(&corners, true, colour, true, 0);
@@ -1880,7 +2174,7 @@ mod tests {
     #[cfg(feature = "3d")]
     #[test]
     fn a_45_degree_instanced_run_agrees_with_the_software_path() {
-        use crate::core::{Color, Point, Size};
+        use crate::core::{Color, Point};
         use crate::render::math3d::Mat3;
         use crate::render::SoftwareSurface;
 
@@ -1900,7 +2194,7 @@ mod tests {
             .render_fill_quads_gpu(32, 32, &affine, &quads)
             .expect("the instanced matrix pipeline must render");
 
-        let mut surface = SoftwareSurface::new(Size::new(32, 32), 1.0);
+        let mut surface = SoftwareSurface::new(crate::core::Size::new(32, 32), 1.0);
         surface.begin_frame(Color::TRANSPARENT);
         for (corners, colour) in run {
             let mapped = corners.map(|point| affine.map_point(point));
@@ -1928,5 +2222,72 @@ mod tests {
                 "a corner outside the rotated run must remain transparent in both paths"
             );
         }
+    }
+
+    /// A zero radius is the identity, and it must not even touch the GPU.
+    #[test]
+    fn a_zero_radius_blur_returns_the_input() {
+        let Some(renderer) = renderer() else { return };
+        let input = vec![9u8; 4 * 4 * 4];
+        let output = renderer.render_blur_rgba8(4, 4, &input, 0).expect("identity blur");
+        assert_eq!(output, input);
+    }
+
+    /// A uniform field is a fixed point of a normalised blur kernel.
+    ///
+    /// This is the property a separable GPU pass is most likely to break with a bad weight or an
+    /// edge clamp: a field of one colour must stay that colour, because every tap reads the same
+    /// value and the weights sum to one.
+    #[test]
+    fn a_uniform_field_survives_the_gpu_blur() {
+        let Some(renderer) = renderer() else { return };
+        let input: Vec<u8> = (0..8 * 8).flat_map(|_| [100u8, 150, 200, 255]).collect();
+        let output = renderer.render_blur_rgba8(8, 8, &input, 3).expect("the blur pass runs");
+        for y in 0..8 {
+            for x in 0..8 {
+                let seen = pixel(&output, 8, x, y);
+                for channel in 0..4 {
+                    assert!(
+                        seen[channel].abs_diff(input[channel]) <= 1,
+                        "a uniform field must stay uniform at ({x},{y}), got {seen:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A blur moves colour across a hard edge and stays symmetric about it.
+    ///
+    /// The left half is red and the right half blue. After the blur the pixels either side of the
+    /// seam must both contain some of each colour, and their values must mirror: the kernel is
+    /// symmetric, so sampling one pixel left of the seam and one right of it must produce the same
+    /// two-colour mixture.
+    #[test]
+    fn the_gpu_blur_spreads_an_edge_symmetrically() {
+        let Some(renderer) = renderer() else { return };
+        let width = 16u32;
+        let height = 4u32;
+        let mut input = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let offset = ((y * width + x) * 4) as usize;
+                if x < width / 2 {
+                    input[offset..offset + 4].copy_from_slice(&[255, 0, 0, 255]);
+                } else {
+                    input[offset..offset + 4].copy_from_slice(&[0, 0, 255, 255]);
+                }
+            }
+        }
+        let output = renderer.render_blur_rgba8(width, height, &input, 4).expect("the blur runs");
+        let left = pixel(&output, width, width / 2 - 1, 2);
+        let right = pixel(&output, width, width / 2, 2);
+        assert!(left[2] > 0, "blue must bleed left of the seam: {left:?}");
+        assert!(right[0] > 0, "red must bleed right of the seam: {right:?}");
+        // Symmetry about the seam swaps the two colours, so the red/blue channels mirror each
+        // other rather than matching channel for channel.
+        assert!(
+            left[0].abs_diff(right[2]) <= 2 && left[2].abs_diff(right[0]) <= 2,
+            "the two sides of a symmetric edge must mirror: {left:?} vs {right:?}"
+        );
     }
 }

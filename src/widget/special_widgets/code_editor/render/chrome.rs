@@ -234,8 +234,14 @@ pub(crate) const TAB_MIN_WIDTH: i32 = 84;
 /// this type carries, and the painter, the caret and the hit-test all read it, so
 /// the three cannot disagree about a wrapped row again.
 pub(super) struct RowGeometry<'a> {
-    /// Measured boundaries, present when the line is not soft-wrapped.
+    /// Measured boundaries, present when the row has been measured.
     pub(super) layout: Option<&'a RowLayout>,
+    /// Character index at which `layout`'s first boundary sits.
+    ///
+    /// A soft-wrapped segment's layout starts at its own first character, while
+    /// callers address characters by line-global index; this offset translates
+    /// between the two.
+    pub(super) layout_base: usize,
     pub(super) grid: &'a LineGrid<'a>,
     pub(super) cell: f32,
     /// Grid column at which this visual row's first character sits.
@@ -247,7 +253,11 @@ pub(super) struct RowGeometry<'a> {
 impl<'a> RowGeometry<'a> {
     /// x of character `index` inside this row's text area.
     pub(super) fn x_of(&self, index: usize) -> f32 {
-        if let Some(x) = self.layout.and_then(|layout| layout.x_of_char(index)) {
+        let local = index.saturating_sub(self.layout_base);
+        if let Some(x) = self.layout.and_then(|layout| layout.x_of_char(local)) {
+            if self.layout_base > 0 {
+                return self.indent + x;
+            }
             return x;
         }
         let column = self.grid.column_of_char(index).saturating_sub(self.first_column);

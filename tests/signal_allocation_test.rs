@@ -17,6 +17,10 @@
 //! measured as an intermittent extra allocation (one run in fifteen). Counting only the thread
 //! that runs the operation is the property these tests actually assert, and it also lets the
 //! file's tests run in parallel again.
+//!
+//! The OpenHarmony cross target expands `thread_local!` through a std shim whose const path
+//! the lint cannot see, so an already-`const` initialiser there is reported as non-const.
+#![allow(clippy::missing_const_for_thread_local)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

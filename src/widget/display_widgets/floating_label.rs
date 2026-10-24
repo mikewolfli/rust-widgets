@@ -109,6 +109,14 @@ pub struct FloatingLabel {
     travel: crate::style::PropertyDriver,
     /// Emitted when the text content changes.
     pub text_changed: Signal1<String>,
+    /// Whether the host has delivered committed text for this widget.
+    ///
+    /// The printable-key path is a fallback for hosts that report typing only as key
+    /// codes. Once `TextInput` or `ImeCommit` has arrived, the backend is speaking the
+    /// committed-text protocol, and accepting the raw key as well would insert the
+    /// character twice — or insert a key code that a non-Latin layout never meant as
+    /// that character.
+    text_input_seen: bool,
 }
 
 impl FloatingLabel {
@@ -128,6 +136,7 @@ impl FloatingLabel {
             // what the theme's `fast` token describes.
             travel: crate::style::PropertyDriver::at(0.0, crate::style::MotionSlot::Fast),
             text_changed: Signal1::new(),
+            text_input_seen: false,
         }
     }
 
@@ -212,6 +221,22 @@ impl FloatingLabel {
     /// Returns whether the text content is empty.
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
+    }
+
+    /// Appends text committed by the platform, dropping control characters.
+    ///
+    /// A single-line field has one line, so a committed newline or tab is not part of
+    /// its value. Filtering here rather than in each event arm keeps the `TextInput`
+    /// and `ImeCommit` paths identical.
+    fn append_committed_text(&mut self, text: &str) {
+        let mut committed = String::new();
+        committed.extend(text.chars().filter(|ch| !ch.is_control()));
+        if committed.is_empty() {
+            return;
+        }
+        let mut new_text = self.text.clone();
+        new_text.push_str(&committed);
+        self.set_text(new_text);
     }
 
     /// Sets the focused state. When focused, the label floats above.
@@ -712,9 +737,13 @@ impl EventHandler for FloatingLabel {
                     // Enter — lose focus
                     self.set_focused(false);
                 } else if *key >= 32 && *key <= 126 {
-                    // Printable ASCII — append to text
-                    let c = char::from_u32(*key).unwrap_or(' ');
-                    if self.is_focused() {
+                    // Printable ASCII — append to text.
+                    //
+                    // This is the fallback for a host that reports typing only as key
+                    // codes. A host that delivers `TextInput`/`ImeCommit` has already
+                    // inserted the character, so the raw key must not be applied again.
+                    if self.is_focused() && !self.text_input_seen {
+                        let c = char::from_u32(*key).unwrap_or(' ');
                         let mut new_text = self.text.clone();
                         new_text.push(c);
                         self.set_text(new_text);
@@ -726,6 +755,16 @@ impl EventHandler for FloatingLabel {
                         new_text.pop();
                         self.set_text(new_text);
                     }
+                }
+            }
+            // Platform-committed text. Both variants take the same path: a printable
+            // character delivered by the keyboard layout and an IME commit are the
+            // same user action from this control's point of view, and neither is
+            // derivable from a raw key code.
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.text_input_seen = true;
+                if self.is_focused() {
+                    self.append_committed_text(text);
                 }
             }
             _ => {
@@ -909,6 +948,47 @@ mod tests {
         // Backspace
         fl.handle_event(&Event::KeyPress { key: 8, modifiers: 0 });
         assert_eq!(fl.text(), "A");
+    }
+
+    /// Platform text input inserts characters, and disables the raw-key fallback.
+    ///
+    /// A backend that sends `TextInput` has already resolved the layout, so applying
+    /// the ASCII key code as well would double-insert the character.
+    #[test]
+    fn floating_label_text_input_inserts_and_suppresses_the_key_fallback() {
+        let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
+        fl.set_focused(true);
+
+        fl.handle_event(&Event::TextInput { text: "A".to_string() });
+        assert_eq!(fl.text(), "A");
+
+        // The same character as a raw key is ignored after a `TextInput`.
+        fl.handle_event(&Event::KeyPress { key: 65, modifiers: 0 });
+        assert_eq!(fl.text(), "A", "the key fallback must not duplicate committed text");
+
+        // Non-ASCII text has no key-code spelling at all; the committed path carries it.
+        fl.handle_event(&Event::TextInput { text: "é".to_string() });
+        assert_eq!(fl.text(), "Aé");
+    }
+
+    /// An IME commit inserts the composed string as one edit.
+    #[test]
+    fn floating_label_ime_commit_inserts_the_composition() {
+        let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
+        fl.set_focused(true);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        fl.text_changed.connect(move |text| {
+            sink.lock().unwrap().push((*text).clone());
+        });
+
+        fl.handle_event(&Event::ImeCommit { text: "日本語".to_string() });
+        assert_eq!(fl.text(), "日本語");
+        assert_eq!(*seen.lock().unwrap(), vec!["日本語".to_string()]);
+
+        // The ASCII fallback is gone once a commit has been seen.
+        fl.handle_event(&Event::KeyPress { key: 65, modifiers: 0 });
+        assert_eq!(fl.text(), "日本語");
     }
 
     #[test]

@@ -10,8 +10,8 @@
 #           placeholder is not a lie, so it is not required to be answered
 # failed  = declarations that disagree with the implementation
 
-controls   213
-skipped    217
+controls   218
+skipped    222
 failed     0
 
 ## skipped entries (each with its reason)
@@ -233,6 +233,11 @@ failed     0
 - confirm_dialog::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - about_dialog::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - time_picker::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- mac_segmented_control::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- mac_stepper::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- mac_toolbar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- mac_source_list::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- mac_window_chrome::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 
 ## failed entries
 

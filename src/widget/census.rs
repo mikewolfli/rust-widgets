@@ -35,6 +35,20 @@
 //! controls (`ToolButton` serves both `tool_button` and `split_button`), so a kind
 //! sweep silently skips 19 controls. Enumerating from
 //! [`WidgetFactory::widget_names`] makes the set impossible to under-count.
+//!
+//! # The counting basis
+//!
+//! This module is the authority for "how many controls does the crate ship": the set
+//! is [`WidgetFactory::widget_names`], one entry per **canonical name**, so any count
+//! quoted elsewhere in the repository should be a count of this enumeration rather than
+//! a hand-written number.
+//!
+//! The number is deliberately **not** a constant here. Capabilities are feature-gated
+//! (`web`, `chart`, `advanced-widgets`, …), so the published set differs between a
+//! `desktop` build and a stripped one, and a constant would be a claim that is true for
+//! one profile and false for another. The snapshot exporter, the baseline file and the
+//! gate counters each quote the number their own build produced; the test below asserts
+//! that whatever that number is, every entry in it is constructible and appears once.
 
 use crate::compat::Vec;
 use crate::core::{Color, Rect, Size};
@@ -384,5 +398,55 @@ pub fn format_rgb(rgba: Option<(u8, u8, u8, u8)>) -> crate::compat::String {
         Some((r, g, b, 255)) => crate::compat::format!("{r},{g},{b}"),
         Some((r, g, b, a)) => crate::compat::format!("{r},{g},{b}@{a}"),
         None => crate::compat::String::from("none"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The census covers **every** canonical control, exactly once, and can build it.
+    ///
+    /// # Why this is an assertion about the factory and not about a list
+    ///
+    /// `census_all_controls` iterates [`WidgetFactory::widget_names`], so a list held
+    /// here would be a second source of truth that could disagree with the sweep. What
+    /// this test adds is the three properties the sweep relies on:
+    ///
+    /// * every published name resolves to a constructor, or the census would report a
+    ///   registered-but-unbuildable control instead of measuring it;
+    /// * no canonical name appears twice, or one control would be measured twice and
+    ///   painted over the other's row in the baseline file;
+    /// * alias spellings are **not** separate rows, because they resolve to the same
+    ///   control — the census counts controls, not names a caller may use.
+    #[test]
+    fn the_census_measures_every_canonical_control_exactly_once() {
+        let factory = WidgetFactory::new_with_defaults();
+        let names = factory.widget_names();
+        assert!(!names.is_empty(), "a build with no controls has nothing to census");
+
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "a canonical name is registered more than once, so one control would \
+             overwrite another in the census"
+        );
+
+        let constructible = factory.constructible_names();
+        assert_eq!(
+            constructible.len(),
+            names.len(),
+            "every canonical capability must also be constructible, or the census would \
+             skip it with a warning instead of measuring it"
+        );
+        for name in &constructible {
+            assert!(
+                factory.constructor_for(name.as_str()).is_some(),
+                "{name} is published as constructible but has no constructor"
+            );
+        }
     }
 }

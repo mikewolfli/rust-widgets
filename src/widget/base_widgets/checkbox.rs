@@ -3,11 +3,12 @@
 
 //! Checkbox widget implementation.
 use crate::compat::{format, String, ToString};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::base_widgets::button_group::{self, GroupKey};
 use crate::widget::capability::coercion::{
     check_state_to_str, expect_bool, expect_check_state, expect_string,
 };
@@ -74,6 +75,12 @@ pub struct CheckBox {
     state: CheckState,
     text: String,
     tristate_enabled: bool,
+    /// Whether this box is exclusive with its siblings under the same parent.
+    ///
+    /// Off by default: the reference toolkit's check box is *not* auto-exclusive, and turning it
+    /// on by default would change the meaning of every existing form. See
+    /// [`CheckBox::set_auto_exclusive`].
+    auto_exclusive: bool,
     /// The hover/press fade that tints the indicator while the pointer interacts.
     ///
     /// Both drivers rest at exactly `0.0`, so a checkbox that has never been pointed at paints
@@ -223,18 +230,107 @@ impl CheckBox {
             state: CheckState::Unchecked,
             text: String::new(),
             tristate_enabled: false,
+            auto_exclusive: false,
             fade: InteractionFade::new(),
             toggled: Signal1::new(),
             state_changed: Signal1::new(),
         }
     }
+    /// The group this box belongs to, when auto-exclusive.
+    ///
+    /// The reference toolkit groups auto-exclusive buttons by **parent**, which is why no
+    /// `group_id` is needed here: two auto-exclusive boxes under one container are a group, and a
+    /// box with no parent is a group of one (and therefore never excludes anything).
+    fn exclusive_key(&self) -> Option<GroupKey> {
+        if !self.auto_exclusive {
+            return None;
+        }
+        self.parent().map(GroupKey::Parent)
+    }
+
+    /// Whether another member of this box's group is currently selected.
+    fn displaced_by_a_peer(&self) -> bool {
+        self.exclusive_key()
+            .and_then(|key| button_group::selected(&key).map(|selected| selected != self.id()))
+            .unwrap_or(false)
+    }
+
+    /// Records this box's current facts with its group, if it has one.
+    ///
+    /// Idempotent, and cheap enough to call from every event: the group's copy of the rectangle
+    /// and enabled flag is what arrow navigation and a later peer's notification read.
+    fn sync_group_registration(&self) {
+        if let Some(key) = self.exclusive_key() {
+            button_group::register(key, self.id(), self.geometry(), self.base.is_enabled());
+        }
+    }
+
+    /// Makes this box the group's selected member and unchecks the one it replaced.
+    fn claim_group_selection(&mut self) {
+        let Some(key) = self.exclusive_key() else {
+            return;
+        };
+        button_group::register(key.clone(), self.id(), self.geometry(), self.base.is_enabled());
+        if let Some(previous) = button_group::select(&key, self.id()) {
+            if previous != self.id() {
+                // A mounted peer is told through the property layer, so it emits its own
+                // `state_changed`. An unmounted peer derives the answer from the registry.
+                button_group::notify_checked(&[previous], false);
+            }
+        }
+    }
+
+    /// Releases the group's selection when this box is the member holding it.
+    fn release_group_selection(&mut self) {
+        if let Some(key) = self.exclusive_key() {
+            if button_group::is_selected(&key, self.id()) {
+                button_group::clear_selection(&key);
+            }
+        }
+    }
+
+    /// Returns whether this box is auto-exclusive with its siblings.
+    pub fn is_auto_exclusive(&self) -> bool {
+        self.auto_exclusive
+    }
+
+    /// Makes this check box exclusive with the other auto-exclusive boxes under its parent.
+    ///
+    /// With it on, checking one box unchecks the others in the same parent — the reference
+    /// toolkit's `autoExclusive`. Off by default, because a group of check boxes normally answers
+    /// "which of these apply?" rather than "which one?", and silently changing that would be a
+    /// behaviour change for every existing form.
+    pub fn set_auto_exclusive(&mut self, exclusive: bool) {
+        if self.auto_exclusive == exclusive {
+            return;
+        }
+        let previous_key = self.exclusive_key();
+        self.auto_exclusive = exclusive;
+        if let Some(key) = previous_key {
+            button_group::unregister(&key, self.id());
+        }
+        self.sync_group_registration();
+        if exclusive && self.state == CheckState::Checked {
+            self.claim_group_selection();
+        }
+        self.base.request_redraw();
+    }
+
     /// Returns current check state.
+    ///
+    /// A box that has been displaced by an auto-exclusive sibling reports
+    /// [`CheckState::Unchecked`]: the group's selection is the fact, and this is the control
+    /// reading it back rather than keeping a second, stale copy.
     pub fn state(&self) -> CheckState {
-        self.state
+        if self.displaced_by_a_peer() {
+            CheckState::Unchecked
+        } else {
+            self.state
+        }
     }
     /// Returns true when the checkbox is fully checked.
     pub fn is_checked(&self) -> bool {
-        self.state == CheckState::Checked
+        self.state() == CheckState::Checked
     }
     /// Returns true when the checkbox is partially checked (tristate).
     pub fn is_partially_checked(&self) -> bool {
@@ -257,21 +353,31 @@ impl CheckBox {
     /// Reached through `set_checked` and `set_tristate_enabled` alike, so one call covers both
     /// entry points rather than each caller having to remember.
     pub fn set_state(&mut self, state: CheckState) {
-        if self.state == state {
+        let previous = self.state();
+        if self.state == state && previous == state {
             return;
         }
-        let previous = self.state;
+        if state == CheckState::Checked {
+            self.claim_group_selection();
+        } else if self.state == CheckState::Checked {
+            self.release_group_selection();
+        }
         self.state = state;
+        self.sync_group_registration();
         // Before the signals: a handler reading the style back must see the state it is being
         // told about, not the previous one.
         crate::style::reapply_active_theme_state(self);
-        self.state_changed.emit(state);
-        // Emit toggled signal for boolean transitions
-        match (previous, state) {
-            (CheckState::Unchecked, CheckState::Checked) => self.toggled.emit(true),
-            (CheckState::Checked, CheckState::Unchecked) => self.toggled.emit(false),
-            // No action needed for this transition
-            _ => {}
+        // A displaced box already reported `Unchecked` through `state()`; clearing its stored
+        // latch must not announce the same value a second time.
+        if previous != state {
+            self.state_changed.emit(state);
+            // Emit toggled signal for boolean transitions
+            match (previous, state) {
+                (CheckState::Unchecked, CheckState::Checked) => self.toggled.emit(true),
+                (CheckState::Checked, CheckState::Unchecked) => self.toggled.emit(false),
+                // No action needed for this transition
+                _ => {}
+            }
         }
         self.base.request_redraw();
     }
@@ -313,7 +419,7 @@ impl CheckBox {
 
     /// Toggles between checked states.
     pub fn toggle(&mut self) {
-        let next_state = match self.state {
+        let next_state = match self.state() {
             CheckState::Unchecked => CheckState::Checked,
             CheckState::Checked => {
                 if self.tristate_enabled {
@@ -423,6 +529,20 @@ impl Widget for CheckBox {
         &mut self.base
     }
 
+    /// Keeps the exclusive group in step with the parent it is keyed by.
+    ///
+    /// Auto-exclusivity is a **same-parent** rule, so a reparent changes which group this box
+    /// belongs to. Leaving the old registration behind would let a control in one container
+    /// uncheck a control in another, which is the one thing the rule is meant to prevent.
+    fn set_parent(&mut self, parent: Option<ObjectId>) {
+        let previous = self.exclusive_key();
+        self.base.set_parent(parent);
+        if let Some(key) = previous {
+            button_group::unregister(&key, self.id());
+        }
+        self.sync_group_registration();
+    }
+
     fn set_enabled(&mut self, enabled: bool) {
         // Reached from `Widget::set_enabled`'s default only through the field write below,
         // because this override shadows it. The hook is the same one the default calls, so a
@@ -483,7 +603,7 @@ impl Widget for CheckBox {
         if !self.base.is_enabled() {
             return WidgetState::Disabled;
         }
-        if self.state != CheckState::Unchecked {
+        if self.state() != CheckState::Unchecked {
             return WidgetState::Checked;
         }
         if self.base.is_pressed() {
@@ -513,6 +633,7 @@ impl WidgetProperties for CheckBox {
             "state" => Ok(CapabilityValue::String(check_state_to_str(self.state()).to_string())),
             "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
             "tristate_enabled" => Ok(CapabilityValue::Bool(self.is_tristate_enabled())),
+            "auto_exclusive" => Ok(CapabilityValue::Bool(self.is_auto_exclusive())),
             _ => base_property_get(self, name),
         }
     }
@@ -535,12 +656,23 @@ impl WidgetProperties for CheckBox {
                 self.set_tristate_enabled(expect_bool(value)?);
                 Ok(())
             }
+            "auto_exclusive" => {
+                self.set_auto_exclusive(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "state", "checked", "tristate_enabled", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "text",
+            "state",
+            "checked",
+            "tristate_enabled",
+            "auto_exclusive",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `check_box` publishes.
@@ -573,6 +705,10 @@ impl WidgetProperties for CheckBox {
 impl EventHandler for CheckBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // The group's copy of this control's rectangle and enabled flag is refreshed on every
+        // event: another member reads it when it is clicked, and no other hook fires reliably
+        // when a caller moves a control it owns directly.
+        self.sync_group_registration();
         // The four pointer events are the only ones that can change the interaction fade. They
         // run before the toggle arms so the painted wash follows the pointer state the base
         // just recorded, and so a disabled box still retargets both drivers to rest rather
@@ -655,9 +791,10 @@ impl Draw for CheckBox {
         let field = if enabled { tinted } else { tinted.with_alpha(180) };
         context.fill_rect(checkbox_rect, field);
 
+        let state = self.state();
         let border_color = style.border_color.unwrap_or_else(|| field.contrast_color());
         context.draw_rect(checkbox_rect, border_color);
-        if self.state != CheckState::Unchecked {
+        if state != CheckState::Unchecked {
             // The mark lands on the box's own fill, so its colour is that fill's contrast
             // colour. A literal accent blue here would be unreadable whenever the field is
             // dark, which is every dark appearance.
@@ -675,7 +812,7 @@ impl Draw for CheckBox {
             // the theme's `:checked` rule exists to supply, and the label falls back to the
             // surface's own contrast colour when the resolved ink is clearly not an ink for it.
             let check_color = style.text_color.unwrap_or_else(|| field.contrast_color());
-            match self.state {
+            match state {
                 CheckState::Checked => {
                     // A compact tick drawn as two strokes, so it scales with the box instead
                     // of being a glyph in an unrelated font's advance model.
@@ -774,6 +911,19 @@ impl Draw for CheckBox {
                     FOCUS_RING_WIDTH,
                 );
             }
+        }
+    }
+}
+
+/// A dropped box leaves its exclusive group.
+///
+/// Without this the registry would keep the id forever: the thread-local map has no notion of a
+/// control's lifetime, and a stale member can keep a group (and its selection) alive long after
+/// every control that described it is gone.
+impl Drop for CheckBox {
+    fn drop(&mut self) {
+        if let Some(key) = self.exclusive_key() {
+            button_group::unregister(&key, self.id());
         }
     }
 }
@@ -1789,5 +1939,61 @@ mod tests {
             "Full mode records no damage, so the control repaints whole"
         );
         runtime::unregister(id);
+    }
+
+    // ── Auto-exclusive siblings (R007) ─────────────────────────────────
+
+    #[test]
+    fn auto_exclusive_is_off_by_default() {
+        let mut a = CheckBox::new(Rect::new(0, 0, 80, 20));
+        let mut b = CheckBox::new(Rect::new(0, 24, 80, 20));
+        a.set_parent(Some(99));
+        b.set_parent(Some(99));
+
+        a.set_checked(true);
+        b.set_checked(true);
+        assert!(a.is_checked() && b.is_checked(), "independent boxes stay independent");
+    }
+
+    #[test]
+    fn auto_exclusive_siblings_under_one_parent_exclude_each_other() {
+        let mut a = CheckBox::new(Rect::new(0, 0, 80, 20));
+        let mut b = CheckBox::new(Rect::new(0, 24, 80, 20));
+        a.set_parent(Some(99));
+        b.set_parent(Some(99));
+        a.set_auto_exclusive(true);
+        b.set_auto_exclusive(true);
+
+        a.set_checked(true);
+        assert!(a.is_checked());
+        assert!(!b.is_checked());
+
+        b.set_checked(true);
+        assert!(!a.is_checked(), "checking b unchecks a");
+        assert!(b.is_checked());
+        assert_eq!(a.state(), CheckState::Unchecked, "the displaced box reports its real state");
+    }
+
+    #[test]
+    fn auto_exclusive_does_not_cross_parents() {
+        let mut a = CheckBox::new(Rect::new(0, 0, 80, 20));
+        let mut b = CheckBox::new(Rect::new(0, 24, 80, 20));
+        a.set_parent(Some(1));
+        b.set_parent(Some(2));
+        a.set_auto_exclusive(true);
+        b.set_auto_exclusive(true);
+
+        a.set_checked(true);
+        b.set_checked(true);
+        assert!(a.is_checked() && b.is_checked(), "the parent is the group boundary");
+    }
+
+    #[test]
+    fn auto_exclusive_is_published_and_writable() {
+        let mut box_ = CheckBox::new(Rect::new(0, 0, 80, 20));
+        assert_eq!(box_.get("auto_exclusive"), Ok(CapabilityValue::Bool(false)));
+        box_.set("auto_exclusive", CapabilityValue::Bool(true)).expect("writable");
+        assert!(box_.is_auto_exclusive());
+        assert_eq!(box_.get("auto_exclusive"), Ok(CapabilityValue::Bool(true)));
     }
 }

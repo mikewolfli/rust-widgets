@@ -44,6 +44,7 @@ use crate::core::{deg_to_rad, Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TEXT_FIT_MARGIN};
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -139,10 +140,24 @@ pub struct RadarChart {
     show_legend: bool,
     /// The axis index nearest the pointer, or `None` when the pointer is away.
     hovered_axis: Option<usize>,
+    /// The `(series, axis)` vertex nearest the pointer.
+    hovered_vertex: Option<(usize, usize)>,
+    /// Per-axis maximum values. Empty means every axis uses the shared data maximum.
+    axis_maxima: Vec<f64>,
+    /// The number of concentric value rings.
+    ring_count: u32,
+    /// Whether polygons grow out from the centre on first paint.
+    animate_entry: bool,
+    /// The entry animation's progress.
+    reveal: PropertyDriver,
     /// Emitted when the pointer's nearest axis changes.
     pub axis_hovered: Signal1<usize>,
     /// Emitted when a series polygon is clicked, carrying the series index.
     pub series_clicked: Signal1<usize>,
+    /// Emitted when a `(series, axis)` vertex is hovered or clicked.
+    pub vertex_hovered: Signal1<(usize, usize)>,
+    /// Emitted when a `(series, axis)` vertex is clicked.
+    pub vertex_clicked: Signal1<(usize, usize)>,
 }
 
 impl RadarChart {
@@ -158,8 +173,91 @@ impl RadarChart {
             show_axis_labels: true,
             show_legend: true,
             hovered_axis: None,
+            hovered_vertex: None,
+            axis_maxima: Vec::new(),
+            ring_count: 4,
+            animate_entry: false,
+            reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
             axis_hovered: Signal1::new(),
             series_clicked: Signal1::new(),
+            vertex_hovered: Signal1::new(),
+            vertex_clicked: Signal1::new(),
+        }
+    }
+
+    /// Sets a maximum for each dimension.
+    ///
+    /// A radar chart compares dimensions with different units (speed, weight, cost), so one
+    /// shared maximum flattens every axis whose own range is smaller. An entry of zero or a
+    /// non-finite value means "use the shared data maximum" for that axis; a shorter list
+    /// leaves the remaining axes shared too.
+    pub fn set_axis_maxima(&mut self, maxima: Vec<f64>) {
+        if self.axis_maxima == maxima {
+            return;
+        }
+        self.axis_maxima = maxima;
+        self.base.request_redraw();
+    }
+
+    /// Returns the per-axis maxima as configured.
+    pub fn axis_maxima(&self) -> &[f64] {
+        &self.axis_maxima
+    }
+
+    /// The maximum used to scale `axis`.
+    pub fn axis_maximum(&self, axis: usize) -> Option<f64> {
+        match self.axis_maxima.get(axis).copied() {
+            Some(value) if value.is_finite() && value > 0.0 => Some(value),
+            _ => self.data_max(),
+        }
+    }
+
+    /// Sets the number of concentric value rings (clamped to one through twelve).
+    pub fn set_ring_count(&mut self, rings: u32) {
+        let rings = rings.clamp(1, 12);
+        if self.ring_count == rings {
+            return;
+        }
+        self.ring_count = rings;
+        self.base.request_redraw();
+    }
+
+    /// Returns the number of concentric value rings.
+    pub fn ring_count(&self) -> u32 {
+        self.ring_count
+    }
+
+    /// Enables the polygon entry animation.
+    pub fn set_animate_entry(&mut self, animate: bool) {
+        if self.animate_entry == animate {
+            return;
+        }
+        self.animate_entry = animate;
+        if animate {
+            self.reveal.jump_to(0.0);
+            self.reveal.set_target(1.0);
+        } else {
+            self.reveal.jump_to(1.0);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether polygons animate in.
+    pub fn animate_entry(&self) -> bool {
+        self.animate_entry
+    }
+
+    /// The `(series, axis)` vertex under the pointer, if any.
+    pub fn hovered_vertex(&self) -> Option<(usize, usize)> {
+        self.hovered_vertex
+    }
+
+    /// The radius scale the polygons are drawn at, in `0.0..=1.0`.
+    fn reveal_scale(&self) -> f32 {
+        if self.animate_entry {
+            self.reveal.value()
+        } else {
+            1.0
         }
     }
 
@@ -390,6 +488,23 @@ impl Widget for RadarChart {
             crate::widget::metrics::dimensions::RADAR_CHART_DEFAULT_SIZE,
         )
     }
+
+    /// Advances the polygon entry animation.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.animate_entry {
+            return false;
+        }
+        let moving = self.reveal.tick(delta_ms);
+        if moving {
+            self.base.request_redraw();
+        }
+        moving
+    }
+
+    /// Whether the entry animation still owes frames.
+    fn is_animating(&self) -> bool {
+        self.animate_entry && self.reveal.is_moving()
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -533,6 +648,16 @@ impl Draw for RadarChart {
         for series_index in 0..self.series.len() {
             self.draw_series(context, center, radius, max, series_index);
         }
+        // The hovered vertex is marked so the pointer's nearest point is visible before a
+        // click commits to it.
+        if let Some((series, axis)) = self.hovered_vertex {
+            if let Some(value) = self.value_at(series, axis) {
+                let axis_max = self.axis_maximum(axis).unwrap_or(max);
+                let point = self.vertex(center, radius, self.axis_angle(axis), value, axis_max);
+                context.fill_circle(point, 3, Self::series_color(series));
+                context.draw_circle_stroke(point, 5, chrome.border, 1);
+            }
+        }
         if self.show_legend && self.series.len() > 1 {
             self.draw_legend(context, rect);
         }
@@ -621,14 +746,14 @@ impl RadarChart {
         radius: u32,
         axis_count: usize,
     ) {
-        const RINGS: u32 = 4;
         let grid = self.chrome_colors().grid;
+        let rings = self.ring_count.max(1);
         // Rings: one per quarter of the radius, so the gauge reading is easy to
         // estimate. Drawn as polylines through the axis angles, which is what makes
         // them polygons rather than circles — a radar chart's rings are the shapes
         // of the plotted polygons themselves.
-        for ring in 1..=RINGS {
-            let ring_radius = radius * ring / RINGS;
+        for ring in 1..=rings {
+            let ring_radius = radius * ring / rings;
             for axis in 0..axis_count {
                 let angle = self.axis_angle(axis);
                 let next_angle = self.axis_angle((axis + 1) % axis_count);
@@ -728,13 +853,16 @@ impl RadarChart {
             return;
         }
         let color = Self::series_color(series_index);
+        let scale = self.reveal_scale();
         let vertices: Vec<Point> = (0..axis_count)
             .map(|axis| {
                 let angle = self.axis_angle(axis);
                 // A missing dimension reads as zero, which lands on the centre,
                 // matching `value_at` returning `None` for it.
                 let value = values.get(axis).copied().unwrap_or(0.0);
-                self.vertex(center, radius, angle, value, max)
+                let axis_max = self.axis_maximum(axis).unwrap_or(max);
+                let scaled_radius = (radius as f32 * scale).max(0.0) as u32;
+                self.vertex(center, scaled_radius, angle, value, axis_max)
             })
             .collect();
 
@@ -755,7 +883,7 @@ impl RadarChart {
             context.draw_line_stroke(from, to, color, 2);
         }
         for vertex in &vertices {
-            context.fill_circle(*vertex, 3, color);
+            context.fill_circle(*vertex, 2, color);
         }
     }
 
@@ -862,15 +990,28 @@ impl EventHandler for RadarChart {
                     if let Some(axis) = axis {
                         self.axis_hovered.emit(axis);
                     }
+                }
+                let vertex = self.vertex_at(*pos);
+                if vertex != self.hovered_vertex {
+                    self.hovered_vertex = vertex;
+                    if let Some(vertex) = vertex {
+                        self.vertex_hovered.emit(vertex);
+                    }
+                    self.base.request_redraw();
+                } else if axis != self.hovered_axis {
                     self.base.request_redraw();
                 }
             }
-            Event::MouseLeave { .. } if self.hovered_axis.is_some() => {
-                self.hovered_axis = None;
-                self.base.request_redraw();
+            Event::MouseLeave { .. } => {
+                if self.hovered_axis.take().is_some() || self.hovered_vertex.take().is_some() {
+                    self.base.request_redraw();
+                }
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(true);
+                if let Some(vertex) = self.vertex_at(*pos) {
+                    self.vertex_clicked.emit(vertex);
+                }
                 if let Some(axis) = self.axis_at(*pos) {
                     // The nearest series polygon is reported, so a click on a
                     // chart tells the caller *which* series was aimed at rather
@@ -903,7 +1044,8 @@ impl RadarChart {
         let mut best: Option<(usize, i64)> = None;
         for series_index in 0..self.series.len() {
             let value = self.value_at(series_index, axis).unwrap_or(0.0);
-            let vertex = self.vertex(center, radius, angle, value, max);
+            let axis_max = self.axis_maximum(axis).unwrap_or(max);
+            let vertex = self.vertex(center, radius, angle, value, axis_max);
             let dx = (vertex.x - pos.x) as i64;
             let dy = (vertex.y - pos.y) as i64;
             // Squared distance, which orders identically to the distance and
@@ -914,6 +1056,30 @@ impl RadarChart {
             }
         }
         best.map(|(index, _)| index)
+    }
+
+    /// The vertex nearest `pos`, within a pointer-sized tolerance.
+    fn vertex_at(&self, pos: Point) -> Option<(usize, usize)> {
+        let (center, radius) = self.geometry_center_radius()?;
+        let max = self.data_max()?;
+        if !self.base.contains_point_with_touch_expansion(pos) {
+            return None;
+        }
+        let mut best: Option<((usize, usize), i64)> = None;
+        for series_index in 0..self.series.len() {
+            for axis in 0..self.axis_count() {
+                let value = self.value_at(series_index, axis).unwrap_or(0.0);
+                let axis_max = self.axis_maximum(axis).unwrap_or(max);
+                let point = self.vertex(center, radius, self.axis_angle(axis), value, axis_max);
+                let dx = i64::from(point.x - pos.x);
+                let dy = i64::from(point.y - pos.y);
+                let distance = dx * dx + dy * dy;
+                if distance <= 14 * 14 && best.is_none_or(|(_, near)| distance < near) {
+                    best = Some(((series_index, axis), distance));
+                }
+            }
+        }
+        best.map(|(vertex, _)| vertex)
     }
 }
 

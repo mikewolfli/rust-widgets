@@ -20,7 +20,7 @@
 //! * Ordering is by date first, then by time.
 use core::fmt::Write as _;
 
-use crate::core::{Color, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
@@ -82,6 +82,73 @@ impl std::fmt::Display for DateTime {
         write!(f, "{} {}", self.date, self.time)
     }
 }
+/// One editable component of a date-time field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateTimeSection {
+    /// The year component.
+    Year,
+    /// The month component.
+    Month,
+    /// The day component.
+    Day,
+    /// The hour component.
+    Hour,
+    /// The minute component.
+    Minute,
+    /// The second component.
+    Second,
+}
+
+impl DateTimeSection {
+    /// The sections in reading order.
+    const ORDER: [Self; 6] =
+        [Self::Year, Self::Month, Self::Day, Self::Hour, Self::Minute, Self::Second];
+
+    /// The next section, wrapping.
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Year => Self::Month,
+            Self::Month => Self::Day,
+            Self::Day => Self::Hour,
+            Self::Hour => Self::Minute,
+            Self::Minute => Self::Second,
+            Self::Second => Self::Year,
+        }
+    }
+
+    /// The previous section, wrapping.
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Year => Self::Second,
+            Self::Month => Self::Year,
+            Self::Day => Self::Month,
+            Self::Hour => Self::Day,
+            Self::Minute => Self::Hour,
+            Self::Second => Self::Minute,
+        }
+    }
+
+    /// The index in [`Self::ORDER`].
+    const fn index(self) -> usize {
+        match self {
+            Self::Year => 0,
+            Self::Month => 1,
+            Self::Day => 2,
+            Self::Hour => 3,
+            Self::Minute => 4,
+            Self::Second => 5,
+        }
+    }
+
+    /// Digits the section collects before the buffer is trimmed.
+    const fn digit_capacity(self) -> usize {
+        match self {
+            Self::Year => 4,
+            _ => 2,
+        }
+    }
+}
+
 /// Date-time editor widget.
 ///
 /// Shows a combined date and time and allows them to be changed one second at a
@@ -124,6 +191,16 @@ pub struct DateTimeEdit {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<DateTime>>,
     restoring_history: bool,
+    /// The section the user is editing, or `None` for whole-second stepping.
+    current_section: Option<DateTimeSection>,
+    /// Digits typed into the active section.
+    digit_buffer: String,
+    /// Whether the value paints a spin-button pair.
+    spin_buttons: bool,
+    /// The calendar grid's reveal.
+    calendar_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal,
+    /// Text painted instead of the value at the minimum.
+    special_value_text: Option<String>,
 }
 impl DateTimeEdit {
     /// Creates a date-time editor occupying `geometry`.
@@ -150,6 +227,11 @@ impl DateTimeEdit {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(now)),
             restoring_history: false,
+            current_section: None,
+            digit_buffer: String::new(),
+            spin_buttons: false,
+            calendar_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal::new(false),
+            special_value_text: None,
         }
     }
     /// Returns the current combined value.
@@ -333,6 +415,7 @@ impl DateTimeEdit {
             return;
         }
         self.calendar_open = open;
+        self.calendar_reveal.set_open(open);
         self.popup_visibility_changed.emit(open);
         self.base.request_redraw();
     }
@@ -344,6 +427,205 @@ impl DateTimeEdit {
         if self.calendar_popup {
             self.set_calendar_open(!self.calendar_open);
         }
+    }
+
+    /// The section the user is editing, or `None` for whole-second stepping.
+    pub fn current_section(&self) -> Option<DateTimeSection> {
+        self.current_section
+    }
+
+    /// Selects the section Up/Down and typed digits apply to.
+    pub fn set_current_section(&mut self, section: Option<DateTimeSection>) {
+        if self.current_section == section {
+            return;
+        }
+        self.current_section = section;
+        self.digit_buffer.clear();
+        self.base.request_redraw();
+    }
+
+    /// The box one section occupies inside the value text.
+    ///
+    /// The six zones are equal sixths of the text run. A custom `display_format` can
+    /// order the components differently and this control does not parse the pattern to
+    /// recover their positions, so the zones are the documented approximation; the
+    /// underline and the pointer target still agree with each other.
+    pub fn section_zone(&self, section: DateTimeSection) -> Rect {
+        let rect = self.geometry();
+        let trailing =
+            if self.calendar_popup { 16u32 } else { 0 } + if self.spin_buttons { 24 } else { 0 };
+        let width = rect.width.saturating_sub(12 + trailing);
+        let part = width / 6;
+        Rect::new(rect.x + 6 + section.index() as i32 * part as i32, rect.y, part, rect.height)
+    }
+
+    /// The section containing `pos`, when the point is on the value text.
+    fn section_at(&self, pos: crate::core::Point) -> Option<DateTimeSection> {
+        if !self.geometry().contains_point(pos) {
+            return None;
+        }
+        DateTimeSection::ORDER
+            .into_iter()
+            .find(|section| self.section_zone(*section).contains_point(pos))
+    }
+
+    /// Shifts a date by whole days, rolling months and years.
+    fn shift_date(date: &mut Date, days: i32) {
+        for _ in 0..days.unsigned_abs() {
+            if days > 0 {
+                if date.day() < date.days_in_month() {
+                    date.set_day(date.day() + 1);
+                } else {
+                    date.set_day(1);
+                    if date.month() < 12 {
+                        date.set_month(date.month() + 1);
+                    } else {
+                        date.set_month(1);
+                        date.set_year(date.year() + 1);
+                    }
+                }
+            } else if date.day() > 1 {
+                date.set_day(date.day() - 1);
+            } else {
+                if date.month() > 1 {
+                    date.set_month(date.month() - 1);
+                } else {
+                    date.set_month(12);
+                    date.set_year(date.year() - 1);
+                }
+                date.set_day(date.days_in_month());
+            }
+        }
+    }
+
+    /// Steps the active section, or one whole second when no section is active.
+    pub fn step_current_section(&mut self, delta: i32) {
+        let Some(section) = self.current_section else {
+            if delta >= 0 {
+                self.step_up();
+            } else {
+                self.step_down();
+            }
+            return;
+        };
+        if delta == 0 {
+            return;
+        }
+        let mut next = self.datetime;
+        match section {
+            DateTimeSection::Year => next.date.set_year(next.date.year() + delta),
+            DateTimeSection::Month => {
+                let total = next.date.year() * 12 + next.date.month() as i32 - 1 + delta;
+                next.date.set_year(total.div_euclid(12));
+                next.date.set_month((total.rem_euclid(12) + 1) as u8);
+            }
+            DateTimeSection::Day => Self::shift_date(&mut next.date, delta),
+            DateTimeSection::Hour => {
+                let total = next.time.hour() as i32 + delta;
+                let days = total.div_euclid(24);
+                next.time.set_hour(total.rem_euclid(24) as u8);
+                Self::shift_date(&mut next.date, days);
+            }
+            DateTimeSection::Minute => {
+                let total = next.time.minute() as i32 + delta;
+                let carry = total.div_euclid(60);
+                next.time.set_minute(total.rem_euclid(60) as u8);
+                let hour_total = next.time.hour() as i32 + carry;
+                let days = hour_total.div_euclid(24);
+                next.time.set_hour(hour_total.rem_euclid(24) as u8);
+                Self::shift_date(&mut next.date, days);
+            }
+            DateTimeSection::Second => {
+                let total = next.time.second() as i32 + delta;
+                let carry = total.div_euclid(60);
+                next.time.set_second(total.rem_euclid(60) as u8);
+                let minute_total = next.time.minute() as i32 + carry;
+                let hour_carry = minute_total.div_euclid(60);
+                next.time.set_minute(minute_total.rem_euclid(60) as u8);
+                let hour_total = next.time.hour() as i32 + hour_carry;
+                let days = hour_total.div_euclid(24);
+                next.time.set_hour(hour_total.rem_euclid(24) as u8);
+                Self::shift_date(&mut next.date, days);
+            }
+        }
+        self.set_datetime(next);
+    }
+
+    /// Types one digit into the active section.
+    pub fn type_digit(&mut self, digit: char) -> bool {
+        if !digit.is_ascii_digit() {
+            return false;
+        }
+        let Some(section) = self.current_section else {
+            return false;
+        };
+        self.digit_buffer.push(digit);
+        while self.digit_buffer.len() > section.digit_capacity() {
+            self.digit_buffer.remove(0);
+        }
+        let Ok(value) = self.digit_buffer.parse::<i32>() else {
+            return false;
+        };
+        let mut next = self.datetime;
+        match section {
+            DateTimeSection::Year => {
+                if value < 1000 {
+                    return true;
+                }
+                next.date.set_year(value);
+            }
+            DateTimeSection::Month => next.date.set_month(value as u8),
+            DateTimeSection::Day => next.date.set_day(value as u8),
+            DateTimeSection::Hour => next.time.set_hour(value as u8),
+            DateTimeSection::Minute => next.time.set_minute(value as u8),
+            DateTimeSection::Second => next.time.set_second(value as u8),
+        }
+        self.set_datetime(next);
+        true
+    }
+
+    /// Whether the spin-button pair is painted.
+    pub fn spin_buttons(&self) -> bool {
+        self.spin_buttons
+    }
+
+    /// Shows or hides the spin-button pair. Off by default.
+    pub fn set_spin_buttons(&mut self, visible: bool) {
+        if self.spin_buttons == visible {
+            return;
+        }
+        self.spin_buttons = visible;
+        self.base.request_redraw();
+    }
+
+    /// The up and down spin buttons, when shown.
+    pub fn spin_button_rects(&self) -> Option<(Rect, Rect)> {
+        if !self.spin_buttons {
+            return None;
+        }
+        let rect = self.geometry();
+        let width = 24u32.min(rect.width);
+        let x =
+            rect.x + rect.width as i32 - width as i32 - if self.calendar_popup { 16 } else { 0 };
+        let half = rect.height / 2;
+        Some((
+            Rect::new(x, rect.y, width, half),
+            Rect::new(x, rect.y + half as i32, width, rect.height - half),
+        ))
+    }
+
+    /// Text painted instead of the value when the value equals the minimum.
+    pub fn special_value_text(&self) -> Option<&str> {
+        self.special_value_text.as_deref()
+    }
+
+    /// Sets the special value text, or clears it with `None`.
+    pub fn set_special_value_text(&mut self, text: Option<String>) {
+        if self.special_value_text == text {
+            return;
+        }
+        self.special_value_text = text;
+        self.base.request_redraw();
     }
     /// Advances the value by one second, carrying into minutes, hours, and days.
     ///
@@ -487,6 +769,16 @@ impl Widget for DateTimeEdit {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(160, 28)
     }
+
+    /// Advances the calendar popup's reveal; `true` while it owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.calendar_reveal.tick(delta_ms)
+    }
+
+    /// Whether the calendar popup is mid-reveal.
+    fn is_animating(&self) -> bool {
+        self.calendar_reveal.is_animating()
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -586,6 +878,16 @@ impl EventHandler for DateTimeEdit {
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 let field = self.geometry();
+                if let Some((up, down)) = self.spin_button_rects() {
+                    if up.contains_point(*pos) {
+                        self.step_current_section(1);
+                        return;
+                    }
+                    if down.contains_point(*pos) {
+                        self.step_current_section(-1);
+                        return;
+                    }
+                }
                 // The arrow is inside the field's own box, so it is checked before anything
                 // else that treats the field as the value's display area.
                 if self.calendar_popup
@@ -602,6 +904,15 @@ impl EventHandler for DateTimeEdit {
                         self.set_date(day);
                         self.set_calendar_open(false);
                     }
+                } else if let Some(section) = self.section_at(*pos) {
+                    self.set_current_section(Some(section));
+                }
+            }
+            Event::Wheel { delta, .. } => {
+                if delta.y > 0 {
+                    self.step_current_section(1);
+                } else if delta.y < 0 {
+                    self.step_current_section(-1);
                 }
             }
             Event::KeyPress { key, modifiers } => match *key {
@@ -616,8 +927,25 @@ impl EventHandler for DateTimeEdit {
                 _ if primary_shortcut_pressed(*key, *modifiers, Key::Y) => {
                     let _ = self.redo();
                 }
-                38 => self.step_up(),
-                40 => self.step_down(),
+                38 => self.step_current_section(1),
+                40 => self.step_current_section(-1),
+                37 => {
+                    if let Some(section) = self.current_section {
+                        let previous = section.previous();
+                        self.set_current_section(Some(previous));
+                    }
+                }
+                39 => {
+                    if let Some(section) = self.current_section {
+                        let next = section.next();
+                        self.set_current_section(Some(next));
+                    }
+                }
+                48..=57 if self.current_section.is_some() => {
+                    if let Some(digit) = char::from_u32(*key) {
+                        self.type_digit(digit);
+                    }
+                }
                 _ => { /* Other keys are not relevant */ }
             },
             _ => { /* Other events are not relevant */ }
@@ -687,7 +1015,10 @@ impl Draw for DateTimeEdit {
         // substituter as `date_edit` and `time_edit`, so the same pattern cannot render three ways.
         // Into the buffer directly: the allocating wrapper built the result plus one string per token.
         let mut text = String::new();
-        if !super::date_edit::format_with_pattern_into(
+        let special = self.special_value_text.as_deref().filter(|_| self.datetime == self.minimum);
+        if let Some(special) = special {
+            text.push_str(special);
+        } else if !super::date_edit::format_with_pattern_into(
             &self.display_format,
             super::date_edit::DateTimeComponents {
                 year: Some(self.datetime.date.year()),
@@ -710,11 +1041,15 @@ impl Draw for DateTimeEdit {
         let font = effective_font(style);
         let line = context.text_line(rect, font);
         // The arrow zone is part of the field's chrome, so the value must not run under it.
-        let text_width = if self.calendar_popup {
-            rect.width.saturating_sub(12).saturating_sub(super::date_edit::CALENDAR_ARROW_W)
-        } else {
-            rect.width.saturating_sub(12)
-        };
+        let text_width = rect
+            .width
+            .saturating_sub(12)
+            .saturating_sub(if self.calendar_popup {
+                super::date_edit::CALENDAR_ARROW_W
+            } else {
+                0
+            })
+            .saturating_sub(if self.spin_buttons { 24 } else { 0 });
         context.draw_text_fitted_cow(
             Rect { x: rect.x + 6, y: line.y, width: text_width, height: line.height },
             text.as_str(),
@@ -723,11 +1058,59 @@ impl Draw for DateTimeEdit {
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
 
+        if let Some(section) = self.current_section {
+            let zone = self.section_zone(section);
+            let y = line.y + line.height as i32;
+            context.draw_line(
+                Point::new(zone.x + 1, y),
+                Point::new(zone.x + zone.width as i32 - 1, y),
+                ink,
+            );
+        }
+
         if self.calendar_popup {
             super::date_edit::draw_calendar_arrow(context, rect, ink);
         }
-        if self.calendar_open {
+        if let Some((up, down)) = self.spin_button_rects() {
+            let fill = surface.blend(&ink, 0.08);
+            context.fill_rect(up, fill);
+            context.fill_rect(down, fill);
+            context.draw_rect(up, border);
+            context.draw_rect(down, border);
+            let side = up.width.min(up.height).min(10);
+            crate::widget::draw_icon_centered(
+                context,
+                up,
+                side,
+                ink,
+                crate::widget::IconName::ChevronUp,
+            );
+            crate::widget::draw_icon_centered(
+                context,
+                down,
+                side,
+                ink,
+                crate::widget::IconName::ChevronDown,
+            );
+        }
+        if self.calendar_open || !self.calendar_reveal.is_closed() {
+            let popup = super::date_edit::calendar_popup_rect(rect);
+            let revealed = self.calendar_reveal.revealed(
+                popup,
+                crate::widget::menu_toolbar::popup_reveal::RevealDirection::Down,
+                crate::widget::menu_toolbar::popup_reveal::PopupReveal::travel_cap_for(Size::new(
+                    popup.width,
+                    popup.height,
+                )),
+            );
+            let clipped = !self.calendar_reveal.is_closed();
+            if clipped {
+                context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
+            }
             self.draw_calendar_popup(context, rect, surface, border, ink);
+            if clipped {
+                context.pop_clip();
+            }
         }
     }
 }
@@ -1265,5 +1648,77 @@ mod tests {
         assert!(!editor.is_visible());
         editor.set_visible(true);
         assert!(editor.is_visible());
+    }
+
+    /// Sections cover every component; typing edits the active one and stepping wraps it.
+    #[test]
+    fn date_time_sections_edit_each_component() {
+        let mut editor = DateTimeEdit::new(Rect::new(0, 0, 280, 30));
+        editor.set_datetime(DateTime::new(Date::new(2026, 6, 15), Time::new(10, 0, 0, 0)));
+        assert!(!editor.type_digit('2'), "no section, no typing");
+
+        editor.set_current_section(Some(DateTimeSection::Hour));
+        assert!(editor.type_digit('2'));
+        assert!(editor.type_digit('3'));
+        assert_eq!(editor.time().hour(), 23);
+        editor.step_current_section(1);
+        assert_eq!(editor.time().hour(), 0, "the hour wraps");
+        assert_eq!(editor.date(), Date::new(2026, 6, 16), "and carries the day");
+
+        editor.set_current_section(Some(DateTimeSection::Month));
+        editor.step_current_section(1);
+        assert_eq!(editor.date().month(), 7);
+        editor.set_current_section(Some(DateTimeSection::Second));
+        editor.step_current_section(60);
+        assert_eq!(editor.time().minute(), 1, "seconds carry into minutes");
+    }
+
+    /// Spin buttons and the wheel are opt-in and step the value.
+    #[test]
+    fn date_time_spin_buttons_and_wheel_step_the_value() {
+        let mut editor = DateTimeEdit::new(Rect::new(0, 0, 280, 30));
+        editor.set_datetime(DateTime::new(Date::new(2026, 6, 15), Time::new(10, 0, 0, 0)));
+        assert!(editor.spin_button_rects().is_none());
+        editor.set_spin_buttons(true);
+        let (up, _) = editor.spin_button_rects().expect("the pair exists");
+        editor.handle_event(&Event::mouse_press(up.x + 2, up.y + 2, 1));
+        assert_eq!(editor.time().second(), 1);
+
+        editor.handle_event(&Event::wheel(0, 1, 0));
+        assert_eq!(editor.time().second(), 2);
+        editor.handle_event(&Event::wheel(0, -1, 0));
+        assert_eq!(editor.time().second(), 1);
+    }
+
+    /// Clicking a zone picks its section, and the special value text is opt-in.
+    #[test]
+    fn date_time_zones_and_special_text() {
+        let mut editor = DateTimeEdit::new(Rect::new(0, 0, 280, 30));
+        let minute = editor.section_zone(DateTimeSection::Minute);
+        editor.handle_event(&Event::mouse_press(minute.x + 1, minute.y + 2, 1));
+        assert_eq!(editor.current_section(), Some(DateTimeSection::Minute));
+
+        let before = render_to_svg(&mut editor);
+        editor.set_datetime(editor.minimum_datetime());
+        let at_minimum = render_to_svg(&mut editor);
+        editor.set_special_value_text(Some("Unset".to_string()));
+        let after = render_to_svg(&mut editor);
+        assert_ne!(at_minimum, after, "the special text must replace the value at the minimum");
+        assert_ne!(before, after);
+    }
+
+    /// The calendar reveal animates and settles.
+    #[test]
+    fn date_time_calendar_reveal_settles() {
+        use crate::widget::Widget;
+
+        let mut editor = DateTimeEdit::new(Rect::new(0, 0, 280, 30));
+        editor.set_calendar_popup(true);
+        editor.set_calendar_open(true);
+        assert!(editor.is_animating());
+        for _ in 0..120 {
+            editor.tick(16);
+        }
+        assert!(!editor.is_animating());
     }
 }

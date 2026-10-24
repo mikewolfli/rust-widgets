@@ -6,7 +6,7 @@
 use crate::core::Point;
 use crate::event::{Event, TouchId};
 
-use super::{point_delta_abs, GestureRecognizer, DOUBLE_TAP_TIMEOUT_MS, MAX_STATIONARY_DISTANCE};
+use super::{point_delta_abs, tuning, GestureKind, GestureRecognizer};
 
 // ────────────────────────────────────────────
 // TapGesture
@@ -29,6 +29,10 @@ impl TapGesture {
 }
 
 impl GestureRecognizer for TapGesture {
+    fn kind(&self) -> GestureKind {
+        GestureKind::Tap
+    }
+
     fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
         match event {
             Event::TouchBegin { pos, touch_id } => {
@@ -44,8 +48,8 @@ impl GestureRecognizer for TapGesture {
                 let start = self.start_pos?;
                 let start_time = self.start_time?;
                 let dt = now_ms.saturating_sub(start_time);
-                if dt < super::TAP_TIMEOUT_MS
-                    && super::distance(start, *pos) < MAX_STATIONARY_DISTANCE
+                if dt < tuning().tap_timeout_ms
+                    && super::distance(start, *pos) < tuning().max_stationary_distance
                 {
                     let result = Event::Tap { pos: *pos };
                     self.reset();
@@ -58,7 +62,7 @@ impl GestureRecognizer for TapGesture {
                 // Cancel if finger moved too far
                 if self.touch_id == Some(*touch_id) {
                     if let Some(start) = self.start_pos {
-                        if super::distance(start, *pos) >= MAX_STATIONARY_DISTANCE {
+                        if super::distance(start, *pos) >= tuning().max_stationary_distance {
                             self.reset();
                         }
                     }
@@ -98,6 +102,10 @@ impl DoubleTapGesture {
 }
 
 impl GestureRecognizer for DoubleTapGesture {
+    fn kind(&self) -> GestureKind {
+        GestureKind::DoubleTap
+    }
+
     fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
         match event {
             Event::Tap { pos } => {
@@ -106,8 +114,9 @@ impl GestureRecognizer for DoubleTapGesture {
                         (self.first_tap_pos, self.first_tap_time)
                     {
                         let dt = now_ms.saturating_sub(first_time);
-                        if dt <= DOUBLE_TAP_TIMEOUT_MS
-                            && super::distance(first_pos, *pos) < MAX_STATIONARY_DISTANCE * 2.0
+                        if dt <= tuning().double_tap_timeout_ms
+                            && super::distance(first_pos, *pos)
+                                < tuning().max_stationary_distance * 2.0
                         {
                             let result = Event::DoubleTap { pos: *pos };
                             self.reset();
@@ -177,6 +186,10 @@ impl TwoFingerTapGesture {
 }
 
 impl GestureRecognizer for TwoFingerTapGesture {
+    fn kind(&self) -> GestureKind {
+        GestureKind::TwoFingerTap
+    }
+
     fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
         match event {
             Event::TouchBegin { pos, touch_id } => {
@@ -194,8 +207,8 @@ impl GestureRecognizer for TwoFingerTapGesture {
                     // `i32` extremes separates the two points (cancelling the tap) instead of
                     // overflowing; and unlike `.abs()` it cannot panic on `i32::MIN`.
                     let (dx, dy) = point_delta_abs(t.0, *pos);
-                    if (dx as f32) > MAX_STATIONARY_DISTANCE
-                        || (dy as f32) > MAX_STATIONARY_DISTANCE
+                    if (dx as f32) > tuning().max_stationary_distance
+                        || (dy as f32) > tuning().max_stationary_distance
                     {
                         self.reset(); // moved too much
                     } else {
@@ -218,7 +231,7 @@ impl GestureRecognizer for TwoFingerTapGesture {
                     // landed (and so produced no Move crossing the threshold — or no Move at all)
                     // was travelling, not tapping; without this check the two-finger recogniser
                     // reported a tap from `1000/1010` releases after `0/10` touchdowns.
-                    if super::distance(touchdown, *pos) >= MAX_STATIONARY_DISTANCE {
+                    if super::distance(touchdown, *pos) >= tuning().max_stationary_distance {
                         self.reset();
                         return None;
                     }

@@ -4,7 +4,7 @@
 //! MiniChart widget — simplified line/bar chart for mini builds (BLUE13 R2.10).
 
 use crate::compat::{String, ToString, Vec};
-use crate::core::{Color, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 // The cartesian-engine widgets draw their axes from one shared derivation in
 // `chart_widgets::charts`. That module is **absent on the `embedded` profile**, where
 // `mini_chart` still exists, so the derivation cannot be imported here: doing so broke the
@@ -15,6 +15,7 @@ use crate::core::{Color, Point, Rect, Size};
 // than the axis — not which module the arithmetic lives in.
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::signal::Signal1;
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -72,6 +73,16 @@ pub struct MiniChart {
     data: Vec<DataPoint>,
     min_value: u32,
     max_value: u32,
+    /// Whether the min/mid/max value labels and the first/last index labels are painted.
+    show_axis_labels: bool,
+    /// The data index the pointer is nearest to, when the pointer is over the plot.
+    hovered_index: Option<usize>,
+    /// Emitted with the hovered index, or `None` when the pointer leaves.
+    pub hovered_point_changed: Signal1<Option<usize>>,
+    /// Whether a new series grows from the baseline instead of appearing at full height.
+    animate_data: bool,
+    /// Drives the entrance scale from `0.0` to `1.0`.
+    entrance: crate::style::PropertyDriver,
 }
 
 impl MiniChart {
@@ -83,6 +94,13 @@ impl MiniChart {
             data: Vec::new(),
             min_value: 0,
             max_value: 100,
+            show_axis_labels: false,
+            hovered_index: None,
+            hovered_point_changed: Signal1::new(),
+            animate_data: false,
+            // At rest at the settled end: with the option off the series is never scaled, and
+            // turning it on resets the driver deliberately.
+            entrance: crate::style::PropertyDriver::at(1.0, crate::style::MotionSlot::Normal),
         }
     }
 
@@ -101,8 +119,19 @@ impl MiniChart {
     }
 
     /// Sets the chart data points.
+    ///
+    /// When [`MiniChart::set_animate_data`] is on, a non-empty series restarts its entrance
+    /// animation from the baseline. With animation off the series is drawn at full height as it
+    /// always was. Replacing the series also clears the hovered index, because the old index may
+    /// no longer name a point.
     pub fn set_data(&mut self, data: Vec<DataPoint>) {
         self.data = data;
+        if self.hovered_index.is_some() {
+            self.set_hovered_index(None);
+        }
+        if self.animate_data && !self.data.is_empty() {
+            self.reset_entrance();
+        }
         self.base.request_redraw();
     }
 
@@ -121,6 +150,155 @@ impl MiniChart {
         self.max_value = b;
         self.base.request_redraw();
     }
+
+    /// Enables or disables the axis value/category labels.
+    ///
+    /// When on, the value axis draws its minimum, midpoint and maximum as numbers in the left
+    /// margin, and the category axis draws the first and last **index** below the plot. Indexes
+    /// rather than data labels are used so a long label cannot overflow the reserved margin. The
+    /// default is `false`, which paints exactly the historical picture.
+    pub fn set_show_axis_labels(&mut self, on: bool) {
+        if self.show_axis_labels == on {
+            return;
+        }
+        self.show_axis_labels = on;
+        self.base.request_redraw();
+    }
+
+    /// Whether the axis labels are painted. Defaults to `false`.
+    pub fn show_axis_labels(&self) -> bool {
+        self.show_axis_labels
+    }
+
+    /// Enables or disables the series entrance animation.
+    ///
+    /// When on, a series grows from the chart's baseline to its real height over the theme's
+    /// `normal` motion tempo. The animation honours the environment's reduced-motion preference:
+    /// with reduced motion requested the series starts at its settled height instead of growing.
+    /// Turning the option off jumps straight to the settled height. The default is `false`.
+    pub fn set_animate_data(&mut self, on: bool) {
+        if self.animate_data == on {
+            return;
+        }
+        self.animate_data = on;
+        if on && !self.data.is_empty() {
+            self.reset_entrance();
+        } else if !on {
+            self.entrance.jump_to(1.0);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether the series entrance animation is enabled. Defaults to `false`.
+    pub fn animate_data(&self) -> bool {
+        self.animate_data
+    }
+
+    /// The data index the pointer is nearest to, or `None` when the pointer is not over the plot.
+    pub fn hovered_index(&self) -> Option<usize> {
+        self.hovered_index
+    }
+
+    /// The value at [`MiniChart::hovered_index`], if that index still names a point.
+    pub fn hovered_value(&self) -> Option<u32> {
+        self.data.get(self.hovered_index?).map(|point| point.value)
+    }
+
+    /// Restarts the entrance at the baseline, settling immediately under reduced motion.
+    fn reset_entrance(&mut self) {
+        self.entrance.jump_to(0.0);
+        self.entrance.set_target(1.0);
+        if crate::style::environment::environment().prefers_reduced_motion() {
+            self.entrance.jump_to(1.0);
+        }
+    }
+
+    /// The plot rectangle, excluding the axis margins.
+    fn plot_area(rect: Rect) -> Rect {
+        let left = 40i32;
+        let right = 10i32;
+        let top = 10i32;
+        let bottom = 30i32;
+        Rect::new(
+            rect.x + left,
+            rect.y + top,
+            (rect.width as i32 - left - right).max(1) as u32,
+            (rect.height as i32 - top - bottom).max(1) as u32,
+        )
+    }
+
+    /// The bar width and inter-bar gap the current series produces for `chart_area_w`.
+    ///
+    /// Shared by the bar painter and the hover hit test, so a marker lands on the bar the user
+    /// actually sees rather than on a second, independently computed layout.
+    fn bar_layout(&self, chart_area_w: u32) -> (u32, u32) {
+        let bar_count = self.data.len().max(1) as u32;
+        let max_bar_width = 40u32;
+        let bar_width = (chart_area_w / bar_count).min(max_bar_width).max(2);
+        let used_width = bar_width * bar_count;
+        let remaining = chart_area_w.saturating_sub(used_width);
+        let gap = (remaining / (bar_count + 1)).max(1);
+        (bar_width, gap)
+    }
+
+    /// The horizontal centre of the point at `index`, in window coordinates.
+    fn point_center_x(&self, index: usize, plot: Rect) -> i32 {
+        let count = self.data.len();
+        if count == 0 {
+            return plot.x;
+        }
+        match self.chart_type {
+            ChartType::Line => {
+                if count == 1 {
+                    plot.x + plot.width as i32 / 2
+                } else {
+                    plot.x + (plot.width as i32 * index as i32 / (count - 1) as i32)
+                }
+            }
+            ChartType::Bar => {
+                let (bar_width, gap) = self.bar_layout(plot.width);
+                plot.x
+                    + gap as i32 * (index + 1) as i32
+                    + bar_width as i32 * index as i32
+                    + bar_width as i32 / 2
+            }
+        }
+    }
+
+    /// The index whose drawn point centre is nearest `x`, when `x` is over the plot.
+    fn nearest_index(&self, x: i32, plot: Rect) -> Option<usize> {
+        if self.data.is_empty() || x < plot.x || x >= plot.x + plot.width as i32 {
+            return None;
+        }
+        let mut best: Option<(usize, i32)> = None;
+        for index in 0..self.data.len() {
+            let distance = (self.point_center_x(index, plot) - x).abs();
+            if best.is_none_or(|(_, current)| distance < current) {
+                best = Some((index, distance));
+            }
+        }
+        best.map(|(index, _)| index)
+    }
+
+    /// Replaces the hovered index, emitting only when it actually changes.
+    fn set_hovered_index(&mut self, next: Option<usize>) {
+        if self.hovered_index == next {
+            return;
+        }
+        self.hovered_index = next;
+        self.hovered_point_changed.emit(next);
+        self.base.request_redraw();
+    }
+
+    /// Updates the hover from a pointer position, clearing it when the pointer is off the plot.
+    fn update_hover(&mut self, pos: Point) {
+        if !self.base.is_enabled() || !self.geometry().contains_point(pos) {
+            self.set_hovered_index(None);
+            return;
+        }
+        let index = self.nearest_index(pos.x, Self::plot_area(self.geometry()));
+        self.set_hovered_index(index);
+    }
 }
 
 impl Widget for MiniChart {
@@ -138,6 +316,28 @@ impl Widget for MiniChart {
     fn size_hint(&self) -> Size {
         Size::new(200, 150)
     }
+
+    /// Advances the series entrance by `delta_ms`; `true` while it is still growing.
+    ///
+    /// The driver collapses to its settled value on the first tick when the environment requests
+    /// reduced motion, so the end state is the same without a growth phase. With animation off the
+    /// driver is held at the settled end and this returns `false`.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.animate_data {
+            return false;
+        }
+        let moving = self.entrance.tick(delta_ms);
+        if moving {
+            self.base.request_redraw();
+        }
+        moving
+    }
+
+    /// Whether the entrance animation still owes frames.
+    fn is_animating(&self) -> bool {
+        self.animate_data && self.entrance.is_moving()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -199,8 +399,17 @@ impl WidgetProperties for MiniChart {
 }
 
 impl EventHandler for MiniChart {
+    /// Tracks the nearest data point while the pointer is over the plot.
+    ///
+    /// A move outside the plot (still inside the widget's margin) clears the hover, so the marker
+    /// and caption never claim a value the pointer is not near. `MouseLeave` clears it as well.
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        match event {
+            Event::MouseMove { pos } => self.update_hover(*pos),
+            Event::MouseLeave { .. } => self.set_hovered_index(None),
+            _ => {}
+        }
     }
 }
 
@@ -255,18 +464,14 @@ impl Draw for MiniChart {
             Color::BLACK,
         );
 
-        // Chart area margins. The left margin reserves room for the value labels a full
-        // `ChartWidget` draws; this control draws none, so the reservation is generous — but it
-        // is part of the layout the control is published with, not something this fix changes.
-        let margin_left = 40i32;
-        let margin_right = 10i32;
-        let margin_top = 10i32;
-        let margin_bottom = 30i32;
-
-        let chart_area_w = (rect.width as i32 - margin_left - margin_right).max(1) as u32;
-        let chart_area_h = (rect.height as i32 - margin_top - margin_bottom).max(1) as u32;
-        let chart_origin_x = rect.x + margin_left;
-        let chart_origin_y = rect.y + margin_top;
+        // Chart area, excluding the axis margins. The left margin reserves room for the value
+        // labels this control can now draw; the reservation is part of the published layout, not
+        // something the label option changes.
+        let plot = Self::plot_area(rect);
+        let chart_area_w = plot.width;
+        let chart_area_h = plot.height;
+        let chart_origin_x = plot.x;
+        let chart_origin_y = plot.y;
 
         // Draw horizontal grid lines (the faint end of the shared axis derivation; see above).
         let grid_count = 4;
@@ -296,11 +501,8 @@ impl Draw for MiniChart {
             axis_color,
         );
 
-        if self.data.is_empty() {
-            return;
-        }
-
-        // Compute effective Y range
+        // Compute effective Y range before the labels so the value axis can state it even when
+        // there is no series yet.
         let effective_max = if self.max_value > self.min_value {
             self.max_value
         } else {
@@ -314,6 +516,59 @@ impl Draw for MiniChart {
         let effective_min = self.min_value;
         let range = (effective_max - effective_min) as f32;
 
+        if self.show_axis_labels {
+            let font = Font::simple("sans-serif", 10.0);
+            let mid = ((u64::from(effective_min) + u64::from(effective_max)) / 2) as u32;
+            let value_labels = [
+                (effective_max, chart_origin_y),
+                (mid, chart_origin_y + chart_area_h as i32 / 2),
+                (effective_min, chart_origin_y + chart_area_h as i32),
+            ];
+            for (value, y) in value_labels {
+                context.draw_text(
+                    Point::new(chart_origin_x - 4, y + 4),
+                    &value.to_string(),
+                    &font,
+                    axis_color,
+                    HorizontalAlignment::Right,
+                );
+            }
+            if let Some(last) = self.data.len().checked_sub(1) {
+                let label_y = chart_origin_y + chart_area_h as i32 + 14;
+                context.draw_text(
+                    Point::new(chart_origin_x, label_y),
+                    "0",
+                    &font,
+                    axis_color,
+                    HorizontalAlignment::Left,
+                );
+                context.draw_text(
+                    Point::new(chart_origin_x + chart_area_w as i32 - 1, label_y),
+                    &last.to_string(),
+                    &font,
+                    axis_color,
+                    HorizontalAlignment::Right,
+                );
+            }
+        }
+
+        if self.data.is_empty() {
+            return;
+        }
+
+        // The entrance scale. With the option off the closure returns the ratio untouched, which
+        // is what keeps the default drawing byte-identical; with it on the series grows out of the
+        // baseline (a zero ratio is the bottom of the plot).
+        let animate = self.animate_data;
+        let progress = self.entrance.value().clamp(0.0, 1.0);
+        let scale_ratio = move |ratio: f32| -> f32 {
+            if animate {
+                (ratio * progress).clamp(0.0, 1.0)
+            } else {
+                ratio
+            }
+        };
+
         match self.chart_type {
             ChartType::Line => {
                 let count = self.data.len();
@@ -325,6 +580,7 @@ impl Draw for MiniChart {
                     } else {
                         0.5
                     };
+                    let y_ratio = scale_ratio(y_ratio);
                     let cy = chart_origin_y + chart_area_h as i32
                         - (chart_area_h as f32 * y_ratio) as i32;
                     // Cross marker arms
@@ -360,9 +616,9 @@ impl Draw for MiniChart {
                         };
 
                         let y1 = chart_origin_y + chart_area_h as i32
-                            - (chart_area_h as f32 * y1_ratio) as i32;
+                            - (chart_area_h as f32 * scale_ratio(y1_ratio)) as i32;
                         let y2 = chart_origin_y + chart_area_h as i32
-                            - (chart_area_h as f32 * y2_ratio) as i32;
+                            - (chart_area_h as f32 * scale_ratio(y2_ratio)) as i32;
 
                         context.draw_line_stroke(
                             Point::new(x1, y1),
@@ -379,17 +635,7 @@ impl Draw for MiniChart {
                     return;
                 }
 
-                // Compute gaps and bar widths evenly across the chart area
-                let bar_count = count as u32;
-                // Reserve one gap before first bar and one after last bar
-                let total_gaps = bar_count + 1;
-                // Try to use a reasonable bar width, shrinking if needed
-                let max_bar_width = 40u32;
-                let ideal_bar_width = (chart_area_w / bar_count).min(max_bar_width).max(2);
-                let used_width = ideal_bar_width * bar_count;
-                let remaining = chart_area_w.saturating_sub(used_width);
-                let gap = (remaining / total_gaps).max(1);
-                let bar_width = ideal_bar_width;
+                let (bar_width, gap) = self.bar_layout(chart_area_w);
 
                 for (i, dp) in self.data.iter().enumerate() {
                     let bx =
@@ -397,7 +643,7 @@ impl Draw for MiniChart {
 
                     let bar_h_ratio =
                         if range > 0.0 { (dp.value - effective_min) as f32 / range } else { 0.5 };
-                    let bar_h = (chart_area_h as f32 * bar_h_ratio) as u32;
+                    let bar_h = (chart_area_h as f32 * scale_ratio(bar_h_ratio)) as u32;
 
                     if bar_h == 0 {
                         continue;
@@ -405,7 +651,9 @@ impl Draw for MiniChart {
 
                     let by = chart_origin_y + chart_area_h as i32 - bar_h as i32;
 
-                    // Proportionally color the bar: low values → blue, high values → red
+                    // Proportionally color the bar: low values → blue, high values → red. The
+                    // colour follows the *value*, not the entrance scale, so a bar keeps its
+                    // meaning while it grows.
                     let t = bar_h_ratio.clamp(0.0, 1.0);
                     let r = (60.0 + t * 195.0) as u8;
                     let g = (120.0 + t * 50.0) as u8;
@@ -413,6 +661,26 @@ impl Draw for MiniChart {
 
                     context.fill_rect(Rect::new(bx, by, bar_width, bar_h), Color::rgb(r, g, b));
                 }
+            }
+        }
+
+        // Hover marker and value caption, drawn last so they sit over the series.
+        if let Some(index) = self.hovered_index {
+            if let Some(point) = self.data.get(index) {
+                let x = self.point_center_x(index, plot);
+                context.draw_line_stroke(
+                    Point::new(x, chart_origin_y),
+                    Point::new(x, chart_origin_y + chart_area_h as i32),
+                    axis_color,
+                    1,
+                );
+                context.draw_text(
+                    Point::new(x + 4, chart_origin_y + 12),
+                    &point.value.to_string(),
+                    &Font::simple("sans-serif", 10.0),
+                    line_color,
+                    HorizontalAlignment::Left,
+                );
             }
         }
     }
@@ -578,5 +846,96 @@ mod tests {
         // Every grid line shares one colour, and both axes share one colour.
         assert!(light[..light.len() - 2].iter().all(|c| *c == light[0]));
         assert!(dark[..dark.len() - 2].iter().all(|c| *c == dark[0]));
+    }
+
+    /// Renders the chart and returns the software surface's pixels.
+    fn render_pixels(chart: &mut MiniChart) -> Vec<u8> {
+        let size = Size::new(200, 150);
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = RenderContext::new(&mut backend);
+        chart.draw(&mut ctx);
+        backend.end_frame();
+        backend.frame_rgba().to_vec()
+    }
+
+    /// Axis labels are opt-in, and turning them on changes the picture.
+    #[test]
+    fn mini_chart_axis_labels_are_optional_and_change_the_picture() {
+        let _guard = crate::style::theme_test_guard();
+        let mut chart = MiniChart::new(Rect::new(0, 0, 200, 150));
+        chart.set_data(vec![
+            DataPoint::new("A", 10),
+            DataPoint::new("B", 50),
+            DataPoint::new("C", 30),
+        ]);
+
+        assert!(!chart.show_axis_labels(), "labels are off by default");
+        let without = crate::widget::svg::render_to_svg(&mut chart);
+
+        chart.set_show_axis_labels(true);
+        assert!(chart.show_axis_labels());
+        let with = crate::widget::svg::render_to_svg(&mut chart);
+
+        assert_ne!(
+            without, with,
+            "the labels must add drawing commands instead of leaving the picture unchanged"
+        );
+    }
+
+    /// Hovering the plot reports the nearest index and leaving clears it.
+    #[test]
+    fn mini_chart_hover_reports_the_nearest_index_and_clears_on_leave() {
+        use std::sync::{Arc, Mutex};
+
+        let mut chart = MiniChart::new(Rect::new(0, 0, 200, 150));
+        chart.set_data(vec![
+            DataPoint::new("A", 10),
+            DataPoint::new("B", 50),
+            DataPoint::new("C", 30),
+        ]);
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        chart.hovered_point_changed.connect(move |index| {
+            if let Ok(mut values) = sink.lock() {
+                values.push(*index);
+            }
+        });
+
+        // The plot is x 40..190, so the middle of three line points is x = 115.
+        chart.handle_event(&Event::MouseMove { pos: Point::new(115, 50) });
+        assert_eq!(chart.hovered_index(), Some(1));
+        assert_eq!(chart.hovered_value(), Some(50));
+
+        chart.handle_event(&Event::MouseLeave { pos: Point::new(115, 50) });
+        assert_eq!(chart.hovered_index(), None, "leaving clears the hover");
+        assert_eq!(chart.hovered_value(), None);
+
+        let values = seen.lock().expect("hover signal lock poisoned").clone();
+        assert_eq!(values, vec![Some(1), None], "each change emits exactly once");
+    }
+
+    /// The entrance animation starts at the baseline, advances on tick, and settles.
+    #[test]
+    fn mini_chart_entrance_animation_scales_then_settles() {
+        let mut chart = MiniChart::new(Rect::new(0, 0, 200, 150));
+        chart.set_data(vec![
+            DataPoint::new("A", 10),
+            DataPoint::new("B", 50),
+            DataPoint::new("C", 30),
+        ]);
+        assert!(!chart.animate_data(), "the entrance is off by default");
+        assert!(!Widget::is_animating(&chart));
+
+        chart.set_animate_data(true);
+        assert!(chart.animate_data());
+        assert!(Widget::is_animating(&chart), "a new entrance owes frames");
+
+        let baseline = render_pixels(&mut chart);
+        assert!(!Widget::tick(&mut chart, 5_000), "the entrance must settle");
+        assert!(!Widget::is_animating(&chart));
+        let settled = render_pixels(&mut chart);
+        assert_ne!(baseline, settled, "the series must grow from zero to its full height");
     }
 }

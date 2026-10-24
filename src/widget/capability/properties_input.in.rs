@@ -149,6 +149,30 @@ macro_rules! impl_properties_input {
 
         pub(crate) const COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            // What `insert_item` does with a new value, and how the size hint reacts to the
+            // item list. Both are token sets the control itself parses.
+            PropertySchema::enumerated(
+                "insert_policy",
+                true,
+                true,
+                &[
+                    "no_insert",
+                    "insert_at_top",
+                    "insert_at_current",
+                    "insert_at_bottom",
+                    "insert_alphabetically",
+                ],
+            ),
+            PropertySchema::enumerated(
+                "size_adjust_policy",
+                true,
+                true,
+                &[
+                    "adjust_to_minimum_contents_length",
+                    "adjust_to_contents",
+                    "adjust_to_contents_on_first_show",
+                ],
+            ),
             // The entry list is a *property*, not only the `set_items` command (whose signature takes
             // the items as an argument the property route could not carry). Without it a document's
             // `"items": [...]` had nowhere to go and a designer could not see or edit the entries at
@@ -197,6 +221,8 @@ macro_rules! impl_properties_input {
         pub(crate) const COMMAND_LINK_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("description", PropertyValueKind::String, true, true),
+            // An optional leading shield slot; opt-in so the default drawing is unchanged.
+            PropertySchema::new("shield", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -211,6 +237,11 @@ macro_rules! impl_properties_input {
             PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
             PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("max_visible_items", PropertyValueKind::Int, true, true),
+            // The filter set and the optional preview text a font picker offers. The filter is a
+            // token set (`monospaced`, `proportional`, `scalable`); the other two are nullable.
+            PropertySchema::new("font_filters", PropertyValueKind::String, true, true),
+            PropertySchema::new("writing_system_filter", PropertyValueKind::String, true, true),
+            PropertySchema::new("sample_text", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -242,10 +273,20 @@ macro_rules! impl_properties_input {
             // counter is not — the text already determines both.
             PropertySchema::new("valid", PropertyValueKind::Bool, true, false),
             PropertySchema::new("validation_message", PropertyValueKind::String, true, false),
+            // The cached outcome of the installed rule: `invalid`, `intermediate` or `acceptable`.
+            PropertySchema::new("validation_state", PropertyValueKind::String, true, false),
             // The value's horizontal alignment. Only the three horizontal tokens are accepted: the
             // value is centred vertically in the field band by the field's own layout, so a
             // `top`/`bottom` write would be one the control could never honour.
             PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
+            // The dirty flag, the clear affordance and the password reveal-on-edit switch are
+            // all assigned through a setter the control owns, so both directions are served.
+            PropertySchema::new("modified", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("clear_button_enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("password_echo_on_edit", PropertyValueKind::Bool, true, true),
+            // Signed because the field's text can be scrolled back past the leading edge while
+            // the caret is parked; the writer clamps to the same range the reader reports.
+            PropertySchema::new("scroll_x", PropertyValueKind::Int, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -304,6 +345,9 @@ macro_rules! impl_properties_input {
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
+            // A nullable row cap and the scroll position of the capped window.
+            PropertySchema::new("max_visible", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("scroll_offset", PropertyValueKind::UInt, true, true),
             PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -318,6 +362,15 @@ macro_rules! impl_properties_input {
             // Enforced by `set_max_length`, but unpublished: a designer had no way to see or set
             // the control's byte budget. `0` means unlimited, as on `line_edit`.
             PropertySchema::new("max_length", PropertyValueKind::UInt, true, true),
+            // Wrapping is a document setting the area owns; the margin and the block budget are
+            // both assigned through setters, and `max_block_count` accepts `Null` to mean
+            // unlimited.
+            PropertySchema::new("soft_wrap", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("content_margin", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("max_block_count", PropertyValueKind::UInt, true, true),
+            // Derived from the caret's position within the laid-out document, so the area
+            // answers it and refuses a write that would leave the caret behind.
+            PropertySchema::new("scroll_x", PropertyValueKind::Int, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -327,6 +380,8 @@ macro_rules! impl_properties_input {
         pub(crate) const KEYBOARD_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::enumerated("layout", true, true, &["qwerty", "numeric"]),
             PropertySchema::new("lowercase", PropertyValueKind::Bool, true, true),
+            // Whether a key paints its pressed state before the character arrives.
+            PropertySchema::new("press_animation", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -397,6 +452,9 @@ macro_rules! impl_properties_input {
         pub(crate) const INPLACE_EDITOR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("editing", PropertyValueKind::Bool, true, true),
+            // A comma-joined set of trigger names (`double_click`, `single_click`, `f2`, or
+            // `none`), so it is free text rather than a single-choice enum.
+            PropertySchema::new("edit_triggers", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -441,6 +499,24 @@ macro_rules! impl_properties_input {
             PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("can_undo", PropertyValueKind::Bool, true, false),
             PropertySchema::new("can_redo", PropertyValueKind::Bool, true, false),
+            // How a suggestion is matched, whether the match is case sensitive, whether the
+            // remainder is shown inline, and when the popup closes.
+            PropertySchema::enumerated(
+                "match_mode",
+                true,
+                true,
+                &["contains", "starts_with", "ends_with", "fixed_string", "regexp"],
+            ),
+            PropertySchema::new("case_sensitive", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("inline_completion", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated(
+                "close_policy",
+                true,
+                true,
+                &["always", "never", "on_commit"],
+            ),
+            // The word being completed is derived from the value, so it is read-only.
+            PropertySchema::new("completion_prefix", PropertyValueKind::String, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -524,6 +600,10 @@ macro_rules! impl_properties_input {
         pub(crate) const EDITABLE_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            // The field's caret, the popup's row cap (nullable) and its scroll position.
+            PropertySchema::new("cursor_position", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("max_visible_items", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("scroll_offset", PropertyValueKind::UInt, true, true),
             PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),

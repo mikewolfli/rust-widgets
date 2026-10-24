@@ -12,7 +12,7 @@
 //! an item list, a focus index and a multi-select flag it can never use.
 
 use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::expect_bool;
@@ -68,18 +68,28 @@ const TAG_PADDING: u32 = 8;
 const TAG_CLOSE_GAP: u32 = 6;
 /// The width of the close glyph's own box.
 const TAG_CLOSE_SIDE: u32 = 8;
+/// How far a hovered tag's fill moves towards its contrast colour.
+const TAG_HOVER_TINT: f32 = 0.08;
 
 /// Tag — a single tone-coloured label with an optional close glyph.
 ///
 /// The tag reports its own text as its accessible label, and the close glyph is drawn only
 /// when `closable` is set — the two are separate properties so a caller can present a tag the
 /// user can select but not remove.
+///
+/// # Removal is the host's job
+///
+/// Activating the close glyph or pressing Delete/Backspace on a closable tag emits
+/// [`Self::closed`]. The tag never removes itself from its parent: it does not own the layout
+/// that placed it, so the host that does is the only thing that can remove it.
 pub struct Tag {
     base: BaseWidget,
     text: String,
     tone: TagTone,
     selected: bool,
     closable: bool,
+    /// Whether the pointer is currently over the tag.
+    hovered: bool,
     /// Emitted when the close glyph is activated, with the tag's own text as the payload.
     pub closed: Signal1<String>,
 }
@@ -93,6 +103,7 @@ impl Tag {
             tone: TagTone::default(),
             selected: false,
             closable: false,
+            hovered: false,
             closed: Signal1::new(),
         }
     }
@@ -157,6 +168,23 @@ impl Tag {
         }
         self.closable = closable;
         self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Whether the pointer is currently over the tag.
+    pub fn is_hovered(&self) -> bool {
+        self.hovered
+    }
+
+    /// Sets the hover state.
+    ///
+    /// [`Event::MouseEnter`] and [`Event::MouseLeave`] drive this automatically; the setter
+    /// exists for a host that synthesises hover, such as a list forwarding a pointer position.
+    pub fn set_hovered(&mut self, hovered: bool) {
+        if self.hovered == hovered {
+            return;
+        }
+        self.hovered = hovered;
         self.base.request_redraw();
     }
 
@@ -305,15 +333,16 @@ impl Draw for Tag {
         let tone = self.tone_color(style);
         // A selected tag is filled with its tone; an unselected one is a tint of it, so the
         // pair is distinguishable in both appearances without a second hardcoded colour.
-        let (fill, ink) = if self.selected {
-            (tone, tone.contrast_color())
+        let base_fill = if self.selected { tone } else { tone.blend(&surface, 0.86) };
+        // A hovered tag shifts its fill slightly towards its own contrast colour, which
+        // lightens it in a dark appearance and darkens it in a light one. At rest the fill is
+        // untouched, so the default picture is byte-identical.
+        let fill = if self.hovered {
+            base_fill.blend(&base_fill.contrast_color(), TAG_HOVER_TINT)
         } else {
-            // Both terms come from the theme, so the tint moves towards the surface in light
-            // mode and away from it in dark mode. The ink is whatever is legible on the
-            // resulting fill, which is what keeps the label readable in both appearances.
-            let fill = tone.blend(&surface, 0.86);
-            (fill, fill.contrast_color())
+            base_fill
         };
+        let ink = fill.contrast_color();
         let radius = rect.height / 2;
         ctx.fill_rounded_rect(rect, radius, fill);
         ctx.draw_rounded_rect_stroke(rect, radius, tone.with_alpha_f32(0.7), 1);
@@ -356,18 +385,33 @@ impl Draw for Tag {
 impl EventHandler for Tag {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
-        if let Event::MousePress { pos, button: 1, .. } = event {
-            if let Some(close) = self.close_rect() {
-                if close.contains(*pos) {
-                    self.closed.emit(self.text.clone());
-                    self.base.request_redraw();
-                    return;
+        match event {
+            Event::MouseEnter { .. } => self.set_hovered(true),
+            Event::MouseLeave { .. } => self.set_hovered(false),
+            // Both removal routes emit the same signal, so a host subscribes once. The tag is
+            // only removable when it is closable, and the key is ignored while disabled.
+            Event::KeyPress { key, .. }
+                if (*key == key_codes::DELETE || *key == key_codes::BACKSPACE)
+                    && self.closable
+                    && self.base.is_enabled() =>
+            {
+                self.closed.emit(self.text.clone());
+                self.base.request_redraw();
+            }
+            Event::MousePress { pos, button: 1, .. } => {
+                if let Some(close) = self.close_rect() {
+                    if close.contains(*pos) {
+                        self.closed.emit(self.text.clone());
+                        self.base.request_redraw();
+                        return;
+                    }
+                }
+                if self.geometry().contains(*pos) {
+                    let selected = !self.selected;
+                    self.set_selected(selected);
                 }
             }
-            if self.geometry().contains(*pos) {
-                let selected = !self.selected;
-                self.set_selected(selected);
-            }
+            _ => {}
         }
     }
 }
@@ -446,5 +490,65 @@ mod tests {
         let mut tag = Tag::new("hello", Rect::new(0, 0, 80, 24));
         let svg = crate::widget::svg::render_to_svg(&mut tag);
         assert_eq!(crate::widget::svg::text_ink_boxes(&svg).len(), 1, "{svg}");
+    }
+
+    /// Pointer entry and exit drive a hover state, and the fill follows it.
+    #[test]
+    fn hovering_highlights_the_fill_and_leaving_restores_it() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut tag = Tag::new("rust", Rect::new(0, 0, 80, 24));
+        assert!(!tag.is_hovered());
+        let rest = crate::widget::svg::render_to_svg(&mut tag);
+
+        tag.handle_event(&Event::MouseEnter { pos: Point::new(5, 5) });
+        assert!(tag.is_hovered(), "MouseEnter sets the hover state");
+        let hovered = crate::widget::svg::render_to_svg(&mut tag);
+        assert_ne!(hovered, rest, "a hovered tag paints a different fill: {hovered}");
+
+        tag.handle_event(&Event::MouseLeave { pos: Point::new(200, 200) });
+        assert!(!tag.is_hovered(), "MouseLeave clears the hover state");
+        let after = crate::widget::svg::render_to_svg(&mut tag);
+        assert_eq!(after, rest, "leaving restores the resting fill byte for byte");
+    }
+
+    /// Delete and Backspace both request removal through the existing `closed` signal.
+    ///
+    /// The tag must not remove itself: the host owns the layout entry, so it is the only
+    /// thing that can take the tag out.
+    #[test]
+    fn delete_and_backspace_request_removal_without_removing_the_tag() {
+        let mut tag = Tag::new("draft", Rect::new(0, 0, 80, 24));
+        tag.set_closable(true);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        tag.closed.connect_ref({
+            let seen = std::sync::Arc::clone(&seen);
+            move |value: &String| seen.lock().expect("lock").push(value.clone())
+        });
+
+        for key in [key_codes::DELETE, key_codes::BACKSPACE] {
+            tag.handle_event(&Event::KeyPress { key, modifiers: 0 });
+        }
+
+        assert_eq!(
+            seen.lock().expect("lock").as_slice(),
+            ["draft".to_string(), "draft".to_string()],
+            "both keys emit `closed` with the tag's label"
+        );
+        assert_eq!(tag.text(), "draft", "the host removes the tag, not the tag itself");
+        assert!(!tag.is_selected(), "keyboard removal is not a selection change");
+    }
+
+    /// A tag the user cannot close is not keyboard-removable either.
+    #[test]
+    fn a_non_closable_tag_ignores_the_delete_key() {
+        let mut tag = Tag::new("pinned", Rect::new(0, 0, 80, 24));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        tag.closed.connect_ref({
+            let seen = std::sync::Arc::clone(&seen);
+            move |value: &String| seen.lock().expect("lock").push(value.clone())
+        });
+
+        tag.handle_event(&Event::KeyPress { key: key_codes::DELETE, modifiers: 0 });
+        assert!(seen.lock().expect("lock").is_empty(), "a non-closable tag cannot be removed");
     }
 }

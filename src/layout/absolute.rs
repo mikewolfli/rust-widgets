@@ -35,12 +35,93 @@ pub struct AbsolutePosition {
     /// [`AbsolutePosition::to_rect_in_parent`] — which edge of the parent it is measured
     /// from.
     pub anchor: Anchor,
+    /// Per-edge insets applied inside the parent before the anchor is resolved.
+    ///
+    /// Order is left, top, right, bottom. All zero preserves the previous geometry, so
+    /// margins are strictly additive.
+    pub margins: (i32, i32, i32, i32),
+    /// Distance from the child's top edge to its text baseline, used by the baseline
+    /// anchors.
+    pub baseline: i32,
+    /// Whether the child fills the parent's box (inset by `margins`).
+    ///
+    /// A filling position ignores `anchor`, `x`, `y`, `width`, and `height`; the other
+    /// fields remain readable so switching `fill` off restores the previous placement.
+    pub fill: bool,
 }
 impl AbsolutePosition {
     /// Creates a position at pixel offset `(x, y)` with the child's own size and
     /// [`Anchor::TopLeft`] (so `(x, y)` is the child's top-left corner).
     pub fn new(x: i32, y: i32) -> Self {
-        Self { x, y, width: None, height: None, anchor: Anchor::TopLeft }
+        Self {
+            x,
+            y,
+            width: None,
+            height: None,
+            anchor: Anchor::TopLeft,
+            margins: (0, 0, 0, 0),
+            baseline: 0,
+            fill: false,
+        }
+    }
+
+    /// A position that fills the parent's box, inset by the four margins.
+    ///
+    /// This is the equivalent of a declarative UI `fill` anchor: the child tracks every
+    /// parent resize without the caller recomputing width or height.
+    pub fn fill() -> Self {
+        Self { fill: true, ..Self::new(0, 0) }
+    }
+
+    /// A position that centres the child in the parent.
+    pub fn center_in() -> Self {
+        Self::new(0, 0).with_anchor_only(Anchor::Center)
+    }
+
+    /// Sets per-edge margins (left, top, right, bottom).
+    pub fn with_margins(mut self, left: i32, top: i32, right: i32, bottom: i32) -> Self {
+        self.margins = (left, top, right, bottom);
+        self
+    }
+
+    /// Sets the distance from the child's top edge to its baseline.
+    ///
+    /// Only the baseline anchors read it; a negative value is accepted because a font's
+    /// ascent may legitimately be reported as a signed metric.
+    pub fn with_baseline(mut self, baseline: i32) -> Self {
+        self.baseline = baseline;
+        self
+    }
+
+    /// Linearly interpolates the offset and size of two positions.
+    ///
+    /// This is the pure primitive a host uses to animate an anchored child: the layout
+    /// itself stays stateless, while an animation controller can call this with its own
+    /// progress and hand the result back as an ordinary [`AbsolutePosition`].
+    pub fn lerp(from: Self, to: Self, progress: f32) -> Self {
+        let t = if progress.is_finite() { progress.clamp(0.0, 1.0) } else { 0.0 };
+        let blend = |a: i32, b: i32| -> i32 { a + ((b - a) as f32 * t).round() as i32 };
+        let blend_size = |a: Option<u32>, b: Option<u32>| -> Option<u32> {
+            match (a, b) {
+                (Some(a), Some(b)) => Some(blend(a as i32, b as i32).max(0) as u32),
+                _ => a.or(b),
+            }
+        };
+        Self {
+            x: blend(from.x, to.x),
+            y: blend(from.y, to.y),
+            width: blend_size(from.width, to.width),
+            height: blend_size(from.height, to.height),
+            anchor: if t < 0.5 { from.anchor } else { to.anchor },
+            margins: (
+                blend(from.margins.0, to.margins.0),
+                blend(from.margins.1, to.margins.1),
+                blend(from.margins.2, to.margins.2),
+                blend(from.margins.3, to.margins.3),
+            ),
+            baseline: blend(from.baseline, to.baseline),
+            fill: if t < 0.5 { from.fill } else { to.fill },
+        }
     }
     /// Sets an explicit size in pixels, overriding the child's size hint.
     ///
@@ -117,8 +198,24 @@ impl AbsolutePosition {
                 let y = self.y - height as i32;
                 (x, y)
             }
+            Anchor::BaselineLeft => (self.x, self.y - self.baseline),
+            Anchor::BaselineCenter => (self.x - (width as i32) / 2, self.y - self.baseline),
+            Anchor::BaselineRight => (self.x - width as i32, self.y - self.baseline),
         };
         Rect::new(x, y, width, height)
+    }
+
+    /// Resolves this position the way an [`AbsoluteLayout`] places a child.
+    ///
+    /// A position that fills the parent or declares per-edge margins is measured against the
+    /// parent box ([`Self::to_rect_in_parent`]); every other position keeps the historical
+    /// self-relative resolution ([`Self::to_rect`]), so existing geometry is unchanged.
+    pub fn resolve(&self, parent_size: Size, child_size: Size) -> Rect {
+        if self.fill || self.margins != (0, 0, 0, 0) {
+            self.to_rect_in_parent(parent_size, child_size)
+        } else {
+            self.to_rect(parent_size, child_size)
+        }
     }
 
     /// Resolves this position into a rect **anchored to the parent's box**.
@@ -134,10 +231,14 @@ impl AbsolutePosition {
     /// self-relative behaviour — which snapshots and callers already depend on — is
     /// untouched.
     pub fn to_rect_in_parent(&self, parent_size: Size, child_size: Size) -> Rect {
+        let (ml, mt, mr, mb) = self.margins;
+        let pw = (parent_size.width as i32 - ml - mr).max(0);
+        let ph = (parent_size.height as i32 - mt - mb).max(0);
+        if self.fill {
+            return Rect::new(ml, mt, pw as u32, ph as u32);
+        }
         let width = self.width.unwrap_or(child_size.width);
         let height = self.height.unwrap_or(child_size.height);
-        let pw = parent_size.width as i32;
-        let ph = parent_size.height as i32;
         let x = match self.anchor.horizontal() {
             HorizontalAnchor::Start => self.x,
             HorizontalAnchor::Center => (pw - width as i32) / 2 + self.x,
@@ -147,13 +248,99 @@ impl AbsolutePosition {
             VerticalAnchor::Start => self.y,
             VerticalAnchor::Center => (ph - height as i32) / 2 + self.y,
             VerticalAnchor::End => ph - height as i32 - self.y,
+            VerticalAnchor::Baseline => self.y - self.baseline,
         };
-        Rect::new(x, y, width, height)
+        Rect::new(ml + x, mt + y, width, height)
     }
 }
 impl Default for AbsolutePosition {
     fn default() -> Self {
         Self::new(0, 0)
+    }
+}
+
+/// How an [`AbsoluteTransition`] redistributes time across its duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransitionEasing {
+    /// Constant speed.
+    #[default]
+    Linear,
+    /// Smoothstep: starts and ends at rest, which keeps an anchored child from popping.
+    Smooth,
+}
+
+impl TransitionEasing {
+    /// Maps a linear fraction to an eased fraction in `0.0..=1.0`.
+    pub fn apply(self, progress: f32) -> f32 {
+        let t = progress.clamp(0.0, 1.0);
+        match self {
+            TransitionEasing::Linear => t,
+            TransitionEasing::Smooth => t * t * (3.0 - 2.0 * t),
+        }
+    }
+}
+
+/// An in-flight interpolation between two [`AbsolutePosition`]s.
+///
+/// A layout is stateless, so the clock has to live outside it. A host that wants an anchored
+/// child to move keeps one of these, advances it from its frame callback, and hands
+/// [`Self::sample`] to the layout as an ordinary position. Nothing moves unless the host
+/// creates a transition, which is what keeps every existing absolute layout byte-identical.
+#[derive(Debug, Clone, Copy)]
+pub struct AbsoluteTransition {
+    from: AbsolutePosition,
+    to: AbsolutePosition,
+    duration_ms: u32,
+    elapsed_ms: u32,
+    easing: TransitionEasing,
+}
+
+impl AbsoluteTransition {
+    /// Starts a transition from `from` to `to` over `duration_ms`.
+    ///
+    /// A zero duration is a completed transition: [`Self::advance`] returns `false` and
+    /// [`Self::sample`] answers `to`.
+    pub fn new(from: AbsolutePosition, to: AbsolutePosition, duration_ms: u32) -> Self {
+        Self { from, to, duration_ms, elapsed_ms: 0, easing: TransitionEasing::default() }
+    }
+
+    /// The same transition with an explicit easing curve.
+    pub fn with_easing(mut self, easing: TransitionEasing) -> Self {
+        self.easing = easing;
+        self
+    }
+
+    /// Advances the clock, returning whether another frame is still owed.
+    pub fn advance(&mut self, delta_ms: u32) -> bool {
+        if !self.is_animating() {
+            return false;
+        }
+        self.elapsed_ms = self.elapsed_ms.saturating_add(delta_ms).min(self.duration_ms);
+        self.is_animating()
+    }
+
+    /// Whether the transition has time left to run.
+    pub fn is_animating(&self) -> bool {
+        self.elapsed_ms < self.duration_ms
+    }
+
+    /// The raw fraction of the duration that has elapsed.
+    pub fn progress(&self) -> f32 {
+        if self.duration_ms == 0 {
+            return 1.0;
+        }
+        self.elapsed_ms as f32 / self.duration_ms as f32
+    }
+
+    /// The interpolated position at the current clock reading.
+    pub fn sample(&self) -> AbsolutePosition {
+        AbsolutePosition::lerp(self.from, self.to, self.easing.apply(self.progress()))
+    }
+
+    /// Ends the transition immediately, returning the destination position.
+    pub fn finish(&mut self) -> AbsolutePosition {
+        self.elapsed_ms = self.duration_ms;
+        self.to
     }
 }
 /// Anchor point for absolute positioning.
@@ -184,6 +371,12 @@ pub enum Anchor {
     BottomCenter,
     /// Bottom-right corner is at `(x, y)`.
     BottomRight,
+    /// The child's text baseline is placed at `y`, with its left edge at `x`.
+    BaselineLeft,
+    /// The child's text baseline is placed at `y`, centred horizontally on `x`.
+    BaselineCenter,
+    /// The child's text baseline is placed at `y`, with its right edge at `x`.
+    BaselineRight,
 }
 /// Which edge of a parent box an anchor measures from, on one axis.
 ///
@@ -204,6 +397,9 @@ pub enum HorizontalAnchor {
 pub enum VerticalAnchor {
     /// Measured from the top edge.
     Start,
+    /// Measured from the child's own text baseline, whose offset from the top edge is
+    /// carried by [`AbsolutePosition::baseline`].
+    Baseline,
     /// Centred in the parent, with `y` as a signed nudge.
     Center,
     /// Measured from the bottom edge.
@@ -214,9 +410,16 @@ impl Anchor {
     /// The horizontal half of this anchor.
     pub fn horizontal(self) -> HorizontalAnchor {
         match self {
-            Anchor::TopLeft | Anchor::CenterLeft | Anchor::BottomLeft => HorizontalAnchor::Start,
-            Anchor::TopCenter | Anchor::Center | Anchor::BottomCenter => HorizontalAnchor::Center,
-            Anchor::TopRight | Anchor::CenterRight | Anchor::BottomRight => HorizontalAnchor::End,
+            Anchor::TopLeft | Anchor::CenterLeft | Anchor::BottomLeft | Anchor::BaselineLeft => {
+                HorizontalAnchor::Start
+            }
+            Anchor::TopCenter | Anchor::Center | Anchor::BottomCenter | Anchor::BaselineCenter => {
+                HorizontalAnchor::Center
+            }
+            Anchor::TopRight
+            | Anchor::CenterRight
+            | Anchor::BottomRight
+            | Anchor::BaselineRight => HorizontalAnchor::End,
         }
     }
 
@@ -226,6 +429,9 @@ impl Anchor {
             Anchor::TopLeft | Anchor::TopCenter | Anchor::TopRight => VerticalAnchor::Start,
             Anchor::CenterLeft | Anchor::Center | Anchor::CenterRight => VerticalAnchor::Center,
             Anchor::BottomLeft | Anchor::BottomCenter | Anchor::BottomRight => VerticalAnchor::End,
+            Anchor::BaselineLeft | Anchor::BaselineCenter | Anchor::BaselineRight => {
+                VerticalAnchor::Baseline
+            }
         }
     }
 }
@@ -431,7 +637,7 @@ impl AbsoluteLayout {
                 .as_ref()
                 .map(|constraint| constraint.apply(child_size))
                 .unwrap_or(child_size);
-            let rect = entry.position.to_rect(parent_size, constrained_size);
+            let rect = entry.position.resolve(parent_size, constrained_size);
             positions.push(rect);
         }
         positions
@@ -451,7 +657,7 @@ impl AbsoluteLayout {
         let mut rects = Vec::new();
         let parent_size = container.size();
         for (position, size) in positions.iter().zip(sizes.iter()) {
-            let rect = position.to_rect(parent_size, *size);
+            let rect = position.resolve(parent_size, *size);
             rects.push(rect);
         }
         rects
@@ -723,6 +929,77 @@ mod tests {
             Rect::new(400 - 60 - 400, 300 - 40 - 300, 60, 40),
             "the new spelling treats the point as an inset from the parent's edge"
         );
+    }
+
+    /// Anchors now express declarative-UI placement: a fill position tracks the parent,
+    /// per-edge margins inset it, and a baseline anchor lines text up on its own baseline.
+    #[test]
+    fn fill_margins_and_baseline_express_declarative_anchors() {
+        let parent = Size::new(200, 100);
+        let filled = AbsolutePosition::fill()
+            .with_margins(4, 6, 8, 10)
+            .to_rect_in_parent(parent, Size::new(10, 10));
+        assert_eq!(filled, Rect::new(4, 6, 200 - 4 - 8, 100 - 6 - 10));
+
+        let centred = AbsolutePosition::center_in().to_rect_in_parent(parent, Size::new(20, 40));
+        assert_eq!(centred, Rect::new(90, 30, 20, 40));
+
+        let baseline = AbsolutePosition::new(10, 50)
+            .with_anchor_only(Anchor::BaselineLeft)
+            .with_baseline(12)
+            .to_rect_in_parent(parent, Size::new(30, 20));
+        assert_eq!(baseline, Rect::new(10, 38, 30, 20));
+
+        // Interpolation is the animation primitive for an anchored child.
+        let animated = AbsolutePosition::lerp(
+            AbsolutePosition::new(0, 0),
+            AbsolutePosition::new(100, 40).with_size(20, 20),
+            0.5,
+        );
+        assert_eq!((animated.x, animated.y), (50, 20));
+        assert_eq!(
+            (animated.width, animated.height),
+            (Some(20), Some(20)),
+            "an unset size keeps the defined endpoint rather than interpolating from zero"
+        );
+    }
+
+    /// `AbsoluteLayout` honours a fill position and per-edge margins, not just the pure
+    /// `AbsolutePosition` resolver.
+    #[test]
+    fn the_layout_applies_fill_and_margins() {
+        let mut layout = AbsoluteLayout::new();
+        layout.add_widget(1, 0);
+        layout.set_position(0, AbsolutePosition::fill().with_margins(4, 6, 8, 10));
+        let rects = layout.layout(Rect::new(0, 0, 200, 100));
+        assert_eq!(rects[0], Rect::new(4, 6, 188, 84));
+
+        // A position with no fill and no margins keeps the historical self-relative answer.
+        layout.set_position(0, AbsolutePosition::new(10, 20));
+        let rects = layout.layout(Rect::new(0, 0, 200, 100));
+        assert_eq!(rects[0], Rect::new(10, 20, 0, 0));
+    }
+
+    /// A transition owns the clock, advances over frames, and reports when it is at rest.
+    #[test]
+    fn a_transition_animates_an_anchored_child_over_frames() {
+        let from = AbsolutePosition::new(0, 0);
+        let to = AbsolutePosition::new(100, 40);
+        let mut transition =
+            AbsoluteTransition::new(from, to, 200).with_easing(TransitionEasing::Smooth);
+        assert!(transition.is_animating());
+        assert_eq!(transition.sample().x, 0, "the first frame starts at the origin");
+        assert!(transition.advance(100));
+        assert_eq!(transition.progress(), 0.5);
+        assert_eq!(transition.sample().x, 50);
+        assert!(!transition.advance(100), "the last frame ends the transition");
+        assert_eq!(transition.sample().x, 100);
+
+        // A zero-duration transition is already complete.
+        let mut instant = AbsoluteTransition::new(from, to, 0);
+        assert!(!instant.advance(16));
+        assert_eq!(instant.sample().x, 100);
+        assert_eq!(instant.finish().x, 100);
     }
 
     /// The anchor's axis decomposition must be a total function that agrees with the nine

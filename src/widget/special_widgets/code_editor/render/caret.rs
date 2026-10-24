@@ -87,9 +87,27 @@ impl CodeEditor {
     /// The caret, the selection outline and the diagnostic underline all go through
     /// this one function, so the cursor cannot point between two glyphs while the
     /// highlight covers them.
-    pub(super) fn caret_x(&self, position: TextPosition) -> i32 {
+    pub(crate) fn caret_x(&self, position: TextPosition) -> i32 {
         let left = self.geometry().x + self.text_origin_x();
         if let Some(x) = self.cached_x(position.line, position.column) {
+            if self.config.word_wrap {
+                // The cached layout is measured for the whole line, while the
+                // caret is painted on one segment. Subtract the segment's own
+                // measured origin and add the continuation indent, the same way
+                // the row itself is drawn.
+                let text = self.line_text(position.line).unwrap_or_default();
+                let grid = LineGrid::new(&text, self.config.tab_width);
+                let columns = self.text_columns().max(1);
+                let (segment, segment_start) = grid.segment_of_char(position.column, columns);
+                let base = self.cached_x(position.line, segment_start).unwrap_or(0.0);
+                let indent = if segment == 0 {
+                    0.0
+                } else {
+                    (grid.leading_indent_columns() as f32 * self.cell_width())
+                        .min(columns.saturating_sub(4) as f32 * self.cell_width())
+                };
+                return self.screen_x(left, x - base + indent);
+            }
             return self.screen_x(left, x);
         }
         let (_, x) = self.unwrapped_x(position.line, position.column);
@@ -126,7 +144,7 @@ impl CodeEditor {
                     };
                 let y = map.row_y(row);
                 let x = self.caret_x(caret.head);
-                context.fill_rect(Rect::new(x, y, 2, row_height.ceil() as u32), chrome.accent);
+                self.draw_caret_shape(context, x, y, row_height, chrome);
             } else if let Some(rect) = self.rect_for_range(caret.bounds().0, caret.bounds().1) {
                 context.fill_rect(rect, chrome.selection);
             }
@@ -140,7 +158,41 @@ impl CodeEditor {
             let row = self.caret_visual_row();
             let y = map.row_y(row);
             let x = self.caret_x(self.cursor.head);
-            context.fill_rect(Rect::new(x, y, 2, row_height.ceil() as u32), chrome.accent);
+            self.draw_caret_shape(context, x, y, row_height, chrome);
+        }
+    }
+
+    /// Paints one caret in the configured shape.
+    ///
+    /// The default line keeps the previous 2 px bar byte for byte; block and
+    /// underline are opt-in through [`CaretStyle`].
+    fn draw_caret_shape(
+        &self,
+        context: &mut RenderContext,
+        x: i32,
+        y: i32,
+        row_height: f32,
+        chrome: &EditorChrome,
+    ) {
+        let height = row_height.ceil().max(1.0) as u32;
+        match self.caret_style {
+            CaretStyle::Line => {
+                context.fill_rect(Rect::new(x, y, 2, height), chrome.accent);
+            }
+            CaretStyle::Block => {
+                let width = self.cell_width().round().max(2.0) as u32;
+                context.fill_rect(
+                    Rect::new(x, y, width, height),
+                    chrome.accent.blend(&chrome.surface, 0.45),
+                );
+            }
+            CaretStyle::Underline => {
+                let width = self.cell_width().round().max(2.0) as u32;
+                context.fill_rect(
+                    Rect::new(x, y + height.saturating_sub(2) as i32, width, 2),
+                    chrome.accent,
+                );
+            }
         }
     }
 

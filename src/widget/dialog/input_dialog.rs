@@ -9,7 +9,7 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -91,9 +91,17 @@ pub struct InputDialog {
     double_max: f64,
     _double_step: f64,
     double_decimals: u8,
-    /// Emitted when the text value changes. Nothing in this widget emits it
-    /// yet — editing happens elsewhere and calls [`InputDialog::set_text_value`]
-    /// — so it is for a host that drives the field.
+    /// How far the caret sits into [`InputDialog::text_value`], in characters.
+    text_caret: usize,
+    /// Whether the host has delivered committed text, which retires the raw-key fallback.
+    text_input_seen: bool,
+    /// Whether the text field has been focused by a click. The caret is painted only then, so
+    /// an untouched dialog keeps its resting appearance.
+    text_focused: bool,
+    /// Whether the item-mode drop-down is open.
+    dropdown_open: bool,
+    /// Emitted when the text value changes. Emitted by the control's own editing as well as
+    /// by [`InputDialog::set_text_value`].
     pub text_value_changed: Signal1<String>,
     /// Emitted when the integer value changes. Not emitted by this widget yet;
     /// see [`InputDialog::text_value_changed`].
@@ -131,6 +139,10 @@ impl InputDialog {
             double_max: f64::MAX,
             _double_step: 1.0,
             double_decimals: 1,
+            text_caret: 0,
+            text_input_seen: false,
+            text_focused: false,
+            dropdown_open: false,
             text_value_changed: Signal1::new(),
             int_value_changed: Signal1::new(),
             double_value_changed: Signal1::new(),
@@ -299,6 +311,7 @@ impl InputDialog {
             return;
         }
         self.text_value = value;
+        self.text_caret = self.text_caret.min(self.text_value.chars().count());
         self.base.request_redraw();
         self.text_value_changed.emit(self.text_value.clone());
     }
@@ -346,6 +359,113 @@ impl InputDialog {
         self.base.request_redraw();
         self.double_value_changed.emit(self.double_value);
     }
+    /// Whether the item-mode drop-down is open.
+    pub fn is_dropdown_open(&self) -> bool {
+        self.dropdown_open
+    }
+
+    /// Opens or closes the item-mode drop-down and repaints when it changes.
+    pub fn set_dropdown_open(&mut self, open: bool) {
+        if self.dropdown_open == open || self.mode != InputMode::Item {
+            return;
+        }
+        self.dropdown_open = open;
+        self.base.request_redraw();
+    }
+
+    /// The caret position in [`InputDialog::text_value`], in characters.
+    pub fn text_caret(&self) -> usize {
+        self.text_caret
+    }
+
+    /// Replaces the free-text value and puts the caret at its end.
+    ///
+    /// This is the editing entry point the control itself uses; it is distinct from
+    /// [`InputDialog::set_text_value`] so typing does not have to route through a public
+    /// setter that a host may have connected to.
+    fn edit_text(&mut self, next: String, caret: usize) {
+        if next == self.text_value {
+            return;
+        }
+        self.text_value = next;
+        self.text_caret = caret.min(self.text_value.chars().count());
+        self.base.request_redraw();
+        self.text_value_changed.emit(self.text_value.clone());
+    }
+
+    /// Inserts `inserted` at the caret.
+    fn insert_at_caret(&mut self, inserted: &str) {
+        if self.mode != InputMode::Text {
+            return;
+        }
+        let caret = self.text_caret.min(self.text_value.chars().count());
+        let byte = Self::byte_index(&self.text_value, caret);
+        let mut next = String::with_capacity(self.text_value.len() + inserted.len());
+        next.push_str(&self.text_value[..byte]);
+        next.push_str(inserted);
+        next.push_str(&self.text_value[byte..]);
+        self.edit_text(next, caret + inserted.chars().count());
+    }
+
+    /// The byte offset of character `index` in `text`.
+    fn byte_index(text: &str, index: usize) -> usize {
+        text.char_indices().nth(index).map(|(offset, _)| offset).unwrap_or(text.len())
+    }
+
+    /// Deletes the character before the caret.
+    fn backspace_text(&mut self) {
+        if self.mode != InputMode::Text || self.text_caret == 0 {
+            return;
+        }
+        let end = Self::byte_index(&self.text_value, self.text_caret);
+        let start = Self::byte_index(&self.text_value, self.text_caret - 1);
+        let mut next = String::with_capacity(self.text_value.len());
+        next.push_str(&self.text_value[..start]);
+        next.push_str(&self.text_value[end..]);
+        self.edit_text(next, self.text_caret - 1);
+    }
+
+    /// Deletes the character after the caret.
+    fn delete_text(&mut self) {
+        if self.mode != InputMode::Text {
+            return;
+        }
+        let length = self.text_value.chars().count();
+        if self.text_caret >= length {
+            return;
+        }
+        let start = Self::byte_index(&self.text_value, self.text_caret);
+        let end = Self::byte_index(&self.text_value, self.text_caret + 1);
+        let mut next = String::with_capacity(self.text_value.len());
+        next.push_str(&self.text_value[..start]);
+        next.push_str(&self.text_value[end..]);
+        self.edit_text(next, self.text_caret);
+    }
+
+    /// Moves the caret to `to`, clamped to the value's length.
+    fn move_text_caret(&mut self, to: usize) {
+        let length = self.text_value.chars().count();
+        let to = to.min(length);
+        if self.text_caret != to {
+            self.text_caret = to;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Steps an integer or floating value by its configured increment.
+    fn step_value(&mut self, direction: i32) {
+        match self.mode {
+            InputMode::Integer => {
+                let step = self.int_step.saturating_mul(i64::from(direction));
+                self.set_int_value(self.int_value.saturating_add(step));
+            }
+            InputMode::Double => {
+                self.set_double_value(self.double_value + self._double_step * f64::from(direction));
+            }
+            _ => {}
+        }
+    }
+
     /// Whether the dialog blocks interaction with its owner while open.
     ///
     /// Records the intent, on by default; enforcement is the modal stack in
@@ -468,6 +588,9 @@ impl WidgetProperties for InputDialog {
             "text_value" => Ok(CapabilityValue::String(self.text_value().to_string())),
             "int_value" => Ok(CapabilityValue::Int(self.int_value())),
             "double_value" => Ok(CapabilityValue::Float(self.double_value())),
+            "int_step" => Ok(CapabilityValue::Int(self.int_step())),
+            "current_item" => Ok(CapabilityValue::UInt(self.current_item() as u64)),
+            "dropdown_open" => Ok(CapabilityValue::Bool(self.is_dropdown_open())),
             _ => base_property_get(self, name),
         }
     }
@@ -511,6 +634,36 @@ impl WidgetProperties for InputDialog {
                 self.set_double_value(number);
                 Ok(())
             }
+            "int_step" => {
+                let step = match value {
+                    CapabilityValue::Int(v) => v,
+                    CapabilityValue::UInt(v) => v as i64,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                if step != self.int_step {
+                    self.int_step = step;
+                }
+                Ok(())
+            }
+            "current_item" => {
+                let index = match value {
+                    CapabilityValue::UInt(v) => v as usize,
+                    CapabilityValue::Int(v) if v >= 0 => v as usize,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                if index >= self.items.len() && !self.items.is_empty() {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                if self.current_item != index {
+                    self.current_item = index;
+                    self.base.request_redraw();
+                }
+                Ok(())
+            }
+            "dropdown_open" => {
+                self.set_dropdown_open(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -523,6 +676,9 @@ impl WidgetProperties for InputDialog {
             "text_value",
             "int_value",
             "double_value",
+            "int_step",
+            "current_item",
+            "dropdown_open",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -535,19 +691,102 @@ impl EventHandler for InputDialog {
         }
         match event {
             Event::MousePress { pos, button: 1, .. } => {
+                // A press on an open drop-down row picks it before anything else can consume
+                // the click; the rows are the topmost thing the dialog paints.
+                if let Some((index, _)) =
+                    self.dropdown_rows().into_iter().find(|(_, rect)| rect.contains_point(*pos))
+                {
+                    self.current_item = index;
+                    self.dropdown_open = false;
+                    self.base.request_redraw();
+                    return;
+                }
                 if let Some(index) = self.button_at(*pos) {
                     if index == 0 {
                         self.accept();
                     } else {
                         self.reject();
                     }
+                    return;
+                }
+                if self.input_band().contains_point(*pos) {
+                    if self.mode == InputMode::Item {
+                        self.dropdown_open = !self.dropdown_open;
+                        self.base.request_redraw();
+                    } else if self.mode == InputMode::Text {
+                        let input = self.input_band();
+                        self.text_focused = true;
+                        let advance =
+                            effective_font(self.base.style()).size().ceil().max(1.0) as u32;
+                        let length = self.text_value.chars().count();
+                        let caret = (((pos.x - input.x - 4).max(0) as u32) / advance) as usize;
+                        self.move_text_caret(caret.min(length));
+                    }
+                } else if self.dropdown_open {
+                    self.dropdown_open = false;
+                    self.base.request_redraw();
+                }
+            }
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.text_input_seen = true;
+                let filtered: String =
+                    text.chars().filter(|character| !character.is_control()).collect();
+                if !filtered.is_empty() {
+                    self.insert_at_caret(&filtered);
                 }
             }
             Event::KeyPress { key, .. } => {
-                if *key == key_codes::ENTER {
-                    self.accept();
-                } else if *key == key_codes::ESCAPE {
-                    self.reject();
+                let length = self.text_value.chars().count();
+                match *key {
+                    key_codes::ENTER => {
+                        if self.mode == InputMode::Item {
+                            self.dropdown_open = false;
+                        }
+                        self.accept();
+                    }
+                    key_codes::ESCAPE => {
+                        if self.dropdown_open {
+                            self.dropdown_open = false;
+                            self.base.request_redraw();
+                        } else {
+                            self.reject();
+                        }
+                    }
+                    key_codes::UP => {
+                        if self.mode == InputMode::Item {
+                            if self.current_item > 0 {
+                                self.current_item -= 1;
+                                self.base.request_redraw();
+                            }
+                        } else {
+                            self.step_value(1);
+                        }
+                    }
+                    key_codes::DOWN => {
+                        if self.mode == InputMode::Item {
+                            if self.current_item + 1 < self.items.len() {
+                                self.current_item += 1;
+                                self.base.request_redraw();
+                            }
+                        } else {
+                            self.step_value(-1);
+                        }
+                    }
+                    key_codes::LEFT => self.move_text_caret(self.text_caret.saturating_sub(1)),
+                    key_codes::RIGHT => self.move_text_caret((self.text_caret + 1).min(length)),
+                    key_codes::HOME => self.move_text_caret(0),
+                    key_codes::END => self.move_text_caret(length),
+                    key_codes::BACKSPACE => self.backspace_text(),
+                    key_codes::DELETE => self.delete_text(),
+                    _ => {
+                        // Printable ASCII is the fallback for a host that reports only key
+                        // codes; committed text wins once it has arrived.
+                        if !self.text_input_seen && *key >= 32 && *key <= 126 {
+                            if let Some(ch) = char::from_u32(*key) {
+                                self.insert_at_caret(&ch.to_string());
+                            }
+                        }
+                    }
                 }
             }
             _ => { /* Other events are not relevant */ }
@@ -571,6 +810,56 @@ impl InputDialog {
             self.base.geometry(),
             Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
         )
+    }
+
+    /// The entry field's band, derived from the same rows the painter stacks.
+    fn input_band(&self) -> Rect {
+        let rect = self.frame_rect();
+        let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
+        let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
+        let context = RenderContext::new(&mut backend);
+        let font = effective_font(self.base.style());
+        let label_line_h = context.measure_text("M", font).height.max(1);
+        let body =
+            ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        let field_band = ControlMetrics::content_below_top_band(body, label_line_h);
+        ControlMetrics::top_band(field_band, field_band.height.min(26))
+    }
+
+    /// The height of one drop-down row.
+    const DROPDOWN_ROW_HEIGHT: u32 = 22;
+
+    /// The item-mode drop-down's rectangle, when it is open and has room.
+    fn dropdown_rect(&self) -> Option<Rect> {
+        if !self.dropdown_open || self.mode != InputMode::Item || self.items.is_empty() {
+            return None;
+        }
+        let input = self.input_band();
+        let rect = self.frame_rect();
+        let button_top = ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT).y;
+        let top = input.y + input.height as i32 + 2;
+        let available = (button_top - top - 4).max(0) as u32;
+        let height = (self.items.len() as u32 * Self::DROPDOWN_ROW_HEIGHT).min(available);
+        (height >= Self::DROPDOWN_ROW_HEIGHT).then(|| Rect::new(input.x, top, input.width, height))
+    }
+
+    /// The visible drop-down rows and their item indices.
+    fn dropdown_rows(&self) -> Vec<(usize, Rect)> {
+        let Some(rect) = self.dropdown_rect() else { return Vec::new() };
+        let visible = (rect.height / Self::DROPDOWN_ROW_HEIGHT) as usize;
+        (0..visible.min(self.items.len()))
+            .map(|index| {
+                (
+                    index,
+                    Rect::new(
+                        rect.x,
+                        rect.y + index as i32 * Self::DROPDOWN_ROW_HEIGHT as i32,
+                        rect.width,
+                        Self::DROPDOWN_ROW_HEIGHT,
+                    ),
+                )
+            })
+            .collect()
     }
 
     /// The action labels this dialog paints, in row order.
@@ -783,6 +1072,43 @@ impl Draw for InputDialog {
                 HorizontalAlignment::Left,
             );
         }
+        // The caret is what makes the field look editable: a one-pixel line at the insertion
+        // point. It is drawn in the text mode only, because the numeric and item modes are
+        // stepped rather than typed into this band.
+        if self.mode == InputMode::Text && self.text_focused {
+            let advance = font.size().ceil().max(1.0) as i32;
+            let caret_x = input_band.x + 4 + self.text_caret as i32 * advance;
+            if caret_x < input_band.x + input_band.width as i32 - 2 {
+                context.draw_line(
+                    Point::new(caret_x, input_band.y + 3),
+                    Point::new(caret_x, input_band.y + input_band.height as i32 - 3),
+                    ink,
+                );
+            }
+        }
+        // The item-mode drop-down: the chosen item is the field's value, and the open list is
+        // bounded by what the button row leaves.
+        if let Some(dropdown) = self.dropdown_rect() {
+            context.fill_rect(dropdown, field);
+            context.draw_rect(dropdown, border);
+            context.push_clip(dropdown.x, dropdown.y, dropdown.width, dropdown.height);
+            for (index, row) in self.dropdown_rows() {
+                if index == self.current_item {
+                    context.fill_rect(row, accent);
+                }
+                let label = self.items.get(index).map(|item| item.as_str()).unwrap_or("");
+                if !label.is_empty() {
+                    context.draw_text_fitted_cow(
+                        Rect::new(row.x + 6, row.y, row.width.saturating_sub(12), row.height),
+                        label,
+                        font,
+                        if index == self.current_item { accent_ink } else { ink },
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
+            context.pop_clip();
+        }
         // OK/Cancel. The pair is the frame's bottom band, right-aligned inside it through the
         // shared [`action_row_geometry`] derivation — the same function `message_box`,
         // `file_dialog`, `font_dialog`, `color_dialog` and `progress_dialog` draw their pair
@@ -927,5 +1253,54 @@ mod tests {
         dialog.handle_event(&Event::key_press(27, 0));
         assert_eq!(*rejected.lock().expect("rejected lock"), 1);
         assert!(!dialog.is_visible());
+    }
+
+    #[test]
+    fn the_text_mode_edits_at_the_caret() {
+        let mut dialog = InputDialog::get_text(Rect::new(0, 0, 320, 180), "T", "L", "abc");
+        dialog.move_text_caret(1);
+        dialog.handle_event(&Event::TextInput { text: "Z".to_string() });
+        assert_eq!(dialog.text_value(), "aZbc");
+        assert_eq!(dialog.text_caret(), 2);
+        dialog.handle_event(&Event::key_press(key_codes::BACKSPACE, 0));
+        assert_eq!(dialog.text_value(), "abc");
+        assert_eq!(dialog.text_caret(), 1);
+        dialog.handle_event(&Event::key_press(key_codes::DELETE, 0));
+        assert_eq!(dialog.text_value(), "ac");
+    }
+
+    #[test]
+    fn clicking_the_field_positions_the_caret() {
+        let mut dialog = InputDialog::get_text(Rect::new(0, 0, 320, 180), "T", "L", "abcdef");
+        let band = dialog.input_band();
+        let advance = effective_font(dialog.base.style()).size().ceil().max(1.0) as i32;
+        dialog.handle_event(&Event::mouse_press(band.x + 4 + advance * 3, band.y + 4, 1));
+        assert_eq!(dialog.text_caret(), 3);
+    }
+
+    #[test]
+    fn the_integer_step_keys_use_the_configured_step() {
+        let mut dialog = InputDialog::get_int(Rect::new(0, 0, 320, 180), "T", "L", 10, 0, 100, 5);
+        dialog.handle_event(&Event::key_press(key_codes::UP, 0));
+        assert_eq!(dialog.int_value(), 15);
+        dialog.handle_event(&Event::key_press(key_codes::DOWN, 0));
+        assert_eq!(dialog.int_value(), 10);
+    }
+
+    #[test]
+    fn the_item_mode_dropdown_opens_and_selects() {
+        let mut dialog = InputDialog::new(Rect::new(0, 0, 320, 240));
+        dialog.set_mode(InputMode::Item);
+        dialog.set_items(vec!["One".to_string(), "Two".to_string(), "Three".to_string()]);
+        let band = dialog.input_band();
+        dialog.handle_event(&Event::mouse_press(band.x + 4, band.y + 4, 1));
+        assert!(dialog.is_dropdown_open());
+        let rows = dialog.dropdown_rows();
+        assert_eq!(rows.len(), 3);
+        let (_, second) = rows[1];
+        dialog.handle_event(&Event::mouse_press(second.x + 2, second.y + 2, 1));
+        assert_eq!(dialog.current_item(), 1);
+        assert!(!dialog.is_dropdown_open());
+        assert_eq!(dialog.current_item_text(), Some("Two"));
     }
 }

@@ -68,6 +68,16 @@ pub struct WebEngineView {
     download_total: Option<u64>,
     /// Lifecycle state of that download.
     download_state: WebEngineDownloadState,
+    /// Visited URLs, oldest first.
+    history: Vec<String>,
+    /// Index of the current entry in [`Self::history`].
+    history_index: usize,
+    /// Last reported load progress, `0..=100`.
+    load_progress: u32,
+    /// Registered web-channel names.
+    channels: Vec<String>,
+    /// Page zoom factor, `1.0` being 100%.
+    zoom_factor: f32,
     /// Emitted when the page starts loading.
     pub loading_started: Signal1<String>,
     /// Emitted when the page finishes loading.
@@ -90,6 +100,10 @@ pub struct WebEngineView {
     pub page_created: Signal1<ObjectId>,
     /// Emitted when the page is destroyed.
     pub page_destroyed: Signal1<ObjectId>,
+    /// Emitted with the load percentage, `0..=100`.
+    pub load_progress_changed: Signal1<u32>,
+    /// Emitted with `(channel, payload)` when the page posts to a web channel.
+    pub channel_message: Signal1<(String, String)>,
     /// Most recently loaded HTML source (kept for inspection; no DOM layout).
     html_content: String,
     /// Next id [`WebEngineView::create_page`] will issue.
@@ -465,6 +479,11 @@ impl WebEngineView {
             download_received: 0,
             download_total: None,
             download_state: WebEngineDownloadState::Idle,
+            history: Vec::new(),
+            history_index: 0,
+            load_progress: 0,
+            channels: Vec::new(),
+            zoom_factor: 1.0,
             loading_started: Signal1::new(),
             loading_finished: Signal1::new(),
             title_changed: Signal1::new(),
@@ -476,6 +495,8 @@ impl WebEngineView {
             download_requested: Signal1::new(),
             page_created: Signal1::new(),
             page_destroyed: Signal1::new(),
+            load_progress_changed: Signal1::new(),
+            channel_message: Signal1::new(),
             html_content: String::new(),
             next_page_id: FIRST_PAGE_ID,
             #[cfg(feature = "js-engine")]
@@ -536,6 +557,7 @@ impl WebEngineView {
     fn begin_loading(&mut self) {
         self.loading = true;
         self.pending_load = true;
+        self.load_progress = 0;
         self.loading_started.emit(self.url.clone());
         self.base.request_redraw();
     }
@@ -544,6 +566,7 @@ impl WebEngineView {
         if self.loading {
             self.loading = false;
             self.pending_load = false;
+            self.report_load_progress(100);
             self.loading_finished.emit(self.url.clone());
             self.base.request_redraw();
         }
@@ -555,11 +578,97 @@ impl WebEngineView {
     pub fn set_url(&mut self, url: String) {
         if self.url != url {
             self.url = url.clone();
+            self.push_history(&url);
+            self.sync_history_flags();
             self.url_changed.emit(url.clone());
             self.begin_loading();
             self.update_navigation_state();
             self.base.request_redraw();
         }
+    }
+
+    /// Returns the load progress reported so far, `0..=100`.
+    pub fn load_progress(&self) -> u32 {
+        self.load_progress
+    }
+
+    /// Reports host-supplied load progress, in percent.
+    ///
+    /// The view performs no network I/O, so the host owns the measurement. Values above 100 are
+    /// clamped; a change is announced through [`Self::load_progress_changed`].
+    pub fn report_load_progress(&mut self, percent: u32) {
+        let percent = percent.min(100);
+        if self.load_progress == percent {
+            return;
+        }
+        self.load_progress = percent;
+        self.load_progress_changed.emit(percent);
+        self.base.request_redraw();
+    }
+
+    /// Appends a URL to the history, discarding any forward entries.
+    fn push_history(&mut self, url: &str) {
+        self.history.truncate(self.history_index + 1);
+        self.history.push(url.to_string());
+        self.history_index = self.history.len() - 1;
+    }
+
+    /// Returns the visited URL list, oldest first.
+    pub fn history(&self) -> &[String] {
+        &self.history
+    }
+
+    /// Returns the index of the current history entry.
+    pub fn history_index(&self) -> usize {
+        self.history_index
+    }
+
+    /// Registers a web-channel name the page may post to.
+    pub fn register_channel(&mut self, name: impl Into<String>) {
+        let name = name.into();
+        if !self.channels.iter().any(|existing| existing == &name) {
+            self.channels.push(name);
+        }
+    }
+
+    /// Posts a payload to a registered channel.
+    ///
+    /// Returns `false` when the channel is not registered. The message is delivered through
+    /// [`Self::channel_message`] because this widget owns no DOM for the host's script to read.
+    pub fn send_to_web_channel(&mut self, channel: &str, payload: &str) -> bool {
+        if !self.channels.iter().any(|name| name == channel) {
+            return false;
+        }
+        self.channel_message.emit((channel.to_string(), payload.to_string()));
+        true
+    }
+
+    /// Reports a payload posted by the page, echoing it to [`Self::channel_message`].
+    pub fn post_from_web_channel(&mut self, channel: &str, payload: &str) {
+        self.channel_message.emit((channel.to_string(), payload.to_string()));
+    }
+
+    /// Returns the registered web-channel names.
+    pub fn channels(&self) -> &[String] {
+        &self.channels
+    }
+
+    /// Returns the page zoom factor (`1.0` is 100%).
+    pub fn zoom_factor(&self) -> f32 {
+        self.zoom_factor
+    }
+
+    /// Sets the page zoom factor, clamped to `0.25..=5.0`.
+    pub fn set_zoom_factor(&mut self, factor: f32) {
+        if !factor.is_finite() {
+            return;
+        }
+        let factor = factor.clamp(0.25, 5.0);
+        if self.zoom_factor == factor {
+            return;
+        }
+        self.zoom_factor = factor;
+        self.base.request_redraw();
     }
     /// "Loads" the supplied HTML synchronously: stores the source for
     /// [`WebEngineView::html_source`], sets the URL to `data:text/html` and the
@@ -570,6 +679,8 @@ impl WebEngineView {
         // HTML source is retained so script evaluation and introspection work.
         self.html_content = html.to_string();
         self.url = "data:text/html".to_string();
+        self.push_history(&self.url.clone());
+        self.sync_history_flags();
         self.title = "HTML Content".to_string();
         self.begin_loading();
         self.finish_loading();
@@ -592,6 +703,8 @@ impl WebEngineView {
         // or layout happens in this simulated view.
         self.html_content = String::from_utf8_lossy(data).into_owned();
         self.url = base_url.to_string();
+        self.push_history(&self.url.clone());
+        self.sync_history_flags();
         self.title = "Data Content".to_string();
         self.begin_loading();
         self.finish_loading();
@@ -604,26 +717,32 @@ impl WebEngineView {
     /// becomes false and `can_go_forward` true. No history is kept and the URL is
     /// left unchanged. No-op when going back is unavailable.
     pub fn go_back(&mut self) {
-        if self.can_go_back {
-            // Navigation state is modeled, not a real page history: toggling
-            // back/forward flips the availability flags.
-            self.can_go_back = false;
-            self.can_go_forward = true;
+        if self.history_index > 0 {
+            self.history_index -= 1;
+            self.url = self.history[self.history_index].clone();
+            self.sync_history_flags();
+            self.url_changed.emit(self.url.clone());
+            self.begin_loading();
             self.update_navigation_state();
-            self.base.request_redraw();
         }
     }
-    /// Models a forward navigation with the same flag flip as `go_back` in
-    /// reverse: `can_go_forward` becomes false and `can_go_back` true. No-op when
-    /// going forward is unavailable.
+    /// Moves forward through the recorded history, restoring that entry's URL.
     pub fn go_forward(&mut self) {
-        if self.can_go_forward {
-            // See `go_back` — modeled navigation state only.
-            self.can_go_forward = false;
-            self.can_go_back = true;
+        if self.history_index + 1 < self.history.len() {
+            self.history_index += 1;
+            self.url = self.history[self.history_index].clone();
+            self.sync_history_flags();
+            self.url_changed.emit(self.url.clone());
+            self.begin_loading();
             self.update_navigation_state();
-            self.base.request_redraw();
         }
+    }
+
+    /// Re-derives the back/forward flags from the history index.
+    fn sync_history_flags(&mut self) {
+        self.can_go_back = self.history_index > 0;
+        self.can_go_forward = self.history_index + 1 < self.history.len();
+        self.base.request_redraw();
     }
     /// Restarts the load for the current URL without fetching anything.
     ///
@@ -1586,4 +1705,44 @@ fn the_url_bar_keeps_its_own_height() {
         let fill = format!("x=\"0\" y=\"0\" width=\"240\" height=\"{}\"", bar.height);
         assert!(svg.contains(&fill), "at view height {height} the bar is {bar:?}:\n{svg}");
     }
+}
+
+/// Back and forward move through a real URL history rather than flipping two flags.
+#[test]
+fn back_and_forward_restore_the_previous_url() {
+    let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+    view.set_url("https://example.com/a".to_string());
+    view.set_url("https://example.com/b".to_string());
+    assert!(view.can_go_back());
+    view.go_back();
+    assert_eq!(view.url(), "https://example.com/a");
+    assert!(view.can_go_forward());
+    view.go_forward();
+    assert_eq!(view.url(), "https://example.com/b");
+}
+
+/// The load percentage is host-reported and announced on every change.
+#[test]
+fn reported_load_progress_is_clamped_and_announced() {
+    let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let s = seen.clone();
+    view.load_progress_changed.connect(move |value: std::sync::Arc<u32>| {
+        s.store(*value, std::sync::atomic::Ordering::SeqCst);
+    });
+    view.report_load_progress(250);
+    assert_eq!(view.load_progress(), 100);
+    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 100);
+}
+
+/// A channel payload reaches the host only through a registered channel.
+#[test]
+fn a_web_channel_echoes_only_registered_names() {
+    let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+    assert!(!view.send_to_web_channel("bridge", "ping"));
+    view.register_channel("bridge");
+    assert!(view.send_to_web_channel("bridge", "ping"));
+    assert_eq!(view.zoom_factor(), 1.0);
+    view.set_zoom_factor(2.0);
+    assert_eq!(view.zoom_factor(), 2.0);
 }

@@ -37,7 +37,9 @@
 //! *reach* — a host's own icons — for the cost of one small table.
 
 use crate::widget::display_widgets::icon::{IconPaintError, IconRef};
-use crate::widget::display_widgets::icon_data_set::{lookup_registered, register_icon_data};
+use crate::widget::display_widgets::icon_data_set::{
+    lookup_registered, register_icon_data, register_icon_data_with_density,
+};
 
 /// How many host icons may be registered at once.
 ///
@@ -92,6 +94,111 @@ pub fn register_icon_on_grid(
     grid: u16,
 ) -> bool {
     try_register_icon_on_grid(name, paths, grid).is_ok()
+}
+
+/// Register `paths` as the source for `name` at a specific pixel `density`.
+///
+/// # Why a name can have more than one source
+///
+/// A vector outline is resolution-independent, but a host icon need not be: an application
+/// may ship a 16 px bitmap or a hand-tuned `@2x` outline next to the ordinary one. Both are
+/// registered under the **same name** and differ only in density, so the name stays the
+/// identity a control uses and the density remains an attribute of the stored source. The
+/// icon widget selects the best source for its configured scale factor through
+/// `lookup_registered_scaled`; a source registered only at `@2x` still draws at a normal
+/// scale rather than disappearing.
+///
+/// `density` below `1` is treated as `1` (a source cannot be less dense than the logical
+/// grid). Re-registration replaces the entry for `(name, density)` and leaves the other
+/// densities of the same name in place, so adding a high-density source never removes the
+/// ordinary one.
+///
+/// Returns `false` when the registry is full, or when the name or path data is invalid.
+/// Use [`try_register_icon_at_density`] when the caller needs the reason.
+pub fn register_icon_at_density(
+    name: &'static str,
+    paths: &'static [&'static str],
+    density: u8,
+) -> bool {
+    try_register_icon_at_density(name, paths, density).is_ok()
+}
+
+/// [`register_icon_at_density`], reporting **why** a registration was refused.
+///
+/// The validation is shared with [`try_register_icon`], so a density variant is accepted
+/// exactly when an ordinary registration would be.
+pub fn try_register_icon_at_density(
+    name: &'static str,
+    paths: &'static [&'static str],
+    density: u8,
+) -> Result<(), IconRegistrationError> {
+    try_register_icon_on_grid_at_density(name, paths, 960, density)
+}
+
+/// [`register_icon_at_density`], for a source on a grid other than the built-in 960 units.
+pub fn try_register_icon_on_grid_at_density(
+    name: &'static str,
+    paths: &'static [&'static str],
+    grid: u16,
+    density: u8,
+) -> Result<(), IconRegistrationError> {
+    validate_registration(name, paths, grid)?;
+    validate_drawable(name, paths, grid)?;
+    // Capacity only refuses a **new** name; a re-registration (of either the same name or
+    // the same name+density) replaces in place, so it is checked after that case is
+    // excluded rather than before.
+    if !is_registered_icon(name) && registered_icon_count() >= MAX_REGISTERED_ICONS {
+        return Err(IconRegistrationError::RegistryFull { capacity: MAX_REGISTERED_ICONS });
+    }
+    if register_icon_data_with_density(name, paths, grid, density) {
+        Ok(())
+    } else {
+        // The storage refuses only when the table is full and this is not a replacement.
+        // Reported as a capacity refusal rather than `unreachable!()` because this is a
+        // public entry point.
+        Err(IconRegistrationError::RegistryFull { capacity: MAX_REGISTERED_ICONS })
+    }
+}
+
+/// Checks everything a registration must satisfy before it occupies a slot.
+///
+/// Shared by the ordinary, on-grid and density entry points so the three cannot accept
+/// different path data.
+fn validate_registration(
+    name: &str,
+    paths: &[&'static str],
+    grid: u16,
+) -> Result<(), IconRegistrationError> {
+    use IconRegistrationError as Refused;
+
+    if name.is_empty() {
+        return Err(Refused::EmptyName);
+    }
+    if paths.is_empty() {
+        return Err(Refused::NoPaths);
+    }
+    if grid == 0 {
+        return Err(Refused::ZeroGrid);
+    }
+    if paths.iter().any(|d| d.trim().is_empty()) {
+        return Err(Refused::BlankPath);
+    }
+    Ok(())
+}
+
+/// Refuses geometry the paint path could not draw.
+///
+/// The validation goes through the same validator a draw uses, so "accepted" and "will
+/// draw" cannot diverge — in either entry point.
+fn validate_drawable(
+    name: &'static str,
+    paths: &'static [&'static str],
+    grid: u16,
+) -> Result<(), IconRegistrationError> {
+    let data = crate::widget::IconData { name, grid, paths };
+    crate::widget::display_widgets::icon::validate_icon(IconRef::StaticGeometry(&data))
+        .map(|_| ())
+        .map_err(IconRegistrationError::Undrawable)
 }
 
 /// Why a host icon registration was refused.
@@ -154,23 +261,10 @@ pub fn try_register_icon_on_grid(
 ) -> Result<(), IconRegistrationError> {
     use IconRegistrationError as Refused;
 
-    if name.is_empty() {
-        return Err(Refused::EmptyName);
-    }
-    if paths.is_empty() {
-        return Err(Refused::NoPaths);
-    }
-    if grid == 0 {
-        return Err(Refused::ZeroGrid);
-    }
-    if paths.iter().any(|d| d.trim().is_empty()) {
-        return Err(Refused::BlankPath);
-    }
+    validate_registration(name, paths, grid)?;
     // Validate before storing, through the same validator the paint path uses, so "accepted" and
     // "will draw" cannot diverge.
-    let data = crate::widget::IconData { name, grid, paths };
-    crate::widget::display_widgets::icon::validate_icon(IconRef::StaticGeometry(&data))
-        .map_err(Refused::Undrawable)?;
+    validate_drawable(name, paths, grid)?;
     // Capacity only refuses a **new** name; a re-registration replaces in place, so it is checked
     // after the replacement case is excluded rather than before.
     if !is_registered_icon(name) && registered_icon_count() >= MAX_REGISTERED_ICONS {
@@ -260,8 +354,32 @@ mod tests {
         assert_eq!(stored.grid, 24, "the replacement's grid wins");
         assert_eq!(stored.paths, &["M0 0L20 0L20 20Z"]);
 
-        // Capacity: the occupied slot plus `MAX - 1` more fill it, and the next is refused.
-        for index in 1..MAX_REGISTERED_ICONS {
+        // ── Density variants share the name and are selected by scale ──
+        //
+        // A `@2x` source is a second slot under the *same* name, so a control still looks
+        // the icon up by one token. Selecting it is the icon widget's scale factor's job;
+        // what this asserts is that the two sources are both stored and distinguishable.
+        assert!(register_icon_at_density("mine", &["M0 0L40 0L40 40Z"], 2));
+        assert_eq!(registered_icon_count(), 2, "a @2x source is its own slot");
+        let ordinary =
+            crate::widget::display_widgets::icon_data_set::lookup_registered_scaled("mine", 1.0)
+                .expect("the density-1 source");
+        let high =
+            crate::widget::display_widgets::icon_data_set::lookup_registered_scaled("mine", 2.0)
+                .expect("the density-2 source");
+        assert_eq!(ordinary.paths, &["M0 0L20 0L20 20Z"], "1x keeps the ordinary source");
+        assert_eq!(high.paths, &["M0 0L40 0L40 40Z"], "2x selects the denser source");
+        // The same validation applies to a density registration.
+        assert_eq!(
+            try_register_icon_at_density("mine", &["M0 0"], 2),
+            Err(IconRegistrationError::Undrawable(
+                crate::widget::display_widgets::icon::IconPaintError::EmptyGeometry
+            ))
+        );
+
+        // Capacity: the two occupied slots plus `MAX - 2` more fill the table, and the next
+        // is refused.
+        for index in 2..MAX_REGISTERED_ICONS {
             let name: &'static str = Box::leak(format!("icon{index}").into_boxed_str());
             assert!(register_icon(name, &["M0 0L1 0L1 1Z"]), "slot {index} must be accepted");
         }

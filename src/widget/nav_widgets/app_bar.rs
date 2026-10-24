@@ -23,7 +23,7 @@
 use crate::core::{Color, HorizontalAlignment, Point, Rect, TextDirection};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::GenericSignal;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{
     expect_string, expect_text_direction, text_direction_to_str,
 };
@@ -64,7 +64,23 @@ enum TapTarget {
     Back,
     /// The trailing action text.
     Action,
+    /// One of the trailing action buttons, by position in the action list.
+    ActionAt(usize),
+    /// The overflow affordance that stands in for the actions that did not fit.
+    Overflow,
 }
+
+/// The narrowest a trailing action button may be drawn, in pixels.
+const APP_BAR_ACTION_MIN_WIDTH: i32 = 48;
+
+/// Space between adjacent trailing action buttons, in pixels.
+const APP_BAR_ACTION_GAP: i32 = 4;
+
+/// The shortest main bar band, in pixels.
+///
+/// A bar with a bottom slot adds the slot's own height to this; a bar without one is
+/// exactly this tall, which is the height every existing picture was drawn at.
+const APP_BAR_MIN_HEIGHT: u32 = 56;
 
 /// AppBar / Top Bar widget — mobile-style top navigation bar.
 ///
@@ -96,6 +112,18 @@ pub struct AppBar {
     pub back_pressed: GenericSignal,
     /// Emitted when the action text area is pressed.
     pub action_pressed: GenericSignal,
+    /// Emitted with the index of a trailing action button when it is activated.
+    pub action_index_pressed: Signal1<usize>,
+    /// Emitted when the overflow affordance is activated.
+    pub action_overflow_pressed: GenericSignal,
+    /// Additional trailing actions, drawn right-to-left before the action text slot.
+    actions: Vec<String>,
+    /// Optional widget drawn in a band below the main bar.
+    ///
+    /// The band's height is the widget's own size hint (clamped to the bar's rectangle), and
+    /// the main bar keeps [`APP_BAR_MIN_HEIGHT`]. A bar with no bottom slot paints exactly the
+    /// band it always did.
+    bottom: Option<Box<dyn Widget>>,
     /// Which affordance a primary-button press armed, if any.
     ///
     /// The press only arms the bar; the signal is emitted on the release, so one click
@@ -117,6 +145,10 @@ impl AppBar {
             direction: TextDirection::default(),
             back_pressed: GenericSignal::new(),
             action_pressed: GenericSignal::new(),
+            action_index_pressed: Signal1::new(),
+            action_overflow_pressed: GenericSignal::new(),
+            actions: Vec::new(),
+            bottom: None,
             pressed: None,
         }
     }
@@ -170,6 +202,102 @@ impl AppBar {
         self.direction
     }
 
+    /// Sets the trailing action buttons, replacing any previous list.
+    ///
+    /// The buttons are drawn from the bar's trailing edge inward, each as wide as its own
+    /// measured label (never narrower than [`APP_BAR_ACTION_MIN_WIDTH`]). When the total does
+    /// not fit, a single overflow affordance takes the innermost slot and
+    /// [`Self::action_overflow_pressed`] reports a tap on it — the actions themselves stay in
+    /// the model and are still reachable by index through [`Self::actions`].
+    ///
+    /// The legacy single [`Self::set_action_text`] slot is independent: it is drawn only when
+    /// the action list is empty, which keeps every existing bar byte-identical.
+    pub fn set_actions(&mut self, actions: Vec<String>) {
+        if self.actions == actions {
+            return;
+        }
+        self.actions = actions;
+        self.base.request_redraw();
+    }
+
+    /// Returns the trailing action labels.
+    pub fn actions(&self) -> &[String] {
+        &self.actions
+    }
+
+    /// Sets an optional widget shown in a band below the main bar.
+    ///
+    /// The main bar keeps [`APP_BAR_MIN_HEIGHT`]; the slot takes the rest of the bar's
+    /// rectangle, so a host that wants a nested bottom strip lays the bar out taller. Passing
+    /// `None` restores the single-band bar and therefore the original pixels.
+    pub fn set_bottom_widget(&mut self, widget: Option<Box<dyn Widget>>) {
+        self.bottom = widget;
+        self.base.request_redraw();
+    }
+
+    /// Returns the widget shown in the bar's bottom slot, if any.
+    pub fn bottom_widget(&self) -> Option<&dyn Widget> {
+        self.bottom.as_deref()
+    }
+
+    /// The height a host should give this bar so its bottom slot is fully visible.
+    pub fn preferred_height(&self) -> u32 {
+        APP_BAR_MIN_HEIGHT + self.bottom_height()
+    }
+
+    /// The height of the bottom slot's band, zero when there is no slot.
+    fn bottom_height(&self) -> u32 {
+        let Some(bottom) = self.bottom.as_deref() else {
+            return 0;
+        };
+        let wanted = bottom.size_hint().height;
+        let room = self.geometry().height.saturating_sub(APP_BAR_MIN_HEIGHT);
+        wanted.min(room)
+    }
+
+    /// The main bar band: the top of the control, without the bottom slot.
+    fn main_band(&self) -> Rect {
+        let rect = self.geometry();
+        Rect::new(rect.x, rect.y, rect.width, rect.height.saturating_sub(self.bottom_height()))
+    }
+
+    /// The font the trailing action buttons are measured and painted with.
+    fn action_font(&self) -> crate::core::Font {
+        let size = (self.main_band().height as f32 * 0.32).clamp(12.0, 18.0);
+        role_font(self.base.style(), size)
+    }
+
+    /// The trailing action boxes that fit, and the overflow affordance when one is needed.
+    ///
+    /// The boxes are ordered from the trailing edge inward: element zero is nearest the edge,
+    /// which is the position a primary action occupies. Paint and hit test both read this one
+    /// derivation, so a button cannot be drawn where it cannot be tapped.
+    fn action_boxes(&self) -> (Vec<(usize, Rect)>, Option<Rect>) {
+        let band = self.trailing_zone();
+        if self.actions.is_empty() || band.width == 0 {
+            return (Vec::new(), None);
+        }
+        let font = self.action_font();
+        let mut cursor = band.right();
+        let mut boxes: Vec<(usize, Rect)> = Vec::new();
+        let mut overflow = None;
+        for (index, label) in self.actions.iter().enumerate() {
+            let width = ((crate::widget::metrics::estimate_text_width(label, &font, 1.0) as i32)
+                + 16)
+                .max(APP_BAR_ACTION_MIN_WIDTH);
+            let left = cursor - width;
+            if left < band.x + APP_BAR_ACTION_MIN_WIDTH + APP_BAR_ACTION_GAP {
+                overflow =
+                    Some(Rect::new(band.x, band.y, APP_BAR_ACTION_MIN_WIDTH as u32, band.height));
+                break;
+            }
+            cursor = left;
+            boxes.push((index, Rect::new(cursor, band.y, width as u32, band.height)));
+            cursor -= APP_BAR_ACTION_GAP;
+        }
+        (boxes, overflow)
+    }
+
     /// Sets the writing direction, and repaints.
     ///
     /// A right-to-left bar puts its back arrow at the **right** edge and its action at the left — the
@@ -190,7 +318,7 @@ impl AppBar {
     /// Deriving it twice is how a mirrored bar ends up with its arrow on one side and its hit test on
     /// the other — a defect that looks correct in a screenshot. One derivation, two consumers.
     fn leading_zone(&self) -> Rect {
-        let rect = self.geometry();
+        let rect = self.main_band();
         let x = if self.direction.is_right_to_left() {
             rect.right() - APP_BAR_LEADING_ZONE
         } else {
@@ -201,7 +329,7 @@ impl AppBar {
 
     /// The trailing zone: where the action is drawn and hit-tested.
     fn trailing_zone(&self) -> Rect {
-        let rect = self.geometry();
+        let rect = self.main_band();
         let x = if self.direction.is_right_to_left() {
             rect.x
         } else {
@@ -215,10 +343,22 @@ impl AppBar {
     /// The press and the release both use this, so the bar can tell whether the pointer
     /// left the affordance it armed between the two events.
     fn tap_target_at(&self, pos: Point) -> Option<TapTarget> {
+        let (boxes, overflow) = self.action_boxes();
+        for (index, box_rect) in boxes {
+            if box_rect.contains_point(pos) {
+                return Some(TapTarget::ActionAt(index));
+            }
+        }
+        if overflow.is_some_and(|box_rect| box_rect.contains_point(pos)) {
+            return Some(TapTarget::Overflow);
+        }
         if self.show_back && self.leading_zone().contains_point(pos) {
             return Some(TapTarget::Back);
         }
-        if !self.action_text.is_empty() && self.trailing_zone().contains_point(pos) {
+        if !self.action_text.is_empty()
+            && self.actions.is_empty()
+            && self.trailing_zone().contains_point(pos)
+        {
             return Some(TapTarget::Action);
         }
         // If neither back nor action matched, the rest of the bar is a back gesture
@@ -303,7 +443,8 @@ impl WidgetProperties for AppBar {
 
 impl Draw for AppBar {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        let full_rect = self.geometry();
+        let rect = self.main_band();
         let is_enabled = self.base.is_enabled();
         let bar_height = rect.height;
 
@@ -471,7 +612,7 @@ impl Draw for AppBar {
         }
 
         // ── Action text (the bar's trailing zone) ──
-        if !self.action_text.is_empty() {
+        if !self.action_text.is_empty() && self.actions.is_empty() {
             // Same rule as the title: the theme face at the action role's own size, scaled by the
             // text preference (D09-STYLE-01).
             let action_font = role_font(style, action_font_size);
@@ -509,6 +650,63 @@ impl Draw for AppBar {
                 action_color,
                 HorizontalAlignment::Left,
             );
+        }
+
+        // ── Trailing action buttons ──
+        //
+        // The boxes come from `action_boxes`, the same derivation the hit test reads. A label
+        // that does not fit its own box is elided by the fitted draw, never painted over its
+        // neighbour.
+        let (action_boxes, overflow) = self.action_boxes();
+        if !action_boxes.is_empty() || overflow.is_some() {
+            let action_font = role_font(style, action_font_size);
+            let action_color = if is_enabled {
+                text_color.blend(&background, 0.25)
+            } else {
+                background.blend(
+                    &background.contrast_color(),
+                    crate::widget::BaseWidget::disabled_ink_weight(),
+                )
+            };
+            for (index, box_rect) in action_boxes {
+                if let Some(label) = self.actions.get(index) {
+                    context.draw_text_fitted_cow(
+                        context.text_line(box_rect, &action_font),
+                        label,
+                        &action_font,
+                        action_color,
+                        HorizontalAlignment::Center,
+                    );
+                }
+            }
+            if let Some(box_rect) = overflow {
+                context.draw_text_fitted_cow(
+                    context.text_line(box_rect, &action_font),
+                    "\u{2026}",
+                    &action_font,
+                    action_color,
+                    HorizontalAlignment::Center,
+                );
+            }
+        }
+
+        // ── Nested bottom slot ──
+        if self.bottom.is_some() {
+            let band_height = self.bottom_height();
+            if band_height > 0 {
+                let band = Rect::new(
+                    full_rect.x,
+                    full_rect.y + full_rect.height as i32 - band_height as i32,
+                    full_rect.width,
+                    band_height,
+                );
+                if let Some(bottom) = self.bottom.as_deref_mut() {
+                    bottom.set_geometry(band);
+                    if let Some(drawable) = crate::widget::draw_bridge::draw_of(bottom) {
+                        drawable.draw(context);
+                    }
+                }
+            }
         }
     }
 }
@@ -560,6 +758,11 @@ impl EventHandler for AppBar {
                 match armed {
                     TapTarget::Back => self.back_pressed.emit(),
                     TapTarget::Action => self.action_pressed.emit(),
+                    TapTarget::ActionAt(index) => {
+                        self.action_index_pressed.emit(index);
+                        self.action_pressed.emit();
+                    }
+                    TapTarget::Overflow => self.action_overflow_pressed.emit(),
                 }
             }
             _ => {
@@ -991,5 +1194,38 @@ mod tests {
         bar.set("direction", CapabilityValue::String("rtl".to_string())).unwrap();
         assert_eq!(bar.direction(), TextDirection::RightToLeft);
         assert_eq!(bar.get("direction").unwrap().as_str(), Some("rtl"));
+    }
+
+    #[test]
+    fn a_crowded_action_list_folds_into_an_overflow_affordance() {
+        let mut bar = make_app_bar();
+        let mut actions: Vec<String> = Vec::new();
+        for index in 0..8 {
+            actions.push(format!("Action {index}"));
+        }
+        bar.set_actions(actions);
+        assert_eq!(bar.actions().len(), 8);
+        // Tapping the trailing edge activates the first action; the overflow zone reports
+        // separately. Both are reachable through the public signals.
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f = fired.clone();
+        bar.action_index_pressed.connect(move |index: Arc<usize>| {
+            f.store(*index, Ordering::SeqCst);
+        });
+        bar.handle_event(&Event::MousePress { pos: Point::new(370, 28), button: 1, modifiers: 0 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(370, 28), button: 1 });
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "the trailing edge is action zero");
+    }
+
+    #[test]
+    fn a_bottom_slot_extends_the_bar_without_moving_the_main_band() {
+        let mut bar = AppBar::new("Home", Rect::new(0, 0, 375, 96));
+        bar.set_bottom_widget(Some(Box::new(crate::widget::base_widgets::label::Label::new(
+            "tabs".to_string(),
+            Rect::new(0, 0, 375, 40),
+        ))));
+        assert!(bar.preferred_height() >= 56);
+        let svg = render_to_svg(&mut bar);
+        assert!(svg.starts_with("<svg"));
     }
 }

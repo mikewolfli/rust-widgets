@@ -141,7 +141,29 @@ pub fn compute_cartesian_layout(
     has_y_label: bool,
     legend_items: usize,
 ) -> CartesianLayout {
-    let left_margin = if has_y_label { 64.0 } else { 48.0 };
+    compute_cartesian_layout_measured(rect, has_x_label, has_y_label, legend_items, 0.0)
+}
+
+/// [`compute_cartesian_layout`], widening the y-label column to fit `widest_y_label`.
+///
+/// # Why the width is a parameter rather than measured here
+///
+/// The engine has no text metrics of its own: the widget paints through a `ChartContext`
+/// (or the SVG exporter through its own), and only that caller can measure a string with
+/// the font the labels are really drawn in. The fixed 64 px column was sized for a
+/// four-character label, so a wider value — `1,234,567`, a negative wide range — ran out of
+/// the plot's own margin. The column only grows past that reservation (`+ 16 px` of gap),
+/// so a chart with ordinary labels keeps exactly the geometry it had. A zero width means
+/// "not measured" and leaves the default untouched.
+pub fn compute_cartesian_layout_measured(
+    rect: Rect,
+    has_x_label: bool,
+    has_y_label: bool,
+    legend_items: usize,
+    widest_y_label: f32,
+) -> CartesianLayout {
+    let measured_left = if widest_y_label > 0.0 { (widest_y_label + 16.0).max(0.0) } else { 0.0 };
+    let left_margin = if has_y_label { measured_left.max(64.0) } else { 48.0 };
     let top_margin = 32.0;
     let bottom_margin = if has_x_label { 52.0 } else { 36.0 };
     let right_margin = if legend_items > 0 { 170.0 } else { 24.0 };
@@ -319,6 +341,52 @@ pub fn draw_legend(
     series: &[&ChartSeries],
 ) {
     draw_legend_rows(context, layout, series.iter().copied(), series.len());
+}
+
+/// Draws a legend from `(label, colour)` pairs.
+///
+/// The control-layer charts own their series as their own types, so they cannot hand the
+/// engine a `ChartSeries`. They used to build one per series per frame purely to reach
+/// [`draw_legend`], which allocated a `Vec<DataPoint>` that was then thrown away. This is the
+/// same row layout over borrowed pairs, so the two entry points cannot disagree.
+pub fn draw_legend_entries(
+    context: &mut dyn ChartContext,
+    layout: &CartesianLayout,
+    entries: &[(&str, Color)],
+) {
+    if entries.is_empty() {
+        return;
+    }
+    let max_rows = ((layout.plot_h / 18.0).floor() as usize).max(1);
+    let max_items = max_rows.saturating_sub(1).max(1);
+    let mut cursor_y = layout.legend_y;
+    for (name, color) in entries.iter().take(max_items) {
+        context.draw_line(
+            Point::from_f32(layout.legend_x, cursor_y),
+            Point::from_f32(layout.legend_x + 20.0, cursor_y),
+            3.0,
+            *color,
+        );
+        context.draw_text(
+            truncate_legend_label(name, 20).as_ref(),
+            Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
+            11.0,
+            axis_chrome_color(0.45),
+        );
+        cursor_y += 18.0;
+    }
+    let hidden = entries.len().saturating_sub(max_items);
+    if hidden > 0 {
+        use core::fmt::Write as _;
+        let mut summary = String::new();
+        let _ = write!(summary, "+{hidden} more");
+        context.draw_text(
+            &summary,
+            Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
+            10.0,
+            axis_chrome_color(0.45),
+        );
+    }
 }
 
 /// Shared legend body: an iterator keeps the visible-series filter allocation-free.

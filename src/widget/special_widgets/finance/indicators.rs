@@ -1421,3 +1421,88 @@ mod tests {
         assert_eq!(on_balance_volume(&values, &volumes).len(), 40);
     }
 }
+
+/// A streaming simple moving average.
+///
+/// The batch [`sma`] recomputes every window from the full series. A live chart receives one
+/// bar at a time, so this keeps the rolling sum and answers the newest value in O(1) — the
+/// difference between a tick that costs one addition and one that costs the whole history.
+#[derive(Debug, Clone)]
+pub struct SmaStream {
+    period: usize,
+    window: alloc::collections::VecDeque<f64>,
+    sum: f64,
+}
+
+impl SmaStream {
+    /// Creates a stream over `period` samples; a zero period is raised to one.
+    pub fn new(period: usize) -> Self {
+        Self { period: period.max(1), window: alloc::collections::VecDeque::new(), sum: 0.0 }
+    }
+
+    /// Adds one sample and returns the average once the window is full.
+    pub fn push(&mut self, value: f64) -> Option<f64> {
+        if !value.is_finite() {
+            return None;
+        }
+        self.window.push_back(value);
+        self.sum += value;
+        if self.window.len() > self.period {
+            if let Some(removed) = self.window.pop_front() {
+                self.sum -= removed;
+            }
+        }
+        if self.window.len() == self.period {
+            Some(self.sum / self.period as f64)
+        } else {
+            None
+        }
+    }
+
+    /// Discards the window.
+    pub fn reset(&mut self) {
+        self.window.clear();
+        self.sum = 0.0;
+    }
+}
+
+/// A streaming exponential moving average.
+///
+/// The seed is the first finite sample, matching [`ema`]'s own warm-up, and each later sample
+/// costs one multiply-add.
+#[derive(Debug, Clone)]
+pub struct EmaStream {
+    alpha: f64,
+    value: Option<f64>,
+}
+
+impl EmaStream {
+    /// Creates a stream with the conventional `2 / (period + 1)` smoothing factor.
+    pub fn new(period: usize) -> Self {
+        let period = period.max(1) as f64;
+        Self { alpha: 2.0 / (period + 1.0), value: None }
+    }
+
+    /// Adds one sample and returns the updated average, or `None` for a non-finite sample.
+    pub fn push(&mut self, value: f64) -> Option<f64> {
+        if !value.is_finite() {
+            return self.value;
+        }
+        let next = match self.value {
+            Some(previous) => previous + self.alpha * (value - previous),
+            None => value,
+        };
+        self.value = Some(next);
+        Some(next)
+    }
+
+    /// Returns the current average without adding a sample.
+    pub fn value(&self) -> Option<f64> {
+        self.value
+    }
+
+    /// Discards the average, so the next sample re-seeds it.
+    pub fn reset(&mut self) {
+        self.value = None;
+    }
+}

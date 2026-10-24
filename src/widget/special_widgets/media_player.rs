@@ -5,7 +5,6 @@
 
 use core::fmt::Write as _;
 
-#[cfg(test)]
 use crate::core::Point;
 use crate::core::{Color, HorizontalAlignment, MediaClock, Rect};
 use crate::event::{Event, EventHandler};
@@ -18,6 +17,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use alloc::sync::Arc;
 
 /// The inset a media player's own chrome keeps from its surface edges: 10.
 ///
@@ -26,6 +26,58 @@ use crate::{impl_widget_property_hooks, property_names_of};
 const MEDIA_PLAYER_PADDING: i32 = 10;
 
 /// Lightweight media player stateful control.
+/// A decoded video frame, ready to paint.
+///
+/// Pixels are RGBA8 in row-major order and are shared, so a decoder can hand the same buffer
+/// to several players without copying it. `MediaPlayer` scales the frame into its picture area,
+/// preserving the frame's aspect ratio.
+#[derive(Clone, Debug)]
+pub struct MediaFrame {
+    pixels: Arc<Vec<u8>>,
+    width: u32,
+    height: u32,
+}
+
+impl MediaFrame {
+    /// Wraps `pixels` as a `width`×`height` RGBA frame, or `None` when the buffer is too short.
+    pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Option<Self> {
+        let expected = width as usize * height as usize * 4;
+        if width == 0 || height == 0 || pixels.len() < expected {
+            return None;
+        }
+        Some(Self { pixels: Arc::new(pixels), width, height })
+    }
+
+    /// Wraps an already shared buffer.
+    pub fn from_shared(width: u32, height: u32, pixels: Arc<Vec<u8>>) -> Option<Self> {
+        let expected = width as usize * height as usize * 4;
+        (width > 0 && height > 0 && pixels.len() >= expected).then_some(Self {
+            pixels,
+            width,
+            height,
+        })
+    }
+
+    /// The frame width in pixels.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// The frame height in pixels.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// The shared RGBA bytes.
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+}
+
+/// A media transport: source, clock, transport rule, volume, rate and optional picture.
+///
+/// The control owns the interaction and the display; decoding and process handling stay with
+/// the host, which feeds frames through [`MediaPlayer::set_frame`].
 pub struct MediaPlayer {
     base: BaseWidget,
     source: Option<String>,
@@ -51,6 +103,20 @@ pub struct MediaPlayer {
     volume: u8,
     muted: bool,
     fullscreen: bool,
+    /// The playback rate multiplier.
+    rate: f32,
+    /// The decoded frame to show, if any.
+    frame: Option<MediaFrame>,
+    /// Whether the progress handle is being dragged.
+    scrubbing: bool,
+    /// Whether the volume rail is being dragged.
+    adjusting_volume: bool,
+    /// Media queued after the current one.
+    playlist: Vec<String>,
+    /// The chapter markers, as `(position_ms, title)`.
+    chapters: Vec<(u64, String)>,
+    /// Emitted when the host should change the window's fullscreen state.
+    pub fullscreen_requested: Signal1<bool>,
     /// Emitted when playback toggles.
     pub playback_changed: Signal1<bool>,
     /// Emitted when position changes.
@@ -72,6 +138,13 @@ impl MediaPlayer {
             volume: 80,
             muted: false,
             fullscreen: false,
+            rate: 1.0,
+            frame: None,
+            scrubbing: false,
+            adjusting_volume: false,
+            playlist: Vec::new(),
+            chapters: Vec::new(),
+            fullscreen_requested: Signal1::new(),
             playback_changed: Signal1::new(),
             position_changed: Signal1::new(),
             volume_changed: Signal1::new(),
@@ -232,6 +305,7 @@ impl MediaPlayer {
     pub fn set_fullscreen(&mut self, fullscreen: bool) {
         if self.fullscreen != fullscreen {
             self.fullscreen = fullscreen;
+            self.fullscreen_requested.emit(fullscreen);
             self.base.request_redraw();
         }
     }
@@ -239,6 +313,104 @@ impl MediaPlayer {
     /// Toggles fullscreen state.
     pub fn toggle_fullscreen(&mut self) {
         self.set_fullscreen(!self.fullscreen);
+    }
+
+    /// Returns the playback rate multiplier.
+    pub fn playback_rate(&self) -> f32 {
+        self.rate
+    }
+
+    /// Sets the playback rate, clamped to `0.25..=4.0`.
+    pub fn set_playback_rate(&mut self, rate: f32) {
+        if !rate.is_finite() {
+            return;
+        }
+        let rate = rate.clamp(0.25, 4.0);
+        if (self.rate - rate).abs() < f32::EPSILON {
+            return;
+        }
+        self.rate = rate;
+        self.clock.set_rate(f64::from(rate));
+        self.base.request_redraw();
+    }
+
+    /// Shows a decoded RGBA frame.
+    pub fn set_frame(&mut self, frame: MediaFrame) {
+        self.frame = Some(frame);
+        self.base.request_redraw();
+    }
+
+    /// Removes the current frame, returning the player to its status-only view.
+    pub fn clear_frame(&mut self) {
+        if self.frame.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Returns the current frame.
+    pub fn frame(&self) -> Option<&MediaFrame> {
+        self.frame.as_ref()
+    }
+
+    /// Replaces the playlist.
+    pub fn set_playlist(&mut self, playlist: Vec<String>) {
+        self.playlist = playlist;
+        self.base.request_redraw();
+    }
+
+    /// Returns the playlist.
+    pub fn playlist(&self) -> &[String] {
+        &self.playlist
+    }
+
+    /// Sets the chapter markers.
+    pub fn set_chapters(&mut self, chapters: Vec<(u64, String)>) {
+        self.chapters = chapters;
+        self.base.request_redraw();
+    }
+
+    /// Returns the chapter markers.
+    pub fn chapters(&self) -> &[(u64, String)] {
+        &self.chapters
+    }
+
+    /// The progress rule's rectangle.
+    fn progress_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let height = dimensions::VIDEO_SEEK_BAR_HEIGHT;
+        Rect::new(
+            rect.x + MEDIA_PLAYER_PADDING,
+            rect.y + rect.height as i32 - height as i32 - MEDIA_PLAYER_PADDING,
+            rect.width.saturating_sub((MEDIA_PLAYER_PADDING * 2) as u32),
+            height,
+        )
+    }
+
+    /// The volume rail's rectangle, to the left of the progress rule.
+    fn volume_rect(&self) -> Rect {
+        let bar = self.progress_rect();
+        Rect::new(bar.x, bar.y.saturating_sub(12), 72, 6)
+    }
+
+    /// Seeks to the ratio under `pos` on the progress rule.
+    fn seek_from_point(&mut self, pos: Point) {
+        let bar = self.progress_rect();
+        if bar.width == 0 || self.duration_ms == 0 {
+            return;
+        }
+        let ratio = ((pos.x - bar.x) as f32 / bar.width as f32).clamp(0.0, 1.0);
+        self.seek_to((f64::from(ratio) * self.duration_ms as f64).round() as u64);
+    }
+
+    /// Sets the volume from a position on the volume rail.
+    fn volume_from_point(&mut self, pos: Point) {
+        let rail = self.volume_rect();
+        if rail.width == 0 {
+            return;
+        }
+        let ratio = ((pos.x - rail.x) as f32 / rail.width as f32).clamp(0.0, 1.0);
+        self.set_volume((ratio * 100.0).round() as u8);
+        self.set_muted(false);
     }
 
     /// Advances playback by `delta_secs`, and reports whether it is still running.
@@ -505,30 +677,41 @@ impl EventHandler for MediaPlayer {
                 40 => self.set_volume(self.volume.saturating_sub(5)),
                 77 | 109 => self.toggle_mute(),
                 70 | 102 => self.toggle_fullscreen(),
+                // Brackets step the rate by a quarter, the convention a media player uses.
+                91 | 219 => self.set_playback_rate(self.rate - 0.25),
+                93 | 221 => self.set_playback_rate(self.rate + 0.25),
                 // Unknown key; ignore
                 _ => {}
             },
             Event::MousePress { pos, button: 1, .. } => {
-                let rect = self.geometry();
-                let bar_rect = Rect::new(
-                    rect.x + 10,
-                    rect.y + rect.height as i32 - 18,
-                    rect.width.saturating_sub(20),
-                    8,
-                );
-                if pos.x >= bar_rect.x
-                    && pos.x < bar_rect.x + bar_rect.width as i32
-                    && pos.y >= bar_rect.y
-                    && pos.y < bar_rect.y + bar_rect.height as i32
-                {
-                    if self.duration_ms > 0 && bar_rect.width > 0 {
-                        let ratio =
-                            ((pos.x - bar_rect.x) as f32 / bar_rect.width as f32).clamp(0.0, 1.0);
-                        self.seek_to((ratio * self.duration_ms as f32) as u64);
-                    }
+                let volume_rail = self.volume_rect();
+                if volume_rail.contains_point(*pos) {
+                    self.adjusting_volume = true;
+                    self.volume_from_point(*pos);
+                    return;
+                }
+                let bar_rect = self.progress_rect();
+                if bar_rect.contains_point(*pos) {
+                    self.scrubbing = true;
+                    self.seek_from_point(*pos);
                 } else {
                     let _ = self.toggle_playback();
                 }
+            }
+            Event::MouseMove { pos } => {
+                if self.scrubbing {
+                    self.seek_from_point(*pos);
+                } else if self.adjusting_volume {
+                    self.volume_from_point(*pos);
+                }
+            }
+            Event::MouseRelease { .. } => {
+                self.scrubbing = false;
+                self.adjusting_volume = false;
+            }
+            Event::MouseLeave { .. } => {
+                self.scrubbing = false;
+                self.adjusting_volume = false;
             }
             // Other events are not relevant for this widget
             _ => {}
@@ -582,6 +765,31 @@ impl Draw for MediaPlayer {
             Color::BLACK,
         );
         context.draw_rect(rect, divider);
+
+        // ── Picture ──
+        //
+        // Drawn over the status chrome, letterboxed inside the room between the two text lines
+        // and the transport rule. A player with no frame keeps the status-only view it has
+        // always had.
+        if let Some(frame) = self.frame.as_ref() {
+            let top = rect.y + MEDIA_PLAYER_PADDING + 36;
+            let bottom = self.progress_rect().y - 6;
+            if bottom > top {
+                let area = Rect::new(
+                    rect.x + MEDIA_PLAYER_PADDING,
+                    top,
+                    rect.width.saturating_sub((MEDIA_PLAYER_PADDING * 2) as u32),
+                    (bottom - top) as u32,
+                );
+                let scale = (area.width as f32 / frame.width() as f32)
+                    .min(area.height as f32 / frame.height() as f32);
+                let width = (frame.width() as f32 * scale).round().max(1.0) as u32;
+                let height = (frame.height() as f32 * scale).round().max(1.0) as u32;
+                let x = area.x + (area.width as i32 - width as i32) / 2;
+                let y = area.y + (area.height as i32 - height as i32) / 2;
+                context.draw_image(x, y, width, height, frame.pixels());
+            }
+        }
 
         let title = self
             .source
@@ -652,6 +860,42 @@ impl Draw for MediaPlayer {
             // The progress fill is a **value indicator**, so it is the accent — exactly as a
             // slider's fill and a progress bar's are — rather than a fixed blue.
             context.fill_rect(Rect::new(bar_rect.x, bar_rect.y, fill_w, bar_rect.height), accent);
+        }
+        // Chapter markers: a thin notch at each chapter's position, so the structure of the
+        // media is readable from the transport rule without opening a menu.
+        if self.duration_ms > 0 {
+            for (position, _) in &self.chapters {
+                let ratio = (*position as f64 / self.duration_ms as f64).clamp(0.0, 1.0) as f32;
+                let x = bar_rect.x + (bar_rect.width as f32 * ratio).round() as i32;
+                context.fill_rect(Rect::new(x, bar_rect.y, 1, bar_rect.height), ink);
+            }
+        }
+
+        // The volume rail sits just above the transport rule, showing the level the pointer or
+        // the arrow keys have chosen.
+        let volume_rail = self.volume_rect();
+        context.fill_rect(volume_rail, surface.blend(&ink, 0.14));
+        let volume_w = if self.muted {
+            0
+        } else {
+            ((volume_rail.width as f32) * (f32::from(self.volume) / 100.0)).round() as u32
+        };
+        if volume_w > 0 {
+            context.fill_rect(
+                Rect::new(volume_rail.x, volume_rail.y, volume_w, volume_rail.height),
+                accent,
+            );
+        }
+        // The rate is shown only when it is not real time, so the ordinary view stays uncluttered.
+        if (self.rate - 1.0).abs() > f32::EPSILON {
+            let rate_text = format!("{:.2}x", self.rate);
+            context.draw_text(
+                Point::new(volume_rail.x + volume_rail.width as i32 + 6, volume_rail.y - 2),
+                &rate_text,
+                font,
+                muted,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

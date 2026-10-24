@@ -12,7 +12,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The horizontal inset a segment's label takes from its own edge: 16.
@@ -21,6 +21,9 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// was `8`, which put a short label close enough to its divider that the two read as one mark.
 const SEGMENT_LABEL_INSET: i32 = 16;
 
+/// Horizontal room reserved for a segment's leading icon, including its gap: 18.
+const SEGMENT_ICON_SLOT: i32 = 18;
+
 /// Single segment entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentItem {
@@ -28,12 +31,20 @@ pub struct SegmentItem {
     pub id: String,
     /// Display label.
     pub label: String,
+    /// Optional leading icon.
+    pub icon: Option<IconSource>,
 }
 
 impl SegmentItem {
     /// Creates one segment item.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into() }
+        Self { id: id.into(), label: label.into(), icon: None }
+    }
+
+    /// Sets the segment's leading icon.
+    pub fn with_icon(mut self, icon: IconSource) -> Self {
+        self.icon = Some(icon);
+        self
     }
 }
 
@@ -320,9 +331,17 @@ impl WidgetProperties for SegmentedControl {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
-            "item_count" | "selected_index" | "selected_id" => {
+            // The selection is derived state: a press or `move_selection` decides it, and the
+            // schema publishes both names as read-only. The property route therefore refuses a
+            // write outright instead of accepting a value it would have to reject later by type,
+            // which is what the declaration gate reads as "the control thinks it is writable".
+            // Callers that want to move the selection use the `move_selection` command or the
+            // typed `set_selected_index` / `set_selected_id` API.
+            "selected_index" | "selected_id" => {
+                let _ = value;
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
+            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -378,12 +397,32 @@ impl EventHandler for SegmentedControl {
                     let _ = self.set_selected_index(index);
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                37 => self.move_selection(-1),
-                39 => self.move_selection(1),
-                // Unknown key; ignore
-                _ => {}
-            },
+            Event::KeyPress { key, modifiers } => {
+                let pressed = crate::shortcut::Key::from_key_code(*key);
+                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                match pressed {
+                    Some(crate::shortcut::Key::Left) => self.move_selection(-1),
+                    Some(crate::shortcut::Key::Right) => self.move_selection(1),
+                    Some(crate::shortcut::Key::Home) => {
+                        let _ = self.set_selected_index(0);
+                    }
+                    Some(crate::shortcut::Key::End) if !self.items.is_empty() => {
+                        let _ = self.set_selected_index(self.items.len() - 1);
+                    }
+                    Some(crate::shortcut::Key::Up)
+                        if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) =>
+                    {
+                        let _ = self.set_selected_index(0);
+                    }
+                    Some(crate::shortcut::Key::Down)
+                        if modifiers.contains(crate::shortcut::Modifiers::PRIMARY)
+                            && !self.items.is_empty() =>
+                    {
+                        let _ = self.set_selected_index(self.items.len() - 1);
+                    }
+                    _ => {}
+                }
+            }
             // Other events are not relevant for this widget
             _ => {}
         }
@@ -535,12 +574,31 @@ impl Draw for SegmentedControl {
                 // 8 the old literal used: at 8 the label of a two-character segment ran into the
                 // divider it sits beside.
                 context.draw_text(
-                    Point::new(seg.x + SEGMENT_LABEL_INSET, line.y),
+                    Point::new(
+                        seg.x
+                            + SEGMENT_LABEL_INSET
+                            + if item.icon.is_some() { SEGMENT_ICON_SLOT } else { 0 },
+                        line.y,
+                    ),
                     &item.label,
                     effective_font(style),
                     label_color,
                     HorizontalAlignment::Left,
                 );
+                if let Some(icon) = item.icon {
+                    let side = 12u32.min(seg.height.saturating_sub(4)).max(1);
+                    let icon_rect = Rect::new(
+                        seg.x + SEGMENT_LABEL_INSET,
+                        seg.y + (seg.height.saturating_sub(side) / 2) as i32,
+                        side,
+                        side,
+                    );
+                    if let Err(error) =
+                        crate::widget::paint_icon(context, icon.into(), icon_rect, label_color)
+                    {
+                        log::warn!("segment '{}' icon failed: {error:?}", item.id);
+                    }
+                }
             }
         }
     }

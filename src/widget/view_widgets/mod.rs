@@ -22,19 +22,23 @@ pub mod tree_view;
 pub mod virtual_list;
 pub mod virtual_table;
 // Re-export view widgets
-pub use data_grid::{ColumnFilter, DataGrid, SortSpec};
+pub use data_grid::{ColumnFilter, ColumnWidthMode, DataGrid, EditTriggers, SortSpec};
 pub use data_source::{
     IncrementalTableDataSource, ListModelDataSource, TableModelDataSource, TreeModelDataSource,
 };
 pub use filter_expr::{FilterCondition, FilterExpr, FilterOperator};
-pub use grid_table::{GridTableSelectionMode, GridTableSortSpec, GridTableWidget};
+pub use grid_table::{
+    GridSectionResizeMode, GridTableSelectionMode, GridTableSortSpec, GridTableWidget,
+};
 pub use image_gallery::{GalleryImage, ImageGallery};
 pub use list_view::ListView;
 pub use properties_panel::{PropertiesPanel, PropertyEntry, PropertyValue};
 pub use property_grid::{PropertyGrid, PropertyItem};
-pub use query_builder::{FilterConjunction, FilterField, QueryBuilder, QueryBuilderRow};
-pub use table_widget::TableWidget;
+pub use query_builder::{
+    FilterConjunction, FilterField, QueryBuilder, QueryBuilderGroup, QueryBuilderRow,
+};
+pub use table_widget::{TableEditTriggers, TableWidget};
 pub use tree_table::{TreeTable, TreeTableModel};
 pub use tree_view::TreeView;
 pub use virtual_list::VirtualList;
-pub use virtual_table::VirtualTable;
+pub use virtual_table::{VirtualCellDelegate, VirtualTable};

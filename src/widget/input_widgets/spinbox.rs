@@ -21,7 +21,7 @@
 //! one geometry.
 use crate::compat::{format, String, ToString};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
@@ -146,6 +146,29 @@ pub struct SpinBox {
     /// Emitted without a payload when an in-progress edit is committed or
     /// cancelled (Enter, focus loss, or step).
     pub editing_finished: GenericSignal,
+    /// How one step chooses its distance.
+    step_type: SpinBoxStepType,
+    /// Whether the user is typing a value into the field.
+    editing: bool,
+    /// The text typed since the edit began.
+    entry_buffer: String,
+    /// Which step button is held down, for auto-repeat: `Some(true)` is the up button.
+    held_step: Option<bool>,
+    /// Milliseconds accumulated while a step button is held.
+    repeat_elapsed: u32,
+}
+
+/// How a spin box chooses the distance of one step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpinBoxStepType {
+    /// Every step moves by `single_step`.
+    #[default]
+    SingleStep,
+    /// The step grows with the magnitude of the value, so large values move faster.
+    ///
+    /// The distance is `max(single_step, 10^(digits(value) - 1))`, which keeps a press
+    /// meaningful at 1 and at 100000 without the caller having to change the step.
+    AdaptiveDecimalStep,
 }
 
 /// Memoised output of [`SpinBox::value_text`].
@@ -360,6 +383,11 @@ impl SpinBox {
             alignment: crate::core::Alignment::Left,
             value_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
+            step_type: SpinBoxStepType::SingleStep,
+            editing: false,
+            entry_buffer: String::new(),
+            held_step: None,
+            repeat_elapsed: 0,
         }
     }
     /// Returns the current value, as an integer.
@@ -570,7 +598,7 @@ impl SpinBox {
     }
     /// Increments value by single step.
     pub fn step_up(&mut self) {
-        let mut new_value = self.value + self.single_step;
+        let mut new_value = self.value + self.step_amount();
         if new_value > self.maximum {
             if self.wrapping {
                 new_value = self.minimum;
@@ -582,7 +610,7 @@ impl SpinBox {
     }
     /// Decrements value by single step.
     pub fn step_down(&mut self) {
-        let mut new_value = self.value - self.single_step;
+        let mut new_value = self.value - self.step_amount();
         if new_value < self.minimum {
             if self.wrapping {
                 new_value = self.maximum;
@@ -591,6 +619,138 @@ impl SpinBox {
             }
         }
         self.set_value_f64(new_value);
+    }
+
+    /// The distance one step moves under the current [`SpinBoxStepType`].
+    pub fn step_amount(&self) -> f64 {
+        match self.step_type {
+            SpinBoxStepType::SingleStep => self.single_step,
+            SpinBoxStepType::AdaptiveDecimalStep => {
+                let magnitude = self.value.abs();
+                if magnitude < 10.0 {
+                    return self.single_step;
+                }
+                let digits = magnitude.log10().floor() as i32;
+                let adaptive = 10f64.powi(digits);
+                adaptive.max(self.single_step)
+            }
+        }
+    }
+
+    /// How one step chooses its distance.
+    pub fn step_type(&self) -> SpinBoxStepType {
+        self.step_type
+    }
+
+    /// Sets how one step chooses its distance.
+    pub fn set_step_type(&mut self, step_type: SpinBoxStepType) {
+        if self.step_type == step_type {
+            return;
+        }
+        self.step_type = step_type;
+    }
+
+    /// Whether the value can be incremented without wrapping.
+    pub fn can_step_up(&self) -> bool {
+        self.wrapping || self.value < self.maximum
+    }
+
+    /// Whether the value can be decremented without wrapping.
+    pub fn can_step_down(&self) -> bool {
+        self.wrapping || self.value > self.minimum
+    }
+
+    /// Whether the user is currently typing a value into the field.
+    pub fn is_editing(&self) -> bool {
+        self.editing
+    }
+
+    /// The text typed since the current edit began.
+    pub fn entry_text(&self) -> &str {
+        &self.entry_buffer
+    }
+
+    /// Starts a typed edit, seeded with the current value's text.
+    pub fn begin_edit(&mut self) {
+        if self.editing {
+            return;
+        }
+        let current_text = self.value_text_cached().to_string();
+        self.editing = true;
+        self.entry_buffer = current_text;
+        self.base.request_redraw();
+    }
+
+    /// Commits the typed buffer, parsing it into the value.
+    ///
+    /// Returns whether a value was parsed. An unparsable buffer leaves the value alone
+    /// rather than silently resetting it, and the edit still ends so the field cannot get
+    /// stuck in a state the user cannot leave.
+    pub fn commit_edit(&mut self) -> bool {
+        if !self.editing {
+            return false;
+        }
+        let parsed = self.entry_buffer.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        self.editing = false;
+        self.entry_buffer.clear();
+        if let Some(value) = parsed {
+            self.set_value_f64(value);
+            self.editing_finished.emit();
+            true
+        } else {
+            self.editing_finished.emit();
+            self.base.request_redraw();
+            false
+        }
+    }
+
+    /// Abandons the typed buffer without changing the value.
+    pub fn cancel_edit(&mut self) {
+        if !self.editing {
+            return;
+        }
+        self.editing = false;
+        self.entry_buffer.clear();
+        self.editing_finished.emit();
+        self.base.request_redraw();
+    }
+
+    /// Advances the held-button repeat. Returns whether another frame is due.
+    ///
+    /// A held step button repeats after an initial delay, then at a steady interval; this is
+    /// what turns one press into a continuous adjustment.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        let Some(up) = self.held_step else {
+            return false;
+        };
+        self.repeat_elapsed = self.repeat_elapsed.saturating_add(delta_ms);
+        let delay = 400u32;
+        let interval = 120u32;
+        if self.repeat_elapsed < delay {
+            return true;
+        }
+        let mut remaining = self.repeat_elapsed - delay;
+        let mut stepped = false;
+        while remaining >= interval {
+            remaining -= interval;
+            if up {
+                self.step_up();
+            } else {
+                self.step_down();
+            }
+            stepped = true;
+        }
+        self.repeat_elapsed = delay + remaining;
+        if stepped {
+            self.base.request_redraw();
+        }
+        true
+    }
+
+    /// Stops any held-button repeat, called when the pointer leaves or is released.
+    pub fn stop_repeat(&mut self) {
+        self.held_step = None;
+        self.repeat_elapsed = 0;
     }
     /// Returns the formatted number, without prefix or suffix.
     ///
@@ -992,14 +1152,47 @@ impl EventHandler for SpinBox {
         match event {
             Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
-                    self.handle_button_click(*pos);
+                    if self.up_button().contains_point(*pos) {
+                        self.held_step = Some(true);
+                        self.repeat_elapsed = 0;
+                        self.handle_button_click(*pos);
+                    } else if self.down_button().contains_point(*pos) {
+                        self.held_step = Some(false);
+                        self.repeat_elapsed = 0;
+                        self.handle_button_click(*pos);
+                    } else if self.editable_rect().contains_point(*pos) {
+                        // A press in the value box starts a typed edit rather than stepping.
+                        self.begin_edit();
+                    }
                 }
             }
+            Event::MouseRelease { .. } => self.stop_repeat(),
+            Event::MouseLeave { .. } => self.stop_repeat(),
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
                 self.handle_button_click(*pos);
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            Event::KeyPress { key, .. } => {
+                if self.editing {
+                    match *key {
+                        48..=57 | 46 | 45 => {
+                            if let Some(ch) = char::from_u32(*key) {
+                                self.entry_buffer.push(ch);
+                                self.base.request_redraw();
+                            }
+                        }
+                        8 => {
+                            self.entry_buffer.pop();
+                            self.base.request_redraw();
+                        }
+                        13 => {
+                            self.commit_edit();
+                        }
+                        27 => self.cancel_edit(),
+                        _ => {}
+                    }
+                    return;
+                }
                 match *key {
                     38 => {
                         // Up arrow
@@ -1009,19 +1202,51 @@ impl EventHandler for SpinBox {
                         // Down arrow
                         self.step_down();
                     }
+                    33 => {
+                        // Page Up takes a larger step (ten single steps).
+                        let target = (self.value + self.single_step * 10.0).min(self.maximum);
+                        self.set_value_f64(target);
+                    }
+                    34 => {
+                        // Page Down.
+                        let target = (self.value - self.single_step * 10.0).max(self.minimum);
+                        self.set_value_f64(target);
+                    }
+                    36 => self.set_value_f64(self.minimum),
+                    35 => self.set_value_f64(self.maximum),
                     13 => {
-                        // Enter
-                        self.editing_finished.emit();
+                        // Enter begins a typed edit.
+                        self.begin_edit();
                     }
                     27 => {
                         // Escape
                         self.editing_finished.emit();
                     }
+                    48..=57 | 46 | 45 => {
+                        // A printable numeric key starts an edit from the current value.
+                        self.begin_edit();
+                        if let Some(ch) = char::from_u32(*key) {
+                            self.entry_buffer.push(ch);
+                            self.base.request_redraw();
+                        }
+                    }
                     // Unknown key; ignore
                     _ => {}
                 }
             }
+            Event::Wheel { delta, modifiers } => {
+                // One notch is one step; a positive y reveals lower values.
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y > 0 {
+                    self.step_down();
+                } else if scroll.lines_y < 0 {
+                    self.step_up();
+                }
+            }
             Event::FocusLost => {
+                if self.editing {
+                    self.commit_edit();
+                }
                 self.editing_finished.emit();
             }
             // Other events are not relevant for this widget
@@ -1109,10 +1334,15 @@ impl Draw for SpinBox {
         // steps toward its own ink while the pointer is on the control; see `step_fill`.
         context.fill_rect(down_button, step_fill(button_bg));
         context.draw_rect(down_button, button_border);
-        draw_step_arrow(context, down_button, false, arrow_color);
+        // A button at its bound is painted dimmed, so the control says "there is nowhere
+        // further to go" before the user presses it. A wrapping box never reaches a bound.
+        let down_arrow =
+            if self.can_step_down() { arrow_color } else { arrow_color.with_alpha(90) };
+        let up_arrow = if self.can_step_up() { arrow_color } else { arrow_color.with_alpha(90) };
+        draw_step_arrow(context, down_button, false, down_arrow);
         context.fill_rect(up_button, step_fill(button_bg));
         context.draw_rect(up_button, button_border);
-        draw_step_arrow(context, up_button, true, arrow_color);
+        draw_step_arrow(context, up_button, true, up_arrow);
         // Draw text. The value is bounded to the **editable** box, so it is fitted into the
         // space the button column left instead of being written from the field's leading
         // padding and allowed to run under the buttons.
@@ -1144,7 +1374,11 @@ impl Draw for SpinBox {
             0,
             &slots,
         );
-        let value_text = self.value_text_cached();
+        let value_text = if self.editing {
+            self.entry_buffer.clone()
+        } else {
+            self.value_text_cached().to_string()
+        };
         if !value_text.is_empty() {
             let line = context.text_line(editable, font);
             // The value's horizontal alignment is the control's own setting, so a centred or
@@ -2075,5 +2309,72 @@ mod tests {
             big_hint.width,
             base_hint.width
         );
+    }
+
+    /// A typed value is committed on Enter and abandoned on Escape.
+    #[test]
+    fn a_typed_value_is_committed_or_cancelled() {
+        let mut spin = SpinBox::new(Rect::new(0, 0, 200, 40));
+        spin.set_range_f64(0.0, 1000.0);
+        for key in [49u32, 50, 51] {
+            spin.handle_event(&Event::KeyPress { key, modifiers: 0 });
+        }
+        assert!(spin.is_editing());
+        assert_eq!(spin.value(), 0, "nothing is committed while typing");
+        spin.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(spin.value(), 123);
+        assert!(!spin.is_editing());
+
+        spin.begin_edit();
+        spin.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert_eq!(spin.value(), 123);
+        assert!(!spin.is_editing());
+    }
+
+    /// Wheel, PageUp/PageDown and a held button all step the value.
+    #[test]
+    fn wheel_page_keys_and_auto_repeat_step_the_value() {
+        let mut spin = SpinBox::new(Rect::new(0, 0, 200, 40));
+        spin.set_range_f64(0.0, 1000.0);
+        spin.set_value_f64(100.0);
+
+        spin.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(spin.value(), 101, "a notch up increments");
+        spin.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(spin.value(), 100);
+
+        spin.handle_event(&Event::KeyPress { key: 33, modifiers: 0 });
+        assert_eq!(spin.value(), 110, "PageUp takes ten steps");
+        spin.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
+        assert_eq!(spin.value(), 100);
+
+        let up = spin.up_button();
+        let center = Point::new(up.x + up.width as i32 / 2, up.y + up.height as i32 / 2);
+        spin.handle_event(&Event::MousePress { pos: center, button: 1, modifiers: 0 });
+        let after_press = spin.value();
+        assert!(spin.tick(16), "a held button keeps owing frames");
+        assert!(spin.tick(600));
+        assert!(spin.value() > after_press, "holding the button repeats");
+        spin.handle_event(&Event::MouseRelease { pos: center, button: 1 });
+        assert!(!spin.tick(500));
+    }
+
+    /// The adaptive step grows with the magnitude, and a bound disables its button.
+    #[test]
+    fn adaptive_steps_and_bound_aware_buttons() {
+        let mut spin = SpinBox::new(Rect::new(0, 0, 200, 40));
+        spin.set_range_f64(0.0, 1000.0);
+        spin.set_value_f64(500.0);
+        spin.set_step_type(SpinBoxStepType::AdaptiveDecimalStep);
+        assert_eq!(spin.step_type(), SpinBoxStepType::AdaptiveDecimalStep);
+        assert!(spin.step_amount() > spin.single_step() as f64);
+
+        spin.set_value_f64(1000.0);
+        assert!(!spin.can_step_up());
+        assert!(spin.can_step_down());
+        let at_max = crate::widget::svg::render_to_svg(&mut spin);
+        spin.set_value_f64(0.0);
+        let at_min = crate::widget::svg::render_to_svg(&mut spin);
+        assert_ne!(at_max, at_min, "a bound must be visible in the arrow column");
     }
 }

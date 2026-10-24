@@ -2,7 +2,7 @@
 
 # 控件图像总览 / Control gallery
 
-本页共 **213** 张控件快照名（每个两种外观，共 **426** 张 SVG）。
+本页共 **218** 张控件快照名（每个两种外观，共 **436** 张 SVG）。
 这些名字来自控件注册表（`factory.widget_names()`），其中包含少量**别名**
 （如 `wizard_dialog` 同时以 `wizard` 注册），因此快照名数多于 `WidgetKind` 的枚举数（**200**）。
 
@@ -53,8 +53,9 @@
 | Miscellaneous (`misc_widgets`) | 8 | [跳转](#miscellaneous) |
 | Cupertino (iOS-style) (`cupertino`) | 8 | [跳转](#cupertino-ios-style) |
 | Web (`web_widgets`) | 1 | [跳转](#web) |
+| macos (`macos`) | 5 | [跳转](#macos) |
 | Core controls (`root`) | 2 | [跳转](#core-controls) |
-| **合计** | **213** | |
+| **合计** | **218** | |
 
 ## Base controls
 
@@ -378,6 +379,18 @@
 | 控件 | 深色 | 浅色 |
 |---|---|---|
 | `web_engine_view` | ![web_engine_view (dark)](snapshots/svg/web_engine_view.svg) | ![web_engine_view (light)](snapshots/svg/web_engine_view.light.svg) |
+
+## macos
+
+`macos` — 5 个控件。
+
+| 控件 | 深色 | 浅色 |
+|---|---|---|
+| `mac_segmented_control` | ![mac_segmented_control (dark)](snapshots/svg/mac_segmented_control.svg) | ![mac_segmented_control (light)](snapshots/svg/mac_segmented_control.light.svg) |
+| `mac_source_list` | ![mac_source_list (dark)](snapshots/svg/mac_source_list.svg) | ![mac_source_list (light)](snapshots/svg/mac_source_list.light.svg) |
+| `mac_stepper` | ![mac_stepper (dark)](snapshots/svg/mac_stepper.svg) | ![mac_stepper (light)](snapshots/svg/mac_stepper.light.svg) |
+| `mac_toolbar` | ![mac_toolbar (dark)](snapshots/svg/mac_toolbar.svg) | ![mac_toolbar (light)](snapshots/svg/mac_toolbar.light.svg) |
+| `mac_window_chrome` | ![mac_window_chrome (dark)](snapshots/svg/mac_window_chrome.svg) | ![mac_window_chrome (light)](snapshots/svg/mac_window_chrome.light.svg) |
 
 ## Core controls
 

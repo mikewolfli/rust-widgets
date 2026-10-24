@@ -290,6 +290,89 @@ pub fn diff(
     report
 }
 
+/// Compute the patches for **one keyed subtree**, leaving the rest of both trees unexamined.
+///
+/// `scope` is the [`Node::key`](crate::view::Node::key) of the container that changed. The two
+/// trees must place that container at the same path and give it the same widget type; when they
+/// do not — the branch was removed, the key was renamed, a key is duplicated — this returns
+/// `None`, and the caller's only correct response is a full [`diff`]. That direction matters: a
+/// stale signal must cost a full rebuild, never a missed change.
+///
+/// # Why the comparison can stop at the container
+///
+/// The caller's signal is an assertion that nothing outside the container changed
+/// ([`RowSignal`](crate::view::RowSignal)). A scoped diff trusts it: siblings are not walked, so
+/// an unchanged 10 000-row list costs one container lookup per tree instead of a full
+/// comparison. Everything from the container's children down is diffed exactly as [`diff`]
+/// would, including key matching, the LIS move minimisation and the transparent-node rules —
+/// this function changes **where** the walk starts, not what it decides.
+pub fn diff_scoped(
+    old: &Node,
+    new: &Node,
+    scope: &str,
+    id_of: &dyn Fn(&[usize], usize) -> Option<crate::core::ObjectId>,
+) -> Option<DiffReport> {
+    // Locate the container first: a signal naming a key that is absent from either tree is not
+    // something this function may answer, even when the two trees happen to be equal. The
+    // caller's fallback is a full diff, and an empty report would hide the mistake.
+    let old_path = find_key_path(old, scope)?;
+    let new_path = find_key_path(new, scope)?;
+    if old_path != new_path {
+        return None;
+    }
+    // An equal pair has nothing to say *inside* the container; answering here spares the walk.
+    if old == new {
+        return Some(DiffReport::default());
+    }
+    let old_node = node_at_path(old, &old_path)?;
+    let new_node = node_at_path(new, &new_path)?;
+    // A different control kind at the same key is a replacement, which the container diff would
+    // emit as a `Replace` of its own root — a patch the apply path refuses at the root of a
+    // batch. Treat it as unscopable and let the caller take the full path.
+    if old_node.widget != new_node.widget {
+        return None;
+    }
+    let parent_id =
+        if old_path.is_empty() { None } else { id_of(&old_path[..old_path.len() - 1], 0) };
+    let index = old_path.last().copied().unwrap_or(0);
+    let mut report = DiffReport::default();
+    let mut path = old_path;
+    diff_node(old_node, new_node, &mut path, parent_id, index, id_of, &mut report);
+    Some(report)
+}
+
+/// Finds the first node carrying `key`, returning its path from `root`.
+///
+/// Depth-first, children in declaration order, which is the order a reader of the document would
+/// find them. A key that is not globally unique therefore resolves to the earliest declaration;
+/// **the contract is that a container key names one node** (`Node::duplicate_sibling_keys`
+/// catches the sibling case, which is the one the diff itself depends on).
+fn find_key_path(node: &Node, key: &str) -> Option<Vec<usize>> {
+    fn walk(node: &Node, key: &str, path: &mut Vec<usize>) -> Option<Vec<usize>> {
+        if node.key_str() == Some(key) {
+            return Some(path.clone());
+        }
+        for (index, child) in node.children.iter().enumerate() {
+            path.push(index);
+            if let Some(found) = walk(child, key, path) {
+                return Some(found);
+            }
+            path.pop();
+        }
+        None
+    }
+    walk(node, key, &mut Vec::new())
+}
+
+/// Reads the node at `path`, or `None` when the path runs past a leaf.
+fn node_at_path<'a>(root: &'a Node, path: &[usize]) -> Option<&'a Node> {
+    let mut node = root;
+    for &index in path {
+        node = node.children.get(index)?;
+    }
+    Some(node)
+}
+
 /// Whether a schema-declared property can be **written** at all.
 ///
 /// Used to suppress a patch that is guaranteed to be refused. The diff's deletion pass emits
@@ -1864,6 +1947,70 @@ mod tests {
             }
             other => panic!("expected one insert, got {other:?}"),
         }
+    }
+
+    /// A keyed list container with `rows` label rows under a panel root.
+    fn keyed_list(rows: usize) -> Node {
+        let mut container = Node::new("panel").key("rows");
+        for index in 0..rows {
+            container = container.child(Node::new("label").key(format!("row{index}")).prop(
+                "text",
+                crate::widget::capability::CapabilityValue::String(format!("v{index}")),
+            ));
+        }
+        Node::new("panel").key("root").child(container)
+    }
+
+    /// A scoped diff reports exactly the patch a full diff would report for the container, while
+    /// leaving the rest of the tree unexamined.
+    #[test]
+    fn a_scoped_diff_sees_the_container_change() {
+        let old = keyed_list(3);
+        let new = keyed_list(4);
+        let mut ids = FixtureIds::default();
+        ids.assign(&old);
+        let report =
+            diff_scoped(&old, &new, "rows", &ids.lookup()).expect("the container is present");
+        assert_eq!(
+            report.patches_of_kind("Insert").len(),
+            1,
+            "one appended row: {:?}",
+            report.patches
+        );
+        assert_eq!(report.patches_of_kind("Remove").len(), 0);
+    }
+
+    /// A change the signal did not name is invisible to a scoped diff — the producer's promise,
+    /// stated as a test so nobody mistakes the behaviour for a bug.
+    #[test]
+    fn a_scoped_diff_does_not_walk_outside_the_container() {
+        let old = keyed_list(2);
+        let mut new = keyed_list(2);
+        // The root is outside the signalled container, so a scoped diff must not notice it.
+        new.props.insert(
+            "text".into(),
+            crate::widget::capability::CapabilityValue::String("changed".into()),
+        );
+        let mut ids = FixtureIds::default();
+        ids.assign(&old);
+        let report =
+            diff_scoped(&old, &new, "rows", &ids.lookup()).expect("the container is present");
+        assert!(
+            report.is_unchanged(),
+            "the changed node is outside the signalled container: {:?}",
+            report.patches
+        );
+    }
+
+    /// A signal naming a key that is not present in both trees cannot be scoped, so the caller
+    /// must take the full path rather than receive an empty report.
+    #[test]
+    fn a_missing_container_is_refused_rather_than_reported_unchanged() {
+        let old = keyed_list(2);
+        let new = keyed_list(2);
+        let mut ids = FixtureIds::default();
+        ids.assign(&old);
+        assert!(diff_scoped(&old, &new, "no-such-key", &ids.lookup()).is_none());
     }
 
     impl Default for FixtureIds {

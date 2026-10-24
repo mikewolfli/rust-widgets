@@ -5,7 +5,7 @@ use super::hints::ChildInfo;
 use super::types::LayoutContext;
 use super::Layout;
 use crate::compat::{Any, Box, Vec};
-use crate::core::{ObjectId, Rect, Size};
+use crate::core::{ObjectId, Rect, Size, TextDirection};
 use crate::widget::Widget;
 use core::fmt;
 
@@ -89,6 +89,9 @@ impl Default for FlowLayoutConfig {
 pub struct FlowLayout {
     config: FlowLayoutConfig,
     children: Vec<FlowChild>,
+    /// Reading direction. [`TextDirection::LeftToRight`] (the default) keeps the historical
+    /// geometry; right-to-left mirrors the arrangement horizontally inside the content box.
+    text_direction: TextDirection,
 }
 impl fmt::Debug for FlowLayout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -102,7 +105,11 @@ impl FlowLayout {
     /// Creates an empty layout with the default configuration (horizontal,
     /// start-aligned, spacing 8, padding 8, wrapping off).
     pub fn new() -> Self {
-        Self { config: FlowLayoutConfig::default(), children: Vec::new() }
+        Self {
+            config: FlowLayoutConfig::default(),
+            children: Vec::new(),
+            text_direction: TextDirection::default(),
+        }
     }
     /// Creates an empty layout with the supplied configuration.
     pub fn with_config(mut config: FlowLayoutConfig) -> Self {
@@ -116,7 +123,22 @@ impl FlowLayout {
             );
             config.padding = 0;
         }
-        Self { config, children: Vec::new() }
+        Self { config, children: Vec::new(), text_direction: TextDirection::default() }
+    }
+
+    /// The reading direction used when placing children.
+    pub fn text_direction(&self) -> TextDirection {
+        self.text_direction
+    }
+
+    /// Sets the reading direction.
+    ///
+    /// Right-to-left mirrors every child horizontally inside the content box, so the first
+    /// child of a horizontal flow begins at the right edge and a wrapped line runs towards
+    /// the left. The sizes and the wrap decision are unchanged; only the physical origin is
+    /// mirrored, which is what makes an RTL flow read in the same order as its text.
+    pub fn set_text_direction(&mut self, direction: TextDirection) {
+        self.text_direction = direction;
     }
     /// Appends a widget, taking ownership of it.
     ///
@@ -223,7 +245,7 @@ impl FlowLayout {
             available_main,
             self.config.wrap,
         );
-        crate::layout::wrap::place_lines(
+        let mut rects = crate::layout::wrap::place_lines(
             sizes,
             &lines,
             direction,
@@ -233,7 +255,11 @@ impl FlowLayout {
             // the two, and a flow is the `None` case.
             spacing,
             content_rect,
-        )
+        );
+        if self.text_direction.is_right_to_left() {
+            crate::layout::wrap::mirror_horizontally(&mut rects, content_rect);
+        }
+        rects
     }
     /// The flow alignment expressed in the shared wrap vocabulary.
     ///
@@ -298,6 +324,67 @@ impl Layout for FlowLayout {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    /// The one-line footprint: what this flow would occupy without wrapping.
+    fn size_hint(&self) -> Size {
+        self.preferred_size()
+    }
+
+    /// The floor: the largest child on the cross axis, and either the largest child (when
+    /// wrapping is allowed) or the whole run on the main axis.
+    fn minimum_size(&self) -> Size {
+        let padding = (self.config.padding.max(0) as u32).saturating_mul(2);
+        let mut main = 0u32;
+        let mut cross = 0u32;
+        for child in &self.children {
+            let size = child.size_hint();
+            let (child_main, child_cross) = match self.config.direction {
+                FlowDirection::Horizontal => (size.width, size.height),
+                FlowDirection::Vertical => (size.height, size.width),
+            };
+            main = if self.config.wrap {
+                main.max(child_main)
+            } else {
+                main.saturating_add(child_main)
+            };
+            cross = cross.max(child_cross);
+        }
+        match self.config.direction {
+            FlowDirection::Horizontal => {
+                Size::new(main.saturating_add(padding), cross.saturating_add(padding))
+            }
+            FlowDirection::Vertical => {
+                Size::new(cross.saturating_add(padding), main.saturating_add(padding))
+            }
+        }
+    }
+
+    /// The wrapped height at a given width, which is the question a height-for-width parent
+    /// asks a horizontal flow. A vertical flow's height does not depend on its width.
+    fn height_for_width(&self, width: u32, height: u32) -> u32 {
+        if self.config.direction != FlowDirection::Horizontal {
+            return height;
+        }
+        let padding = self.config.padding.max(0);
+        let inner = width.saturating_sub((padding as u32).saturating_mul(2));
+        if inner == 0 || self.children.is_empty() {
+            return height;
+        }
+        let sizes: Vec<Size> = self.children.iter().map(|child| child.size_hint()).collect();
+        let lines = crate::layout::wrap::break_lines(
+            &sizes,
+            crate::layout::WrapDirection::Horizontal,
+            self.config.spacing,
+            inner as i32,
+            self.config.wrap,
+        );
+        let row_heights: i32 = lines
+            .iter()
+            .map(|line| line.iter().map(|index| sizes[*index].height as i32).max().unwrap_or(0))
+            .sum();
+        let gaps = (lines.len() as i32 - 1).max(0) * self.config.spacing;
+        (row_heights + gaps + 2 * padding).max(0) as u32
     }
 
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
@@ -1014,5 +1101,52 @@ mod tests {
         // Padding 8 -> 16, spacing 8 -> 16.
         assert_eq!(placed[&1], Rect::new(16, 16, 30, 20));
         assert_eq!(placed[&2], Rect::new(16 + 30 + 16, 16, 30, 20));
+    }
+
+    /// A right-to-left flow mirrors the physical origin of every child inside the padded
+    /// content box, without changing sizes or where the line breaks.
+    #[test]
+    fn right_to_left_mirrors_the_arrangement() {
+        let mut layout = FlowLayout::new();
+        layout.config.padding = 0;
+        layout.config.spacing = 10;
+        layout.config.wrap = true;
+        layout.set_text_direction(TextDirection::RightToLeft);
+        assert!(layout.text_direction().is_right_to_left());
+        layout.add_child(Box::new(TestWidget::new(1, 40, 20)));
+        layout.add_child(Box::new(TestWidget::new(2, 40, 20)));
+        layout.add_child(Box::new(TestWidget::new(3, 40, 20)));
+
+        let rects = layout.layout(Rect::new(0, 0, 100, 100));
+        // 40 + 10 + 40 fits in 100, so items 1 and 2 share the first row and 3 wraps.
+        assert_eq!(rects[0], Rect::new(60, 0, 40, 20), "the first child begins at the right edge");
+        assert_eq!(rects[1], Rect::new(10, 0, 40, 20), "and the row runs towards the left");
+        assert_eq!(rects[2], Rect::new(60, 30, 40, 20), "the wrapped row mirrors too");
+
+        // Mirroring is an involution: switching back restores the LTR geometry.
+        layout.set_text_direction(TextDirection::LeftToRight);
+        let ltr = layout.layout(Rect::new(0, 0, 100, 100));
+        assert_eq!(ltr[0].x, 0);
+        assert_eq!(ltr[1].x, 50);
+    }
+
+    /// The flow answers the upward channel: a preferred one-line size, a wrap-aware floor,
+    /// and the height it needs at a given width.
+    #[test]
+    fn the_flow_aggregates_its_size_and_answers_height_for_width() {
+        let mut layout = FlowLayout::new();
+        layout.config.padding = 0;
+        layout.config.spacing = 0;
+        layout.config.wrap = true;
+        for id in 1..=3 {
+            layout.add_child(Box::new(TestWidget::new(id, 40, 20)));
+        }
+        assert_eq!(layout.size_hint(), Size::new(120, 20));
+        assert_eq!(layout.minimum_size(), Size::new(40, 20), "wrapping removes the sum floor");
+        assert_eq!(layout.height_for_width(90, 1_000), 40, "two rows at 90 px");
+        assert_eq!(layout.height_for_width(200, 1_000), 20, "one row at 200 px");
+
+        layout.config.wrap = false;
+        assert_eq!(layout.minimum_size(), Size::new(120, 20), "no wrap means the run is the floor");
     }
 }

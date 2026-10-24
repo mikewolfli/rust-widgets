@@ -10,6 +10,55 @@ use crate::object::Object;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 
+/// Distance, in logical pixels, from the eye to a pseudo-3D item's plane.
+///
+/// The item API is a deliberate **pseudo** 3D: there is no scene camera, no depth buffer and no
+/// perspective for the children of a control. A single fixed viewing distance is enough to make a
+/// turned card read as turned, and a constant keeps the API reproducible: the same angle always
+/// produces the same picture regardless of the control's size. Larger values flatten the effect,
+/// smaller ones exaggerate it.
+#[cfg(feature = "3d")]
+pub const ITEM_PERSPECTIVE_DISTANCE: f32 = 1024.0;
+
+/// Composes the affine item transform and the optional pseudo-3D rotation into the matrix the
+/// batch replay records.
+///
+/// The order is fixed and documented on the setters: the affine is applied first, then the
+/// rotation about `origin`, both in the control's local coordinates. With no rotation the result
+/// is exactly the affine embedded in a homogeneous matrix, so a flat control takes the existing
+/// `FillQuad` path and maps its corners identically.
+#[cfg(feature = "3d")]
+fn item_projective_matrix(
+    affine: crate::render::math3d::Mat3,
+    rotation: Option<(crate::render::math3d::Axis, f32, Point)>,
+) -> crate::render::math3d::Mat4 {
+    use crate::render::math3d::{Mat3, Mat4};
+
+    let affine = Mat4::from_affine(affine);
+    let Some((axis, angle, origin)) = rotation else {
+        return affine;
+    };
+    // A zero turn is the affine, bit for bit. Composing the perspective anyway would leave a
+    // homogeneous matrix that is mathematically the affine but not equal to it, which would send
+    // a flat control down the projective raster path (and make "identity leaves pixels unchanged"
+    // false by a rounding step).
+    if angle == 0.0 {
+        return affine;
+    }
+    let distance = ITEM_PERSPECTIVE_DISTANCE;
+    let origin_x = origin.x as f32;
+    let origin_y = origin.y as f32;
+    // Translate the pivot to zero, turn about it, move the plane in front of the eye, project,
+    // scale the normalised projection back to pixels, and put the pivot back where it was.
+    let projective = Mat4::translation(-origin_x, -origin_y, 0.0)
+        .then(&Mat4::rotation(axis, angle))
+        .then(&Mat4::translation(0.0, 0.0, -distance))
+        .then(&Mat4::perspective(core::f32::consts::FRAC_PI_2, 1.0, distance * 0.5, distance * 4.0))
+        .then(&Mat4::from_affine(Mat3::scaling(distance, distance)))
+        .then(&Mat4::translation(origin_x, origin_y, 0.0));
+    affine.then(&projective)
+}
+
 /// Shared widget state and signals used by concrete controls.
 ///
 /// Every widget in the crate embeds one of these and exposes it through
@@ -43,6 +92,21 @@ pub struct BaseWidget {
     /// conversion.
     #[cfg(feature = "3d")]
     pub(crate) item_transform: crate::render::math3d::Mat3,
+    /// Settled pseudo-3D rotation, or `None` when the control is flat.
+    ///
+    /// Kept beside the affine rather than folded into it because the two are independent
+    /// setters: [`BaseWidget::set_item_transform`] leaves this untouched and
+    /// [`BaseWidget::set_rotation`] leaves the affine untouched. The composite both produce is
+    /// [`BaseWidget::item_projective_transform`].
+    #[cfg(feature = "3d")]
+    pub(crate) item_rotation: Option<(crate::render::math3d::Axis, f32, Point)>,
+    /// The composed affine + pseudo-3D matrix recorded by the batch replay.
+    ///
+    /// Identity until either setter is called. This is what a control records as
+    /// [`crate::render::BatchCommand::PushProjectiveTransform`] when the rotation is not the
+    /// identity; the affine-only path keeps using [`Self::item_transform`].
+    #[cfg(feature = "3d")]
+    pub(crate) item_projective: crate::render::math3d::Mat4,
     pub(crate) min_size: Option<Size>,
     pub(crate) max_size: Option<Size>,
     pub(crate) parent: Option<ObjectId>,
@@ -167,6 +231,26 @@ pub struct BaseWidget {
     /// derivation both [`crate::widget::Widget::widget_state`] and a draw path need.
     pub(crate) focus_reason: Option<FocusReason>,
 }
+
+/// Why a DPI scale was refused.
+///
+/// Returned by [`BaseWidget::try_set_dpi_scale`]. The only refusal is a non-finite value:
+/// a positive scale below the floor is clamped rather than refused, and an unchanged value
+/// is a successful no-op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpiScaleError {
+    /// The argument was `NaN` or an infinity, so no finite scale could be derived from it.
+    NonFinite,
+}
+
+impl core::fmt::Display for DpiScaleError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NonFinite => formatter.write_str("the DPI scale must be finite"),
+        }
+    }
+}
+
 impl BaseWidget {
     /// Create base widget state and core signals.
     ///
@@ -182,6 +266,10 @@ impl BaseWidget {
             geometry,
             #[cfg(feature = "3d")]
             item_transform: crate::render::math3d::Mat3::IDENTITY,
+            #[cfg(feature = "3d")]
+            item_rotation: None,
+            #[cfg(feature = "3d")]
+            item_projective: crate::render::math3d::Mat4::IDENTITY,
             min_size: None,
             max_size: None,
             parent: None,
@@ -225,8 +313,9 @@ impl BaseWidget {
     }
     /// The widget's rectangle in parent-relative coordinates, in logical pixels.
     ///
-    /// This is the raw stored value: `min_size`/`max_size` are hints the widget
-    /// does not apply to it, and no clipping against the parent is performed.
+    /// The stored value is the last rectangle this widget accepted: for an explicit
+    /// [`Self::set_geometry`] it is the clamped extent, and for a layout write it is the
+    /// rectangle the layout assigned. No clipping against the parent is performed.
     pub fn geometry(&self) -> Rect {
         self.geometry
     }
@@ -235,8 +324,15 @@ impl BaseWidget {
     /// `min_size`/`max_size` are no longer advisory (C11=A): the layout's
     /// [`crate::widget::Widget::hints`] reports them, and this setter enforces the same
     /// bounds on direct writes so a programmatic resize cannot bypass them. The position
-    /// is never clamped — only the extent — and no redraw or layout is requested, so
-    /// callers that need one must ask for it via [`Self::request_redraw`].
+    /// is never clamped — only the extent.
+    ///
+    /// # Repaint
+    ///
+    /// A rectangle that differs from the stored one requests a redraw and a layout pass,
+    /// because geometry is a pixel-visible fact: the control occupies a different area and
+    /// its children are positioned from it. A call that clamps to the value already stored
+    /// is a no-op, so a layout pass that reasserts the same rectangle every frame does not
+    /// enqueue work.
     pub fn set_geometry(&mut self, geometry: Rect) {
         let mut geometry = geometry;
         if let Some(min) = self.min_size {
@@ -255,7 +351,12 @@ impl BaseWidget {
             geometry.width = geometry.width.min(max.width);
             geometry.height = geometry.height.min(max.height);
         }
+        if geometry == self.geometry {
+            return;
+        }
         self.geometry = geometry;
+        self.request_layout();
+        self.request_redraw();
     }
 
     /// Sets the item-level affine used by the control's own drawing (`3d` feature only).
@@ -289,6 +390,65 @@ impl BaseWidget {
             .then(&crate::render::math3d::Mat3::scaling(scale_x, scale_y))
             .then(&crate::render::math3d::Mat3::rotation(rotation))
             .then(&crate::render::math3d::Mat3::translation(origin_x, origin_y));
+        self.item_projective = item_projective_matrix(self.item_transform, self.item_rotation);
+    }
+
+    /// Sets a settled pseudo-3D rotation of the control's own drawing (`3d` feature only).
+    ///
+    /// `axis` is the local axis the control turns about, `angle_radians` is the angle, and
+    /// `origin` is the pivot in the control's local pixel coordinates. A rotation about `Y`
+    /// turns the control like a card; about `X` like a flap; about `Z` is the same plane
+    /// rotation [`Self::set_item_transform`] already offers, routed through the projective path so
+    /// a caller can mix the two APIs without two conventions.
+    ///
+    /// # Perspective
+    ///
+    /// The control's plane is placed [`ITEM_PERSPECTIVE_DISTANCE`] pixels in front of the eye and
+    /// projected with a 90° vertical field of view. The corners of the item are then
+    /// **perspective-divided**, which is what makes the far edge of a turned card shorter than
+    /// the near edge rather than scaling the two equally.
+    ///
+    /// # Composition with [`Self::set_item_transform`]
+    ///
+    /// The affine is applied **first**, then this rotation about `origin`, both in the control's
+    /// local coordinate system: `P = rotate(origin) * affine`. Each setter leaves the other's
+    /// parameter untouched and recomputes the composite, so the last call does not erase the
+    /// previous one. The order is fixed by this method, not by call order.
+    ///
+    /// # Reduced motion
+    ///
+    /// Like [`Self::set_item_transform`], the value is installed as the settled state; a caller
+    /// that animates a turn interpolates the angle itself and calls this once with the final
+    /// value when reduced motion is on.
+    #[cfg(feature = "3d")]
+    pub fn set_rotation(
+        &mut self,
+        axis: crate::render::math3d::Axis,
+        angle_radians: f32,
+        origin: Point,
+    ) {
+        let angle = if angle_radians.is_finite() { angle_radians } else { 0.0 };
+        self.item_rotation = Some((axis, angle, origin));
+        self.item_projective = item_projective_matrix(self.item_transform, self.item_rotation);
+        self.request_redraw();
+    }
+
+    /// The settled pseudo-3D rotation, or `None` when the control is flat.
+    ///
+    /// Returns the exact `(axis, angle, origin)` last passed to [`Self::set_rotation`].
+    #[cfg(feature = "3d")]
+    pub fn item_rotation(&self) -> Option<(crate::render::math3d::Axis, f32, Point)> {
+        self.item_rotation
+    }
+
+    /// The composed affine + pseudo-3D matrix, ready for
+    /// [`crate::render::BatchCommand::PushProjectiveTransform`].
+    ///
+    /// It is the affine alone when no rotation is set, so the identity case maps every point to
+    /// itself exactly.
+    #[cfg(feature = "3d")]
+    pub fn item_projective_transform(&self) -> crate::render::math3d::Mat4 {
+        self.item_projective
     }
 
     /// The settled item matrix, in the representation [`crate::render::BatchCommand::PushTransform`]
@@ -315,15 +475,27 @@ impl BaseWidget {
     ///
     /// The bound is enforced by [`Self::set_geometry`] and consumed by
     /// `Widget::hints`, so a layout is told the same floor the widget enforces itself.
+    /// A changed bound requests a layout pass, because the extent the layout may assign
+    /// has changed.
     pub fn set_min_size(&mut self, min_size: Option<Size>) {
+        if self.min_size == min_size {
+            return;
+        }
         self.min_size = min_size;
+        self.request_layout();
     }
     /// Sets the maximum size; `None` clears it.
     ///
     /// The bound is enforced by [`Self::set_geometry`] and consumed by
     /// `Widget::hints`, so a layout is told the same ceiling the widget enforces itself.
+    /// A changed bound requests a layout pass for the same reason as
+    /// [`Self::set_min_size`].
     pub fn set_max_size(&mut self, max_size: Option<Size>) {
+        if self.max_size == max_size {
+            return;
+        }
         self.max_size = max_size;
+        self.request_layout();
     }
     /// The parent's id, or `None` for a root widget. Stored as-is.
     pub fn parent(&self) -> Option<ObjectId> {
@@ -542,15 +714,42 @@ impl BaseWidget {
     }
     /// Makes the widget visible by setting its visibility flag.
     ///
-    /// Does not request a redraw, and does not touch the visibility of any child.
+    /// # The subtree
+    ///
+    /// Child flags are deliberately **not** rewritten: a child remembers whether it was
+    /// hidden in its own right, and clearing that on a parent's `show` would lose the
+    /// distinction between "hidden by its container" and "hidden itself". The subtree
+    /// effect is achieved at render time — every tree walk (draw, hit test, focus,
+    /// accessibility) skips a child whose own flag is clear, so an invisible parent's
+    /// descendants are never painted and never receive input. See
+    /// `widget::runtime`'s `collect_draw_order` and `hit_test`, which both consult
+    /// `is_visible` before descending.
+    ///
+    /// A call that does not change the flag is a no-op; a real change requests a redraw
+    /// and a layout pass, because the visible area of the surface has changed.
     pub fn show(&mut self) {
+        if self.visible {
+            return;
+        }
         self.visible = true;
+        self.request_layout();
+        self.request_redraw();
     }
     /// Hides the widget by clearing its visibility flag.
     ///
-    /// Does not request a redraw.
+    /// Like [`Self::show`] this does not rewrite child flags; the subtree disappears
+    /// because every tree walk skips a hidden widget before descending, so hiding a
+    /// container hides its contents on screen without destroying their own state.
+    ///
+    /// A call that does not change the flag is a no-op; a real change requests a redraw
+    /// and a layout pass.
     pub fn hide(&mut self) {
+        if !self.visible {
+            return;
+        }
         self.visible = false;
+        self.request_layout();
+        self.request_redraw();
     }
     /// Whether the visibility flag is set. True unless [`Self::hide`] was called.
     pub fn is_visible(&self) -> bool {
@@ -704,11 +903,44 @@ impl BaseWidget {
     pub fn dpi_scale(&self) -> f32 {
         self.dpi_scale
     }
-    /// Sets the DPI scale factor, clamping values below `0.1` up to `0.1` so a
-    /// degenerate scale cannot reach layout maths. `NaN` is *not* handled: NaN
-    /// comparisons are false, so a NaN argument is stored as-is.
+    /// Sets the DPI scale factor, clamping to the valid range.
+    ///
+    /// The stored value is always finite and at least `0.1`: a non-finite argument
+    /// (`NaN` or infinity) is **refused**, and values below `0.1` are raised to `0.1`, so
+    /// a degenerate scale cannot reach layout or glyph arithmetic. `NaN` is the dangerous
+    /// one — every comparison against it is false, so `NaN.max(0.1)` used to store `NaN`
+    /// and poison every size derived from it.
+    ///
+    /// # Rejection, not silent coercion
+    ///
+    /// A non-finite argument is a caller bug: it cannot be repaired by picking a scale,
+    /// so the current value is kept rather than replaced by a guess. Use
+    /// [`Self::try_set_dpi_scale`] to observe the refusal; this infallible form is what
+    /// the property setters use, where a `Result` would have nowhere to go.
+    ///
+    /// A call that leaves the value unchanged performs no work.
     pub fn set_dpi_scale(&mut self, scale: f32) {
-        self.dpi_scale = scale.max(0.1);
+        let _ = self.try_set_dpi_scale(scale);
+    }
+
+    /// Sets the DPI scale factor, reporting a non-finite argument.
+    ///
+    /// The fallible form of [`Self::set_dpi_scale`]. A host that reads the scale from a
+    /// device or a settings file can report a bad value instead of silently keeping the
+    /// previous one; a value below `0.1` is still clamped rather than refused, because it
+    /// is a legal scale that is simply too small to lay out against.
+    pub fn try_set_dpi_scale(&mut self, scale: f32) -> Result<(), DpiScaleError> {
+        if !scale.is_finite() {
+            return Err(DpiScaleError::NonFinite);
+        }
+        let scale = scale.max(0.1);
+        if scale == self.dpi_scale {
+            return Ok(());
+        }
+        self.dpi_scale = scale;
+        self.request_layout();
+        self.request_redraw();
+        Ok(())
     }
     /// Sets the tooltip by looking up a translation `key`.
     ///
@@ -1292,6 +1524,113 @@ mod tests {
         );
     }
 
+    /// A geometry write repaints only when the clamped rectangle really moved.
+    ///
+    /// The signal is the observable half of the contract: layout reasserts a rectangle
+    /// every pass, so a setter that emitted unconditionally would enqueue a redraw for a
+    /// value that did not change — the loop the early return exists to break.
+    #[test]
+    fn set_geometry_requests_repaint_only_when_the_rectangle_changes() {
+        let mut bw = make_base();
+        let redraws = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let layouts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let r = redraws.clone();
+        let l = layouts.clone();
+        bw.redraw_requested.connect(move || {
+            r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        bw.layout_requested.connect(move || {
+            l.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        bw.set_geometry(bw.geometry());
+        assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 0, "same rect is a no-op");
+        assert_eq!(layouts.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        bw.set_geometry(Rect::new(10, 20, 120, 30));
+        assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(layouts.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // A write that clamps back to the stored value reports nothing.
+        bw.set_max_size(Some(Size::new(120, 30)));
+        bw.set_geometry(Rect::new(10, 20, 500, 500));
+        assert_eq!(bw.geometry(), Rect::new(10, 20, 120, 30));
+        assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 1, "no second repaint");
+    }
+
+    /// A changed size bound asks layout to run again, and an unchanged one does not.
+    #[test]
+    fn size_bound_setters_request_layout_only_on_change() {
+        let mut bw = make_base();
+        let layouts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let l = layouts.clone();
+        bw.layout_requested.connect(move || {
+            l.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        bw.set_min_size(None);
+        bw.set_max_size(None);
+        assert_eq!(layouts.load(std::sync::atomic::Ordering::SeqCst), 0, "None -> None is a no-op");
+
+        bw.set_min_size(Some(Size::new(40, 20)));
+        assert_eq!(layouts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        bw.set_min_size(Some(Size::new(40, 20)));
+        assert_eq!(layouts.load(std::sync::atomic::Ordering::SeqCst), 1, "same bound is a no-op");
+        bw.set_max_size(Some(Size::new(400, 200)));
+        assert_eq!(layouts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// Hiding and showing repaint, and neither rewrites a child's own flag.
+    ///
+    /// The subtree effect is a render-time skip (see `BaseWidget::hide`), so the flag is
+    /// the only thing this type owns. A child's flag surviving the parent's toggle is what
+    /// lets it keep its own hidden state across the container being shown again.
+    #[test]
+    fn visibility_toggles_repaint_and_leave_child_flags_alone() {
+        let mut parent = make_base();
+        let mut child = make_base();
+        parent.add_child(child.id());
+        child.hide();
+
+        let redraws = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let r = redraws.clone();
+        parent.redraw_requested.connect(move || {
+            r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        parent.show();
+        assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 0, "already visible");
+        parent.hide();
+        assert!(!parent.is_visible());
+        assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 1, "hiding repaints");
+        parent.hide();
+        assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 1, "already hidden");
+        parent.show();
+        assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 2, "showing repaints");
+
+        assert!(!child.is_visible(), "a child keeps the visibility it chose for itself");
+    }
+
+    /// A non-finite DPI scale is refused instead of stored.
+    ///
+    /// `NaN.max(0.1)` is `NaN` (every NaN comparison is false), so the old setter stored
+    /// it and every size derived from the scale became NaN.
+    #[test]
+    fn dpi_scale_refuses_non_finite_values() {
+        let mut bw = make_base();
+        assert_eq!(bw.try_set_dpi_scale(2.0), Ok(()));
+        assert_eq!(bw.dpi_scale(), 2.0);
+        assert_eq!(bw.try_set_dpi_scale(f32::NAN), Err(DpiScaleError::NonFinite));
+        assert_eq!(bw.dpi_scale(), 2.0, "NaN leaves the last good scale in place");
+        assert_eq!(bw.try_set_dpi_scale(f32::INFINITY), Err(DpiScaleError::NonFinite));
+        assert_eq!(bw.dpi_scale(), 2.0, "infinity is refused too");
+        // The infallible form keeps the refusal invisible but the value safe.
+        bw.set_dpi_scale(f32::NAN);
+        assert_eq!(bw.dpi_scale(), 2.0);
+        bw.set_dpi_scale(0.0);
+        assert_eq!(bw.dpi_scale(), 0.1, "a positive-but-degenerate value still clamps up");
+    }
+
     #[test]
     fn test_parent_and_children() {
         let mut bw = make_base();
@@ -1862,5 +2201,108 @@ mod tests {
         }
 
         assert_eq!(mapped, Point::new(10, 20), "the first call must land on the final matrix");
+    }
+
+    /// A 45° turn about `Y` makes the far edge shorter than the near edge.
+    ///
+    /// The assertion is the perspective divide itself: with an orthographic (affine) rotation both
+    /// vertical edges would have the same height. Reading the projected corner positions and
+    /// comparing their distances is what proves the `w` term is being applied.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn item_rotation_maps_corners_with_a_perspective_divide() {
+        use crate::render::math3d::Axis;
+
+        let mut bw = make_base();
+        let origin = Point::new(50, 50);
+        bw.set_rotation(Axis::Y, core::f32::consts::FRAC_PI_4, origin);
+        assert_eq!(
+            bw.item_rotation(),
+            Some((Axis::Y, core::f32::consts::FRAC_PI_4, origin)),
+            "the settled rotation is readable back exactly"
+        );
+
+        let matrix = bw.item_projective_transform();
+        let project = |x: f32, y: f32| {
+            let (px, py, w) = matrix.project_row(x, y);
+            assert!(w > 0.0, "a corner in front of the eye must have a positive divisor");
+            (px / w, py / w)
+        };
+        // The control's local corners before the turn.
+        let near_top = project(0.0, 0.0);
+        let near_bottom = project(0.0, 100.0);
+        let far_top = project(100.0, 0.0);
+        let far_bottom = project(100.0, 100.0);
+        let near_height = (near_top.1 - near_bottom.1).abs();
+        let far_height = (far_top.1 - far_bottom.1).abs();
+        assert!(
+            near_height > far_height + 1.0,
+            "the near edge ({near_height}) must be taller than the far edge ({far_height})"
+        );
+        assert!(
+            (near_top.1 - far_top.1).abs() > 1.0,
+            "the two top corners must not share a row once the card is turned"
+        );
+    }
+
+    /// A zero rotation composes to exactly the affine transform.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_zero_item_rotation_is_exactly_the_affine_transform() {
+        use crate::render::math3d::{Axis, Mat4};
+
+        let mut bw = make_base();
+        bw.set_item_transform(0.0, (2.0, 3.0), Point::new(4, 5));
+        bw.set_rotation(Axis::Z, 0.0, Point::new(4, 5));
+        assert_eq!(bw.item_projective_transform(), Mat4::from_affine(bw.item_transform()));
+        let mapped = bw.item_transform().map_point(Point::new(7, 9));
+        let (px, py, w) = bw.item_projective_transform().project_row(7.0, 9.0);
+        assert_eq!((px / w).round() as i32, mapped.x);
+        assert_eq!((py / w).round() as i32, mapped.y);
+    }
+
+    /// The two setters are independent and compose in the documented order.
+    ///
+    /// Calling one does not erase the other, and the affine stays the readable `Mat3` while the
+    /// rotation stays the readable `(axis, angle, origin)` pair; the composite is the matrix the
+    /// batch records.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn item_transform_and_rotation_compose_without_erasing_each_other() {
+        use crate::render::math3d::{Axis, Mat4};
+
+        let mut bw = make_base();
+        bw.set_item_transform(0.0, (2.0, 2.0), Point::new(0, 0));
+        bw.set_rotation(Axis::Y, 0.5, Point::new(10, 10));
+        assert_eq!(
+            bw.item_rotation(),
+            Some((Axis::Y, 0.5, Point::new(10, 10))),
+            "the rotation survives a later affine set"
+        );
+
+        bw.set_item_transform(0.0, (3.0, 3.0), Point::new(0, 0));
+        assert_eq!(bw.item_rotation(), Some((Axis::Y, 0.5, Point::new(10, 10))));
+        assert_eq!(bw.item_transform().m[0], 3.0, "the affine also survives the rotation set");
+        assert_ne!(
+            bw.item_projective_transform(),
+            Mat4::from_affine(bw.item_transform()),
+            "the composite must carry the rotation, not just the affine"
+        );
+    }
+
+    /// A non-finite angle is treated as no turn, like the affine setter's parameters.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn item_rotation_rejects_a_non_finite_angle() {
+        use crate::render::math3d::{Axis, Mat4};
+
+        let mut bw = make_base();
+        bw.set_rotation(Axis::X, f32::NAN, Point::new(0, 0));
+        assert_eq!(
+            bw.item_rotation(),
+            Some((Axis::X, 0.0, Point::new(0, 0))),
+            "a NaN angle must be stored as zero, not propagated"
+        );
+        assert_eq!(bw.item_projective_transform(), Mat4::IDENTITY);
     }
 }

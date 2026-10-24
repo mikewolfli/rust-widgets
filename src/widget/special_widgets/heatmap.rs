@@ -64,6 +64,25 @@ const RAMP_HIGH: Color = Color { r: 249, g: 216, b: 122, a: 255 };
 /// stroke (which would leave the grid looking like a table rather than a field).
 const CELL_INSET: i32 = 1;
 
+/// A colour ramp used to encode cell values.
+///
+/// A heat map's colours *are* its reading, so an application with a house colour scale can
+/// supply it here instead of being limited to the built-in three-stop ramp. `fraction` is
+/// the value's position in the scale, already clamped to `0.0..=1.0`.
+pub trait ColorRamp: Send + Sync {
+    /// The colour for a normalised value.
+    fn color_at(&self, fraction: f32) -> Color;
+}
+
+impl<F> ColorRamp for F
+where
+    F: Fn(f32) -> Color + Send + Sync,
+{
+    fn color_at(&self, fraction: f32) -> Color {
+        self(fraction)
+    }
+}
+
 /// One value in the matrix.
 ///
 /// A missing cell is `None` rather than `0.0`: on a heat map "no data" and "the minimum"
@@ -116,6 +135,22 @@ pub struct Heatmap {
     pub cell_hovered: Signal1<(usize, usize)>,
     /// Emitted when a cell is clicked, carrying `(row, column)`.
     pub cell_clicked: Signal1<(usize, usize)>,
+    /// The selected cell, drawn with a heavier outline.
+    selected_cell: Option<(usize, usize)>,
+    /// Whether the hover read-out is painted.
+    show_tooltip: bool,
+    /// Whether rows are ordered by their mean value.
+    cluster_rows: bool,
+    /// Whether columns are ordered by their mean value.
+    cluster_columns: bool,
+    /// The row indices in display order.
+    row_order: Vec<usize>,
+    /// The column indices in display order.
+    column_order: Vec<usize>,
+    /// A caller-supplied colour ramp.
+    ramp: Option<Box<dyn ColorRamp>>,
+    /// Cached legend samples for the width they were built at.
+    legend_cache: Option<(u32, Vec<Color>)>,
 }
 
 impl Heatmap {
@@ -135,7 +170,126 @@ impl Heatmap {
             hovered_cell: None,
             cell_hovered: Signal1::new(),
             cell_clicked: Signal1::new(),
+            selected_cell: None,
+            show_tooltip: false,
+            cluster_rows: false,
+            cluster_columns: false,
+            row_order: Vec::new(),
+            column_order: Vec::new(),
+            ramp: None,
+            legend_cache: None,
         }
+    }
+
+    /// Replaces the colour ramp, or restores the built-in one with `None`.
+    pub fn set_color_ramp(&mut self, ramp: Option<Box<dyn ColorRamp>>) {
+        self.ramp = ramp;
+        self.legend_cache = None;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether a caller-supplied ramp is installed.
+    pub fn has_color_ramp(&self) -> bool {
+        self.ramp.is_some()
+    }
+
+    /// Shows the hover read-out: the value and both axis labels of the hovered cell.
+    pub fn set_show_tooltip(&mut self, show: bool) {
+        if self.show_tooltip == show {
+            return;
+        }
+        self.show_tooltip = show;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the hover read-out is enabled.
+    pub fn show_tooltip(&self) -> bool {
+        self.show_tooltip
+    }
+
+    /// Orders rows by their mean value, grouping similar rows together.
+    pub fn set_cluster_rows(&mut self, cluster: bool) {
+        if self.cluster_rows == cluster {
+            return;
+        }
+        self.cluster_rows = cluster;
+        self.rebuild_order();
+        self.base.request_redraw();
+    }
+
+    /// Returns whether rows are clustered.
+    pub fn cluster_rows(&self) -> bool {
+        self.cluster_rows
+    }
+
+    /// Orders columns by their mean value.
+    pub fn set_cluster_columns(&mut self, cluster: bool) {
+        if self.cluster_columns == cluster {
+            return;
+        }
+        self.cluster_columns = cluster;
+        self.rebuild_order();
+        self.base.request_redraw();
+    }
+
+    /// Returns whether columns are clustered.
+    pub fn cluster_columns(&self) -> bool {
+        self.cluster_columns
+    }
+
+    /// The selected cell, if any.
+    pub fn selected_cell(&self) -> Option<(usize, usize)> {
+        self.selected_cell
+    }
+
+    /// Selects a cell by its data coordinates.
+    pub fn set_selected_cell(&mut self, cell: Option<(usize, usize)>) {
+        let valid =
+            cell.filter(|(row, column)| *row < self.row_count() && *column < self.column_count());
+        if self.selected_cell == valid {
+            return;
+        }
+        self.selected_cell = valid;
+        self.base.request_redraw();
+    }
+
+    /// Rebuilds the display order for both axes.
+    fn rebuild_order(&mut self) {
+        let rows = self.values.len();
+        let columns = self.column_labels.len();
+        let mut row_order: Vec<usize> = (0..rows).collect();
+        let mut column_order: Vec<usize> = (0..columns).collect();
+        if self.cluster_rows {
+            let means: Vec<f64> = row_order
+                .iter()
+                .map(|row| self.values.get(*row).map_or(0.0, |cells| row_mean(cells)))
+                .collect();
+            row_order.sort_by(|a, b| means[*a].total_cmp(&means[*b]));
+        }
+        if self.cluster_columns {
+            let mut means = vec![0.0f64; columns];
+            for row in &self.values {
+                for (column, cell) in row.iter().enumerate() {
+                    if let Some(value) = cell.value {
+                        means[column] += value;
+                    }
+                }
+            }
+            column_order.sort_by(|a, b| means[*a].total_cmp(&means[*b]));
+        }
+        self.row_order = row_order;
+        self.column_order = column_order;
+        self.hovered_cell = None;
+    }
+
+    /// The data row drawn at display row `position`.
+    fn data_row(&self, position: usize) -> usize {
+        self.row_order.get(position).copied().unwrap_or(position)
+    }
+
+    /// The data column drawn at display column `position`.
+    fn data_column(&self, position: usize) -> usize {
+        self.column_order.get(position).copied().unwrap_or(position)
     }
 
     /// Replaces the row and column labels and the value matrix together.
@@ -155,6 +309,12 @@ impl Heatmap {
         let columns = column_labels.len();
         let rows = row_labels.len();
         self.values = values.into_iter().take(rows).map(|row| pad_row(row, columns)).collect();
+        // The display order is rebuilt from the new shape: a stale order would index rows that
+        // no longer exist, or omit rows the new data added.
+        self.row_order = (0..self.values.len()).collect();
+        self.column_order = (0..columns).collect();
+        self.rebuild_order();
+        self.legend_cache = None;
         // A matrix with fewer rows than labels leaves the missing rows empty rather than
         // shifting the present ones up, which would mislabel every row after the gap.
         while self.values.len() < rows {
@@ -336,7 +496,10 @@ impl Heatmap {
             return RAMP_HIGH;
         }
         let fraction = ((value - low) / span).clamp(0.0, 1.0) as f32;
-        interpolate_ramp(fraction)
+        match self.ramp.as_ref() {
+            Some(ramp) => ramp.color_at(fraction),
+            None => interpolate_ramp(fraction),
+        }
     }
 
     /// The rectangle the value grid occupies, excluding the label margins and the legend.
@@ -372,7 +535,7 @@ impl Heatmap {
         // uses, so a click lands in the cell it looks like it landed in.
         let column = (dx as u64 * columns as u64 / grid.width as u64) as usize;
         let row = (dy as u64 * rows as u64 / grid.height as u64) as usize;
-        Some((row.min(rows - 1), column.min(columns - 1)))
+        Some((self.data_row(row.min(rows - 1)), self.data_column(column.min(columns - 1))))
     }
 }
 
@@ -420,6 +583,22 @@ fn pad_row(mut row: Vec<HeatmapCell>, columns: usize) -> Vec<HeatmapCell> {
         row.push(HeatmapCell::empty());
     }
     row
+}
+
+/// The mean of the present values in one row; rows with no data sort last relative to each
+/// other at zero, which is the neutral answer for clustering.
+fn row_mean(cells: &[HeatmapCell]) -> f64 {
+    let mut total = 0.0;
+    let mut count = 0usize;
+    for value in cells.iter().filter_map(|cell| cell.value) {
+        total += value;
+        count += 1;
+    }
+    if count == 0 {
+        0.0
+    } else {
+        total / count as f64
+    }
 }
 
 /// Blends the three-stop ramp at `fraction` in `[0, 1]`.
@@ -641,6 +820,7 @@ fn expect_float(value: CapabilityValue) -> Result<f64, CapabilityAccessError> {
 impl Draw for Heatmap {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        self.refresh_legend_cache();
         let style = self.style();
         // Chrome reads the style; the ramp does not (rule #108 ③). See the module docs.
         let background = style.background_color.unwrap_or(Color::rgb(30, 30, 30));
@@ -693,8 +873,10 @@ impl Draw for Heatmap {
         // cell it looks like it landed in.
         for row in 0..rows {
             let y = grid.y + row as i32 * cell_height;
+            let data_row = self.data_row(row);
             for column in 0..columns {
                 let x = grid.x + column as i32 * cell_width;
+                let data_column = self.data_column(column);
                 let width = if column + 1 == columns {
                     grid.width as i32 - column as i32 * cell_width
                 } else {
@@ -711,7 +893,7 @@ impl Draw for Heatmap {
                     width: (width - CELL_INSET * 2).max(1) as u32,
                     height: (height - CELL_INSET * 2).max(1) as u32,
                 };
-                let value = self.cell(row, column).and_then(|cell| cell.value);
+                let value = self.cell(data_row, data_column).and_then(|cell| cell.value);
                 let fill = match value {
                     Some(value) => self.color_for_value(value),
                     // "No datum" is drawn as the frame's own colour, which is a hole rather
@@ -719,11 +901,56 @@ impl Draw for Heatmap {
                     None => background,
                 };
                 context.fill_rect(cell_rect, fill);
-                if self.hovered_cell == Some((row, column)) {
+                if self.hovered_cell == Some((data_row, data_column)) {
                     // The hover ring is chrome: it marks where the pointer is, not what the
                     // value is, so it uses the border colour.
                     context.draw_rect(cell_rect, border);
                 }
+                if self.selected_cell == Some((data_row, data_column)) {
+                    context.draw_rect_stroke(cell_rect, text_color, 2);
+                }
+            }
+        }
+
+        // ── Hover read-out ──
+        if self.show_tooltip {
+            if let Some((row, column)) = self.hovered_cell {
+                let display_row =
+                    self.row_order.iter().position(|index| *index == row).unwrap_or(row);
+                let display_column =
+                    self.column_order.iter().position(|index| *index == column).unwrap_or(column);
+                let value = self.cell(row, column).and_then(|cell| cell.value);
+                let row_label = self.row_labels.get(row).map(String::as_str).unwrap_or("");
+                let column_label = self.column_labels.get(column).map(String::as_str).unwrap_or("");
+                let text = match value {
+                    Some(value) => {
+                        format!("{row_label} / {column_label}: {}", format_endpoint(value))
+                    }
+                    None => format!("{row_label} / {column_label}: —"),
+                };
+                let metrics = context.measure_text(&text, font);
+                let width = metrics.width as i32 + 8;
+                let height = metrics.height.max(1) as i32 + 6;
+                let mut x = grid.x + (display_column as i32 * cell_width) + cell_width;
+                let mut y = grid.y + (display_row as i32 * cell_height) - height - 2;
+                if x + width > rect.x + rect.width as i32 {
+                    x = grid.x + display_column as i32 * cell_width - width;
+                }
+                if y < rect.y {
+                    y = grid.y + (display_row as i32 + 1) * cell_height + 2;
+                }
+                x = x.max(rect.x);
+                y = y.max(rect.y).min(rect.y + rect.height as i32 - height);
+                let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
+                context.fill_rect(box_rect, background);
+                context.draw_rect(box_rect, border);
+                context.draw_text_line(
+                    box_rect,
+                    &text,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Center,
+                );
             }
         }
 
@@ -794,6 +1021,28 @@ impl Heatmap {
         }
     }
 
+    /// Rebuilds the legend's colour samples for the current strip width.
+    fn refresh_legend_cache(&mut self) {
+        let strip_width = self.grid_rect().width as i32;
+        if strip_width <= 0 {
+            return;
+        }
+        let steps = strip_width.min(512);
+        if self.legend_cache.as_ref().is_some_and(|(width, _)| *width == steps as u32) {
+            return;
+        }
+        let samples: Vec<Color> = (0..steps)
+            .map(|step| {
+                let fraction = step as f32 / (steps - 1).max(1) as f32;
+                match self.ramp.as_ref() {
+                    Some(ramp) => ramp.color_at(fraction),
+                    None => interpolate_ramp(fraction),
+                }
+            })
+            .collect();
+        self.legend_cache = Some((steps as u32, samples));
+    }
+
     /// Draws the ramp strip and its end values along the bottom edge.
     ///
     /// The legend is what makes the colour readable as a value, so the two end numbers are
@@ -823,14 +1072,16 @@ impl Heatmap {
         // the legend cannot disagree with the colours the cells use.
         let steps = strip_width.min(512);
         let segment = (strip_width as f32 / steps as f32).max(1.0);
-        for step in 0..steps {
-            let fraction = step as f32 / (steps - 1).max(1) as f32;
-            let x = strip_x + (step as f32 * segment).round() as i32;
-            let width = segment.round().max(1.0) as u32;
-            context.fill_rect(
-                Rect { x, y, width, height: strip_height as u32 },
-                interpolate_ramp(fraction),
-            );
+        // The ramp samples are cached per strip width: a caller-supplied ramp is an arbitrary
+        // function, and recomputing it for every pixel on every frame is work the width cannot
+        // change. `refresh_legend_cache` fills it before the draw's style borrow starts.
+        let samples_borrowed = self.legend_cache.as_ref();
+        if let Some((_, samples)) = samples_borrowed {
+            for (step, color) in samples.iter().enumerate() {
+                let x = strip_x + (step as f32 * segment).round() as i32;
+                let width = segment.round().max(1.0) as u32;
+                context.fill_rect(Rect { x, y, width, height: strip_height as u32 }, *color);
+            }
         }
         let Some((low, high)) = self.scale_range() else {
             return;
@@ -894,12 +1145,14 @@ impl EventHandler for Heatmap {
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 if let Some((row, column)) = self.cell_at(*pos) {
+                    self.set_selected_cell(Some((row, column)));
                     self.cell_clicked.emit((row, column));
                 }
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
                 if let Some((row, column)) = self.cell_at(*pos) {
+                    self.set_selected_cell(Some((row, column)));
                     self.cell_clicked.emit((row, column));
                 }
             }

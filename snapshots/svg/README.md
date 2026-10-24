@@ -29,7 +29,7 @@ fails the gate in between.
 generated automatically — this list is derived from the registry, never typed.
 3. Run `bash tools/check_svg_snapshots.sh`.
 
-## Controls (213)
+## Controls (218)
 
 | # | Control | Dark | Light |
 |---|---|---|---|
@@ -216,33 +216,38 @@ generated automatically — this list is derived from the registry, never typed.
 | 181 | `cupertino_date_picker` | `cupertino_date_picker.svg` | `cupertino_date_picker.light.svg` |
 | 182 | `editable_combo_box` | `editable_combo_box.svg` | `editable_combo_box.light.svg` |
 | 183 | `date_range_picker` | `date_range_picker.svg` | `date_range_picker.light.svg` |
-| 184 | `rich_edit` | `rich_edit.svg` | `rich_edit.light.svg` |
-| 185 | `carousel` | `carousel.svg` | `carousel.light.svg` |
-| 186 | `material_navigation_rail` | `material_navigation_rail.svg` | `material_navigation_rail.light.svg` |
-| 187 | `tab_view` | `tab_view.svg` | `tab_view.light.svg` |
-| 188 | `search_bar` | `search_bar.svg` | `search_bar.light.svg` |
-| 189 | `shortcut_editor` | `shortcut_editor.svg` | `shortcut_editor.light.svg` |
-| 190 | `swipe_to_dismiss` | `swipe_to_dismiss.svg` | `swipe_to_dismiss.light.svg` |
-| 191 | `line_chart` | `line_chart.svg` | `line_chart.light.svg` |
-| 192 | `sparkline` | `sparkline.svg` | `sparkline.light.svg` |
-| 193 | `bar_chart` | `bar_chart.svg` | `bar_chart.light.svg` |
-| 194 | `candlestick_chart` | `candlestick_chart.svg` | `candlestick_chart.light.svg` |
-| 195 | `volume_chart` | `volume_chart.svg` | `volume_chart.light.svg` |
-| 196 | `depth_chart` | `depth_chart.svg` | `depth_chart.light.svg` |
-| 197 | `order_book` | `order_book.svg` | `order_book.light.svg` |
-| 198 | `quote_board` | `quote_board.svg` | `quote_board.light.svg` |
-| 199 | `indicator_chart` | `indicator_chart.svg` | `indicator_chart.light.svg` |
-| 200 | `pie_chart` | `pie_chart.svg` | `pie_chart.light.svg` |
-| 201 | `animated_image` | `animated_image.svg` | `animated_image.light.svg` |
-| 202 | `hero_animation` | `hero_animation.svg` | `hero_animation.light.svg` |
-| 203 | `bezier_curve_editor` | `bezier_curve_editor.svg` | `bezier_curve_editor.light.svg` |
-| 204 | `lottie_widget` | `lottie_widget.svg` | `lottie_widget.light.svg` |
-| 205 | `rive_widget` | `rive_widget.svg` | `rive_widget.light.svg` |
-| 206 | `video_player` | `video_player.svg` | `video_player.light.svg` |
-| 207 | `image_gallery` | `image_gallery.svg` | `image_gallery.light.svg` |
-| 208 | `audio_visualizer` | `audio_visualizer.svg` | `audio_visualizer.light.svg` |
-| 209 | `camera_preview` | `camera_preview.svg` | `camera_preview.light.svg` |
-| 210 | `barcode_scanner` | `barcode_scanner.svg` | `barcode_scanner.light.svg` |
-| 211 | `tool_button` | `tool_button.svg` | `tool_button.light.svg` |
-| 212 | `status_bar` | `status_bar.svg` | `status_bar.light.svg` |
-| 213 | `property_grid` | `property_grid.svg` | `property_grid.light.svg` |
+| 184 | `mac_segmented_control` | `mac_segmented_control.svg` | `mac_segmented_control.light.svg` |
+| 185 | `mac_stepper` | `mac_stepper.svg` | `mac_stepper.light.svg` |
+| 186 | `mac_toolbar` | `mac_toolbar.svg` | `mac_toolbar.light.svg` |
+| 187 | `mac_source_list` | `mac_source_list.svg` | `mac_source_list.light.svg` |
+| 188 | `mac_window_chrome` | `mac_window_chrome.svg` | `mac_window_chrome.light.svg` |
+| 189 | `rich_edit` | `rich_edit.svg` | `rich_edit.light.svg` |
+| 190 | `carousel` | `carousel.svg` | `carousel.light.svg` |
+| 191 | `material_navigation_rail` | `material_navigation_rail.svg` | `material_navigation_rail.light.svg` |
+| 192 | `tab_view` | `tab_view.svg` | `tab_view.light.svg` |
+| 193 | `search_bar` | `search_bar.svg` | `search_bar.light.svg` |
+| 194 | `shortcut_editor` | `shortcut_editor.svg` | `shortcut_editor.light.svg` |
+| 195 | `swipe_to_dismiss` | `swipe_to_dismiss.svg` | `swipe_to_dismiss.light.svg` |
+| 196 | `line_chart` | `line_chart.svg` | `line_chart.light.svg` |
+| 197 | `sparkline` | `sparkline.svg` | `sparkline.light.svg` |
+| 198 | `bar_chart` | `bar_chart.svg` | `bar_chart.light.svg` |
+| 199 | `candlestick_chart` | `candlestick_chart.svg` | `candlestick_chart.light.svg` |
+| 200 | `volume_chart` | `volume_chart.svg` | `volume_chart.light.svg` |
+| 201 | `depth_chart` | `depth_chart.svg` | `depth_chart.light.svg` |
+| 202 | `order_book` | `order_book.svg` | `order_book.light.svg` |
+| 203 | `quote_board` | `quote_board.svg` | `quote_board.light.svg` |
+| 204 | `indicator_chart` | `indicator_chart.svg` | `indicator_chart.light.svg` |
+| 205 | `pie_chart` | `pie_chart.svg` | `pie_chart.light.svg` |
+| 206 | `animated_image` | `animated_image.svg` | `animated_image.light.svg` |
+| 207 | `hero_animation` | `hero_animation.svg` | `hero_animation.light.svg` |
+| 208 | `bezier_curve_editor` | `bezier_curve_editor.svg` | `bezier_curve_editor.light.svg` |
+| 209 | `lottie_widget` | `lottie_widget.svg` | `lottie_widget.light.svg` |
+| 210 | `rive_widget` | `rive_widget.svg` | `rive_widget.light.svg` |
+| 211 | `video_player` | `video_player.svg` | `video_player.light.svg` |
+| 212 | `image_gallery` | `image_gallery.svg` | `image_gallery.light.svg` |
+| 213 | `audio_visualizer` | `audio_visualizer.svg` | `audio_visualizer.light.svg` |
+| 214 | `camera_preview` | `camera_preview.svg` | `camera_preview.light.svg` |
+| 215 | `barcode_scanner` | `barcode_scanner.svg` | `barcode_scanner.light.svg` |
+| 216 | `tool_button` | `tool_button.svg` | `tool_button.light.svg` |
+| 217 | `status_bar` | `status_bar.svg` | `status_bar.light.svg` |
+| 218 | `property_grid` | `property_grid.svg` | `property_grid.light.svg` |

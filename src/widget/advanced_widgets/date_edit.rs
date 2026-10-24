@@ -411,6 +411,49 @@ pub(crate) struct DateTimeComponents {
     /// Millisecond, `0`–`999`.
     pub millisecond: Option<u16>,
 }
+/// One editable component of a date field.
+///
+/// A date editor with a section model lets a user type into the year, the month or the
+/// day without re-entering the whole value: Left/Right choose the section, Up/Down step
+/// it, and digits accumulate into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateSection {
+    /// The year component.
+    Year,
+    /// The month component.
+    Month,
+    /// The day component.
+    Day,
+}
+
+impl DateSection {
+    /// The section after this one, wrapping from day back to year.
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Year => Self::Month,
+            Self::Month => Self::Day,
+            Self::Day => Self::Year,
+        }
+    }
+
+    /// The section before this one, wrapping from year back to day.
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Year => Self::Day,
+            Self::Month => Self::Year,
+            Self::Day => Self::Month,
+        }
+    }
+
+    /// How many digits the section accepts before the buffer is trimmed.
+    const fn digit_capacity(self) -> usize {
+        match self {
+            Self::Year => 4,
+            _ => 2,
+        }
+    }
+}
+
 /// Date editor widget.
 ///
 /// Shows a date and allows it to be changed a day at a time (see
@@ -425,9 +468,8 @@ pub(crate) struct DateTimeComponents {
 /// # Display format
 ///
 /// [`DateEdit::display_format`] holds a format pattern string that is exposed
-/// as a property, but the widget's own `draw` and `Display` output always use
-/// the fixed `YYYY-MM-DD` spelling. The pattern is stored and round-tripped, not
-/// yet applied when painting.
+/// as a property, and it is what the field paints when the pattern is one this
+/// control can render; the fixed `YYYY-MM-DD` spelling is the fallback.
 pub struct DateEdit {
     base: BaseWidget,
     date: Date,
@@ -465,6 +507,19 @@ pub struct DateEdit {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<Date>>,
     restoring_history: bool,
+    /// The section the user is editing, or `None` when the whole value is the unit.
+    ///
+    /// `None` is the historical mode: Up/Down step a whole day. A section becomes active
+    /// when the pointer picks one of the field's three zones or the host sets it.
+    current_section: Option<DateSection>,
+    /// Digits typed into the active section, cleared when it changes.
+    digit_buffer: String,
+    /// Whether the field paints a spin-button pair at its trailing edge.
+    spin_buttons: bool,
+    /// The calendar grid's reveal, so opening it animates like every other popup.
+    calendar_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal,
+    /// Text shown instead of the date when the value equals the minimum.
+    special_value_text: Option<String>,
 }
 impl DateEdit {
     /// Creates a date editor occupying `geometry`.
@@ -487,6 +542,11 @@ impl DateEdit {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(Date::today())),
             restoring_history: false,
+            current_section: None,
+            digit_buffer: String::new(),
+            spin_buttons: false,
+            calendar_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal::new(false),
+            special_value_text: None,
         }
     }
     /// Returns the current date.
@@ -671,6 +731,7 @@ impl DateEdit {
             return;
         }
         self.calendar_open = open;
+        self.calendar_reveal.set_open(open);
         self.popup_visibility_changed.emit(open);
         self.base.request_redraw();
     }
@@ -682,6 +743,178 @@ impl DateEdit {
         if self.calendar_popup {
             self.set_calendar_open(!self.calendar_open);
         }
+    }
+
+    /// The section the user is editing, or `None` for whole-day editing.
+    pub fn current_section(&self) -> Option<DateSection> {
+        self.current_section
+    }
+
+    /// Selects the section Up/Down and typed digits apply to.
+    ///
+    /// `None` restores the historical whole-day behaviour. Changing the section clears
+    /// the digit buffer, so digits typed for the year cannot leak into the day.
+    pub fn set_current_section(&mut self, section: Option<DateSection>) {
+        if self.current_section == section {
+            return;
+        }
+        self.current_section = section;
+        self.digit_buffer.clear();
+        self.base.request_redraw();
+    }
+
+    /// The box one section occupies inside the value text.
+    ///
+    /// The three zones are equal thirds of the text run. A custom `display_format` can
+    /// place the components in any order, and the control does not parse the pattern to
+    /// recover their positions, so the zones are the documented approximation: the
+    /// underline and the pointer target agree with each other, which is what a user
+    /// needs, rather than disagreeing about a parsed layout.
+    pub fn section_zone(&self, section: DateSection) -> Rect {
+        let rect = self.geometry();
+        let trailing = if self.calendar_popup { CALENDAR_ARROW_W } else { 0 }
+            + if self.spin_buttons { 24 } else { 0 };
+        let width = rect.width.saturating_sub(12 + trailing);
+        let third = width / 3;
+        let index = match section {
+            DateSection::Year => 0,
+            DateSection::Month => 1,
+            DateSection::Day => 2,
+        };
+        Rect::new(rect.x + 6 + index * third as i32, rect.y, third, rect.height)
+    }
+
+    /// The section containing `pos`, when the point is on the value text.
+    fn section_at(&self, pos: Point) -> Option<DateSection> {
+        let rect = self.geometry();
+        if !rect.contains_point(pos) {
+            return None;
+        }
+        [DateSection::Year, DateSection::Month, DateSection::Day]
+            .into_iter()
+            .find(|&section| self.section_zone(section).contains_point(pos))
+    }
+
+    /// Steps the active section, or the whole day when no section is active.
+    pub fn step_current_section(&mut self, delta: i32) {
+        let Some(section) = self.current_section else {
+            if delta >= 0 {
+                self.step_up();
+            } else {
+                self.step_down();
+            }
+            return;
+        };
+        if delta == 0 {
+            return;
+        }
+        let mut next = self.date;
+        match section {
+            DateSection::Year => {
+                next.set_year(self.date.year() + delta);
+            }
+            DateSection::Month => {
+                // Month stepping wraps across the year, which a plain clamp cannot
+                // express: December + 1 is January of the next year, not December.
+                let total = self.date.year() * 12 + self.date.month() as i32 - 1 + delta;
+                next.set_year(total.div_euclid(12));
+                next.set_month((total.rem_euclid(12) + 1) as u8);
+            }
+            DateSection::Day => {
+                if delta >= 0 {
+                    self.step_up();
+                } else {
+                    self.step_down();
+                }
+                return;
+            }
+        }
+        self.set_date(next);
+    }
+
+    /// Types one digit into the active section.
+    ///
+    /// Returns `false` for a non-digit or when no section is active. The buffer keeps at
+    /// most the section's digit capacity, so typing `2026` into the year and then `5`
+    /// yields `0265` rather than a five-digit year.
+    pub fn type_digit(&mut self, digit: char) -> bool {
+        if !digit.is_ascii_digit() {
+            return false;
+        }
+        let Some(section) = self.current_section else {
+            return false;
+        };
+        self.digit_buffer.push(digit);
+        while self.digit_buffer.len() > section.digit_capacity() {
+            self.digit_buffer.remove(0);
+        }
+        let Ok(value) = self.digit_buffer.parse::<i32>() else {
+            return false;
+        };
+        let mut next = self.date;
+        match section {
+            DateSection::Year => {
+                if value < 1000 {
+                    // A partial year is not a year yet: wait for four digits rather than
+                    // jumping to year 2 as soon as the user presses `2`.
+                    return true;
+                }
+                next.set_year(value);
+            }
+            DateSection::Month => next.set_month(value as u8),
+            DateSection::Day => next.set_day(value as u8),
+        }
+        self.set_date(next);
+        true
+    }
+
+    /// Whether the spin-button pair is painted at the trailing edge.
+    pub fn spin_buttons(&self) -> bool {
+        self.spin_buttons
+    }
+
+    /// Shows or hides the spin-button pair. Off by default, so the field keeps its
+    /// historical pixels.
+    pub fn set_spin_buttons(&mut self, visible: bool) {
+        if self.spin_buttons == visible {
+            return;
+        }
+        self.spin_buttons = visible;
+        self.base.request_redraw();
+    }
+
+    /// The up and down spin buttons, when they are shown.
+    pub fn spin_button_rects(&self) -> Option<(Rect, Rect)> {
+        if !self.spin_buttons {
+            return None;
+        }
+        let rect = self.geometry();
+        let width = 24u32.min(rect.width);
+        let x = rect.x + rect.width as i32
+            - width as i32
+            - if self.calendar_popup { CALENDAR_ARROW_W as i32 } else { 0 };
+        let half = rect.height / 2;
+        Some((
+            Rect::new(x, rect.y, width, half),
+            Rect::new(x, rect.y + half as i32, width, rect.height - half),
+        ))
+    }
+
+    /// Text painted instead of the value when the date equals the minimum.
+    pub fn special_value_text(&self) -> Option<&str> {
+        self.special_value_text.as_deref()
+    }
+
+    /// Sets the special value text, or clears it with `None`.
+    ///
+    /// The text replaces the date only when the value is exactly `minimum_date`, which is
+    /// the convention a spin box uses for its "unset" value. Off by default.
+    pub fn set_special_value_text(&mut self, text: Option<String>) {
+        if self.special_value_text == text {
+            return;
+        }
+        self.special_value_text = text;
+        self.base.request_redraw();
     }
     /// Advances the date by one day, rolling over month and year ends.
     ///
@@ -784,6 +1017,16 @@ impl Widget for DateEdit {
             dimensions::DATE_EDIT_DEFAULT_WIDTH,
             dimensions::DATE_EDIT_DEFAULT_HEIGHT,
         )
+    }
+
+    /// Advances the calendar popup's reveal; `true` while it owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.calendar_reveal.tick(delta_ms)
+    }
+
+    /// Whether the calendar popup is mid-reveal.
+    fn is_animating(&self) -> bool {
+        self.calendar_reveal.is_animating()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -895,6 +1138,18 @@ impl EventHandler for DateEdit {
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 let field = self.geometry();
+                // Spin buttons sit inside the field's trailing edge and take precedence
+                // over the value zones underneath them.
+                if let Some((up, down)) = self.spin_button_rects() {
+                    if up.contains_point(*pos) {
+                        self.step_current_section(1);
+                        return;
+                    }
+                    if down.contains_point(*pos) {
+                        self.step_current_section(-1);
+                        return;
+                    }
+                }
                 // The arrow comes first: it is drawn inside the field's own box, so a press
                 // there would otherwise be indistinguishable from a press on the value.
                 if self.calendar_popup && calendar_arrow_rect(field).contains_point(*pos) {
@@ -907,6 +1162,16 @@ impl EventHandler for DateEdit {
                         self.set_date(day);
                         self.set_calendar_open(false);
                     }
+                } else if let Some(section) = self.section_at(*pos) {
+                    self.set_current_section(Some(section));
+                }
+            }
+            Event::Wheel { delta, .. } => {
+                // A notched wheel steps the value; the direction follows the sign.
+                if delta.y > 0 {
+                    self.step_current_section(1);
+                } else if delta.y < 0 {
+                    self.step_current_section(-1);
                 }
             }
             Event::KeyPress { key, modifiers } => match *key {
@@ -921,8 +1186,27 @@ impl EventHandler for DateEdit {
                 _ if primary_shortcut_pressed(*key, *modifiers, Key::Y) => {
                     let _ = self.redo();
                 }
-                38 => self.step_up(),   // Up arrow
-                40 => self.step_down(), // Down arrow
+                37 => {
+                    // Left moves to the previous section once one is active; with no
+                    // section the historical no-op is kept.
+                    if let Some(section) = self.current_section {
+                        let previous = section.previous();
+                        self.set_current_section(Some(previous));
+                    }
+                }
+                39 => {
+                    if let Some(section) = self.current_section {
+                        let next = section.next();
+                        self.set_current_section(Some(next));
+                    }
+                }
+                38 => self.step_current_section(1),  // Up arrow
+                40 => self.step_current_section(-1), // Down arrow
+                48..=57 if self.current_section.is_some() => {
+                    if let Some(digit) = char::from_u32(*key) {
+                        self.type_digit(digit);
+                    }
+                }
                 _ => { /* Other keys are not relevant */ }
             },
             _ => { /* Other events are not relevant */ }
@@ -993,7 +1277,10 @@ impl Draw for DateEdit {
         // unrecognised pattern showing the value rather than the pattern's literal words. Into the
         // buffer directly: the allocating wrapper built the result plus one string per token.
         let mut text = String::new();
-        if !super::date_edit::format_with_pattern_into(
+        let special = self.special_value_text.as_deref().filter(|_| self.date == self.minimum);
+        if let Some(special) = special {
+            text.push_str(special);
+        } else if !super::date_edit::format_with_pattern_into(
             &self.display_format,
             super::date_edit::DateTimeComponents {
                 year: Some(self.date.year()),
@@ -1016,11 +1303,11 @@ impl Draw for DateEdit {
         let line = context.text_line(rect, font);
         // The arrow zone is part of the field's chrome, so the value must not run under it:
         // the text box's trailing edge stops where the affordance begins.
-        let text_width = if self.calendar_popup {
-            rect.width.saturating_sub(12).saturating_sub(CALENDAR_ARROW_W)
-        } else {
-            rect.width.saturating_sub(12)
-        };
+        let text_width = rect
+            .width
+            .saturating_sub(12)
+            .saturating_sub(if self.calendar_popup { CALENDAR_ARROW_W } else { 0 })
+            .saturating_sub(if self.spin_buttons { 24 } else { 0 });
         context.draw_text_fitted_cow(
             Rect { x: rect.x + 6, y: line.y, width: text_width, height: line.height },
             text.as_str(),
@@ -1029,11 +1316,61 @@ impl Draw for DateEdit {
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
 
+        // The active section is marked with a rule under its zone, so the user can see
+        // which digits the arrow keys will step. Only an active section paints it.
+        if let Some(section) = self.current_section {
+            let zone = self.section_zone(section);
+            let y = line.y + line.height as i32;
+            context.draw_line(
+                Point::new(zone.x + 2, y),
+                Point::new(zone.x + zone.width as i32 - 2, y),
+                ink,
+            );
+        }
+
         if self.calendar_popup {
             draw_calendar_arrow(context, rect, ink);
         }
-        if self.calendar_open {
+        if let Some((up, down)) = self.spin_button_rects() {
+            let fill = surface.blend(&ink, 0.08);
+            context.fill_rect(up, fill);
+            context.fill_rect(down, fill);
+            context.draw_rect(up, border);
+            context.draw_rect(down, border);
+            let side = up.width.min(up.height).min(10);
+            crate::widget::draw_icon_centered(
+                context,
+                up,
+                side,
+                ink,
+                crate::widget::IconName::ChevronUp,
+            );
+            crate::widget::draw_icon_centered(
+                context,
+                down,
+                side,
+                ink,
+                crate::widget::IconName::ChevronDown,
+            );
+        }
+        if self.calendar_open || !self.calendar_reveal.is_closed() {
+            let popup = calendar_popup_rect(rect);
+            let revealed = self.calendar_reveal.revealed(
+                popup,
+                crate::widget::menu_toolbar::popup_reveal::RevealDirection::Down,
+                crate::widget::menu_toolbar::popup_reveal::PopupReveal::travel_cap_for(Size::new(
+                    popup.width,
+                    popup.height,
+                )),
+            );
+            let clipped = !self.calendar_reveal.is_closed();
+            if clipped {
+                context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
+            }
             self.draw_calendar_popup(context, rect, surface, border, ink);
+            if clipped {
+                context.pop_clip();
+            }
         }
     }
 }
@@ -1948,5 +2285,117 @@ mod tests {
         edit.set_maximum_date(Date::new(2024, 11, 1));
 
         assert_eq!(edit.date(), Date::new(2024, 6, 15), "an in-range value must not be nudged");
+    }
+
+    /// Typing into a section edits that component without re-entering the value.
+    #[test]
+    fn typing_edits_the_active_section() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_date(Date::new(2024, 6, 15));
+        assert!(!edit.type_digit('2'), "no section, no typing");
+
+        edit.set_current_section(Some(DateSection::Year));
+        for digit in ['2', '0', '2', '6'] {
+            assert!(edit.type_digit(digit));
+        }
+        assert_eq!(edit.date(), Date::new(2026, 6, 15));
+
+        edit.set_current_section(Some(DateSection::Month));
+        assert!(edit.type_digit('1'));
+        assert!(edit.type_digit('2'));
+        assert_eq!(edit.date(), Date::new(2026, 12, 15));
+
+        edit.set_current_section(Some(DateSection::Day));
+        assert!(edit.type_digit('3'));
+        assert_eq!(edit.date(), Date::new(2026, 12, 3));
+        assert!(!edit.type_digit('x'), "a non-digit is refused");
+    }
+
+    /// Section stepping wraps the month across a year boundary.
+    #[test]
+    fn stepping_a_section_wraps_the_month() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_date(Date::new(2026, 12, 15));
+        edit.set_current_section(Some(DateSection::Month));
+        edit.step_current_section(1);
+        assert_eq!(edit.date(), Date::new(2027, 1, 15));
+        edit.step_current_section(-1);
+        assert_eq!(edit.date(), Date::new(2026, 12, 15));
+
+        edit.set_current_section(Some(DateSection::Year));
+        edit.step_current_section(-1);
+        assert_eq!(edit.date(), Date::new(2025, 12, 15));
+    }
+
+    /// Spin buttons are opt-in, and the up button steps the active section.
+    #[test]
+    fn spin_buttons_are_opt_in_and_step_the_value() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_date(Date::new(2026, 6, 15));
+        assert!(edit.spin_button_rects().is_none(), "off by default");
+        edit.set_spin_buttons(true);
+        let (up, _down) = edit.spin_button_rects().expect("the pair exists once enabled");
+
+        edit.handle_event(&Event::mouse_press(up.x + 2, up.y + 2, 1));
+        assert_eq!(edit.date(), Date::new(2026, 6, 16), "the button steps a whole day");
+        edit.set_current_section(Some(DateSection::Month));
+        edit.handle_event(&Event::mouse_press(up.x + 2, up.y + 2, 1));
+        assert_eq!(edit.date(), Date::new(2026, 7, 16), "and the section once one is active");
+    }
+
+    /// The wheel steps the value.
+    #[test]
+    fn the_wheel_steps_the_value() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_date(Date::new(2026, 6, 15));
+        edit.handle_event(&Event::wheel(0, 1, 0));
+        assert_eq!(edit.date(), Date::new(2026, 6, 16), "wheel up increases");
+        edit.handle_event(&Event::wheel(0, -1, 0));
+        assert_eq!(edit.date(), Date::new(2026, 6, 15), "wheel down decreases");
+    }
+
+    /// Special value text replaces the date only at the minimum, where it is painted.
+    #[test]
+    fn special_value_text_is_shown_at_the_minimum() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_date_range(Date::new(2026, 1, 1), Date::new(2026, 12, 31));
+        edit.set_date(Date::new(2026, 1, 1));
+        let plain = crate::widget::svg::render_to_svg(&mut edit);
+        edit.set_special_value_text(Some("Not set".to_string()));
+        let special = crate::widget::svg::render_to_svg(&mut edit);
+        assert_ne!(plain, special, "the special text must reach the painter");
+        assert_eq!(edit.special_value_text(), Some("Not set"));
+
+        edit.set_date(Date::new(2026, 2, 1));
+        assert_eq!(edit.date(), Date::new(2026, 2, 1));
+    }
+
+    /// The calendar reveal animates when opened and settles when ticked.
+    #[test]
+    fn the_calendar_popup_reveals() {
+        use crate::widget::Widget;
+
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_calendar_popup(true);
+        edit.set_calendar_open(true);
+        assert!(edit.is_animating(), "opening the grid starts a reveal");
+        for _ in 0..120 {
+            edit.tick(16);
+        }
+        assert!(!edit.is_animating());
+        assert!(edit.calendar_open());
+    }
+
+    /// Clicking one of the value's three zones selects that section.
+    #[test]
+    fn clicking_a_value_zone_selects_its_section() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 240, 30));
+        assert_eq!(edit.current_section(), None);
+        let month = edit.section_zone(DateSection::Month);
+        edit.handle_event(&Event::mouse_press(month.x + 2, month.y + 2, 1));
+        assert_eq!(edit.current_section(), Some(DateSection::Month));
+        let day = edit.section_zone(DateSection::Day);
+        edit.handle_event(&Event::mouse_press(day.x + 2, day.y + 2, 1));
+        assert_eq!(edit.current_section(), Some(DateSection::Day));
     }
 }

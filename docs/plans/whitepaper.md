@@ -105,12 +105,12 @@
 
 | | 模式 1（不重编译） | 模式 2（重编译） |
 |---|---|---|
-| 代表 | Flutter 热重载、QML 式声明 + 运行时解释、Web | SwiftUI、Compose、React |
+| 代表 | a mainstream material toolkit 热重载、the reference markup set 式声明 + 运行时解释、Web | a mainstream declarative toolkit、a mainstream declarative toolkit、a web UI framework |
 | 迭代速度 | **毫秒** | **Rust 重编译（秒到分钟）** |
 | 产物干净度 | 需打包解析器 | **纯 Rust** |
 | 类型安全 | 运行时校验 | **编译期** |
 
-**「哪个更现代」不是判据**：React 是转代码的却最主流，Web 的 HTML/CSS 是不重编译的却最传统。
+**「哪个更现代」不是判据**：a web UI framework 是转代码的却最主流，Web 的 HTML/CSS 是不重编译的却最传统。
 两种都大获成功。
 
 真正的判据是三条，且指向不同答案：**迭代速度 → 模式 1；产物干净度 → 模式 2；类型安全 → 模式 2。**

@@ -31,7 +31,7 @@
 //! (`index + 1`, because `ObjectId` is `u64` and 0 is not used here); nothing else ever sees
 //! them, and the returned rectangles are mapped back by index.
 
-use crate::core::{Rect, Size};
+use crate::core::{Point, Rect, Size, TextDirection};
 use crate::event::{Event, EventHandler};
 use crate::layout::flow::{
     FlowAlignment, FlowDirection, FlowLayout as FlowEngine, FlowLayoutConfig,
@@ -40,6 +40,7 @@ use crate::layout::wrap::{WrapAlignment, WrapDirection, WrapLayout as WrapEngine
 use crate::layout::{AlignItems, ChildInfo, FlexDirection, FlexItem, FlexLayout, FlexWrap, Hints};
 use crate::layout::{JustifyContent, Layout};
 use crate::render::RenderContext;
+use crate::signal::Signal1;
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -54,12 +55,30 @@ pub struct FlexItemSpec {
     label: String,
     size: Size,
     grow: u32,
+    /// Optional real widget mounted behind this item.
+    ///
+    /// The distribution engine addresses items by synthetic ids, so a real child used to be
+    /// unaddressable: a click could not reach it, it had no focus, and no accessibility node
+    /// existed. This id is the bridge — it lets the control report the item a click landed
+    /// on without changing the solver's index-based contract.
+    widget_id: Option<crate::core::ObjectId>,
 }
 
 impl FlexItemSpec {
     /// A weightless item of `size`.
     pub fn new(label: &str, size: Size) -> Self {
-        Self { label: label.to_string(), size, grow: 0 }
+        Self { label: label.to_string(), size, grow: 0, widget_id: None }
+    }
+
+    /// Attaches a real child id to the item.
+    pub fn with_widget(mut self, widget_id: crate::core::ObjectId) -> Self {
+        self.widget_id = Some(widget_id);
+        self
+    }
+
+    /// The real child id, when one is attached.
+    pub fn widget_id(&self) -> Option<crate::core::ObjectId> {
+        self.widget_id
     }
 
     /// The same item with an explicit grow weight.
@@ -154,6 +173,11 @@ pub struct Flex {
     justify: JustifyContent,
     align: AlignItems,
     gap: u32,
+    /// Bumped by every input that changes the arrangement.
+    rect_version: u64,
+    rect_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<Rect>>)>>,
+    /// Emitted with the item index when an item is clicked.
+    pub item_clicked: Signal1<usize>,
 }
 
 impl Flex {
@@ -167,6 +191,9 @@ impl Flex {
             justify: JustifyContent::default(),
             align: AlignItems::default(),
             gap: 0,
+            rect_version: 1,
+            rect_cache: std::cell::RefCell::new(None),
+            item_clicked: Signal1::new(),
         }
     }
 
@@ -178,6 +205,7 @@ impl Flex {
     /// Appends an item and requests a redraw.
     pub fn add_item(&mut self, item: FlexItemSpec) {
         self.items.push(item);
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -188,6 +216,7 @@ impl Flex {
             return;
         }
         self.items.clear();
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -203,6 +232,7 @@ impl Flex {
             return;
         }
         self.direction = direction;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -218,6 +248,7 @@ impl Flex {
             return;
         }
         self.wrap = wrap;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -233,6 +264,7 @@ impl Flex {
             return;
         }
         self.justify = justify;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -247,6 +279,7 @@ impl Flex {
             return;
         }
         self.align = align;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -261,12 +294,36 @@ impl Flex {
             return;
         }
         self.gap = gap;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
 
     /// The rectangle each item occupies, in item order.
+    ///
+    /// The solver runs only when an input changed; the draw path uses the same cache, so a
+    /// repaint of an unchanged distribution is a refcount bump rather than a re-arrange.
     pub fn item_rects(&self) -> Vec<Rect> {
+        (*self.cached_item_rects()).clone()
+    }
+
+    fn cached_item_rects(&self) -> std::rc::Rc<Vec<Rect>> {
+        if let Some((version, rects)) = self.rect_cache.borrow().as_ref() {
+            if *version == self.rect_version {
+                return std::rc::Rc::clone(rects);
+            }
+        }
+        let rects = std::rc::Rc::new(self.compute_item_rects());
+        *self.rect_cache.borrow_mut() = Some((self.rect_version, std::rc::Rc::clone(&rects)));
+        rects
+    }
+
+    /// The item index under `point`, or `None` when the point is between items.
+    pub fn item_at(&self, point: Point) -> Option<usize> {
+        self.cached_item_rects().iter().position(|rect| rect.contains_point(point))
+    }
+
+    fn compute_item_rects(&self) -> Vec<Rect> {
         let layout = self.build_layout();
         let children: Vec<ChildInfo> = self
             .items
@@ -314,6 +371,11 @@ impl Widget for Flex {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.rect_version = self.rect_version.wrapping_add(1);
     }
 
     /// The summed item extent plus the gaps: what this row or column wants to be.
@@ -411,7 +473,7 @@ impl WidgetProperties for Flex {
 impl Draw for Flex {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
-        let rects = self.item_rects();
+        let rects = self.cached_item_rects();
         paint_items(ctx, &self.base, "flex", outer, &rects, &self.items);
     }
 }
@@ -419,6 +481,11 @@ impl Draw for Flex {
 impl EventHandler for Flex {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if let Event::MousePress { pos, button: 1, .. } = event {
+            if let Some(index) = self.item_at(*pos) {
+                self.item_clicked.emit(index);
+            }
+        }
     }
 }
 
@@ -437,6 +504,10 @@ pub struct FlowLayout {
     spacing: u32,
     padding: u32,
     wrap: bool,
+    /// Reading direction forwarded to the flow engine; left-to-right by default.
+    text_direction: TextDirection,
+    /// Emitted with the item index when an item is clicked.
+    pub item_clicked: Signal1<usize>,
 }
 
 impl FlowLayout {
@@ -454,7 +525,24 @@ impl FlowLayout {
             spacing: 8,
             padding: 8,
             wrap: true,
+            text_direction: TextDirection::default(),
+            item_clicked: Signal1::new(),
         }
+    }
+
+    /// The reading direction items are placed in.
+    pub fn text_direction(&self) -> TextDirection {
+        self.text_direction
+    }
+
+    /// Sets the reading direction; right-to-left mirrors each run inside the control.
+    pub fn set_text_direction(&mut self, direction: TextDirection) {
+        if self.text_direction == direction {
+            return;
+        }
+        self.text_direction = direction;
+        self.base.request_layout();
+        self.base.request_redraw();
     }
 
     /// The items this control places.
@@ -562,6 +650,7 @@ impl FlowLayout {
             padding: self.padding as i32,
             wrap: self.wrap,
         });
+        engine.set_text_direction(self.text_direction);
         let children: Vec<ChildInfo> = self
             .items
             .iter()
@@ -575,6 +664,11 @@ impl FlowLayout {
         collect_rects(self.items.len(), |out| {
             engine.arrange(self.geometry(), &children, &mut |id, rect| out(id, rect));
         })
+    }
+
+    /// The item index under `point`.
+    pub fn item_at(&self, point: Point) -> Option<usize> {
+        self.item_rects().iter().position(|rect| rect.contains_point(point))
     }
 }
 
@@ -687,6 +781,11 @@ impl Draw for FlowLayout {
 impl EventHandler for FlowLayout {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if let Event::MousePress { pos, button: 1, .. } = event {
+            if let Some(index) = self.item_at(*pos) {
+                self.item_clicked.emit(index);
+            }
+        }
     }
 }
 
@@ -708,6 +807,10 @@ pub struct WrapLayout {
     spacing: u32,
     run_spacing: Option<u32>,
     padding: u32,
+    /// Reading direction forwarded to the wrap engine; left-to-right by default.
+    text_direction: TextDirection,
+    /// Emitted with the item index when an item is clicked.
+    pub item_clicked: Signal1<usize>,
 }
 
 impl WrapLayout {
@@ -722,6 +825,8 @@ impl WrapLayout {
             spacing: 8,
             run_spacing: None,
             padding: 8,
+            text_direction: TextDirection::default(),
+            item_clicked: Signal1::new(),
         }
     }
 
@@ -821,6 +926,21 @@ impl WrapLayout {
         self.base.request_redraw();
     }
 
+    /// The reading direction items are placed in.
+    pub fn text_direction(&self) -> TextDirection {
+        self.text_direction
+    }
+
+    /// Sets the reading direction; right-to-left mirrors each run inside the control.
+    pub fn set_text_direction(&mut self, direction: TextDirection) {
+        if self.text_direction == direction {
+            return;
+        }
+        self.text_direction = direction;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
     /// The rectangle each item occupies, in item order.
     pub fn item_rects(&self) -> Vec<Rect> {
         let mut engine = WrapEngine::new(
@@ -830,6 +950,7 @@ impl WrapLayout {
             self.padding as i32,
         );
         engine.set_run_spacing(self.run_spacing.map(|spacing| spacing as i32));
+        engine.set_text_direction(self.text_direction);
         let children: Vec<ChildInfo> = self
             .items
             .iter()
@@ -844,6 +965,11 @@ impl WrapLayout {
         collect_rects(self.items.len(), |out| {
             engine.arrange(self.geometry(), &children, &mut |id, rect| out(id, rect));
         })
+    }
+
+    /// The item index under `point`.
+    pub fn item_at(&self, point: Point) -> Option<usize> {
+        self.item_rects().iter().position(|rect| rect.contains_point(point))
     }
 }
 
@@ -965,6 +1091,11 @@ impl Draw for WrapLayout {
 impl EventHandler for WrapLayout {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if let Event::MousePress { pos, button: 1, .. } = event {
+            if let Some(index) = self.item_at(*pos) {
+                self.item_clicked.emit(index);
+            }
+        }
     }
 }
 
@@ -1320,5 +1451,50 @@ mod tests {
         flow.handle_event(&Event::KeyDown((65, 0)));
         let mut wrap = WrapLayout::new(Rect::new(0, 0, 100, 40));
         wrap.handle_event(&Event::KeyUp((65, 0)));
+    }
+
+    /// Items with real child ids are addressable, the arrangement is cached, and a click
+    /// reports the item it landed on.
+    #[test]
+    fn items_carry_child_ids_and_clicks_name_them() {
+        let mut flex = Flex::new(Rect::new(0, 0, 120, 30));
+        flex.add_item(FlexItemSpec::new("a", Size::new(50, 20)).with_widget(7));
+        flex.add_item(FlexItemSpec::new("b", Size::new(50, 20)));
+        assert_eq!(flex.items()[0].widget_id(), Some(7));
+        let rects = flex.item_rects();
+        assert_eq!(flex.item_at(crate::core::Point::new(rects[0].x + 1, rects[0].y + 1)), Some(0));
+        assert_eq!(flex.item_at(crate::core::Point::new(500, 500)), None);
+
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        let sink = std::sync::Arc::clone(&seen);
+        flex.item_clicked.connect(move |index| {
+            sink.store(*index, std::sync::atomic::Ordering::SeqCst);
+        });
+        flex.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(rects[0].x + 1, rects[0].y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// The layout controls expose reading direction and forward it to their engine.
+    #[test]
+    fn flow_and_wrap_controls_mirror_for_right_to_left() {
+        let mut flow = FlowLayout::new(Rect::new(0, 0, 100, 40));
+        flow.set_padding(0);
+        flow.add_item(FlexItemSpec::new("a", Size::new(30, 10)));
+        assert_eq!(flow.item_rects()[0].x, 0);
+        flow.set_text_direction(TextDirection::RightToLeft);
+        assert!(flow.text_direction().is_right_to_left());
+        assert_eq!(flow.item_rects()[0].x, 70, "the run begins at the right edge");
+
+        let mut wrap = WrapLayout::new(Rect::new(0, 0, 100, 40));
+        wrap.set_padding(0);
+        wrap.add_item(FlexItemSpec::new("a", Size::new(30, 10)));
+        assert_eq!(wrap.item_rects()[0].x, 0);
+        wrap.set_text_direction(TextDirection::RightToLeft);
+        assert!(wrap.text_direction().is_right_to_left());
+        assert_eq!(wrap.item_rects()[0].x, 70, "the wrap run mirrors too");
     }
 }

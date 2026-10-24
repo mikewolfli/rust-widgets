@@ -56,6 +56,12 @@ fn index_after_move(index: usize, from: usize, to: usize) -> usize {
 pub struct ListBox {
     base: BaseWidget,
     items: Vec<String>,
+    /// Per-row presentation metadata, parallel to [`Self::items`].
+    ///
+    /// The label vector is kept as the public item accessor so existing callers (and the
+    /// property bridge, which publishes `Vec<String>`) do not have to unwrap a struct to read a
+    /// row. The metadata vector is maintained by every mutation beside it.
+    item_meta: Vec<ListBoxItem>,
     selected_indices: Vec<usize>,
     selection_mode: SelectionMode,
     current_row: Option<usize>,
@@ -108,6 +114,120 @@ pub struct ListBox {
     /// the row a second time. A transfer commits in the target's list, leaving this false, and
     /// that is exactly when the source's copy has to go.
     drop_committed_here: core::cell::Cell<bool>,
+    /// Number of columns a row is split into. One is a plain list.
+    columns: usize,
+    /// Which gestures may start an item rename.
+    edit_triggers: EditTriggers,
+    /// The prefix typed since the last navigation, for first-letter type-ahead.
+    type_ahead: String,
+    /// Emitted when a rename gesture lands on a row. The host owns the editor.
+    pub rename_requested: Signal1<usize>,
+}
+
+/// Presentation metadata for one list row.
+///
+/// The row's text stays in the list's label vector; this carries what a list tends to grow next:
+/// an icon, an optional check state, a disabled flag and a caller-owned data token. Every field
+/// is optional or defaults to the plain state, so a list that never touches the type paints
+/// exactly as it did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListBoxItem {
+    icon: Option<String>,
+    checked: Option<bool>,
+    enabled: bool,
+    data: Option<String>,
+}
+
+impl Default for ListBoxItem {
+    fn default() -> Self {
+        Self { icon: None, checked: None, enabled: true, data: None }
+    }
+}
+
+impl ListBoxItem {
+    /// Creates a plain, enabled row with no icon and no check box.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the row's icon text (a glyph or short marker) drawn before the label.
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Gives the row a check box with the given state.
+    pub fn with_checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
+        self
+    }
+
+    /// Marks the row as disabled, so it cannot be selected or activated.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Attaches a caller-owned data token to the row.
+    pub fn with_data(mut self, data: impl Into<String>) -> Self {
+        self.data = Some(data.into());
+        self
+    }
+
+    /// The row's icon text, if it has one.
+    pub fn icon(&self) -> Option<&str> {
+        self.icon.as_deref()
+    }
+
+    /// The row's check state, or `None` when it has no check box.
+    pub fn checked(&self) -> Option<bool> {
+        self.checked
+    }
+
+    /// Whether the row can be selected and activated.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// The caller-owned data token, if one was attached.
+    pub fn data(&self) -> Option<&str> {
+        self.data.as_deref()
+    }
+}
+
+/// Which gestures may begin renaming a list row.
+///
+/// A rename is a **request**, not an in-place editor: the control emits
+/// [`ListBox::rename_requested`] and the host decides whether to mount an editor over the row.
+/// That is the only shape that works when the host owns undo, validation and the commit target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditTriggers(u8);
+
+impl EditTriggers {
+    /// No gesture starts a rename.
+    pub const NONE: Self = Self(0);
+    /// A double-click on a row starts a rename.
+    pub const DOUBLE_CLICK: Self = Self(1);
+    /// The F2 key on the current row starts a rename.
+    pub const F2: Self = Self(2);
+    /// Both common gestures start a rename.
+    pub const DEFAULT: Self = Self(Self::DOUBLE_CLICK.0 | Self::F2.0);
+
+    /// Whether every trigger in `other` is enabled here.
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The union of two trigger sets.
+    pub fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl Default for EditTriggers {
+    fn default() -> Self {
+        Self::NONE
+    }
 }
 /// Selection mode for list, tree, table and list-box views.
 ///
@@ -145,6 +265,7 @@ impl ListBox {
         Self {
             base: BaseWidget::new(WidgetKind::ListBox, geometry, "ListBox"),
             items: Vec::new(),
+            item_meta: Vec::new(),
             selected_indices: Vec::new(),
             selection_mode: SelectionMode::Single,
             current_row: None,
@@ -159,6 +280,10 @@ impl ListBox {
             drag_finished: Signal1::new(),
             pending_drag_row: core::cell::Cell::new(None),
             drop_committed_here: core::cell::Cell::new(false),
+            columns: 1,
+            edit_triggers: EditTriggers::NONE,
+            type_ahead: String::new(),
+            rename_requested: Signal1::new(),
         }
     }
     /// Returns number of items.
@@ -176,15 +301,19 @@ impl ListBox {
     /// Adds an item.
     pub fn add_item(&mut self, text: String) {
         self.items.push(text);
+        self.item_meta.push(ListBoxItem::default());
     }
     /// Adds multiple items.
     pub fn add_items(&mut self, items: Vec<String>) {
+        let added = items.len();
         self.items.extend(items);
+        self.item_meta.resize(self.item_meta.len() + added, ListBoxItem::default());
     }
     /// Inserts an item at specified position.
     pub fn insert_item(&mut self, index: usize, text: String) {
         if index <= self.items.len() {
             self.items.insert(index, text);
+            self.item_meta.insert(index.min(self.item_meta.len()), ListBoxItem::default());
             // Adjust selected indices
             for selected in &mut self.selected_indices {
                 if index <= *selected {
@@ -230,6 +359,9 @@ impl ListBox {
     pub fn remove_item(&mut self, index: usize) {
         if index < self.items.len() {
             self.items.remove(index);
+            if index < self.item_meta.len() {
+                self.item_meta.remove(index);
+            }
             // Remove from selected indices
             self.selected_indices.retain(|&i| i != index);
             // Adjust remaining indices
@@ -271,6 +403,10 @@ impl ListBox {
         }
         let item = self.items.remove(from);
         self.items.insert(to, item);
+        if from < self.item_meta.len() {
+            let meta = self.item_meta.remove(from);
+            self.item_meta.insert(to.min(self.item_meta.len()), meta);
+        }
         for index in &mut self.selected_indices {
             *index = index_after_move(*index, from, to);
         }
@@ -287,6 +423,7 @@ impl ListBox {
     /// Clears all items.
     pub fn clear(&mut self) {
         self.items.clear();
+        self.item_meta.clear();
         self.selected_indices.clear();
         self.current_row = None;
         self.anchor = None;
@@ -347,7 +484,7 @@ impl ListBox {
     ///   that mode the *modifiers* are what extend. Use [`ListBox::select_with_modifiers`]
     ///   to express ctrl-toggle and shift-extend; a plain `select` cannot know them.
     pub fn select(&mut self, index: usize) {
-        if index >= self.items.len() {
+        if index >= self.items.len() || !self.is_item_enabled(index) {
             return;
         }
         match self.selection_mode {
@@ -394,7 +531,7 @@ impl ListBox {
     /// delegates to [`ListBox::select`], so a caller does not have to know the current
     /// mode to call it safely.
     pub fn select_with_modifiers(&mut self, index: usize, modifiers: crate::shortcut::Modifiers) {
-        if index >= self.items.len() {
+        if index >= self.items.len() || !self.is_item_enabled(index) {
             return;
         }
         if self.selection_mode != SelectionMode::Extended {
@@ -527,6 +664,180 @@ impl ListBox {
     /// Returns all items.
     pub fn items(&self) -> &[String] {
         &self.items
+    }
+
+    /// The presentation metadata for a row, or `None` when the index is out of range.
+    pub fn item_meta(&self, index: usize) -> Option<&ListBoxItem> {
+        self.item_meta.get(index)
+    }
+
+    /// Replaces a row's presentation metadata.
+    ///
+    /// An out-of-range index is ignored, matching the label mutators. Repaints only when the
+    /// metadata actually changes.
+    pub fn set_item_meta(&mut self, index: usize, meta: ListBoxItem) {
+        let Some(slot) = self.item_meta.get_mut(index) else {
+            return;
+        };
+        if *slot == meta {
+            return;
+        }
+        *slot = meta;
+        self.base.request_redraw();
+    }
+
+    /// Sets a row's icon text, or clears it with `None`.
+    pub fn set_item_icon(&mut self, index: usize, icon: Option<String>) {
+        if let Some(meta) = self.item_meta.get_mut(index) {
+            if meta.icon == icon {
+                return;
+            }
+            meta.icon = icon;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Gives a row a check box in the given state, or removes it with `None`.
+    pub fn set_item_checked(&mut self, index: usize, checked: Option<bool>) {
+        if let Some(meta) = self.item_meta.get_mut(index) {
+            if meta.checked == checked {
+                return;
+            }
+            meta.checked = checked;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Enables or disables a row. A disabled row cannot be selected or activated.
+    pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
+        if let Some(meta) = self.item_meta.get_mut(index) {
+            if meta.enabled == enabled {
+                return;
+            }
+            meta.enabled = enabled;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Attaches a caller-owned data token to a row, or clears it with `None`.
+    pub fn set_item_data(&mut self, index: usize, data: Option<String>) {
+        if let Some(meta) = self.item_meta.get_mut(index) {
+            if meta.data == data {
+                return;
+            }
+            meta.data = data;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a row can be selected. An out-of-range row is not selectable.
+    pub fn is_item_enabled(&self, index: usize) -> bool {
+        self.item_meta.get(index).is_none_or(|meta| meta.enabled)
+    }
+
+    /// The indices whose check boxes are checked, in row order.
+    pub fn checked_indices(&self) -> Vec<usize> {
+        self.item_meta
+            .iter()
+            .enumerate()
+            .filter_map(|(index, meta)| (meta.checked == Some(true)).then_some(index))
+            .collect()
+    }
+
+    /// Flips a row's check box when it has one.
+    ///
+    /// Returns whether a check box was there to flip. A check box is presentation state, so
+    /// this does not touch the selection and does not emit `selection_changed`.
+    pub fn toggle_item_checked(&mut self, index: usize) -> bool {
+        let Some(meta) = self.item_meta.get_mut(index) else {
+            return false;
+        };
+        let Some(checked) = meta.checked else {
+            return false;
+        };
+        meta.checked = Some(!checked);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Sorts the rows by label.
+    ///
+    /// # Why the selection is cleared
+    ///
+    /// A selected row is an index into the old order. Sorting moves the row the index names,
+    /// so remapping it would silently select a different label. Clearing is the only outcome
+    /// that cannot lie; a caller that needs to preserve a selection should sort its own model
+    /// and call [`ListBox::set_items`] equivalent mutators itself.
+    pub fn sort_items(&mut self) {
+        if self.items.len() < 2 {
+            return;
+        }
+        let mut rows: Vec<(String, ListBoxItem)> = {
+            let metas = self.item_meta.iter().cloned();
+            self.items.drain(..).zip(metas).collect()
+        };
+        rows.sort_by(|left, right| left.0.cmp(&right.0));
+        let old_len = rows.len();
+        self.items = rows.iter().map(|(text, _)| text.clone()).collect();
+        self.item_meta = rows.into_iter().map(|(_, meta)| meta).collect();
+        if self.item_meta.len() < old_len {
+            self.item_meta.resize(old_len, ListBoxItem::default());
+        }
+        self.selected_indices.clear();
+        self.current_row = None;
+        self.anchor = None;
+        self.selection_changed.emit();
+        self.base.request_redraw();
+    }
+
+    /// Number of columns a row is split into.
+    ///
+    /// A row's label is split on `\t`; columns beyond the first are placed at equal widths
+    /// across the row. One column is a plain list, which is the default, so a caller that
+    /// never asks paints exactly the label it always did.
+    pub fn columns(&self) -> usize {
+        self.columns
+    }
+
+    /// Sets the number of columns, clamped to at least one.
+    pub fn set_columns(&mut self, columns: usize) {
+        let columns = columns.max(1);
+        if self.columns == columns {
+            return;
+        }
+        self.columns = columns;
+        self.base.request_redraw();
+    }
+
+    /// Which gestures may start a rename.
+    pub fn edit_triggers(&self) -> EditTriggers {
+        self.edit_triggers
+    }
+
+    /// Sets which gestures may start a rename.
+    ///
+    /// The control never mutates its own label: it emits [`Self::rename_requested`] so the
+    /// host can mount an editor that owns validation and undo.
+    pub fn set_edit_triggers(&mut self, triggers: EditTriggers) {
+        if self.edit_triggers == triggers {
+            return;
+        }
+        self.edit_triggers = triggers;
+    }
+
+    /// The rows visible in the content band, used by PageUp/PageDown.
+    fn page_rows(&self) -> usize {
+        let content = self.content_rect();
+        ((content.height as f32 / self.row_height()).floor() as usize).max(1)
+    }
+
+    /// Selects the first row at or after `start` whose label begins with `prefix`.
+    fn find_prefix(&self, prefix: &str, start: usize) -> Option<usize> {
+        let needle = prefix.to_lowercase();
+        let count = self.items.len();
+        (0..count).map(|offset| (start + offset) % count).find(|&index| {
+            self.is_item_enabled(index) && self.items[index].to_lowercase().starts_with(&needle)
+        })
     }
 
     /// The row the pointer is currently over, or `None`.
@@ -996,6 +1307,17 @@ impl EventHandler for ListBox {
                 }
             }
             Event::MouseDoubleClick { pos, button } if *button == 1 => {
+                // A double-click on a rename-enabled row asks the host for an editor instead of
+                // activating the row, so the two gestures do not fight over one click stream.
+                if self.edit_triggers.contains(EditTriggers::DOUBLE_CLICK) {
+                    if let Some(index) = self.item_index_at_y(*pos) {
+                        if self.is_item_enabled(index) {
+                            self.select(index);
+                            self.rename_requested.emit(index);
+                            return;
+                        }
+                    }
+                }
                 self.activate_at_pos(*pos);
             }
             #[cfg(feature = "touch")]
@@ -1007,45 +1329,106 @@ impl EventHandler for ListBox {
                 self.activate_at_pos(*pos);
             }
             Event::KeyPress { key, modifiers } => {
+                // Modifier-aware navigation: Shift extends from the anchor, Primary/Ctrl
+                // toggles, and a plain arrow replaces the selection. The old handler only ran
+                // when `modifiers == 0`, so a keyboard user had no range selection at all while
+                // the pointer path supported it.
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let extend = mods.contains(crate::shortcut::Modifiers::SHIFT)
+                    || mods.contains(crate::shortcut::Modifiers::CTRL);
+                let select_target = |list: &mut Self, index: usize| {
+                    if extend {
+                        list.select_with_modifiers(index, mods);
+                    } else {
+                        list.select(index);
+                    }
+                };
                 match *key {
-                    38 if *modifiers == 0 => {
-                        // Up arrow
-                        if let Some(current) = self.current_row {
-                            if current > 0 {
-                                self.select(current - 1);
-                            }
-                        } else if !self.items.is_empty() {
-                            self.select(self.items.len() - 1);
+                    38 => {
+                        // Up arrow: move toward earlier selectable rows.
+                        let start = self.current_row.unwrap_or(self.items.len());
+                        if let Some(target) = (0..start).rev().find(|&i| self.is_item_enabled(i)) {
+                            select_target(self, target);
                         }
                     }
-                    40 if *modifiers == 0 => {
-                        // Down arrow
-                        if let Some(current) = self.current_row {
-                            if current < self.items.len() - 1 {
-                                self.select(current + 1);
-                            }
-                        } else if !self.items.is_empty() {
-                            self.select(0);
+                    40 => {
+                        // Down arrow.
+                        let start = self.current_row.map_or(0, |row| row + 1);
+                        if let Some(target) =
+                            (start..self.items.len()).find(|&i| self.is_item_enabled(i))
+                        {
+                            select_target(self, target);
                         }
                     }
-                    36
-                        // Home
-                        if !self.items.is_empty() => {
-                            self.select(0);
+                    36 => {
+                        // Home; Primary+Home is the conventional "first row" chord as well.
+                        if let Some(target) =
+                            (0..self.items.len()).find(|&i| self.is_item_enabled(i))
+                        {
+                            select_target(self, target);
                         }
-                    35
-                        // End
-                        if !self.items.is_empty() => {
-                            self.select(self.items.len() - 1);
+                    }
+                    35 => {
+                        // End.
+                        if let Some(target) =
+                            (0..self.items.len()).rev().find(|&i| self.is_item_enabled(i))
+                        {
+                            select_target(self, target);
                         }
+                    }
+                    33 => {
+                        // Page Up.
+                        let stride = self.page_rows();
+                        let start = self.current_row.unwrap_or(self.items.len());
+                        let floor = start.saturating_sub(stride);
+                        if let Some(target) =
+                            (floor..start).rev().find(|&i| self.is_item_enabled(i))
+                        {
+                            select_target(self, target);
+                        }
+                    }
+                    34 => {
+                        // Page Down.
+                        let stride = self.page_rows();
+                        let start = self.current_row.map_or(0, |row| row + 1);
+                        let ceiling = (start + stride).min(self.items.len());
+                        if let Some(target) = (start..ceiling).find(|&i| self.is_item_enabled(i)) {
+                            select_target(self, target);
+                        }
+                    }
                     13 => {
-                        // Enter - activate current item
+                        // Enter activates the current row.
                         if let Some(current) = self.current_row {
-                            self.item_activated.emit(current);
+                            if self.is_item_enabled(current) {
+                                self.item_activated.emit(current);
+                            }
                         }
                     }
-                    // Unknown key; ignore
-                    _ => {}
+                    113 => {
+                        // F2 requests a rename when that trigger is enabled.
+                        if self.edit_triggers.contains(EditTriggers::F2) {
+                            if let Some(current) = self.current_row {
+                                if self.is_item_enabled(current) {
+                                    self.rename_requested.emit(current);
+                                }
+                            }
+                        }
+                    }
+                    // Type-ahead: a printable character extends the prefix and jumps to the
+                    // first matching row from the current one. Without it a long list could
+                    // only be traversed with the arrows or the pointer.
+                    32..=126 => {
+                        if let Some(ch) = char::from_u32(*key) {
+                            self.type_ahead.push(ch);
+                            let start = self.current_row.map_or(0, |row| row + 1);
+                            if let Some(target) = self.find_prefix(&self.type_ahead, start) {
+                                self.select(target);
+                            }
+                        }
+                    }
+                    _ => {
+                        self.type_ahead.clear();
+                    }
                 }
             }
             Event::Wheel { delta, modifiers } => {
@@ -1143,29 +1526,86 @@ impl Draw for ListBox {
                     // collide when a theme changes hue, and falls back to the control's ink on a
                     // row with no highlight.
                     let label_ink = fill.map_or(ink, |fill| fill.contrast_color());
+                    let meta = self.item_meta.get(i);
+                    let enabled = meta.is_none_or(|meta| meta.enabled);
+                    let label_ink = if enabled { label_ink } else { label_ink.with_alpha(110) };
                     // The line box is measured from the same font the ink is drawn with and centred
-                    // in the row, so the glyph box's top edge lands where the text renders. The old
-                    // `row.y + item_height / 2` put that edge on the row's middle line, half a line
-                    // low, and ignored the font entirely.
+                    // in the row, so the glyph box's top edge lands where the text renders.
                     let line = context.text_line(row, &font);
-                    // Fitted into the row's inner width, so an item longer than the row is elided
-                    // rather than drawn across the border and out of the control. The alignment is
-                    // the control's own; a right-aligned row keeps the same inner inset on both
-                    // sides, so the elision bound and the anchor move together.
                     let label_align =
                         self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
-                    context.draw_text_fitted_cow(
-                        Rect::new(
-                            row.x + text_inset,
-                            line.y,
-                            row.width.saturating_sub(text_inset as u32 * 2),
-                            line.height,
-                        ),
-                        text,
-                        &font,
-                        label_ink,
-                        label_align,
-                    );
+                    let mut left = row.x + text_inset;
+
+                    // A check box, when the row has one, is drawn first and reserves its own
+                    // leading space. Clicking it is handled by the row press (the whole row is
+                    // the target), which is the forgiving behaviour a list needs.
+                    if let Some(checked) = meta.and_then(|meta| meta.checked) {
+                        let box_size = 10i32;
+                        let box_y = row.y + (row.height as i32 - box_size) / 2;
+                        let box_rect = Rect::new(left, box_y, box_size as u32, box_size as u32);
+                        context.draw_rounded_rect_stroke(box_rect, 2, label_ink.with_alpha(180), 1);
+                        if checked {
+                            context.fill_rounded_rect(box_rect, 2, label_ink.with_alpha(200));
+                            context.draw_line(
+                                Point::new(left + 2, box_y + 5),
+                                Point::new(left + 4, box_y + 8),
+                                fill.map_or(surface, |fill| fill.contrast_color()),
+                            );
+                            context.draw_line(
+                                Point::new(left + 4, box_y + 8),
+                                Point::new(left + 8, box_y + 2),
+                                fill.map_or(surface, |fill| fill.contrast_color()),
+                            );
+                        }
+                        left += box_size + 6;
+                    }
+
+                    // The row's icon, when present, occupies the slot before the label.
+                    if let Some(icon) = meta.and_then(|meta| meta.icon()) {
+                        if !icon.is_empty() {
+                            let icon_width = context.measure_text(icon, &font).width as i32;
+                            context.draw_text(
+                                Point::new(left, line.y),
+                                icon,
+                                &font,
+                                label_ink,
+                                HorizontalAlignment::Left,
+                            );
+                            left += icon_width + 6;
+                        }
+                    }
+
+                    let inner_width = (row.x + row.width as i32 - text_inset - left).max(1) as u32;
+                    if self.columns > 1 {
+                        // Multi-column rows split the label on `\t` and place each part in an
+                        // equal-width cell, which is the cheap presentation of a table a list
+                        // needs before it becomes a real grid.
+                        let parts: Vec<&str> = text.split('\t').collect();
+                        let cell_width = (inner_width / self.columns as u32).max(1);
+                        for (column, part) in parts.iter().take(self.columns).enumerate() {
+                            let cell_x = left + (column as i32) * cell_width as i32;
+                            let width = if column + 1 == self.columns {
+                                (left + inner_width as i32 - cell_x).max(1) as u32
+                            } else {
+                                cell_width
+                            };
+                            context.draw_text_fitted_cow(
+                                Rect::new(cell_x, line.y, width, line.height),
+                                part,
+                                &font,
+                                label_ink,
+                                HorizontalAlignment::Left,
+                            );
+                        }
+                    } else {
+                        context.draw_text_fitted_cow(
+                            Rect::new(left, line.y, inner_width, line.height),
+                            text,
+                            &font,
+                            label_ink,
+                            label_align,
+                        );
+                    }
                 }
             }
             // A separator only belongs *between* rows, so it is skipped on the last visible one.
@@ -1867,5 +2307,107 @@ mod tests {
             "the carried text became a row before the row under the pointer"
         );
         assert_eq!(observed.1, vec![1], "an insert after the selected row leaves its index alone");
+    }
+
+    /// Structured rows carry an icon, a check state, a disabled flag and a data token.
+    #[test]
+    fn rows_carry_icons_checks_and_data() {
+        let mut list = listbox_with(3);
+        list.set_item_meta(
+            0,
+            ListBoxItem::new().with_icon("*").with_checked(true).with_data("row-a"),
+        );
+        list.set_item_enabled(1, false);
+
+        assert_eq!(list.item_meta(0).and_then(ListBoxItem::icon), Some("*"));
+        assert_eq!(list.item_meta(0).and_then(ListBoxItem::checked), Some(true));
+        assert_eq!(list.item_meta(0).and_then(ListBoxItem::data), Some("row-a"));
+        assert!(!list.is_item_enabled(1));
+        assert_eq!(list.checked_indices(), vec![0]);
+
+        let svg = crate::widget::svg::render_to_svg(&mut list);
+        assert!(!svg.contains("row-a"), "the data token is not painted");
+        assert_eq!(list.item_meta(0).and_then(|meta| meta.icon()), Some("*"));
+    }
+
+    /// Shift and Ctrl modify keyboard movement, exactly as they modify a pointer press.
+    #[test]
+    fn modified_arrow_keys_extend_and_toggle_the_selection() {
+        let mut list = listbox_with(4);
+        list.set_selection_mode(SelectionMode::Extended);
+        list.select(0);
+
+        list.handle_event(&Event::KeyPress { key: 40, modifiers: 1 });
+        assert_eq!(list.selected_indices(), &[0, 1], "Shift+Down extends the range");
+
+        list.handle_event(&Event::KeyPress { key: 40, modifiers: 2 });
+        assert_eq!(list.selected_indices(), &[0, 1, 2], "Ctrl+Down adds a row");
+    }
+
+    /// Page keys, type-ahead and disabled rows are all reachable from the keyboard.
+    #[test]
+    fn page_keys_type_ahead_and_disabled_rows_are_honoured() {
+        let mut list = ListBox::new(Rect::new(0, 0, 200, 100));
+        for label in ["Alpha", "Bravo", "Charlie", "Delta"] {
+            list.add_item(label.to_string());
+        }
+        list.set_current_row(Some(0));
+
+        list.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
+        assert_ne!(list.current_row(), Some(0), "PageDown moves by a screenful");
+
+        list.handle_event(&Event::KeyPress { key: 67, modifiers: 0 }); // 'C'
+        assert_eq!(list.current_row(), Some(2), "type-ahead jumps to the matching row");
+
+        list.set_item_enabled(2, false);
+        list.handle_event(&Event::KeyPress { key: 67, modifiers: 0 });
+        assert_eq!(list.current_row(), Some(2), "a disabled row is not selectable");
+
+        list.set_current_row(Some(0));
+        list.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(list.current_row(), Some(1));
+        list.set_item_enabled(1, false);
+        list.set_current_row(Some(0));
+        list.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(list.current_row(), Some(3), "arrows skip the disabled rows");
+    }
+
+    /// A row with tabs paints as columns, and sorting keeps its metadata with its label.
+    #[test]
+    fn columns_and_sorting_keep_rows_together() {
+        let mut list = ListBox::new(Rect::new(0, 0, 200, 100));
+        list.add_item("b\t2".to_string());
+        list.add_item("a\t1".to_string());
+        list.set_item_data(0, Some("second".to_string()));
+        list.set_item_data(1, Some("first".to_string()));
+        list.set_columns(2);
+        assert_eq!(list.columns(), 2);
+
+        let svg = crate::widget::svg::render_to_svg(&mut list);
+        assert!(svg.contains("b") && svg.contains("2"));
+
+        list.sort_items();
+        assert_eq!(list.items(), &["a\t1".to_string(), "b\t2".to_string()]);
+        assert_eq!(list.item_meta(0).and_then(ListBoxItem::data), Some("first"));
+        assert!(list.selected_indices().is_empty(), "sorting clears an index-based selection");
+    }
+
+    /// A rename gesture asks the host rather than mutating the label itself.
+    #[test]
+    fn rename_gestures_emit_a_request() {
+        let mut list = listbox_with(2);
+        list.set_edit_triggers(EditTriggers::DEFAULT);
+        let requested = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        list.rename_requested.connect({
+            let requested = requested.clone();
+            move |index: std::sync::Arc<usize>| {
+                requested.store(*index, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        list.set_current_row(Some(1));
+        list.handle_event(&Event::KeyPress { key: 113, modifiers: 0 }); // F2
+        assert_eq!(requested.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(list.item(1), Some("Item 1"), "the label is the host's to change");
     }
 }

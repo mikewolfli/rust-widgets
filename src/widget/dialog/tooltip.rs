@@ -42,6 +42,41 @@ const TIMER_SHOW_ID: u32 = 1;
 /// Timer id used for hide-delay scheduling.
 const TIMER_HIDE_ID: u32 = 2;
 
+/// One run of rich text inside a tooltip bubble.
+///
+/// A plain tooltip has one run — the whole label in one colour. A caller that wants a
+/// highlighted fragment (a shortcut, a warning, a unit) installs several runs through
+/// [`Tooltip::set_spans`], each with its own colour and weight. The runs are laid out on one
+/// line in order, so the bubble is still a tooltip rather than a paragraph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TooltipSpan {
+    /// The text this run contributes.
+    pub text: String,
+    /// The colour overrides the bubble's resolved ink when set.
+    pub color: Option<Color>,
+    /// Whether the run is painted in the bubble font's bold face.
+    pub bold: bool,
+}
+
+impl TooltipSpan {
+    /// Creates a plain run in the bubble's own ink and weight.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into(), color: None, bold: false }
+    }
+
+    /// Sets the run's colour.
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    /// Sets the run's weight.
+    pub fn with_bold(mut self, bold: bool) -> Self {
+        self.bold = bold;
+        self
+    }
+}
+
 /// Tooltip widget — a popup label attached to a target widget.
 ///
 /// The tooltip appears when the pointer hovers over the target widget and
@@ -58,6 +93,12 @@ pub struct Tooltip {
     padding: i32,
     font_size: f32,
     max_width: u32,
+    /// Rich-text runs painted instead of the single `text` label when non-empty.
+    spans: Vec<TooltipSpan>,
+    /// Whether the label wraps at the bubble's maximum width instead of eliding.
+    wrap: bool,
+    /// The rectangle the bubble is positioned against, when one was supplied.
+    anchor: Option<Rect>,
     /// Tracks whether the pointer is currently hovering over the target area.
     hovering: bool,
     /// What the bubble is fading towards: `1.0` shown, `0.0` hidden.
@@ -101,6 +142,9 @@ impl Tooltip {
             padding: DEFAULT_PADDING,
             font_size: DEFAULT_FONT_SIZE,
             max_width: DEFAULT_MAX_WIDTH,
+            spans: Vec::new(),
+            wrap: false,
+            anchor: None,
             hovering: false,
             fade: PropertyDriver::at(0.0, MotionSlot::Fast),
             show_elapsed_ms: 0,
@@ -125,6 +169,77 @@ impl Tooltip {
     /// Returns the tooltip text content.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Returns the rich-text runs, empty when the tooltip paints its plain label.
+    pub fn spans(&self) -> &[TooltipSpan] {
+        &self.spans
+    }
+
+    /// Installs rich-text runs, replacing the plain label while they are present.
+    ///
+    /// An empty vector restores the plain label. The runs are painted on one line in
+    /// order; a run whose `color` is unset uses the bubble's resolved ink, and a bold run
+    /// uses the bubble font's bold face.
+    pub fn set_spans(&mut self, spans: Vec<TooltipSpan>) {
+        if self.spans == spans {
+            return;
+        }
+        self.spans = spans;
+        self.base.request_redraw();
+    }
+
+    /// Removes the rich-text runs, restoring the plain label.
+    pub fn clear_spans(&mut self) {
+        if self.spans.is_empty() {
+            return;
+        }
+        self.spans.clear();
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the label wraps at the bubble's maximum width.
+    pub fn wrap(&self) -> bool {
+        self.wrap
+    }
+
+    /// Enables or disables word wrapping.
+    ///
+    /// Off by default, which is the single-line elided bubble the control has always
+    /// painted. On, the label breaks at spaces (and at explicit newlines) and the bubble
+    /// grows a line at a time, up to the caller's `max_width`.
+    pub fn set_wrap(&mut self, wrap: bool) {
+        if self.wrap == wrap {
+            return;
+        }
+        self.wrap = wrap;
+        self.base.request_redraw();
+    }
+
+    /// Returns the rectangle the bubble is positioned against, if any.
+    pub fn anchor_rect(&self) -> Option<Rect> {
+        self.anchor
+    }
+
+    /// Positions the bubble against `anchor` instead of centring it in the control.
+    ///
+    /// The bubble is placed below the anchor, flipped above when there is no room, and
+    /// clamped inside the control's own rectangle. This is the "follow the thing the
+    /// tooltip describes" placement; without an anchor the bubble stays centred, which is
+    /// what keeps the default frame unchanged.
+    pub fn set_anchor_rect(&mut self, anchor: Rect) {
+        if self.anchor == Some(anchor) {
+            return;
+        }
+        self.anchor = Some(anchor);
+        self.base.request_redraw();
+    }
+
+    /// Removes the anchor, returning the bubble to its centred placement.
+    pub fn clear_anchor(&mut self) {
+        if self.anchor.take().is_some() {
+            self.base.request_redraw();
+        }
     }
 
     /// Immediately shows the tooltip, jumping the fade to its shown end.
@@ -311,13 +426,22 @@ impl Tooltip {
     /// Zero-width characters are ignored by the count where the platform agrees with
     /// `char::is_control`; a control character occupies no ink in any font this crate ships.
     pub fn preferred_size(&self) -> Size {
-        if self.text.is_empty() {
+        if self.text.is_empty() && self.spans.is_empty() {
             return Size::new((self.padding as u32) * 2, (self.padding as u32) * 2 + 16);
         }
         // The hint measures with the **same font the bubble draws with** (D09-STYLE-02): a themed
         // body font, or the caller's own `font_size` when the style names none.
         let font = self.bubble_font();
-        let glyphs = self.text.chars().filter(|c| !c.is_control()).count() as f32;
+        // Rich runs are measured as the sum of their glyph counts; the hint has no render
+        // context, so this is the same estimate as the plain path, applied per run.
+        let glyphs: f32 = if self.spans.is_empty() {
+            self.text.chars().filter(|c| !c.is_control()).count() as f32
+        } else {
+            self.spans
+                .iter()
+                .map(|span| span.text.chars().filter(|c| !c.is_control()).count() as f32)
+                .sum()
+        };
         // A proportional face averages a little over half an em; this is the same constant
         // the old estimate used and is the honest resolution of a hint without a context.
         let char_width = font.size() * 0.6;
@@ -325,8 +449,79 @@ impl Tooltip {
         let line_height = (font.size() * 1.4).ceil() as u32;
 
         let width = (estimated_width + (self.padding as u32) * 2).min(self.max_width);
-        let height = line_height + (self.padding as u32) * 2;
+        // Wrapping is the one mode the hint can state honestly as a count: the label breaks
+        // at the width cap, so the height is that many lines. Without wrapping the label is
+        // one line and elides, which is what the old fixed height described.
+        let height = if self.wrap {
+            let line_width = width.saturating_sub((self.padding as u32) * 2).max(1);
+            let lines = estimated_width.saturating_add(line_width - 1) / line_width;
+            line_height.saturating_mul(lines.max(1)).saturating_add((self.padding as u32) * 2)
+        } else {
+            line_height + (self.padding as u32) * 2
+        };
         Size::new(width, height)
+    }
+
+    /// The lines the plain label is painted on.
+    ///
+    /// Without wrapping this is the label itself, unchanged. With wrapping the text breaks
+    /// at spaces and at explicit newlines, measured against the bubble's content width.
+    /// A word longer than the cap is kept whole on its own line and elided by the fitted
+    /// draw, rather than being split mid-word.
+    fn wrapped_lines(&self, context: &RenderContext, text: &str, font: &Font) -> Vec<String> {
+        if !self.wrap {
+            return vec![text.to_string()];
+        }
+        let control_width = self.geometry().width.saturating_sub(dimensions::TOOLTIP_PADDING_H * 2);
+        let available = self.max_width.min(control_width).max(1);
+        let mut lines: Vec<String> = Vec::new();
+        for paragraph in text.split('\n') {
+            let mut current = String::new();
+            for word in paragraph.split(' ') {
+                let candidate = if current.is_empty() {
+                    word.to_string()
+                } else {
+                    let mut candidate = current.clone();
+                    candidate.push(' ');
+                    candidate.push_str(word);
+                    candidate
+                };
+                if current.is_empty() || context.measure_text(&candidate, font).width <= available {
+                    current = candidate;
+                } else {
+                    lines.push(core::mem::take(&mut current));
+                    current = word.to_string();
+                }
+            }
+            lines.push(current);
+        }
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines
+    }
+
+    /// The bubble rectangle for a bubble of `size`.
+    ///
+    /// Centred in the control unless an anchor was supplied, in which case it sits below
+    /// the anchor, flips above when that would leave the control, and is clamped inside it.
+    fn bubble_rect(&self, rect: Rect, size: Size) -> Rect {
+        let Some(anchor) = self.anchor else {
+            return ControlMetrics::center_in(rect, size);
+        };
+        const GAP: i32 = 6;
+        let max_x = (rect.x + rect.width as i32 - size.width as i32).max(rect.x);
+        let max_y = (rect.y + rect.height as i32 - size.height as i32).max(rect.y);
+        let x = (anchor.x + anchor.width as i32 / 2 - size.width as i32 / 2).clamp(rect.x, max_x);
+        let below = anchor.y + anchor.height as i32 + GAP;
+        let above = anchor.y - size.height as i32 - GAP;
+        let y = if below + size.height as i32 <= rect.y + rect.height as i32 || above < rect.y {
+            below
+        } else {
+            above
+        }
+        .clamp(rect.y, max_y);
+        Rect::new(x, y, size.width, size.height)
     }
 
     /// The font the bubble draws its label with: the resolved `style.font` when set, otherwise the
@@ -395,6 +590,7 @@ impl WidgetProperties for Tooltip {
         match name {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "shown" => Ok(CapabilityValue::Bool(self.is_shown())),
+            "wrap" => Ok(CapabilityValue::Bool(self.wrap())),
             _ => base_property_get(self, name),
         }
     }
@@ -409,12 +605,16 @@ impl WidgetProperties for Tooltip {
                 self.set_shown(expect_bool(value)?);
                 Ok(())
             }
+            "wrap" => {
+                self.set_wrap(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "shown", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "shown", "wrap", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `tooltip` publishes.
@@ -593,29 +793,56 @@ impl Draw for Tooltip {
 
         let font = self.bubble_font();
 
-        // Measure text for layout. The empty case measures the placeholder so a hidden
-        // tooltip still has a body to paint at the census geometry.
+        // ── What is painted ──
+        //
+        // The plain label is wrapped into lines only when the caller enabled wrapping;
+        // without it the vector holds exactly the one label the control has always drawn, so
+        // the single-line path below is byte-identical to the pre-wrap one. A rich-text run
+        // set is painted on one line in order and ignores wrapping.
         let label = if self.text.is_empty() { "Tooltip" } else { self.text.as_str() };
-        let metrics = context.measure_text(label, &font);
-        let text_width = metrics.width;
+        let lines = if self.spans.is_empty() {
+            self.wrapped_lines(context, label, &font)
+        } else {
+            Vec::new()
+        };
+
+        // Measured content width: the widest wrapped line, or every rich run's advance in a
+        // row. Either way the bubble is capped by `max_width` and by the control itself.
+        let text_width = if self.spans.is_empty() {
+            lines.iter().map(|line| context.measure_text(line, &font).width).max().unwrap_or(0)
+        } else {
+            let mut total = 0u32;
+            for span in &self.spans {
+                let span_font = font.with_bold(span.bold);
+                total = total.saturating_add(context.measure_text(&span.text, &span_font).width);
+            }
+            total
+        };
 
         // ── The bubble actually painted ──
         //
-        // A tooltip is a **single-line bubble of its own height**, centred in the area it was
-        // given, not a panel shaped like its container. `total_width = ..max(rect.width)` and
-        // `total_height = ..max(rect.height)` did the opposite: the bubble was *at least* the
-        // control's size, so the 240x120 census cell drew a full-canvas 240x120 rounded
-        // rectangle (`tooltip.svg` carried `<rect x="0" y="0" width="240" height="120"
-        // rx="4"/>`) with its label stranded at y = 6 — a poorly filled panel rather than a
-        // tooltip. The height is now [`dimensions::TOOLTIP_HEIGHT`] and the width is the
-        // label's own advance plus [`dimensions::TOOLTIP_PADDING_H`], so a longer string makes
-        // a wider bubble and nothing about the caller's rectangle can stretch it.
+        // A tooltip is a **bubble of its own height**, centred in the area it was given (or
+        // placed against its anchor), not a panel shaped like its container.
+        // `total_width = ..max(rect.width)` and `total_height = ..max(rect.height)` did the
+        // opposite: the bubble was *at least* the control's size, so the 240x120 census cell
+        // drew a full-canvas 240x120 rounded rectangle (`tooltip.svg` carried `<rect x="0"
+        // y="0" width="240" height="120" rx="4"/>`) with its label stranded at y = 6 — a
+        // poorly filled panel rather than a tooltip. The height is
+        // [`dimensions::TOOLTIP_HEIGHT`] for a single line and the measured line count plus
+        // padding once wrapping is on, and the width is the label's own advance plus
+        // [`dimensions::TOOLTIP_PADDING_H`].
         let content_width = text_width.min(self.max_width);
         let total_width = (content_width + dimensions::TOOLTIP_PADDING_H * 2).min(rect.width);
-        let bubble = ControlMetrics::center_in(
-            rect,
-            Size::new(total_width.max(1), dimensions::TOOLTIP_HEIGHT),
-        );
+        let single_line = self.spans.is_empty() && !self.wrap;
+        let measured_line_height = context.measure_text("M", &font).height.max(1);
+        let bubble_height = if single_line || !self.spans.is_empty() {
+            dimensions::TOOLTIP_HEIGHT
+        } else {
+            measured_line_height
+                .saturating_mul(lines.len().max(1) as u32)
+                .saturating_add(dimensions::TOOLTIP_PADDING_V * 2)
+        };
+        let bubble = self.bubble_rect(rect, Size::new(total_width.max(1), bubble_height));
         // The corner is the vertical padding, so the radius scales with the bubble's own
         // edging rather than being a fourth literal for a 24 px box.
         let corner_radius = dimensions::TOOLTIP_PADDING_V;
@@ -631,28 +858,65 @@ impl Draw for Tooltip {
         // rectangle while the bubble was centred, so once the bubble stopped filling its
         // rectangle the two would have been placed from different boxes. `text_line` derives the
         // line box from the bubble itself, which is the same box the fill just painted.
-        let line = context.text_line(bubble, &font);
-        let text_x = bubble.x + dimensions::TOOLTIP_PADDING_H as i32;
-
-        // Fitted inside the bubble. The bubble is capped at `max_width`/the control width, but the
-        // label used to be drawn at its full measured width, so any tooltip longer than 300 px
-        // painted outside the bubble and outside the control. The band is widened by the fitted
-        // draw's own inset so a label that fits is neither shifted nor elided by those 3 px.
+        //
+        // The band is widened by the fitted draw's own inset so a label that fits is neither
+        // shifted nor elided by those 3 px. This was the single-line body, and the plain
+        // unwrapped case still takes exactly this path once, so its frame is unchanged.
         let fit_inset = crate::render::TEXT_FIT_MARGIN as i32;
-        let text_band = Rect::new(
-            text_x - fit_inset,
-            line.y,
-            (bubble.width.saturating_sub(dimensions::TOOLTIP_PADDING_H * 2) as i32 + 2 * fit_inset)
-                .max(1) as u32,
-            line.height.max(1),
-        );
-        context.draw_text_fitted_cow(
-            text_band,
-            label,
-            &font,
-            text_color,
-            HorizontalAlignment::Left,
-        );
+        if !self.spans.is_empty() {
+            // Rich runs, left to right on the bubble's one line. Each run is fitted to what
+            // is left of the bubble, so a long run elides rather than painting outside it.
+            let mut x = bubble.x + dimensions::TOOLTIP_PADDING_H as i32;
+            let right = bubble.x + bubble.width as i32 - dimensions::TOOLTIP_PADDING_H as i32;
+            for span in &self.spans {
+                if x >= right {
+                    break;
+                }
+                let span_font = font.with_bold(span.bold);
+                let advance = context.measure_text(&span.text, &span_font).width as i32;
+                let remaining = (right - x).max(1) as u32;
+                let band = Rect::new(
+                    x - fit_inset,
+                    context.text_line(bubble, &span_font).y,
+                    remaining.saturating_add((2 * fit_inset) as u32),
+                    measured_line_height,
+                );
+                context.draw_text_fitted_cow(
+                    band,
+                    &span.text,
+                    &span_font,
+                    span.color.unwrap_or(text_color),
+                    HorizontalAlignment::Left,
+                );
+                x += advance;
+            }
+        } else {
+            let text_x = bubble.x + dimensions::TOOLTIP_PADDING_H as i32;
+            let band_width = (bubble.width.saturating_sub(dimensions::TOOLTIP_PADDING_H * 2) as i32
+                + 2 * fit_inset)
+                .max(1) as u32;
+            let line = context.text_line(bubble, &font);
+            // The single-line band is the line box `text_line` derived, so the unwrapped
+            // frame stays byte-identical; a wrapped bubble uses the measured line advance
+            // so its rows cannot overlap.
+            let band_height = if single_line { line.height.max(1) } else { measured_line_height };
+            for (index, text) in lines.iter().enumerate() {
+                let line_y = if single_line {
+                    line.y
+                } else {
+                    bubble.y
+                        + dimensions::TOOLTIP_PADDING_V as i32
+                        + index as i32 * measured_line_height as i32
+                };
+                context.draw_text_fitted_cow(
+                    Rect::new(text_x - fit_inset, line_y, band_width, band_height),
+                    text,
+                    &font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
     }
 }
 
@@ -1051,5 +1315,103 @@ mod tests {
             }
         };
         0.2126 * linear(channels[0]) + 0.7152 * linear(channels[1]) + 0.0722 * linear(channels[2])
+    }
+
+    /// The `(y, height)` of the bubble's rounded rectangle in the document.
+    fn bubble_box(svg: &str) -> (i32, i32) {
+        let chunk = svg
+            .split("<rect ")
+            .find(|chunk| chunk.contains("rx=\""))
+            .unwrap_or_else(|| panic!("the tooltip paints no rounded bubble:\n{svg}"));
+        let y = chunk
+            .split("y=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|value| value.parse::<i32>().ok())
+            .expect("a bubble y");
+        let height = chunk
+            .split("height=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|value| value.parse::<i32>().ok())
+            .expect("a bubble height");
+        (y, height)
+    }
+
+    /// Rich-text runs are painted in their own colours and weights.
+    #[test]
+    fn rich_text_spans_paint_their_own_runs() {
+        let _guard = crate::style::theme_test_guard();
+        let mut plain = Tooltip::new("Ctrl+S to save", Rect::new(0, 0, 200, 40));
+        plain.show();
+        let plain_svg = render_to_svg(&mut plain);
+        assert!(!plain_svg.contains("rgba(255,0,0"));
+
+        let mut rich = Tooltip::new("Ctrl+S to save", Rect::new(0, 0, 200, 40));
+        rich.set_spans(vec![
+            TooltipSpan::new("Ctrl+S").with_color(Color::rgb(255, 0, 0)).with_bold(true),
+            TooltipSpan::new(" to save"),
+        ]);
+        rich.show();
+        let rich_svg = render_to_svg(&mut rich);
+
+        assert_eq!(rich.spans().len(), 2);
+        assert!(
+            rich_svg.contains("rgba(255,0,0,1.00)"),
+            "the first run must paint in its own colour: {rich_svg}"
+        );
+        assert_ne!(plain_svg, rich_svg);
+
+        rich.clear_spans();
+        assert!(rich.spans().is_empty());
+        assert_eq!(plain_svg, render_to_svg(&mut rich), "clearing restores the plain label");
+    }
+
+    /// An anchor places the bubble next to the thing it describes.
+    #[test]
+    fn an_anchor_places_the_bubble_next_to_it() {
+        let mut free = Tooltip::new("hint", Rect::new(0, 0, 300, 300));
+        free.show();
+        let (free_y, _) = bubble_box(&render_to_svg(&mut free));
+
+        let anchor = Rect::new(100, 100, 40, 20);
+        let mut anchored = Tooltip::new("hint", Rect::new(0, 0, 300, 300));
+        anchored.set_anchor_rect(anchor);
+        anchored.show();
+        let (anchored_y, _) = bubble_box(&render_to_svg(&mut anchored));
+
+        assert_eq!(anchored.anchor_rect(), Some(anchor));
+        assert!(
+            anchored_y >= anchor.y + anchor.height as i32,
+            "an anchored bubble sits below its anchor: bubble y={anchored_y}, anchor bottom={}",
+            anchor.y + anchor.height as i32
+        );
+        assert_ne!(free_y, anchored_y, "the anchor must move the bubble");
+
+        anchored.clear_anchor();
+        assert_eq!(anchored.anchor_rect(), None);
+        assert_eq!(free_y, bubble_box(&render_to_svg(&mut anchored)).0);
+    }
+
+    /// Wrapping breaks the label at spaces and grows the bubble a line at a time.
+    #[test]
+    fn wrapping_grows_the_bubble() {
+        let long = "Tooltip words that must wrap onto more lines than one";
+        let mut single = Tooltip::new(long, Rect::new(0, 0, 200, 80));
+        single.show();
+        let (_, single_height) = bubble_box(&render_to_svg(&mut single));
+
+        let mut wrapped = Tooltip::new(long, Rect::new(0, 0, 200, 80));
+        wrapped.set_wrap(true);
+        wrapped.show();
+        let (_, wrapped_height) = bubble_box(&render_to_svg(&mut wrapped));
+
+        assert!(wrapped.wrap());
+        assert_eq!(single_height, dimensions::TOOLTIP_HEIGHT as i32);
+        assert!(
+            wrapped_height > single_height,
+            "a wrapped bubble needs more lines: single={single_height}, wrapped={wrapped_height}"
+        );
+        assert!(wrapped.preferred_size().height > single.preferred_size().height);
     }
 }

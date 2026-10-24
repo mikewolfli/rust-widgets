@@ -13,7 +13,7 @@
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::GenericSignal;
+use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -38,6 +38,19 @@ const DIALOG_TITLE_BAR_HEIGHT: u32 = dimensions::DIALOG_TITLE_BAR_HEIGHT;
 /// watching. Named locally only because the draw and its test both read it.
 const DIALOG_REVEAL_MIN_SCALE: f32 = super::REVEAL_MIN_SCALE;
 
+/// The side of the square close button drawn on a closable dialog's title bar.
+const DIALOG_CLOSE_BUTTON: u32 = 16;
+
+/// The drag in progress on the dialog's title bar.
+#[derive(Debug, Clone, Copy)]
+struct TitleDrag {
+    /// The pointer position at the press, in the same space events carry.
+    origin: Point,
+    /// The dialog's rectangle at the press, so a move is an offset from a fixed anchor rather
+    /// than an accumulation that drifts.
+    origin_rect: Rect,
+}
+
 /// A generic dial‑log window: a titled frame that owns one content widget.
 ///
 /// The dialog is the secondary window a caller fills with its own form. Modality is a
@@ -51,6 +64,22 @@ pub struct Dialog {
     content_widget: Option<ObjectId>,
     /// Whether the dialog blocks interaction with its owner while open.
     modal: bool,
+    /// The result code the dialog finished with, if it has finished.
+    ///
+    /// `None` while the dialog is still open or was never accepted/rejected. This is the value
+    /// [`Dialog::done`] writes and the one [`Dialog::exec`] reports.
+    result: Option<i32>,
+    /// Whether the last finish was an acceptance.
+    accepted_state: bool,
+    /// Whether the last finish was a rejection.
+    rejected_state: bool,
+    /// Whether the title bar paints its close button.
+    ///
+    /// Off by default so a dialog that never asked for the affordance keeps the exact chrome it
+    /// always had; [`Dialog::set_closable`] opts in.
+    closable: bool,
+    /// The title-bar drag in progress, if any.
+    drag: Option<TitleDrag>,
     /// How far the dialog has revealed, `0.0` hidden and `1.0` fully shown.
     ///
     /// # Why this is separate from the widget's own visible flag
@@ -69,6 +98,8 @@ pub struct Dialog {
     pub opened: GenericSignal,
     /// Emitted by [`Dialog::close`].
     pub closed: GenericSignal,
+    /// Emitted with the result code when [`Dialog::done`] finishes the dialog.
+    pub finished: Signal1<i32>,
 }
 
 impl Dialog {
@@ -84,6 +115,11 @@ impl Dialog {
             title: title.into(),
             content_widget: None,
             modal: true,
+            result: None,
+            accepted_state: false,
+            rejected_state: false,
+            closable: false,
+            drag: None,
             // At rest at the hidden end: a freshly built dialog is not shown, so it must not animate
             // itself away on its first frame.
             reveal: PropertyDriver::at(0.0, MotionSlot::Normal),
@@ -91,6 +127,7 @@ impl Dialog {
             rejected: GenericSignal::new(),
             opened: GenericSignal::new(),
             closed: GenericSignal::new(),
+            finished: Signal1::new(),
         }
     }
 
@@ -127,6 +164,9 @@ impl Dialog {
     /// the child list forever — a stale id a tree walk would still visit, and one that also kept
     /// claiming this dialog as its parent.
     pub fn set_content_widget(&mut self, widget: Option<ObjectId>) {
+        if self.content_widget == widget {
+            return;
+        }
         if let Some(old) = self.content_widget {
             if Some(old) != widget {
                 self.base.remove_child_linked(old);
@@ -185,6 +225,7 @@ impl Dialog {
         let _ = crate::widget::runtime::exit_modal(self.id());
         self.hide();
         self.reveal.set_target(0.0);
+        self.drag = None;
         // The base lifecycle signal is what a handle-layer `on_close` / the JSON `closed` route
         // connects to; the widget's own signal is kept for its own listeners. Emitting both means
         // a handler fires from either path that closed the dialog.
@@ -210,16 +251,115 @@ impl Dialog {
         self.reveal.is_moving()
     }
 
-    /// Accepts the dialog: emits `accepted` then closes it.
+    /// Accepts the dialog: records the accepted outcome, emits `accepted`, then closes it.
+    ///
+    /// The result code is `1`, the conventional accept value. Use [`Dialog::done`] when the
+    /// caller needs a specific code.
     pub fn accept(&mut self) {
-        self.accepted.emit();
+        self.done(1);
+    }
+
+    /// Rejects the dialog: records the rejected outcome, emits `rejected`, then closes it.
+    ///
+    /// The result code is `0`, the conventional reject value.
+    pub fn reject(&mut self) {
+        self.done(0);
+    }
+
+    /// Finishes the dialog with `result`.
+    ///
+    /// A non-zero code emits `accepted`; zero emits `rejected`. In both cases the outcome is
+    /// recorded on [`Dialog::result`], the public `accepted`/`rejected` state properties, the
+    /// `finished` signal, and then the dialog closes.
+    pub fn done(&mut self, result: i32) {
+        self.result = Some(result);
+        self.accepted_state = result != 0;
+        self.rejected_state = result == 0;
+        if result != 0 {
+            self.accepted.emit();
+        } else {
+            self.rejected.emit();
+        }
+        self.finished.emit(result);
         self.close();
     }
 
-    /// Rejects the dialog: emits `rejected` then closes it.
-    pub fn reject(&mut self) {
-        self.rejected.emit();
-        self.close();
+    /// The result code the dialog finished with, or `None` while it is still open.
+    pub fn result(&self) -> Option<i32> {
+        self.result
+    }
+
+    /// Whether the dialog finished by accepting.
+    pub fn was_accepted(&self) -> bool {
+        self.accepted_state
+    }
+
+    /// Whether the dialog finished by rejecting.
+    pub fn was_rejected(&self) -> bool {
+        self.rejected_state
+    }
+
+    /// Opens the dialog and reports the result it currently holds.
+    ///
+    /// # Why this does not block
+    ///
+    /// A widget has no event loop of its own: the host owns the loop, so a blocking `exec` would
+    /// either re-enter it or deadlock. This entry point therefore performs the open half and
+    /// answers [`Dialog::result`] — `None` until the host delivers the accept/reject that finishes
+    /// the dialog. A host that needs a synchronous answer can connect `finished` and run its own
+    /// loop until it fires.
+    pub fn exec(&mut self) -> Option<i32> {
+        self.open();
+        self.result
+    }
+
+    /// Whether the title bar paints a close button.
+    pub fn is_closable(&self) -> bool {
+        self.closable
+    }
+
+    /// Shows or hides the title-bar close button.
+    ///
+    /// Off by default, so the default chrome is unchanged. When on, a press on the button
+    /// rejects the dialog.
+    pub fn set_closable(&mut self, closable: bool) {
+        if self.closable == closable {
+            return;
+        }
+        self.closable = closable;
+        self.base.request_redraw();
+    }
+
+    /// The close button's rectangle on the painted frame.
+    ///
+    /// Returns the empty rectangle when the dialog is not closable or has no title bar to put
+    /// the button on. Drawing and hit-testing both read this, so the mark and its target cannot
+    /// drift.
+    fn close_button_rect(&self) -> Option<Rect> {
+        if !self.closable || self.title.is_empty() {
+            return None;
+        }
+        let frame = self.frame_rect();
+        let bar = ControlMetrics::top_band(frame, DIALOG_TITLE_BAR_HEIGHT);
+        if bar.height == 0 || bar.width < DIALOG_CLOSE_BUTTON {
+            return None;
+        }
+        let side = DIALOG_CLOSE_BUTTON.min(bar.height);
+        Some(Rect::new(
+            bar.x + bar.width as i32 - side as i32 - 4,
+            bar.y + ((bar.height - side) / 2) as i32,
+            side,
+            side,
+        ))
+    }
+
+    /// The title-bar band that starts a move drag.
+    fn drag_bar(&self) -> Option<Rect> {
+        if self.title.is_empty() {
+            return None;
+        }
+        let bar = ControlMetrics::top_band(self.frame_rect(), DIALOG_TITLE_BAR_HEIGHT);
+        (bar.width > 0 && bar.height > 0).then_some(bar)
     }
 
     /// The frame the dialog actually paints: at most its intrinsic size, centred in the
@@ -343,6 +483,9 @@ impl Widget for Dialog {
             "rejected" => Some(EventSignalRef::unit("rejected", &self.rejected)),
             "opened" => Some(EventSignalRef::unit("opened", &self.opened)),
             "closed" => Some(EventSignalRef::unit("closed", &self.closed)),
+            "finished" => Some(EventSignalRef::mapped("finished", &self.finished, |v| {
+                CapabilityValue::Int(i64::from(*v))
+            })),
             _ => None,
         }
     }
@@ -355,6 +498,13 @@ impl WidgetProperties for Dialog {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
             "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
             "has_content" => Ok(CapabilityValue::Bool(self.content_widget().is_some())),
+            "result" => Ok(match self.result {
+                Some(code) => CapabilityValue::Int(i64::from(code)),
+                None => CapabilityValue::Null,
+            }),
+            "accepted" => Ok(CapabilityValue::Bool(self.was_accepted())),
+            "rejected" => Ok(CapabilityValue::Bool(self.was_rejected())),
+            "closable" => Ok(CapabilityValue::Bool(self.is_closable())),
             _ => base_property_get(self, name),
         }
     }
@@ -373,22 +523,41 @@ impl WidgetProperties for Dialog {
                 _ => Err(CapabilityAccessError::TypeMismatch),
             },
             "has_content" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // The outcome is written by finishing the dialog (`done`), not by assignment: a
+            // writable `result` would record an answer nobody gave.
+            "result" | "accepted" | "rejected" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "closable" => match value {
+                CapabilityValue::Bool(v) => {
+                    self.set_closable(v);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "modal", "has_content", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "modal",
+            "has_content",
+            "result",
+            "accepted",
+            "rejected",
+            "closable",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "accept" => {
-                self.accepted.emit();
+                self.accept();
                 Ok(())
             }
             "reject" => {
-                self.rejected.emit();
+                self.reject();
                 Ok(())
             }
             _ => Err(CapabilityAccessError::UnknownCommand),
@@ -402,9 +571,44 @@ impl EventHandler for Dialog {
         if !self.base.is_enabled() {
             return;
         }
+        if !self.is_visible() {
+            return;
+        }
         match event {
-            Event::MousePress { button: 1, .. } => self.base.set_mouse_pressed(true),
-            Event::MouseRelease { button: 1, .. } => self.base.set_mouse_pressed(false),
+            Event::MousePress { pos, button: 1, .. } => {
+                if self.close_button_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.reject();
+                    return;
+                }
+                if self.drag_bar().is_some_and(|bar| bar.contains_point(*pos)) {
+                    // The *painted* frame moves with the pointer, not the offered rectangle: the
+                    // frame is what the user grabbed.
+                    self.drag = Some(TitleDrag { origin: *pos, origin_rect: self.frame_rect() });
+                }
+                self.base.set_mouse_pressed(true);
+            }
+            Event::MouseMove { pos } => {
+                if let Some(drag) = self.drag {
+                    let dx = pos.x - drag.origin.x;
+                    let dy = pos.y - drag.origin.y;
+                    if dx != 0 || dy != 0 {
+                        let moved = Rect::new(
+                            drag.origin_rect.x + dx,
+                            drag.origin_rect.y + dy,
+                            drag.origin_rect.width,
+                            drag.origin_rect.height,
+                        );
+                        self.set_geometry(moved);
+                    }
+                }
+            }
+            Event::MouseRelease { button: 1, .. } => {
+                self.drag = None;
+                self.base.set_mouse_pressed(false);
+            }
+            Event::KeyPress { key, .. } if *key == crate::event::key_codes::ESCAPE => {
+                self.reject();
+            }
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -544,18 +748,29 @@ impl Draw for Dialog {
         let title_font = effective_font(style);
         let band = ControlMetrics::band_inset(bar, 0);
         let title_line = context.text_line(band, title_font);
+        // A closable dialog leaves room on the right of the title for its button, so a long
+        // title elides before the mark instead of running underneath it.
+        let title_width = if self.closable {
+            rect.width.saturating_sub(16).saturating_sub(DIALOG_CLOSE_BUTTON + 8)
+        } else {
+            rect.width.saturating_sub(16)
+        };
         context.draw_text_fitted_cow(
-            Rect::new(
-                rect.x + 8,
-                title_line.y,
-                rect.width.saturating_sub(16),
-                title_line.height.max(1),
-            ),
+            Rect::new(rect.x + 8, title_line.y, title_width, title_line.height.max(1)),
             &self.title,
             title_font,
             ink,
             HorizontalAlignment::Left,
         );
+        if let Some(close) = self.close_button_rect() {
+            crate::widget::draw_icon_centered(
+                context,
+                close,
+                close.height,
+                ink,
+                crate::widget::IconName::Close,
+            );
+        }
     }
 }
 
@@ -633,6 +848,90 @@ mod tests {
         d.close();
         assert!(!d.is_visible());
         assert_eq!(closed.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn done_records_the_result_and_finishes_the_dialog() {
+        let mut d = dialog();
+        d.open();
+        let finished = Arc::new(std::sync::Mutex::new(Vec::<i32>::new()));
+        let sink = finished.clone();
+        d.finished.connect(move |code: std::sync::Arc<i32>| {
+            sink.lock().expect("lock").push(*code);
+        });
+        assert_eq!(d.result(), None);
+        assert!(!d.was_accepted() && !d.was_rejected());
+
+        d.done(42);
+        assert_eq!(d.result(), Some(42));
+        assert!(d.was_accepted());
+        assert!(!d.was_rejected());
+        assert!(!d.is_visible(), "finishing closes the dialog");
+        assert_eq!(*finished.lock().expect("lock"), vec![42]);
+
+        d.open();
+        d.done(0);
+        assert_eq!(d.result(), Some(0));
+        assert!(!d.was_accepted());
+        assert!(d.was_rejected());
+        assert_eq!(*finished.lock().expect("lock"), vec![42, 0]);
+    }
+
+    #[test]
+    fn escape_rejects_an_open_dialog() {
+        let mut d = dialog();
+        d.open();
+        let rejected = Arc::new(AtomicUsize::new(0));
+        let r = rejected.clone();
+        d.rejected.connect(move || {
+            r.fetch_add(1, Ordering::SeqCst);
+        });
+        d.handle_event(&Event::key_press(crate::event::key_codes::ESCAPE, 0));
+        assert_eq!(rejected.load(Ordering::SeqCst), 1);
+        assert_eq!(d.result(), Some(0));
+        assert!(!d.is_visible());
+    }
+
+    #[test]
+    fn dragging_the_title_bar_moves_the_dialog() {
+        let mut d = Dialog::with_title("Move", Rect::new(10, 20, 200, 160));
+        let before = d.geometry();
+        let bar = d.drag_bar().expect("a titled dialog has a drag bar");
+        let grab = Point::new(bar.x + 4, bar.y + 4);
+        d.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
+        d.handle_event(&Event::MouseMove { pos: Point::new(grab.x + 15, grab.y + 25) });
+        assert_eq!(
+            d.geometry(),
+            Rect::new(before.x + 15, before.y + 25, before.width, before.height)
+        );
+        d.handle_event(&Event::MouseRelease {
+            pos: Point::new(grab.x + 15, grab.y + 25),
+            button: 1,
+        });
+        // A move after the release no longer drags.
+        let settled = d.geometry();
+        d.handle_event(&Event::MouseMove { pos: Point::new(grab.x + 90, grab.y + 90) });
+        assert_eq!(d.geometry(), settled);
+    }
+
+    #[test]
+    fn a_closable_dialog_owns_a_close_hit_area() {
+        let mut d = Dialog::with_title("Close", Rect::new(0, 0, 300, 200));
+        assert!(!d.is_closable(), "the button is opt-in, so the default chrome is unchanged");
+        d.set_closable(true);
+        let close = d.close_button_rect().expect("a closable titled dialog paints a close button");
+        let rejected = Arc::new(AtomicUsize::new(0));
+        let r = rejected.clone();
+        d.rejected.connect(move || {
+            r.fetch_add(1, Ordering::SeqCst);
+        });
+        d.handle_event(&Event::MousePress {
+            pos: Point::new(close.x + 1, close.y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(rejected.load(Ordering::SeqCst), 1);
+        assert_eq!(d.result(), Some(0));
     }
 
     #[test]

@@ -26,6 +26,12 @@ pub struct StackedWidget {
     pub current_changed: Signal1<usize>,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
+    /// Duration of a page slide, in milliseconds. `0` disables the transition.
+    transition_ms: u32,
+    /// Slide progress, `0.0` showing the previous page and `1.0` the current one.
+    transition: f32,
+    /// The page being slid out, while a transition is active.
+    previous_page: Option<usize>,
 }
 impl StackedWidget {
     /// Creates a stacked widget.
@@ -36,6 +42,9 @@ impl StackedWidget {
             current_index: 0,
             current_changed: Signal1::new(),
             registry: None,
+            transition_ms: 0,
+            transition: 1.0,
+            previous_page: None,
         }
     }
     /// Sets the shared widget registry for child forwarding.
@@ -126,7 +135,15 @@ impl StackedWidget {
     /// [`Self::current_changed_suppression_reason`].
     pub fn set_current_index(&mut self, index: usize) {
         if index < self.widgets.len() && self.current_index != index {
+            let previous = self.current_index;
             self.current_index = index;
+            if self.transition_ms > 0 && previous < self.widgets.len() {
+                self.previous_page = Some(previous);
+                self.transition = 0.0;
+            } else {
+                self.previous_page = None;
+                self.transition = 1.0;
+            }
             self.sync_pages();
             self.base.request_redraw();
             if !self.base.is_enabled() {
@@ -154,7 +171,8 @@ impl StackedWidget {
     /// uses), so the flag the painter reads and the one a host reads cannot disagree.
     fn sync_pages(&self) {
         for (index, widget_id) in self.widgets.iter().enumerate() {
-            crate::set_widget_visible(*widget_id, index == self.current_index);
+            let shown = index == self.current_index || self.previous_page == Some(index);
+            crate::set_widget_visible(*widget_id, shown);
         }
         self.place_current_page();
     }
@@ -165,10 +183,56 @@ impl StackedWidget {
     /// so "placing" is moving the selected child onto the control's geometry. Without it
     /// a page created at `0x0` stayed at `0x0` and painted nothing.
     fn place_current_page(&self) {
+        let rect = self.geometry();
         if let Some(widget_id) = self.current_widget() {
-            let rect = self.geometry();
-            crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+            let offset = if self.previous_page.is_some() {
+                ((1.0 - self.transition) * rect.width as f32).round() as i32
+            } else {
+                0
+            };
+            crate::set_widget_geometry(
+                widget_id,
+                rect.x.saturating_add(offset),
+                rect.y,
+                rect.width,
+                rect.height,
+            );
         }
+        if let Some(previous) = self.previous_page {
+            if let Some(widget_id) = self.widgets.get(previous) {
+                let offset = (-(self.transition) * rect.width as f32).round() as i32;
+                crate::set_widget_geometry(
+                    *widget_id,
+                    rect.x.saturating_add(offset),
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                );
+            }
+        }
+    }
+
+    /// Sets the page-slide duration. `0` (the default) snaps, as before.
+    pub fn set_transition_duration(&mut self, milliseconds: u32) {
+        if self.transition_ms == milliseconds {
+            return;
+        }
+        self.transition_ms = milliseconds;
+        if milliseconds == 0 {
+            self.previous_page = None;
+            self.transition = 1.0;
+            self.sync_pages();
+        }
+    }
+
+    /// The page-slide duration in milliseconds.
+    pub fn transition_duration(&self) -> u32 {
+        self.transition_ms
+    }
+
+    /// How far the slide has progressed: `0.0` previous, `1.0` current.
+    pub fn transition_progress(&self) -> f32 {
+        self.transition
     }
 
     /// Reports why [`Self::set_current_index`] would **not** emit `current_changed`
@@ -211,6 +275,25 @@ impl Widget for StackedWidget {
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
+    }
+
+    /// Advances the page slide; `true` while it is still moving.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if self.transition_ms == 0 || self.previous_page.is_none() {
+            return false;
+        }
+        let step = delta_ms as f32 / self.transition_ms as f32;
+        self.transition = (self.transition + step).min(1.0);
+        if self.transition >= 1.0 {
+            self.previous_page = None;
+        }
+        self.place_current_page();
+        self.base.request_redraw();
+        self.previous_page.is_some()
+    }
+
+    fn is_animating(&self) -> bool {
+        self.transition_ms > 0 && self.previous_page.is_some()
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -363,8 +446,11 @@ impl Draw for StackedWidget {
         );
         if let Some(widget_id) = self.current_widget() {
             if let Some(ref reg) = self.registry {
-                reg.borrow_mut().set_widget_geometry(widget_id, rect);
                 context.push_clip(rect.x, rect.y, rect.width, rect.height);
+                if let Some(previous) = self.previous_page.and_then(|index| self.widgets.get(index))
+                {
+                    reg.borrow_mut().draw_widget(*previous, context);
+                }
                 reg.borrow_mut().draw_widget(widget_id, context);
                 context.pop_clip();
             }
@@ -1129,5 +1215,27 @@ mod tests {
         assert_eq!(sw.count(), 3);
         sw.set_current_widget(widget_id_3());
         assert_eq!(sw.selected_index().unwrap_or(0), 2, "past the end lands last");
+    }
+
+    /// A transition keeps the previous page visible and slides both pages over frames.
+    #[test]
+    fn a_page_transition_slides_instead_of_snapping() {
+        use crate::event::EventHandler;
+        let mut sw = StackedWidget::new(Rect::new(0, 0, 200, 100));
+        sw.add_widget(widget_id_1());
+        sw.add_widget(widget_id_2());
+        sw.set_transition_duration(100);
+        sw.set_current_index(1);
+        assert_eq!(sw.transition_progress(), 0.0);
+        assert!(sw.is_animating());
+        assert!(sw.tick(50));
+        assert!(sw.transition_progress() > 0.0);
+        assert!(!sw.tick(100));
+        assert_eq!(sw.transition_progress(), 1.0);
+        assert!(!sw.is_animating());
+        // A disabled stack still moves; the signal gate is covered elsewhere.
+        sw.set_current_index(0);
+        let _ = sw.selected_index();
+        sw.handle_event(&crate::event::Event::MouseMove { pos: crate::core::Point::new(1, 1) });
     }
 }

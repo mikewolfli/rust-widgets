@@ -12,7 +12,8 @@
 use super::editor::{decimal_digits, CodeEditor};
 use super::grid::{LineGrid, RowLayout};
 use super::types::{
-    MarkerSeverity, SearchMatch, SyntaxPalette, TextPosition, TokenKind, MIN_TOUCH_TARGET,
+    CaretStyle, MarkerSeverity, SearchMatch, SyntaxPalette, TextPosition, TokenKind,
+    MIN_TOUCH_TARGET,
 };
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::{RenderContext, TEXT_FIT_MARGIN};

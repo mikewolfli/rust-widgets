@@ -25,7 +25,7 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -71,6 +71,14 @@ pub struct OtpInput {
     /// again, but a change while the control is already complete does not, so a
     /// listener that submits the code cannot be made to submit twice.
     pub completed: Signal1<String>,
+    /// Emitted when Enter is pressed, carrying the code as it stands.
+    ///
+    /// Enter is the user's "submit this", which is why it carries the value even when the code is
+    /// not yet complete: the host may still accept it, and refusing to say anything would leave the
+    /// key doing nothing.
+    pub submitted: Signal1<String>,
+    /// Emitted when Escape is pressed — the user abandoned the entry.
+    pub cancelled: GenericSignal,
 }
 
 impl OtpInput {
@@ -85,6 +93,8 @@ impl OtpInput {
             focused_index: 0,
             value_changed: Signal1::new(),
             completed: Signal1::new(),
+            submitted: Signal1::new(),
+            cancelled: GenericSignal::new(),
         }
     }
 
@@ -375,6 +385,10 @@ impl Widget for OtpInput {
             "completed" => Some(EventSignalRef::mapped("completed", &self.completed, |v| {
                 CapabilityValue::String(v.clone())
             })),
+            "submitted" => Some(EventSignalRef::mapped("submitted", &self.submitted, |v| {
+                CapabilityValue::String(v.clone())
+            })),
+            "cancelled" => Some(EventSignalRef::unit("cancelled", &self.cancelled)),
             _ => None,
         }
     }
@@ -499,38 +513,64 @@ impl EventHandler for OtpInput {
                     self.set_focused_index(index);
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                // Backspace.
-                8 => {
-                    self.backspace();
-                }
-                // Enter and Escape are accepted as "the code is as typed"; the
-                // caller decides what that means.
-                13 | 27 => {}
-                // Left arrow.
-                37 => {
-                    self.set_focused_index(self.focused_index.saturating_sub(1));
-                }
-                // Right arrow. Clamped to the last box, not past it: one box beyond
-                // the end is not a box, and an index there would make backspace
-                // ambiguous.
-                39 => {
-                    self.set_focused_index((self.focused_index + 1).min(self.length));
-                }
-                _ => {
-                    if *key >= 32 && *key < 127 {
-                        if let Some(ch) = char::from_u32(*key) {
-                            self.insert_char(ch);
+            Event::KeyPress { key, modifiers } => {
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
+                let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
+                match *key {
+                    // Backspace.
+                    8 => {
+                        self.backspace();
+                    }
+                    // Enter submits the entry; Escape abandons it. Both are reported to the
+                    // host, because a segmented code field owns no policy beyond the code.
+                    13 => {
+                        self.submitted.emit(self.value());
+                    }
+                    27 => {
+                        self.cancelled.emit();
+                    }
+                    // Tab steps to the next box, Shift+Tab to the previous one. A code is a row
+                    // of slots, so Tab is a lateral movement rather than a focus gesture.
+                    9 => {
+                        let next = if shift {
+                            self.focused_index.saturating_sub(1)
+                        } else {
+                            (self.focused_index + 1).min(self.length.saturating_sub(1))
+                        };
+                        self.set_focused_index(next);
+                    }
+                    // Primary+V pastes the clipboard into the boxes, which is how a code copied
+                    // from a message actually gets entered.
+                    86 if primary => {
+                        #[cfg(not(alloc_frugal))]
+                        {
+                            let pasted = crate::get_clipboard_text();
+                            if !pasted.is_empty() {
+                                self.paste(&pasted);
+                            }
+                        }
+                    }
+                    // Left arrow.
+                    37 => {
+                        self.set_focused_index(self.focused_index.saturating_sub(1));
+                    }
+                    // Right arrow. Clamped to the last box, not past it: one box beyond
+                    // the end is not a box, and an index there would make backspace
+                    // ambiguous.
+                    39 => {
+                        self.set_focused_index((self.focused_index + 1).min(self.length));
+                    }
+                    _ => {
+                        if *key >= 32 && *key < 127 && !primary {
+                            if let Some(ch) = char::from_u32(*key) {
+                                self.insert_char(ch);
+                            }
                         }
                     }
                 }
-            },
-            // An IME commit is a run of characters the input method resolved. It fills the
-            // boxes character by character through `insert_char`, so it obeys the control's own
-            // rules — one alphanumeric per box, focus advances, a full code refuses the rest —
-            // rather than replacing the code as a paste does. Formatting characters are skipped
-            // for the same reason `paste` drops them.
-            Event::ImeCommit { text } => {
+            }
+            Event::TextInput { text } | Event::ImeCommit { text } => {
                 for ch in text.chars() {
                     if !ch.is_alphanumeric() {
                         continue;
@@ -1263,5 +1303,53 @@ mod tests {
         assert_ne!(masked_svg, svg, "masking must change what is drawn");
         assert!(masked_svg.contains("<circle"), "the mask dot must be drawn as geometry");
         assert!(!masked_svg.contains("data-text"), "a masked cell must not draw the code as text");
+    }
+
+    /// Platform-committed text fills successive boxes.
+    #[test]
+    fn text_input_fills_the_boxes() {
+        let mut otp = otp();
+        otp.handle_event(&Event::TextInput { text: "123".to_string() });
+        assert_eq!(otp.value(), "123");
+        assert_eq!(otp.focused_index(), 3);
+    }
+
+    /// Primary+V pastes the clipboard into the boxes.
+    #[test]
+    fn primary_v_pastes_the_code() {
+        let _clipboard = crate::clipboard::clipboard_test_guard();
+        crate::set_clipboard_text("987654");
+        let mut otp = otp();
+        otp.handle_event(&Event::KeyPress { key: 86, modifiers: 0b1000 });
+        assert_eq!(otp.value(), "987654");
+    }
+
+    /// Tab and Shift+Tab step between boxes.
+    #[test]
+    fn tab_steps_between_boxes() {
+        let mut otp = otp();
+        otp.handle_event(&Event::KeyPress { key: 9, modifiers: 0 });
+        assert_eq!(otp.focused_index(), 1);
+        otp.handle_event(&Event::KeyPress { key: 9, modifiers: 0b0001 });
+        assert_eq!(otp.focused_index(), 0, "Shift+Tab steps back");
+    }
+
+    /// Enter submits the entry and Escape reports an abandoned one.
+    #[test]
+    fn enter_and_escape_report_the_entry() {
+        use std::sync::{Arc, Mutex};
+        let mut otp = otp();
+        otp.handle_event(&Event::TextInput { text: "12".to_string() });
+        let submitted = Arc::new(Mutex::new(String::new()));
+        let submitted_clone = submitted.clone();
+        otp.submitted.connect(move |value| *submitted_clone.lock().unwrap() = value.to_string());
+        let cancelled = Arc::new(Mutex::new(false));
+        let cancelled_clone = cancelled.clone();
+        otp.cancelled.connect(move || *cancelled_clone.lock().unwrap() = true);
+
+        otp.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(*submitted.lock().unwrap(), "12");
+        otp.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert!(*cancelled.lock().unwrap());
     }
 }

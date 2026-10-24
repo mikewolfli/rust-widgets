@@ -297,6 +297,20 @@ pub fn default_widget_property_default_value(
             "pressed" => CapabilityValue::Bool(false),
             "default" => CapabilityValue::Bool(false),
             "icon_source" => CapabilityValue::Null,
+            // Mirrors `Button::new`'s field initialisers, so a fresh button and the
+            // schema's defaults agree.
+            "icon_size" => {
+                CapabilityValue::UInt(crate::widget::metrics::dimensions::BUTTON_ICON_SIZE as u64)
+            }
+            "shortcut" => CapabilityValue::Null,
+            "auto_default" => CapabilityValue::Bool(false),
+            "auto_exclusive" => CapabilityValue::Bool(false),
+            "flat" => CapabilityValue::Bool(false),
+            "elide" => CapabilityValue::String("right".to_string()),
+            "drag_enabled" => CapabilityValue::Bool(false),
+            "accepts_drops" => CapabilityValue::Bool(false),
+            "menu_open" => CapabilityValue::Bool(false),
+            "menu_item_count" => CapabilityValue::UInt(0),
             "enabled" => CapabilityValue::Bool(true),
             "tooltip" => CapabilityValue::String(String::new()),
             _ => return None,
@@ -304,6 +318,10 @@ pub fn default_widget_property_default_value(
         WidgetKind::Label => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "alignment" => CapabilityValue::String("left".to_string()),
+            "word_wrap" => CapabilityValue::Bool(false),
+            "elide" => CapabilityValue::String("none".to_string()),
+            "margin" => CapabilityValue::UInt(0),
+            "scaled_contents" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::CheckBox => match property_name {
@@ -311,12 +329,15 @@ pub fn default_widget_property_default_value(
             "state" => CapabilityValue::String("unchecked".to_string()),
             "checked" => CapabilityValue::Bool(false),
             "tristate_enabled" => CapabilityValue::Bool(false),
+            "auto_exclusive" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::RadioButton => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "checked" => CapabilityValue::Bool(false),
             "group_id" => CapabilityValue::Null,
+            // A radio is exclusive by construction; see `RadioButton::new`.
+            "auto_exclusive" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::Slider => match property_name {
@@ -402,6 +423,8 @@ pub fn default_widget_property_default_value(
             "current_text" => CapabilityValue::String(String::new()),
             "editable" => CapabilityValue::Bool(false),
             "max_visible_items" => CapabilityValue::UInt(10),
+            "insert_policy" => CapabilityValue::String("insert_at_bottom".to_string()),
+            "size_adjust_policy" => CapabilityValue::String("adjust_to_contents".to_string()),
             "open" => CapabilityValue::Bool(false),
             // The direction the field runs in. `ComboBox::new` starts left-to-right, so the schema's
             // default has to say the same thing or a manifest reset would silently mirror a field
@@ -426,6 +449,12 @@ pub fn default_widget_property_default_value(
             "title_bar_height" => CapabilityValue::UInt(32),
             "close_button_size" => CapabilityValue::UInt(14),
             "button_spacing" => CapabilityValue::UInt(40),
+            // The macOS title bar's own names. `chrome_height` is the height the desktop bar
+            // actually paints (28) rather than the generic window row's 32, because a default
+            // that disagreed with the control would make a dropped binding silently resize it.
+            "chrome_height" => CapabilityValue::UInt(28),
+            "buttons_visible" => CapabilityValue::Bool(true),
+            "draggable" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::GroupBox => match property_name {
@@ -447,6 +476,9 @@ pub fn default_widget_property_default_value(
             "frame_shadow" => CapabilityValue::String("plain".to_string()),
             "line_width" => CapabilityValue::Float(1.0),
             "mid_line_width" => CapabilityValue::Float(0.0),
+            "frame_width" => CapabilityValue::Float(1.0),
+            "contents_margins" => CapabilityValue::String("0,0,0,0".to_string()),
+            "theme_bevel" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::LCDNumber => match property_name {
@@ -462,6 +494,7 @@ pub fn default_widget_property_default_value(
         WidgetKind::CommandLink => match property_name {
             "text" => CapabilityValue::String("Command".to_string()),
             "description" => CapabilityValue::String(String::new()),
+            "shield" => CapabilityValue::Bool(false),
             "enabled" => CapabilityValue::Bool(true),
             _ => return None,
         },
@@ -472,6 +505,9 @@ pub fn default_widget_property_default_value(
             "editable" => CapabilityValue::Bool(false),
             "max_visible_items" => CapabilityValue::Int(10),
             "alignment" => CapabilityValue::String("left".to_string()),
+            "font_filters" => CapabilityValue::String(String::new()),
+            "writing_system_filter" => CapabilityValue::Null,
+            "sample_text" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::Action => match property_name {
@@ -549,8 +585,15 @@ pub fn default_widget_property_default_value(
             // A field without a grammar (`line_edit`, `password_edit`) is valid and has no
             // message; `phone_input` / `email_input` start empty, which both grammars accept.
             "valid" => CapabilityValue::Bool(true),
+            "validation_state" => CapabilityValue::String("acceptable".to_string()),
             "validation_message" => CapabilityValue::String(String::new()),
             "alignment" => CapabilityValue::String("left".to_string()),
+            // Mirrors `LineEdit::new`: clean, with neither the clear affordance nor the
+            // reveal-on-edit echo enabled, and the value scrolled to its leading edge.
+            "modified" => CapabilityValue::Bool(false),
+            "clear_button_enabled" => CapabilityValue::Bool(false),
+            "password_echo_on_edit" => CapabilityValue::Bool(false),
+            "scroll_x" => CapabilityValue::Int(0),
             _ => return None,
         },
         WidgetKind::ListView => match property_name {
@@ -570,6 +613,10 @@ pub fn default_widget_property_default_value(
             "item_count" => CapabilityValue::UInt(0),
             "unread_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
+            // The macOS source list's own names (see `MAC_SOURCE_LIST_PROPERTIES`): a fresh
+            // sidebar has no sections and nothing selected.
+            "section_count" => CapabilityValue::UInt(0),
+            "selected_row" => CapabilityValue::Null,
             "row_height" => CapabilityValue::UInt(24),
             "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
@@ -759,6 +806,10 @@ pub fn default_widget_property_default_value(
             "movable" => CapabilityValue::Bool(true),
             "floatable" => CapabilityValue::Bool(true),
             "item_count" => CapabilityValue::UInt(0),
+            // The macOS toolbar's own names: an action strip is not selectable and has no
+            // selected slot until the host asks for one.
+            "selectable" => CapabilityValue::Bool(false),
+            "selected_index" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::RibbonBar => match property_name {
@@ -772,6 +823,12 @@ pub fn default_widget_property_default_value(
             "current_color" => CapabilityValue::String("#FFFFFFFF".to_string()),
             "modal" => CapabilityValue::Bool(true),
             "options_alpha" => CapabilityValue::Bool(false),
+            // Mirrors `ColorDialog::new`: white is the second preset, and every picker section
+            // starts hidden with an empty custom palette.
+            "hex_rgba" => CapabilityValue::String("#FFFFFFFF".to_string()),
+            "preset_index" => CapabilityValue::UInt(1),
+            "show_hex_input" | "show_presets" | "show_hue_rail" => CapabilityValue::Bool(false),
+            "custom_color_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
         // `ColorPicker` declares its own kind since BLUE16 phase E-6. The defaults
@@ -906,6 +963,14 @@ pub fn default_widget_property_default_value(
             "text" => CapabilityValue::String(String::new()),
             "checked" => CapabilityValue::Bool(false),
             "state" => CapabilityValue::String("normal".to_string()),
+            "auto_exclusive" => CapabilityValue::Bool(false),
+            "auto_raise" => CapabilityValue::Bool(false),
+            "group_id" => CapabilityValue::Null,
+            "icon_source" => CapabilityValue::Null,
+            "arrow_type" => CapabilityValue::String("none".to_string()),
+            "popup_mode" => CapabilityValue::String("instant".to_string()),
+            "menu_open" => CapabilityValue::Bool(false),
+            "menu_item_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
         // `SegmentedControl` has its own kind and therefore its own arm. These two arms used to be
@@ -917,6 +982,8 @@ pub fn default_widget_property_default_value(
             "item_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
             "selected_id" => CapabilityValue::Null,
+            // The macOS picker's own derived count (see `MAC_SEGMENTED_CONTROL_PROPERTIES`).
+            "segment_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
         // A `Chip` declares these; `CheckListBox` is a *type alias for `ListBox`* and
@@ -944,6 +1011,11 @@ pub fn default_widget_property_default_value(
             "line_color" => CapabilityValue::String("#DCDCDCFF".to_string()),
             "cell_width" => CapabilityValue::UInt(0),
             "cell_height" => CapabilityValue::UInt(0),
+            // `selected_count` and `page` follow the current selection/scroll position, so their
+            // static default is the empty first page.
+            "selected_count" => CapabilityValue::UInt(0),
+            "page" => CapabilityValue::UInt(0),
+            "selected_cell" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::FreeformShape => match property_name {
@@ -984,6 +1056,8 @@ pub fn default_widget_property_default_value(
             "selected_index" => CapabilityValue::UInt(0),
             "item_count" => CapabilityValue::UInt(0),
             "expanded" => CapabilityValue::Bool(false),
+            "max_visible" => CapabilityValue::Null,
+            "scroll_offset" => CapabilityValue::UInt(0),
             "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
@@ -993,11 +1067,18 @@ pub fn default_widget_property_default_value(
             "read_only" => CapabilityValue::Bool(false),
             // `0` is unlimited, matching `TextArea::new`.
             "max_length" => CapabilityValue::UInt(0),
+            // A fresh area starts unwrapped, flush with its inset, with no block budget and
+            // no horizontal scroll.
+            "soft_wrap" => CapabilityValue::Bool(false),
+            "content_margin" => CapabilityValue::UInt(0),
+            "max_block_count" => CapabilityValue::Null,
+            "scroll_x" => CapabilityValue::Int(0),
             _ => return None,
         },
         WidgetKind::Keyboard => match property_name {
             "layout" => CapabilityValue::String("qwerty".to_string()),
             "lowercase" => CapabilityValue::Bool(true),
+            "press_animation" => CapabilityValue::Bool(false),
             _ => return None,
         },
         // `CupertinoSwitch` publishes the same schema as `Switch` (it is the
@@ -1072,6 +1153,7 @@ pub fn default_widget_property_default_value(
             "separator" => CapabilityValue::String("/".to_string()),
             "filterable" => CapabilityValue::Bool(false),
             "filter" => CapabilityValue::String(String::new()),
+            "max_visible" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::QueryBuilder => match property_name {
@@ -1102,6 +1184,9 @@ pub fn default_widget_property_default_value(
             "mention_count" => CapabilityValue::UInt(0),
             "popup_open" => CapabilityValue::Bool(false),
             "caret" => CapabilityValue::UInt(0),
+            // Mirrors `Mention::new` (`MAX_VISIBLE` = 6 rows of `ROW_HEIGHT` = 24).
+            "max_visible" => CapabilityValue::UInt(6),
+            "row_height" => CapabilityValue::UInt(24),
             _ => return None,
         },
         WidgetKind::MiniChart => match property_name {
@@ -1117,6 +1202,11 @@ pub fn default_widget_property_default_value(
             "title" => CapabilityValue::String(String::new()),
             "modal" => CapabilityValue::Bool(true),
             "has_content" => CapabilityValue::Bool(false),
+            // `Dialog::new` starts with no outcome recorded and no close affordance.
+            "result" => CapabilityValue::Null,
+            "accepted" => CapabilityValue::Bool(false),
+            "rejected" => CapabilityValue::Bool(false),
+            "closable" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::MessageBox => match property_name {
@@ -1125,6 +1215,14 @@ pub fn default_widget_property_default_value(
             // Mirrors `MessageBox::new`, which starts at `MessageBoxIcon::NoIcon`.
             "icon" => CapabilityValue::String("none".to_string()),
             "modal" => CapabilityValue::Bool(true),
+            // The supplementary text and the checkbox label start empty, the checkbox is
+            // unchecked, Enter answers the OK button and Escape answers no button.
+            "informative_text" | "detailed_text" | "check_box" => {
+                CapabilityValue::String(String::new())
+            }
+            "check_box_checked" => CapabilityValue::Bool(false),
+            "default_button" => CapabilityValue::String("ok".to_string()),
+            "escape_button" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::FileDialog => match property_name {
@@ -1133,10 +1231,18 @@ pub fn default_widget_property_default_value(
             "directory" => CapabilityValue::String(String::new()),
             "selected_file" => CapabilityValue::Null,
             "mode" => CapabilityValue::String("open_file".to_string()),
+            // No prompt or suffix is preset, the host has supplied no rows yet, and a fresh
+            // dialog sits at the start of its history.
+            "label_text" | "default_suffix" => CapabilityValue::String(String::new()),
+            "file_count" => CapabilityValue::UInt(0),
+            "can_go_back" | "can_go_forward" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::FontDialog => match property_name {
             "modal" => CapabilityValue::Bool(true),
+            // Mirrors `FontDialog::new`: no face option is set and the preview is on.
+            "underline" | "strikethrough" | "no_buttons" => CapabilityValue::Bool(false),
+            "show_preview" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::InputDialog => match property_name {
@@ -1146,6 +1252,9 @@ pub fn default_widget_property_default_value(
             "text_value" => CapabilityValue::String(String::new()),
             "int_value" => CapabilityValue::Int(0),
             "double_value" => CapabilityValue::Float(0.0),
+            "int_step" => CapabilityValue::Int(1),
+            "current_item" => CapabilityValue::UInt(0),
+            "dropdown_open" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::ProgressDialog => match property_name {
@@ -1154,11 +1263,20 @@ pub fn default_widget_property_default_value(
             "value" => CapabilityValue::Int(0),
             "minimum" => CapabilityValue::Int(0),
             "maximum" => CapabilityValue::Int(100),
+            // `cancel()` returns the value to the minimum, the button and the bar are
+            // painted, and the bar neither eases nor takes the accent colour until asked.
+            "auto_reset" | "show_cancel_button" | "show_bar" => CapabilityValue::Bool(true),
+            "minimum_duration" => CapabilityValue::UInt(0),
+            "animated" | "accent_fill" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::PopupWindow => match property_name {
             "title" => CapabilityValue::String(String::new()),
             "has_content" => CapabilityValue::Bool(false),
+            // A fresh popup is transient (`modal == false`), has no owner, and paints the
+            // square frame; `0` in `transient_parent` means "no parent".
+            "modal" | "floating_chrome" => CapabilityValue::Bool(false),
+            "transient_parent" => CapabilityValue::UInt(0),
             // `toast_stack` shares this kind; see the `ListView` note above.
             "toast_count" => CapabilityValue::UInt(0),
             "selected_id" => CapabilityValue::Null,
@@ -1299,6 +1417,8 @@ pub fn default_widget_property_default_value(
             "minimum" => CapabilityValue::Int(0),
             "maximum" => CapabilityValue::Int(100),
             "step" => CapabilityValue::Int(1),
+            // The macOS stepper's own flag (see `MAC_STEPPER_PROPERTIES`).
+            "wraps" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::Rating => match property_name {
@@ -1347,6 +1467,8 @@ pub fn default_widget_property_default_value(
         WidgetKind::InplaceEditor => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "editing" => CapabilityValue::Bool(false),
+            // Mirrors `EditTriggers::default()` (`DOUBLE_CLICK`).
+            "edit_triggers" => CapabilityValue::String("double_click".to_string()),
             _ => return None,
         },
         WidgetKind::QRCode => match property_name {
@@ -1376,6 +1498,7 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::WizardDialog => match property_name {
             "title" => CapabilityValue::String(String::new()),
+            "subtitle" => CapabilityValue::String(String::new()),
             "current_step" => CapabilityValue::UInt(0),
             "step_count" => CapabilityValue::UInt(0),
             "can_go_back" => CapabilityValue::Bool(false),
@@ -1405,6 +1528,8 @@ pub fn default_widget_property_default_value(
             // The popup state, published under its own name so bare `visible` can keep
             // meaning the base widget's visibility (served by the shared entry above).
             "shown" => CapabilityValue::Bool(false),
+            // A fresh tooltip is one eliding line; wrapping is the caller's opt-in.
+            "wrap" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::SegmentedButton => match property_name {
@@ -1491,6 +1616,12 @@ pub fn default_widget_property_default_value(
         WidgetKind::Popover => match property_name {
             "shown" => CapabilityValue::Bool(false),
             "text" => CapabilityValue::String(String::new()),
+            // A fresh popover is transient, auto-places its arrow, uses the built-in
+            // placeholder and paints an opaque card.
+            "behavior" => CapabilityValue::String("transient".to_string()),
+            "arrow_direction" => CapabilityValue::String("auto".to_string()),
+            "placeholder_text" => CapabilityValue::String(String::new()),
+            "translucent" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::AutoCompleteEdit => match property_name {
@@ -1505,6 +1636,11 @@ pub fn default_widget_property_default_value(
             "max_visible" => CapabilityValue::UInt(5),
             "can_undo" => CapabilityValue::Bool(false),
             "can_redo" => CapabilityValue::Bool(false),
+            "match_mode" => CapabilityValue::String("contains".to_string()),
+            "case_sensitive" => CapabilityValue::Bool(false),
+            "inline_completion" => CapabilityValue::Bool(false),
+            "close_policy" => CapabilityValue::String("always".to_string()),
+            "completion_prefix" => CapabilityValue::String(String::new()),
             "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
@@ -1559,12 +1695,19 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::ModalBottomSheet => match property_name {
             "visible" => CapabilityValue::Bool(false),
+            // `0` is the documented "derive the height from the control" value, so it is
+            // the round-trippable default; the accessor reports the effective height.
+            "sheet_height" => CapabilityValue::UInt(0),
+            "animated" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::FindReplaceDialog => match property_name {
             "find_text" => CapabilityValue::String(String::new()),
             "replace_text" => CapabilityValue::String(String::new()),
             "match_case" => CapabilityValue::Bool(false),
+            "whole_word" => CapabilityValue::Bool(false),
+            "use_regex" => CapabilityValue::Bool(false),
+            "highlight_all" => CapabilityValue::Bool(false),
             "wrap_around" => CapabilityValue::Bool(true),
             _ => return None,
         },
@@ -1579,6 +1722,9 @@ pub fn default_widget_property_default_value(
         WidgetKind::EditableComboBox => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "item_count" => CapabilityValue::UInt(0),
+            "cursor_position" => CapabilityValue::UInt(0),
+            "max_visible_items" => CapabilityValue::Null,
+            "scroll_offset" => CapabilityValue::UInt(0),
             "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
@@ -1650,6 +1796,7 @@ pub fn default_widget_property_default_value(
         WidgetKind::Sparkline => match property_name {
             "stroke_width" => CapabilityValue::Float(1.5),
             "data" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "show_end_value" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::BarChart => match property_name {
@@ -1835,6 +1982,8 @@ pub fn default_widget_property_default_value(
             "maximum" => CapabilityValue::Float(100.0),
             "label" | "unit" => CapabilityValue::String(String::new()),
             "thickness" => CapabilityValue::UInt(10),
+            "zone_count" => CapabilityValue::UInt(0),
+            "animated" => CapabilityValue::Bool(false),
             _ => return None,
         },
 
@@ -1848,17 +1997,37 @@ pub fn default_widget_property_default_value(
         WidgetKind::AlertDialog => match property_name {
             "title" | "message" => CapabilityValue::String(String::new()),
             "button_text" => CapabilityValue::String("OK".to_string()),
+            // The shared notice card starts with empty supplementary text and checkbox label,
+            // no icon, the first button as default, and modality on.
+            "informative_text" | "detailed_text" | "check_box" | "icon" => {
+                CapabilityValue::String(String::new())
+            }
+            "modal" => CapabilityValue::Bool(true),
+            "default_button" => CapabilityValue::UInt(0),
+            "check_box_checked" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::ConfirmDialog => match property_name {
             "title" | "message" => CapabilityValue::String(String::new()),
             "accept_text" => CapabilityValue::String("OK".to_string()),
             "reject_text" => CapabilityValue::String("Cancel".to_string()),
+            "informative_text" | "detailed_text" | "check_box" | "icon" => {
+                CapabilityValue::String(String::new())
+            }
+            "modal" => CapabilityValue::Bool(true),
+            "default_button" => CapabilityValue::UInt(0),
+            "check_box_checked" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::AboutDialog => match property_name {
             "title" => CapabilityValue::String("About".to_string()),
             "application_name" | "version" | "message" => CapabilityValue::String(String::new()),
+            "informative_text" | "detailed_text" | "check_box" | "icon" => {
+                CapabilityValue::String(String::new())
+            }
+            "modal" => CapabilityValue::Bool(true),
+            "default_button" => CapabilityValue::UInt(0),
+            "check_box_checked" => CapabilityValue::Bool(false),
             _ => return None,
         },
 

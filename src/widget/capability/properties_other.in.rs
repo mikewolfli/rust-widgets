@@ -339,6 +339,11 @@ macro_rules! impl_properties_other {
             PropertySchema::new("line_color", PropertyValueKind::String, true, true),
             PropertySchema::new("cell_width", PropertyValueKind::UInt, true, false),
             PropertySchema::new("cell_height", PropertyValueKind::UInt, true, false),
+            // The grid tracks a selection, so both directions are served: the reader reports the
+            // selected cell as a flat index (or null), and the writer accepts the same spelling.
+            PropertySchema::new("selected_cell", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("selected_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("page", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -404,6 +409,10 @@ macro_rules! impl_properties_other {
             PropertySchema::new("mention_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("popup_open", PropertyValueKind::Bool, true, false),
             PropertySchema::new("caret", PropertyValueKind::UInt, true, false),
+            // The popup's size budget: the row cap it shows before scrolling and the height of
+            // one candidate row. Both are assigned through the control's own setters.
+            PropertySchema::new("max_visible", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -455,6 +464,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("separator", PropertyValueKind::String, true, true),
             PropertySchema::new("filterable", PropertyValueKind::Bool, true, true),
             PropertySchema::new("filter", PropertyValueKind::String, true, false),
+            // A nullable row cap applied to every column of the browsed path.
+            PropertySchema::new("max_visible", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -907,6 +918,7 @@ macro_rules! impl_properties_other {
             // than `Records`.
             PropertySchema::new("data", PropertyValueKind::NumberList, true, true),
             PropertySchema::new("stroke_width", PropertyValueKind::Float, true, true),
+            PropertySchema::new("show_end_value", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -1075,7 +1087,79 @@ macro_rules! impl_properties_other {
             PropertySchema::new("maximum", PropertyValueKind::Float, true, true),
             PropertySchema::new("label", PropertyValueKind::String, true, true),
             PropertySchema::new("unit", PropertyValueKind::String, true, true),
+            PropertySchema::new("zone_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("animated", PropertyValueKind::Bool, true, true),
             PropertySchema::new("thickness", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        // ── macOS (desktop) component set ───────────────────────────────
+        //
+        // Five controls that model the desktop platform's own shapes, beside the
+        // touch-styled `cupertino` set. Each shares a `WidgetKind` with the control it
+        // refines, so its schema is its own table rather than a row on the sibling's.
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const MAC_SEGMENTED_CONTROL_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("segment_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const MAC_STEPPER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("value", PropertyValueKind::Int, true, true),
+            PropertySchema::new("minimum", PropertyValueKind::Int, true, true),
+            PropertySchema::new("maximum", PropertyValueKind::Int, true, true),
+            PropertySchema::new("step", PropertyValueKind::Int, true, true),
+            PropertySchema::new("wraps", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const MAC_TOOLBAR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("icon_size", PropertyValueKind::Float, true, true),
+            // Laid out horizontally by construction, so the name is readable and not writable:
+            // publishing a token the control would refuse to honour would be a lie.
+            PropertySchema::new("orientation", PropertyValueKind::String, true, false),
+            PropertySchema::new("selectable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const MAC_SOURCE_LIST_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("section_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("row_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("row_height", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("selected_row", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const MAC_WINDOW_CHROME_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
+            // The bar's height is the control's own metric; a caller wanting a different bar
+            // draws a different component rather than stretching this one.
+            PropertySchema::new("chrome_height", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("buttons_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("draggable", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

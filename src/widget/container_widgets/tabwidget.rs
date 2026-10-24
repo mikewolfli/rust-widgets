@@ -29,6 +29,7 @@ use crate::widget::IconSource;
 use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 /// Tab widget.
@@ -111,6 +112,26 @@ pub struct TabWidget {
     /// cannot leave a stale width behind). Strip width and tab position are not part of the key:
     /// they only decide the overflow division, which is integer arithmetic over these widths.
     tab_width_cache: RefCell<TabWidthCache>,
+    /// Pixels the tab strip is scrolled by when it overflows.
+    overflow_scroll: i32,
+    /// Whether the strip shows scroll arrows when the tabs do not fit.
+    show_overflow_buttons: bool,
+    /// How a title too long for its tab is shortened.
+    elide_mode: TabElideMode,
+    /// The tab under the pointer, for the tooltip path.
+    hovered_tab: Option<usize>,
+    /// An optional widget placed in the unused strip corner.
+    corner_widget: Option<ObjectId>,
+}
+
+/// How a tab title that does not fit its box is shortened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TabElideMode {
+    /// Clip the title (the historical behaviour).
+    #[default]
+    None,
+    /// Shorten the title and append an ellipsis.
+    ElideRight,
 }
 
 /// The measurement cache behind [`TabWidget::tab_width_hints`].
@@ -331,6 +352,11 @@ impl TabWidget {
             context_menu_requested: Signal1::new(),
             registry: None,
             tab_width_cache: RefCell::new(TabWidthCache::default()),
+            overflow_scroll: 0,
+            show_overflow_buttons: false,
+            elide_mode: TabElideMode::None,
+            hovered_tab: None,
+            corner_widget: None,
         }
     }
     /// Sets the shared widget registry for child forwarding.
@@ -936,14 +962,16 @@ impl TabWidget {
     fn tab_rects(&self) -> Vec<Rect> {
         let rect = self.geometry();
         let tab_height = TAB_HEIGHT as u32;
+        let scroll = self.overflow_scroll;
         self.tab_run()
             .into_iter()
             .map(|tab| {
                 let tab_width = tab.width;
+                let along = tab.x - scroll;
                 match self.tab_position {
-                    TabPosition::North => Rect::new(rect.x + tab.x, rect.y, tab_width, tab_height),
+                    TabPosition::North => Rect::new(rect.x + along, rect.y, tab_width, tab_height),
                     TabPosition::South => Rect::new(
-                        rect.x + tab.x,
+                        rect.x + along,
                         rect.y + rect.height as i32 - TAB_HEIGHT,
                         tab_width,
                         tab_height,
@@ -951,10 +979,10 @@ impl TabWidget {
                     // A vertical strip runs **down** the control: the layout's horizontal answer
                     // is the position along the strip, and the caption's width becomes the box
                     // width (the label stays horizontal, as every shipped tab strip draws it).
-                    TabPosition::West => Rect::new(rect.x, rect.y + tab.y, tab_width, tab_height),
+                    TabPosition::West => Rect::new(rect.x, rect.y + along, tab_width, tab_height),
                     TabPosition::East => Rect::new(
                         rect.x + rect.width as i32 - tab_width as i32,
-                        rect.y + tab.y,
+                        rect.y + tab.y - scroll,
                         tab_width,
                         tab_height,
                     ),
@@ -987,6 +1015,192 @@ impl TabWidget {
             }
         }
     }
+    /// Whether the strip draws scroll arrows when the tabs overflow.
+    pub fn show_overflow_buttons(&self) -> bool {
+        self.show_overflow_buttons
+    }
+
+    /// Enables or disables the overflow arrows.
+    ///
+    /// Off by default, so the historical proportional shrink is unchanged. When on and the
+    /// tabs do not fit, the strip reserves an arrow at each end and the user can scroll it.
+    pub fn set_show_overflow_buttons(&mut self, show: bool) {
+        if self.show_overflow_buttons == show {
+            return;
+        }
+        self.show_overflow_buttons = show;
+        if !show {
+            self.overflow_scroll = 0;
+        }
+        self.base.request_redraw();
+    }
+
+    /// The current tab-strip scroll offset along its axis.
+    pub fn overflow_scroll(&self) -> i32 {
+        self.overflow_scroll
+    }
+
+    /// The largest useful overflow offset.
+    fn max_overflow_scroll(&self) -> i32 {
+        let run = self.tab_run();
+        let end = run.last().map(|tab| tab.x + tab.width as i32).unwrap_or(0);
+        let strip = match self.tab_position {
+            TabPosition::North | TabPosition::South => self.geometry().width as i32,
+            TabPosition::West | TabPosition::East => self.geometry().height as i32,
+        };
+        (end - strip).max(0)
+    }
+
+    /// Scrolls the strip by `delta` pixels, clamped to the useful range.
+    pub fn scroll_tabs(&mut self, delta: i32) {
+        let next = (self.overflow_scroll + delta).clamp(0, self.max_overflow_scroll());
+        if next == self.overflow_scroll {
+            return;
+        }
+        self.overflow_scroll = next;
+        self.base.request_redraw();
+    }
+
+    /// How an over-long title is shortened.
+    pub fn elide_mode(&self) -> TabElideMode {
+        self.elide_mode
+    }
+
+    /// Sets the title elision mode; the default clips, as before.
+    pub fn set_elide_mode(&mut self, mode: TabElideMode) {
+        if self.elide_mode == mode {
+            return;
+        }
+        self.elide_mode = mode;
+        self.base.request_redraw();
+    }
+
+    /// The tab under the pointer, if any.
+    pub fn hovered_tab(&self) -> Option<usize> {
+        self.hovered_tab
+    }
+
+    /// The tooltip of the tab under the pointer, if it has one.
+    ///
+    /// The tooltip text was stored and never reachable: no pointer path recorded a hovered
+    /// tab and no query exposed its text. A host can now paint a tooltip from this answer.
+    pub fn hovered_tooltip(&self) -> Option<&str> {
+        let index = self.hovered_tab?;
+        self.tabs.get(index).map(|tab| tab.tooltip.as_str()).filter(|text| !text.is_empty())
+    }
+
+    /// An optional widget placed in the strip's unused corner.
+    pub fn corner_widget(&self) -> Option<ObjectId> {
+        self.corner_widget
+    }
+
+    /// Sets (or clears) the corner widget and places it.
+    pub fn set_corner_widget(&mut self, widget: Option<ObjectId>) {
+        if self.corner_widget == widget {
+            return;
+        }
+        if let Some(previous) = self.corner_widget {
+            self.base.remove_child(previous);
+        }
+        self.corner_widget = widget;
+        if let Some(widget) = widget {
+            self.base.add_child_linked(widget);
+            self.place_corner_widget();
+        }
+        self.base.request_redraw();
+    }
+
+    /// The rectangle the corner widget occupies.
+    pub fn corner_rect(&self) -> Rect {
+        const CORNER_WIDTH: u32 = 80;
+        let rect = self.geometry();
+        match self.tab_position {
+            TabPosition::North => Rect::new(
+                rect.x + rect.width.saturating_sub(CORNER_WIDTH) as i32,
+                rect.y,
+                CORNER_WIDTH,
+                TAB_HEIGHT as u32,
+            ),
+            TabPosition::South => Rect::new(
+                rect.x + rect.width.saturating_sub(CORNER_WIDTH) as i32,
+                rect.y + rect.height as i32 - TAB_HEIGHT,
+                CORNER_WIDTH,
+                TAB_HEIGHT as u32,
+            ),
+            TabPosition::West => Rect::new(
+                rect.x,
+                rect.y + rect.height.saturating_sub(CORNER_WIDTH) as i32,
+                TAB_HEIGHT as u32,
+                CORNER_WIDTH,
+            ),
+            TabPosition::East => Rect::new(
+                rect.x + rect.width as i32 - TAB_HEIGHT,
+                rect.y + rect.height.saturating_sub(CORNER_WIDTH) as i32,
+                TAB_HEIGHT as u32,
+                CORNER_WIDTH,
+            ),
+        }
+    }
+
+    fn place_corner_widget(&self) {
+        if let Some(widget) = self.corner_widget {
+            let rect = self.corner_rect();
+            crate::set_widget_geometry(widget, rect.x, rect.y, rect.width, rect.height);
+        }
+    }
+
+    /// The two overflow arrow boxes, or `None` when the strip has no overflow.
+    fn overflow_button_rects(&self) -> Option<(Rect, Rect)> {
+        const BUTTON: u32 = 16;
+        if !self.show_overflow_buttons || self.max_overflow_scroll() == 0 {
+            return None;
+        }
+        let rect = self.geometry();
+        let first = match self.tab_position {
+            TabPosition::North => Rect::new(rect.x, rect.y, BUTTON, TAB_HEIGHT as u32),
+            TabPosition::South => Rect::new(
+                rect.x,
+                rect.y + rect.height as i32 - TAB_HEIGHT,
+                BUTTON,
+                TAB_HEIGHT as u32,
+            ),
+            TabPosition::West => Rect::new(rect.x, rect.y, TAB_HEIGHT as u32, BUTTON),
+            TabPosition::East => Rect::new(
+                rect.x + rect.width as i32 - TAB_HEIGHT,
+                rect.y,
+                TAB_HEIGHT as u32,
+                BUTTON,
+            ),
+        };
+        let second = match self.tab_position {
+            TabPosition::North => Rect::new(
+                rect.x + rect.width.saturating_sub(BUTTON) as i32,
+                rect.y,
+                BUTTON,
+                TAB_HEIGHT as u32,
+            ),
+            TabPosition::South => Rect::new(
+                rect.x + rect.width.saturating_sub(BUTTON) as i32,
+                rect.y + rect.height as i32 - TAB_HEIGHT,
+                BUTTON,
+                TAB_HEIGHT as u32,
+            ),
+            TabPosition::West => Rect::new(
+                rect.x,
+                rect.y + rect.height.saturating_sub(BUTTON) as i32,
+                TAB_HEIGHT as u32,
+                BUTTON,
+            ),
+            TabPosition::East => Rect::new(
+                rect.x + rect.width as i32 - TAB_HEIGHT,
+                rect.y + rect.height.saturating_sub(BUTTON) as i32,
+                TAB_HEIGHT as u32,
+                BUTTON,
+            ),
+        };
+        Some((first, second))
+    }
+
     /// Returns index of tab at position.
     fn tab_at_position(&self, pos: Point) -> Option<usize> {
         self.tab_rects().into_iter().position(|tab_rect| tab_rect.contains(pos))
@@ -1013,6 +1227,30 @@ fn scaled_tab_spacing() -> i32 {
     let context = crate::layout::types::LayoutContext::default();
     let scale = context.layout_scale.max(context.font_scale);
     (TAB_SPACING as f32 * scale).round() as i32
+}
+
+/// Shortens a tab title to `width`, adding the ellipsis a shortened title must keep.
+///
+/// The fit itself is [`text_utils::elide_to_width`](crate::widget::text_utils::elide_to_width),
+/// the crate's one width-budget elider, so a tab title is cut exactly as a label or a segment
+/// caption is. The rule added here is this control's floor: a title that must be shortened
+/// never paints as nothing. The shared primitive reports "not even the ellipsis fits" as an
+/// empty string, while a blank tab would read as a tab with no caption rather than a tab whose
+/// caption was cut.
+fn elide_tab_title<'a>(
+    text: &'a str,
+    width: u32,
+    measure: &mut dyn FnMut(&str) -> u32,
+) -> Cow<'a, str> {
+    if width == 0 || text.is_empty() {
+        return Cow::Borrowed("");
+    }
+    let fitted = crate::widget::text_utils::elide_to_width(text, width, measure);
+    if fitted.is_empty() {
+        Cow::Borrowed("\u{2026}")
+    } else {
+        fitted
+    }
 }
 
 /// Widest a measured tab may become, and narrowest it may stay.
@@ -1410,6 +1648,16 @@ impl EventHandler for TabWidget {
         // what makes the strip behave as one control rather than as a set of drop targets.
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
+                if let Some((back, forward)) = self.overflow_button_rects() {
+                    if back.contains_point(*pos) {
+                        self.scroll_tabs(-MIN_TAB_WIDTH);
+                        return;
+                    }
+                    if forward.contains_point(*pos) {
+                        self.scroll_tabs(MIN_TAB_WIDTH);
+                        return;
+                    }
+                }
                 if let Some(index) = self.tab_at_position(*pos) {
                     if self.tabs[index].enabled {
                         // Check if the click is on the close button area.
@@ -1436,7 +1684,32 @@ impl EventHandler for TabWidget {
                     }
                 }
             }
-            Event::MouseMove { pos } => self.update_tab_drag(*pos),
+            Event::MouseMove { pos } => {
+                let hovered = self.tab_at_position(*pos);
+                if hovered != self.hovered_tab {
+                    self.hovered_tab = hovered;
+                    self.base.request_redraw();
+                }
+                self.update_tab_drag(*pos);
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_tab.take().is_some() {
+                    self.base.request_redraw();
+                }
+            }
+            Event::KeyPress { key, modifiers } if *key == crate::event::key_codes::TAB => {
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                if mods.contains(crate::shortcut::Modifiers::CTRL) && self.tabs.len() > 1 {
+                    let forward = !mods.contains(crate::shortcut::Modifiers::SHIFT);
+                    let count = self.tabs.len();
+                    let next = if forward {
+                        (self.current_index + 1) % count
+                    } else {
+                        (self.current_index + count - 1) % count
+                    };
+                    self.set_current_index(next);
+                }
+            }
             Event::MouseRelease { .. } => self.end_tab_drag(),
             _ => {}
         }
@@ -1510,6 +1783,73 @@ impl Draw for TabWidget {
         context.fill_rect(content_rect, content_background);
         // Draw content border
         context.draw_rect(content_rect, border);
+        // Overflow arrows are chrome: reserved at each end of the strip only when the
+        // caller asked for them and the tabs actually overflow.
+        if let Some((back, forward)) = self.overflow_button_rects() {
+            for button in [back, forward] {
+                context.fill_rect(button, content_background);
+                context.draw_rect(button, border);
+            }
+            let glyph = text_color.blend(&content_background, 0.2);
+            let (bx, by) = (back.x + back.width as i32 / 2, back.y + back.height as i32 / 2);
+            let (fx, fy) =
+                (forward.x + forward.width as i32 / 2, forward.y + forward.height as i32 / 2);
+            let half = 3;
+            match self.tab_position {
+                TabPosition::North | TabPosition::South => {
+                    context.draw_line_stroke(
+                        Point::new(bx + half, by - half),
+                        Point::new(bx - half, by),
+                        glyph,
+                        1,
+                    );
+                    context.draw_line_stroke(
+                        Point::new(bx - half, by),
+                        Point::new(bx + half, by + half),
+                        glyph,
+                        1,
+                    );
+                    context.draw_line_stroke(
+                        Point::new(fx - half, fy - half),
+                        Point::new(fx + half, fy),
+                        glyph,
+                        1,
+                    );
+                    context.draw_line_stroke(
+                        Point::new(fx + half, fy),
+                        Point::new(fx - half, fy + half),
+                        glyph,
+                        1,
+                    );
+                }
+                TabPosition::West | TabPosition::East => {
+                    context.draw_line_stroke(
+                        Point::new(bx - half, by + half),
+                        Point::new(bx, by - half),
+                        glyph,
+                        1,
+                    );
+                    context.draw_line_stroke(
+                        Point::new(bx, by - half),
+                        Point::new(bx + half, by + half),
+                        glyph,
+                        1,
+                    );
+                    context.draw_line_stroke(
+                        Point::new(fx - half, fy - half),
+                        Point::new(fx, fy + half),
+                        glyph,
+                        1,
+                    );
+                    context.draw_line_stroke(
+                        Point::new(fx, fy + half),
+                        Point::new(fx + half, fy - half),
+                        glyph,
+                        1,
+                    );
+                }
+            }
+        }
         // Draw tabs
         //
         // One `tab_rects()` call for the whole strip: asking `tab_rect(i)` in a loop rebuilt the
@@ -1634,9 +1974,15 @@ impl Draw for TabWidget {
                 }
                 let title_band =
                     Rect { x: title_x, y: tab_line.y, width: title_width, height: tab_line.height };
+                let title_text = if self.elide_mode == TabElideMode::ElideRight {
+                    let mut measure = |candidate: &str| context.measure_text(candidate, font).width;
+                    elide_tab_title(&tab.title, title_width, &mut measure)
+                } else {
+                    Cow::Borrowed(tab.title.as_str())
+                };
                 context.draw_text_fitted_cow(
                     title_band,
-                    &tab.title,
+                    &title_text,
                     font,
                     text_color,
                     HorizontalAlignment::Center,
@@ -3098,5 +3444,57 @@ mod tests {
         tw.set_style(style);
         let larger = tw.tab_width_hints();
         assert!(larger[0].1 > first[0].1, "a larger font re-measures even when no caption changed");
+    }
+
+    /// The tab elider is the shared width-budget primitive plus this control's floor: a
+    /// shortened title never paints as nothing.
+    #[test]
+    fn a_tab_title_is_elided_by_the_shared_primitive_with_an_ellipsis_floor() {
+        let font = Font::default();
+        let mut measure = |text: &str| estimate_text_width(text, &font, 1.0);
+
+        // A title that fits is borrowed untouched, so the common case allocates nothing.
+        let fitted = elide_tab_title("Short", 200, &mut measure);
+        assert!(matches!(fitted, Cow::Borrowed("Short")), "{fitted:?}");
+
+        // A title that does not fit is shortened on a character boundary and keeps the marker.
+        let budget = measure("A very");
+        let fitted = elide_tab_title("A very long tab title", budget, &mut measure);
+        assert!(fitted.ends_with('\u{2026}'), "the shortened title keeps the marker: {fitted:?}");
+        assert!(fitted.chars().count() < "A very long tab title".chars().count());
+
+        // Even when the marker alone is wider than the budget, the tab paints the marker
+        // rather than an empty caption.
+        assert_eq!(elide_tab_title("A very long tab title", 1, &mut measure), "\u{2026}");
+    }
+
+    /// Overflow scrolling, elision, the corner widget and Ctrl+Tab are wired.
+    #[test]
+    fn overflow_elide_corner_and_ctrl_tab_are_wired() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 120, 100));
+        for index in 0..6 {
+            tw.add_tab(format!("A very long tab title {index}"), None);
+        }
+        tw.scroll_tabs(40);
+        assert!(tw.overflow_scroll() > 0);
+        tw.set_elide_mode(TabElideMode::ElideRight);
+        assert_eq!(tw.elide_mode(), TabElideMode::ElideRight);
+        tw.set_corner_widget(Some(0xC0FFEE));
+        assert_eq!(tw.corner_widget(), Some(0xC0FFEE));
+        assert!(tw.corner_rect().width > 0);
+
+        let mut keys = TabWidget::new(Rect::new(0, 0, 300, 100));
+        keys.add_tab("a".to_string(), None);
+        keys.add_tab("b".to_string(), None);
+        keys.handle_event(&crate::event::Event::KeyPress {
+            key: crate::event::key_codes::TAB,
+            modifiers: 0b0010,
+        });
+        assert_eq!(keys.selected_index(), Some(1), "Ctrl+Tab advances");
+        keys.handle_event(&crate::event::Event::KeyPress {
+            key: crate::event::key_codes::TAB,
+            modifiers: 0b0011,
+        });
+        assert_eq!(keys.selected_index(), Some(0), "Ctrl+Shift+Tab goes back");
     }
 }

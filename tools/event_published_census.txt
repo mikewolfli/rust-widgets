@@ -108,6 +108,11 @@ line_edit: text_changed, editing_finished, return_pressed, context_menu_requeste
 list_box: item_selected, item_activated, selection_changed, drag_finished
 list_view: selection_changed, focused_row_changed
 lottie_widget: animation_finished
+mac_segmented_control: value_changed
+mac_source_list: selection_changed
+mac_stepper: value_changed
+mac_toolbar: item_activated
+mac_window_chrome: close_requested, minimize_requested, zoom_requested
 map_view: center_changed, zoom_changed, marker_selected
 markdown_editor: text_changed, preview_mode_changed
 masked_edit: text_changed
@@ -211,5 +216,5 @@ virtual_table: visible_window_changed
 volume_chart: bar_clicked, bar_hovered
 web_engine_view: loading_started, loading_finished, title_changed, url_changed, error_occurred, navigation_state_changed, page_created, page_destroyed, console_message, download_requested, certificate_error
 window: closed
-wizard_dialog: finished, cancelled, step_changed
+wizard_dialog: finished, cancelled, step_changed, help_requested, custom_button_clicked
 wrap_layout:

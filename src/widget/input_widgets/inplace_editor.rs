@@ -23,6 +23,42 @@ use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// A bit mask of the gestures that enter edit mode.
+///
+/// The default is [`Self::DOUBLE_CLICK`], which is the gesture this control shipped with; the
+/// other flags exist so a grid cell can opt into single-click or F2 editing without a new widget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditTriggers(u8);
+
+impl EditTriggers {
+    /// No gesture starts an edit; only [`InplaceEditor::start_edit`] does.
+    pub const NONE: Self = Self(0);
+    /// A double click on the field starts an edit.
+    pub const DOUBLE_CLICK: Self = Self(1);
+    /// A single click on the field starts an edit.
+    pub const SINGLE_CLICK: Self = Self(2);
+    /// The F2 key starts an edit while the control is focused.
+    pub const F2: Self = Self(4);
+    /// The default set: a double click.
+    pub const DEFAULT: Self = Self::DOUBLE_CLICK;
+
+    /// Whether every flag in `other` is set here.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The union of two trigger sets.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl Default for EditTriggers {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// A text editor that switches between display mode and edit mode in-place.
 ///
 /// In display mode, the text is drawn as plain text with a background.
@@ -44,6 +80,12 @@ pub struct InplaceEditor {
     /// the phase logic come from [`crate::style::CursorBlink`] so this control cannot drift from
     /// every other caret in the crate.
     cursor_blink: crate::style::CursorBlink,
+    /// The gestures that enter edit mode.
+    edit_triggers: EditTriggers,
+    /// The other end of the edit selection, as a character index, or `None`.
+    selection_anchor: Option<usize>,
+    /// Whether a pointer drag is extending the selection.
+    dragging_selection: bool,
     /// Emitted when the edit is accepted (Enter/Tab). Carries the final text.
     pub edit_accepted: Signal1<String>,
     /// Emitted when the edit is cancelled (Escape).
@@ -68,6 +110,9 @@ impl InplaceEditor {
             history_target: Rc::new(RefCell::new(text.to_string())),
             restoring_history: false,
             cursor_blink: crate::style::CursorBlink::new(),
+            edit_triggers: EditTriggers::default(),
+            selection_anchor: None,
+            dragging_selection: false,
             edit_accepted: Signal1::new(),
             edit_cancelled: GenericSignal::new(),
         }
@@ -78,7 +123,8 @@ impl InplaceEditor {
         if !self.is_editing {
             self.is_editing = true;
             self.original_text = self.text.clone();
-            self.cursor_position = self.text.len();
+            self.cursor_position = self.text.chars().count();
+            self.selection_anchor = None;
             // Entering edit mode is entering the state the caret blinks in, so the blink starts
             // here rather than waiting for the host to notice — a caret that only began blinking on
             // some later frame would sit frozen for however long that took.
@@ -265,7 +311,10 @@ impl InplaceEditor {
     /// Inserts a character at the cursor position.
     fn insert_char(&mut self, c: char) {
         if c == '\u{7f}' {
-            // Delete (backward)
+            // Backspace, kept as a sentinel for the existing keyboard path.
+            if self.delete_selection() {
+                return;
+            }
             if self.cursor_position > 0 {
                 let mut chars: Vec<char> = self.text.chars().collect();
                 chars.remove(self.cursor_position - 1);
@@ -276,21 +325,19 @@ impl InplaceEditor {
                 self.base.request_redraw();
             }
         } else if c == '\u{ffff}' {
-            // Forward delete
-            if self.cursor_position < self.text.chars().count() {
-                let mut chars: Vec<char> = self.text.chars().collect();
-                chars.remove(self.cursor_position);
-                let next = chars.into_iter().collect::<String>();
-                self.set_text(&next);
-                self.cursor_position = self.cursor_position.min(self.text.chars().count());
-                self.base.request_redraw();
-            }
+            // Forward delete, routed through the dedicated method so the sentinel remains only a
+            // compatibility spelling for callers that still pass it.
+            self.delete_forward();
         } else {
+            // Typing over a selection replaces it, which is the one edit every text field owes
+            // the user after a drag.
+            self.delete_selection();
             let mut chars: Vec<char> = self.text.chars().collect();
-            chars.insert(self.cursor_position, c);
+            let at = self.cursor_position.min(chars.len());
+            chars.insert(at, c);
             let next = chars.into_iter().collect::<String>();
             self.set_text(&next);
-            self.cursor_position = self.text.chars().count();
+            self.cursor_position = (at + 1).min(self.text.chars().count());
             self.base.request_redraw();
         }
     }
@@ -309,20 +356,137 @@ impl InplaceEditor {
     }
 
     /// Moves the cursor left by one character.
-    fn cursor_left(&mut self) {
-        if self.cursor_position > 0 {
-            self.cursor_position -= 1;
-            self.base.request_redraw();
+    /// The gestures that enter edit mode.
+    pub fn edit_triggers(&self) -> EditTriggers {
+        self.edit_triggers
+    }
+
+    /// Replaces the gestures that enter edit mode.
+    pub fn set_edit_triggers(&mut self, triggers: EditTriggers) {
+        if self.edit_triggers == triggers {
+            return;
+        }
+        self.edit_triggers = triggers;
+    }
+
+    /// The edit selection as ordered character indices, or `None` when nothing is selected.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        let char_count = self.text.chars().count();
+        let caret = self.cursor_position.min(char_count);
+        let anchor = anchor.min(char_count);
+        if anchor == caret {
+            return None;
+        }
+        Some(if anchor < caret { (anchor, caret) } else { (caret, anchor) })
+    }
+
+    /// The selected text, or an empty string when nothing is selected.
+    pub fn selected_text(&self) -> String {
+        match self.selection_range() {
+            Some((start, end)) => self.text.chars().skip(start).take(end - start).collect(),
+            None => String::new(),
         }
     }
 
-    /// Moves the cursor right by one character.
-    fn cursor_right(&mut self) {
-        let char_count = self.text.chars().count();
-        if self.cursor_position < char_count {
-            self.cursor_position += 1;
-            self.base.request_redraw();
+    /// Selects the whole value and puts the caret at its end.
+    pub fn select_all(&mut self) {
+        self.selection_anchor = Some(0);
+        self.cursor_position = self.text.chars().count();
+        self.base.request_redraw();
+    }
+
+    /// Removes the selection, if any, returning whether anything was removed.
+    fn delete_selection(&mut self) -> bool {
+        let Some((start, end)) = self.selection_range() else {
+            self.selection_anchor = None;
+            return false;
+        };
+        let mut chars: Vec<char> = self.text.chars().collect();
+        chars.drain(start..end);
+        let next: String = chars.into_iter().collect();
+        self.set_text(&next);
+        self.cursor_position = start.min(self.text.chars().count());
+        self.selection_anchor = None;
+        self.base.request_redraw();
+        true
+    }
+
+    /// Deletes the character after the caret, or the selection when one is active.
+    ///
+    /// This is the forward-delete the editor previously expressed by passing a sentinel
+    /// replacement character through [`Self::insert_char`], which made a deletion indistinguishable
+    /// from typed text in every log and test.
+    pub fn delete_forward(&mut self) -> bool {
+        if self.delete_selection() {
+            return true;
         }
+        let char_count = self.text.chars().count();
+        if self.cursor_position >= char_count {
+            return false;
+        }
+        let at = self.cursor_position;
+        let mut chars: Vec<char> = self.text.chars().collect();
+        chars.remove(at);
+        let next: String = chars.into_iter().collect();
+        self.set_text(&next);
+        self.cursor_position = at.min(self.text.chars().count());
+        self.base.request_redraw();
+        true
+    }
+
+    /// Moves the caret to `target` (a character index), extending the selection when `extend` is set.
+    fn move_caret(&mut self, target: usize, extend: bool) {
+        let char_count = self.text.chars().count();
+        let target = target.min(char_count);
+        if extend {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor_position.min(char_count));
+            }
+        } else {
+            self.selection_anchor = None;
+        }
+        self.cursor_position = target;
+        self.base.request_redraw();
+    }
+
+    /// The character index a horizontal position points at.
+    ///
+    /// Measured through the shared metric model rather than a fixed advance, so a proportional face
+    /// or a wider glyph does not move the click target away from the character under the pointer.
+    fn char_index_at_x(&self, x: i32) -> usize {
+        let font = self
+            .base
+            .style()
+            .font
+            .clone()
+            .unwrap_or_else(|| crate::core::Font::simple("sans-serif", self.font_size));
+        let target = (x - self.text_rect().x).max(0) as f32;
+        let mut best = 0usize;
+        let mut ordinal = 0usize;
+        for ch in self.text.chars() {
+            let prefix: String = self.text.chars().take(ordinal).collect();
+            let before = crate::widget::metrics::estimate_text_width(&prefix, &font, 1.0);
+            let advance = crate::widget::metrics::estimate_text_width(&ch.to_string(), &font, 1.0);
+            if target < before as f32 + advance as f32 / 2.0 {
+                break;
+            }
+            ordinal += 1;
+            best = ordinal;
+        }
+        best
+    }
+
+    /// The advance, in pixels, of the first `count` characters of the value.
+    fn advance_of_prefix(&self, count: usize) -> i32 {
+        let font = self
+            .base
+            .style()
+            .font
+            .clone()
+            .unwrap_or_else(|| crate::core::Font::simple("sans-serif", self.font_size));
+        let prefix: String = self.text.chars().take(count).collect();
+        crate::widget::metrics::estimate_text_width(&prefix, &font, 1.0) as i32
     }
 }
 
@@ -398,6 +562,7 @@ impl WidgetProperties for InplaceEditor {
         match name {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "editing" => Ok(CapabilityValue::Bool(self.is_editing())),
+            "edit_triggers" => Ok(CapabilityValue::String(triggers_token(self.edit_triggers))),
             _ => base_property_get(self, name),
         }
     }
@@ -416,12 +581,18 @@ impl WidgetProperties for InplaceEditor {
                 }
                 Ok(())
             }
+            "edit_triggers" => {
+                let triggers = triggers_from_token(&expect_string(value)?)
+                    .ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_edit_triggers(triggers);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "editing", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "editing", "edit_triggers", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `inplace_editor` publishes.
@@ -445,6 +616,54 @@ impl WidgetProperties for InplaceEditor {
             "set_text" => Err(CapabilityAccessError::OutOfRange),
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
+    }
+}
+
+/// The published token for an [`EditTriggers`] set.
+fn triggers_token(triggers: EditTriggers) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if triggers.contains(EditTriggers::DOUBLE_CLICK) {
+        parts.push("double_click");
+    }
+    if triggers.contains(EditTriggers::SINGLE_CLICK) {
+        parts.push("single_click");
+    }
+    if triggers.contains(EditTriggers::F2) {
+        parts.push("f2");
+    }
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        parts.join(",")
+    }
+}
+
+/// The [`EditTriggers`] a published token names, or `None` for an unknown token.
+fn triggers_from_token(token: &str) -> Option<EditTriggers> {
+    let mut triggers = EditTriggers::NONE;
+    let mut saw_any = false;
+    for part in token.split(',') {
+        match part.trim() {
+            "" | "none" => continue,
+            "double_click" => {
+                triggers = triggers.union(EditTriggers::DOUBLE_CLICK);
+                saw_any = true;
+            }
+            "single_click" => {
+                triggers = triggers.union(EditTriggers::SINGLE_CLICK);
+                saw_any = true;
+            }
+            "f2" => {
+                triggers = triggers.union(EditTriggers::F2);
+                saw_any = true;
+            }
+            _ => return None,
+        }
+    }
+    if saw_any || token.trim() == "none" || token.trim().is_empty() {
+        Some(triggers)
+    } else {
+        None
     }
 }
 
@@ -529,6 +748,20 @@ impl Draw for InplaceEditor {
             // in the field rather than positioned by two unrelated offsets.
             let text_x = text_box.x;
             let line = context.text_line(text_box, &font);
+            // The selection band is painted under the glyphs, with both edges measured by the same
+            // ruler the caret uses. It used to be invisible: the control had no selection state at
+            // all, so a drag or a shift-extension only moved an invisible anchor.
+            if let Some((start, end)) = self.selection_range() {
+                let left = text_x + self.advance_of_prefix(start);
+                let right = text_x + self.advance_of_prefix(end);
+                if right > left {
+                    let highlight = ink.blend(&surface, 0.3).blend(&surface, 0.25);
+                    context.fill_rect(
+                        Rect::new(left, line.y, (right - left) as u32, line.height.max(1)),
+                        highlight,
+                    );
+                }
+            }
             context.draw_text(
                 Point::new(text_x, line.y),
                 &self.text,
@@ -541,7 +774,7 @@ impl Draw for InplaceEditor {
             // the control's `CursorBlink`, which `tick` advances; drawing it unconditionally was
             // the "blinking cursor" that never blinked.
             if self.cursor_blink.is_visible() {
-                let cursor_x = text_x + self.cursor_position as i32 * 8;
+                let cursor_x = text_x + self.advance_of_prefix(self.cursor_position);
                 context.draw_line(
                     Point::new(cursor_x, line.y),
                     Point::new(cursor_x, line.y + line.height as i32),
@@ -589,15 +822,66 @@ impl EventHandler for InplaceEditor {
                 // a double-click on the empty space below a 48 px field in a tall cell is on
                 // the window background, and starting an edit there would put the user into
                 // a mode they never asked for.
-                if self.field_rect().contains_point(*pos) {
+                if self.edit_triggers.contains(EditTriggers::DOUBLE_CLICK)
+                    && self.field_rect().contains_point(*pos)
+                {
                     self.start_edit();
+                    let index = self.char_index_at_x(pos.x);
+                    self.move_caret(index, false);
+                }
+            }
+            // A single click enters edit mode when that trigger is enabled, and places the caret
+            // when the editor is already editing. Before this the click was ignored entirely, so
+            // the caret stayed wherever `start_edit` had put it (the end of the value).
+            Event::MousePress { pos, button, modifiers, .. }
+                if *button == 1 && self.field_rect().contains_point(*pos) =>
+            {
+                if !self.is_editing {
+                    if self.edit_triggers.contains(EditTriggers::SINGLE_CLICK) {
+                        self.start_edit();
+                    } else {
+                        self.base.handle_event(event);
+                        return;
+                    }
+                }
+                let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                    .contains(crate::shortcut::Modifiers::SHIFT);
+                let index = self.char_index_at_x(pos.x);
+                if !shift {
+                    self.selection_anchor = Some(index);
+                }
+                self.cursor_position = index;
+                self.dragging_selection = !shift;
+                self.base.request_redraw();
+            }
+            Event::MouseMove { pos } => {
+                if self.dragging_selection {
+                    self.cursor_position = self.char_index_at_x(pos.x);
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseRelease { button, .. } if *button == 1 => {
+                if self.dragging_selection {
+                    self.dragging_selection = false;
+                    if self.selection_anchor == Some(self.cursor_position) {
+                        self.selection_anchor = None;
+                    }
+                    self.base.request_redraw();
                 }
             }
             Event::KeyPress { key, modifiers } => {
                 if !self.is_editing {
+                    if *key == crate::event::key_codes::F2
+                        && self.edit_triggers.contains(EditTriggers::F2)
+                    {
+                        self.start_edit();
+                        return;
+                    }
                     self.base.handle_event(event);
                     return;
                 }
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
                 match *key {
                     // Undo and redo are the platform primary chord: Control+Z/Y on
                     // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
@@ -610,10 +894,12 @@ impl EventHandler for InplaceEditor {
                     }
                     0x1B => {
                         // Escape - cancel
+                        self.selection_anchor = None;
                         self.finish_edit(false);
                     }
                     0x0D | 0x09 => {
                         // Enter or Tab - accept
+                        self.selection_anchor = None;
                         self.finish_edit(true);
                     }
                     0x08 => {
@@ -622,15 +908,24 @@ impl EventHandler for InplaceEditor {
                     }
                     0x2E => {
                         // Delete (forward)
-                        self.insert_char('\u{ffff}');
+                        self.delete_forward();
                     }
                     0x25 => {
                         // Left arrow
-                        self.cursor_left();
+                        let target = self.cursor_position.saturating_sub(1);
+                        self.move_caret(target, shift);
                     }
                     0x27 => {
                         // Right arrow
-                        self.cursor_right();
+                        self.move_caret(self.cursor_position + 1, shift);
+                    }
+                    0x24 | 0x26 => {
+                        // Home (and Up in a single-line editor) — the start of the value.
+                        self.move_caret(0, shift);
+                    }
+                    0x23 | 0x28 => {
+                        // End (and Down) — the end of the value.
+                        self.move_caret(self.text.chars().count(), shift);
                     }
                     _ => {
                         // Printable characters
@@ -1010,5 +1305,65 @@ mod tests {
         ie.set_enabled(false);
         ie.handle_event(&Event::TextInput { text: "X".to_string() });
         assert_eq!(ie.text(), "");
+    }
+
+    /// Edit triggers are configurable: a single click can start an edit, and `NONE` refuses both.
+    #[test]
+    fn edit_triggers_are_configurable() {
+        let rect = Rect::new(0, 0, 200, 30);
+        let mut single = InplaceEditor::new("value", rect);
+        single.set_edit_triggers(EditTriggers::SINGLE_CLICK);
+        single.handle_event(&Event::MousePress {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(single.is_editing(), "a single click starts an edit when configured");
+
+        let mut never = InplaceEditor::new("value", rect);
+        never.set_edit_triggers(EditTriggers::NONE);
+        never.handle_event(&Event::MouseDoubleClick { pos: Point::new(10, 10), button: 1 });
+        assert!(!never.is_editing(), "NONE must refuse the default gesture too");
+    }
+
+    /// A click places the caret and a drag selects between the press and the pointer.
+    #[test]
+    fn a_click_places_the_caret_and_a_drag_selects() {
+        let mut ie = InplaceEditor::new("hello world", Rect::new(0, 0, 240, 30));
+        ie.set_edit_triggers(EditTriggers::SINGLE_CLICK);
+        ie.handle_event(&Event::MousePress { pos: Point::new(60, 10), button: 1, modifiers: 0 });
+        assert!(ie.cursor_position > 0 && ie.cursor_position < ie.text().chars().count());
+        let anchor = ie.cursor_position;
+        ie.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
+        let (start, end) = ie.selection_range().expect("a drag must select");
+        assert!(end > start);
+        assert!(anchor >= start, "the press is one end of the range");
+        assert_eq!(ie.selected_text(), ie.text()[start..end].to_string());
+    }
+
+    /// Home and End move the caret to the ends, extending under Shift.
+    #[test]
+    fn home_end_and_arrows_move_the_caret() {
+        let mut ie = InplaceEditor::new("abc", Rect::new(0, 0, 200, 30));
+        ie.start_edit();
+        ie.handle_event(&Event::KeyPress { key: 0x24, modifiers: 0 });
+        assert_eq!(ie.cursor_position, 0);
+        ie.handle_event(&Event::KeyPress { key: 0x23, modifiers: 0 });
+        assert_eq!(ie.cursor_position, 3);
+        ie.handle_event(&Event::KeyPress { key: 0x24, modifiers: 0b0001 });
+        assert_eq!(ie.selection_range(), Some((0, 3)), "Shift+Home extends to the start");
+    }
+
+    /// Forward delete has its own entry point and does not go through `insert_char`'s sentinel.
+    #[test]
+    fn delete_forward_removes_the_character_after_the_caret() {
+        let mut ie = InplaceEditor::new("abc", Rect::new(0, 0, 200, 30));
+        ie.start_edit();
+        ie.cursor_position = 1;
+        assert!(ie.delete_forward());
+        assert_eq!(ie.text(), "ac");
+        assert_eq!(ie.cursor_position, 1);
+        ie.cursor_position = 2;
+        assert!(!ie.delete_forward(), "there is nothing after the end");
     }
 }

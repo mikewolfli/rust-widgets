@@ -16,7 +16,7 @@ use crate::render::{
 
 use super::paint::{route_command_to_surface, PaintBackend, SoftwarePaintBackend};
 #[cfg(feature = "3d")]
-use crate::render::math3d::{Mat3, Transform, TransformStack, TRANSFORM_STACK_MAX};
+use crate::render::math3d::{Mat3, Mat4, Transform, TransformStack, TRANSFORM_STACK_MAX};
 
 /// A zero-copy [`PaintBackend`] view over a borrowed [`SoftwareSurface`].
 ///
@@ -165,6 +165,22 @@ pub enum BatchCommand {
     /// An unbalanced pop leaves the current transform unchanged and logs a warning.
     #[cfg(feature = "3d")]
     PopTransform,
+    /// Save the current transform and compose a **projective** matrix onto it.
+    ///
+    /// This is the pseudo-3D form of [`BatchCommand::PushTransform`]: `matrix` may rotate the
+    /// recorded geometry out of the `z = 0` plane and include a perspective term. A rectangle
+    /// filled under it becomes a projectively divided quad drawn as two antialiased triangles,
+    /// and an image becomes a homography-mapped quad. The matching pop is
+    /// [`BatchCommand::PopProjectiveTransform`], but either pop restores either push (the save
+    /// stack is shared) so a caller cannot leave a matrix behind by closing the wrong kind.
+    #[cfg(feature = "3d")]
+    PushProjectiveTransform {
+        /// Homogeneous transform composed after the current one.
+        matrix: Mat4,
+    },
+    /// Restore the transform saved by the matching [`BatchCommand::PushProjectiveTransform`].
+    #[cfg(feature = "3d")]
+    PopProjectiveTransform,
     /// Stroke a rectangular border.
     ///
     /// Translated by the active offset; `width` is in pixels and is truncated
@@ -418,6 +434,21 @@ impl BatchState {
     }
 }
 
+/// The screen-space bounding box of four mapped corners.
+#[cfg(feature = "3d")]
+fn bounds_of(corners: &[Point; 4]) -> Rect {
+    let min_x = corners.iter().map(|p| p.x).min().unwrap_or(0);
+    let min_y = corners.iter().map(|p| p.y).min().unwrap_or(0);
+    let max_x = corners.iter().map(|p| p.x).max().unwrap_or(0);
+    let max_y = corners.iter().map(|p| p.y).max().unwrap_or(0);
+    Rect::new(
+        min_x,
+        min_y,
+        max_x.saturating_sub(min_x).max(0) as u32,
+        max_y.saturating_sub(min_y).max(0) as u32,
+    )
+}
+
 /// Accumulated transform state that tracks translation, opacity and (with the `3d` feature)
 /// the current affine matrix across consecutive [`BatchCommand`]s.
 ///
@@ -435,31 +466,47 @@ struct TransformState {
     /// Current affine matrix, composed by `PushTransform`/`PopTransform`.
     #[cfg(feature = "3d")]
     matrix: Mat3,
-    /// Saved matrices for balanced `PushTransform`/`PopTransform` pairs.
+    /// Current full homogeneous transform, including any pseudo-3D rotation.
+    ///
+    /// Equal to `Mat4::from_affine(matrix)` while only affine pushes are active. A
+    /// [`BatchCommand::PushProjectiveTransform`] composes a perspective matrix here, and the
+    /// geometry arms switch to the projected-quad path for as long as that is true.
+    #[cfg(feature = "3d")]
+    projective: Mat4,
+    /// Saved matrices for balanced push/pop pairs. One stack serves both push forms because a
+    /// pop must restore whatever was active, whichever kind of push it closes.
     #[cfg(feature = "3d")]
     stack: TransformStack,
 }
 
 impl TransformState {
+    /// Whether a projective (pseudo-3D) transform is active.
+    ///
+    /// The two representations are kept consistent: every affine push composes the same affine
+    /// into both, so a projective matrix can only differ from the affine when a projective push
+    /// is on the stack.
+    #[cfg(feature = "3d")]
+    fn is_projective(&self) -> bool {
+        self.projective != Mat4::from_affine(self.matrix)
+    }
+
     fn apply_to_rect(&self, rect: &Rect) -> Rect {
         #[cfg(feature = "3d")]
         {
+            if self.is_projective() {
+                if let Some(corners) = self.apply_to_projective_quad(rect) {
+                    return bounds_of(&corners);
+                }
+                // The quad crosses the eye plane and cannot be divided; drawing its bounding box
+                // would put ink where the geometry is not, so collapse it to nothing.
+                return Rect::new(0, 0, 0, 0);
+            }
             if self.matrix != Mat3::IDENTITY {
                 // A rotated or sheared rectangle is no longer a rectangle. The non-quad
                 // primitives that still travel through this helper (strokes, images, clips,
                 // text anchors) take the bounding box of the mapped corners rather than
                 // silently ignoring the transform.
-                let corners = self.apply_to_quad(rect);
-                let min_x = corners.iter().map(|p| p.x).min().unwrap_or(0);
-                let min_y = corners.iter().map(|p| p.y).min().unwrap_or(0);
-                let max_x = corners.iter().map(|p| p.x).max().unwrap_or(0);
-                let max_y = corners.iter().map(|p| p.y).max().unwrap_or(0);
-                return Rect::new(
-                    min_x,
-                    min_y,
-                    max_x.saturating_sub(min_x).max(0) as u32,
-                    max_y.saturating_sub(min_y).max(0) as u32,
-                );
+                return bounds_of(&self.apply_to_quad(rect));
             }
         }
         Rect::new(
@@ -473,8 +520,17 @@ impl TransformState {
     fn apply_to_point(&self, pt: &Point) -> Point {
         #[cfg(feature = "3d")]
         let (x, y) = {
-            let (x, y) = self.map_xy(pt.x as f32, pt.y as f32);
-            (x + self.dx, y + self.dy)
+            if self.is_projective() {
+                match self.map_projective(pt.x as f32, pt.y as f32) {
+                    Some((x, y)) => (x + self.dx, y + self.dy),
+                    // A point on or behind the eye plane is not drawable; parking it at the
+                    // origin is the least surprising fallback for a text anchor or line end.
+                    None => return Point::new(0, 0),
+                }
+            } else {
+                let (x, y) = self.map_xy(pt.x as f32, pt.y as f32);
+                (x + self.dx, y + self.dy)
+            }
         };
         #[cfg(not(feature = "3d"))]
         let (x, y) = (pt.x as f32 + self.dx, pt.y as f32 + self.dy);
@@ -504,6 +560,71 @@ impl TransformState {
         (a * x + c * y + e, b * x + d * y + f)
     }
 
+    /// Maps a point through the full homogeneous matrix and divides by `w`.
+    ///
+    /// Returns `None` for `w <= 0`: those points are on or behind the eye plane and have no
+    /// screen position. Callers drop such geometry instead of drawing a mirrored or infinite
+    /// projection.
+    #[cfg(feature = "3d")]
+    fn map_projective(&self, x: f32, y: f32) -> Option<(f32, f32)> {
+        let (px, py, w) = self.projective.project_row(x, y);
+        if !w.is_finite() || w <= f32::EPSILON {
+            return None;
+        }
+        Some((px / w, py / w))
+    }
+
+    /// Maps a rectangle's corners through the projective matrix, or `None` when any corner is
+    /// not projectable.
+    #[cfg(feature = "3d")]
+    fn apply_to_projective_quad(&self, rect: &Rect) -> Option<[Point; 4]> {
+        let x0 = rect.x as f32;
+        let y0 = rect.y as f32;
+        let x1 = x0 + rect.width as f32;
+        let y1 = y0 + rect.height as f32;
+        let source = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+        let mut corners = [Point::new(0, 0); 4];
+        for (slot, (x, y)) in corners.iter_mut().zip(source) {
+            let (mx, my) = self.map_projective(x, y)?;
+            *slot = Point::new((mx + self.dx).round() as i32, (my + self.dy).round() as i32);
+        }
+        Some(corners)
+    }
+
+    /// The approximate screen-space scale of the projective transform, from the projected lengths
+    /// of a unit square's `x` and `y` edges.
+    ///
+    /// Used only by primitives without corners (text, line width). Text under a perspective is a
+    /// documented approximation: it scales and moves with the transform but its baseline stays
+    /// upright and its glyphs are not warped.
+    #[cfg(feature = "3d")]
+    fn projective_length_scale(&self) -> f32 {
+        let origin = self.map_projective(0.0, 0.0);
+        let unit_x = self.map_projective(1.0, 0.0);
+        let unit_y = self.map_projective(0.0, 1.0);
+        let (Some(origin), Some(unit_x), Some(unit_y)) = (origin, unit_x, unit_y) else {
+            return 1.0;
+        };
+        let x = (unit_x.0 - origin.0).hypot(unit_x.1 - origin.1);
+        let y = (unit_y.0 - origin.0).hypot(unit_y.1 - origin.1);
+        let scale = (x + y) * 0.5;
+        if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        }
+    }
+
+    /// Maps a point through the full homogeneous matrix, or `None` when it cannot be projected.
+    #[cfg(feature = "3d")]
+    fn try_apply_to_point(&self, pt: &Point) -> Option<Point> {
+        if !self.is_projective() {
+            return Some(self.apply_to_point(pt));
+        }
+        let (x, y) = self.map_projective(pt.x as f32, pt.y as f32)?;
+        Some(Point::new((x + self.dx).round() as i32, (y + self.dy).round() as i32))
+    }
+
     fn apply_to_color(&self, color: &Color) -> Color {
         // `self.opacity` can be NaN when a caller fed a non-finite `SetOpacity` (see below), and
         // `NaN.round() as u8` is 0, so the colour would silently vanish. Clamping first turns any
@@ -526,6 +647,8 @@ impl Default for TransformState {
             opacity: 1.0,
             #[cfg(feature = "3d")]
             matrix: Mat3::IDENTITY,
+            #[cfg(feature = "3d")]
+            projective: Mat4::IDENTITY,
             #[cfg(feature = "3d")]
             stack: TransformStack::new(),
         }
@@ -561,6 +684,15 @@ fn transform_command(
         BatchCommand::FillRect { rect, color } => {
             #[cfg(feature = "3d")]
             {
+                // A projective transform has no affine equivalent: the rectangle becomes a
+                // general quad whose opposite edges may differ in length. It is emitted through
+                // the antialiased quad command so the projected edge, not its bounding box, is
+                // what gets coverage.
+                if state.is_projective() {
+                    return state.apply_to_projective_quad(rect).map(|corners| {
+                        RenderCommand::FillQuadAA { corners, color: state.apply_to_color(color) }
+                    });
+                }
                 // A non-identity affine means the four corners no longer coincide with the
                 // axis-aligned rectangle, so the command becomes a quad. The identity case
                 // keeps the exact 2D rounding path below.
@@ -579,7 +711,7 @@ fn transform_command(
 
         #[cfg(feature = "3d")]
         BatchCommand::PushTransform { matrix } => {
-            let saved = Transform::from_affine(state.matrix);
+            let saved = Transform::from_matrix(state.projective);
             if !state.stack.push(saved) {
                 log::warn!(
                     "[batch] PushTransform rejected: the save stack already holds its maximum of {} entries",
@@ -588,14 +720,48 @@ fn transform_command(
                 return None;
             }
             state.matrix = state.matrix.then(matrix);
+            state.projective = state.projective.then(&Mat4::from_affine(*matrix));
             None
         }
 
         #[cfg(feature = "3d")]
         BatchCommand::PopTransform => {
             match state.stack.pop() {
-                Some(saved) => state.matrix = saved.affine(),
+                Some(saved) => {
+                    state.matrix = saved.affine();
+                    state.projective = saved.matrix();
+                }
                 None => log::warn!("[batch] PopTransform with an empty save stack"),
+            }
+            None
+        }
+
+        #[cfg(feature = "3d")]
+        BatchCommand::PushProjectiveTransform { matrix } => {
+            let saved = Transform::from_matrix(state.projective);
+            if !state.stack.push(saved) {
+                log::warn!(
+                    "[batch] PushProjectiveTransform rejected: the save stack already holds its maximum of {} entries",
+                    TRANSFORM_STACK_MAX
+                );
+                return None;
+            }
+            state.projective = state.projective.then(matrix);
+            // The affine view is used only by primitives without corners (text size, clip boxes,
+            // line endpoints); the geometry arms above select the projective path from
+            // `is_projective`, so this derivative cannot make them take the affine branch.
+            state.matrix = Transform::from_matrix(state.projective).affine();
+            None
+        }
+
+        #[cfg(feature = "3d")]
+        BatchCommand::PopProjectiveTransform => {
+            match state.stack.pop() {
+                Some(saved) => {
+                    state.matrix = saved.affine();
+                    state.projective = saved.matrix();
+                }
+                None => log::warn!("[batch] PopProjectiveTransform with an empty save stack"),
             }
             None
         }
@@ -603,6 +769,15 @@ fn transform_command(
         BatchCommand::StrokeRect { rect, color, width } => {
             #[cfg(feature = "3d")]
             {
+                if state.is_projective() {
+                    return state.apply_to_projective_quad(rect).map(|corners| {
+                        RenderCommand::StrokeQuad {
+                            corners,
+                            color: state.apply_to_color(color),
+                            width: (*width).round().max(1.0) as u32,
+                        }
+                    });
+                }
                 // The outline of an affine-mapped rectangle is four connected edges, not the
                 // outline of its bounding box: the box's corners are where the shape *is not*.
                 if state.matrix != Mat3::IDENTITY {
@@ -652,6 +827,18 @@ fn transform_command(
             {
                 // A rotated image keeps its pixels: the destination is the mapped quad, and the
                 // source grid is the rectangle the 2D path would have stretched the data across.
+                // Under a projective transform the quad is a general quadrilateral, which the
+                // surface maps with a homography rather than an affine inverse.
+                if state.is_projective() {
+                    return state.apply_to_projective_quad(rect).map(|corners| {
+                        RenderCommand::DrawImageQuad {
+                            corners,
+                            width: rect.width,
+                            height: rect.height,
+                            data,
+                        }
+                    });
+                }
                 if state.matrix != Mat3::IDENTITY {
                     return Some(RenderCommand::DrawImageQuad {
                         corners: state.apply_to_quad(rect),
@@ -689,13 +876,22 @@ fn transform_command(
             // path does not have, and pretending otherwise by shearing the run would be worse than
             // the honest upright approximation.
             #[cfg(feature = "3d")]
-            let scale =
-                if state.matrix == Mat3::IDENTITY { 1.0 } else { state.matrix.length_scale() };
+            let scale = if state.is_projective() {
+                state.projective_length_scale()
+            } else if state.matrix == Mat3::IDENTITY {
+                1.0
+            } else {
+                state.matrix.length_scale()
+            };
             #[cfg(not(feature = "3d"))]
             let scale = 1.0f32;
             let font = Font::simple(BATCH_DEFAULT_FONT_FAMILY, (*font_size * scale).max(1.0));
+            #[cfg(feature = "3d")]
+            let origin = state.try_apply_to_point(position)?;
+            #[cfg(not(feature = "3d"))]
+            let origin = state.apply_to_point(position);
             Some(RenderCommand::DrawText {
-                origin: state.apply_to_point(position),
+                origin,
                 text: text.clone(),
                 font,
                 color: state.apply_to_color(color),
@@ -1468,5 +1664,176 @@ mod tests {
 
         assert!(backend.contains_batch(id));
         assert_eq!(backend.batch_count(), 1);
+    }
+
+    /// The pseudo-3D matrix the item API records: turn 45° about `Y` around the centre of a
+    /// 100×100 control, with the plane placed in front of the eye.
+    #[cfg(feature = "3d")]
+    fn item_turn_matrix() -> Mat4 {
+        use crate::render::math3d::Axis;
+
+        // The same viewing distance the item API documents.
+        let distance = 1024.0f32;
+        Mat4::translation(-50.0, -50.0, 0.0)
+            .then(&Mat4::rotation(Axis::Y, core::f32::consts::FRAC_PI_4))
+            .then(&Mat4::translation(0.0, 0.0, -distance))
+            .then(&Mat4::perspective(
+                core::f32::consts::FRAC_PI_2,
+                1.0,
+                distance * 0.5,
+                distance * 4.0,
+            ))
+            .then(&Mat4::from_affine(Mat3::scaling(distance, distance)))
+            .then(&Mat4::translation(50.0, 50.0, 0.0))
+    }
+
+    /// A projective push turns a fill into a divided quad and reaches a real pixel.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_projective_fill_reaches_a_pixel_and_keeps_its_perspective() {
+        use crate::core::Size;
+
+        let images = crate::compat::HashMap::new();
+        let mut state = TransformState::default();
+        assert!(transform_command(
+            &BatchCommand::PushProjectiveTransform { matrix: item_turn_matrix() },
+            &images,
+            &mut state,
+        )
+        .is_none());
+        let command = transform_command(
+            &BatchCommand::FillRect { rect: Rect::new(0, 0, 100, 100), color: Color::RED },
+            &images,
+            &mut state,
+        )
+        .expect("a projected fill must produce a command");
+        let corners = match command {
+            RenderCommand::FillQuadAA { corners, color } => {
+                assert_eq!(color, Color::RED);
+                corners
+            }
+            other => panic!("a perspective fill must use the antialiased quad, got {other:?}"),
+        };
+        assert!(
+            transform_command(&BatchCommand::PopProjectiveTransform, &images, &mut state).is_none()
+        );
+        assert!(!state.is_projective(), "the pop restores the flat state");
+
+        // The turned card's vertical edges differ in length; an affine rotation would keep them
+        // equal, so this is the evidence that the divide really happened.
+        let left_height = (corners[0].y - corners[3].y).abs();
+        let right_height = (corners[1].y - corners[2].y).abs();
+        assert_ne!(left_height, right_height, "the two vertical edges must differ");
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(120, 120), 1.0);
+        backend.begin_frame(Color::WHITE);
+        backend.execute_command(&RenderCommand::FillQuadAA { corners, color: Color::RED });
+        backend.end_frame();
+        let frame = backend.frame_rgba();
+        assert!(
+            frame.as_chunks::<4>().0.iter().any(|pixel| pixel[0] > 200 && pixel[1] < 40),
+            "the projected quad must leave red ink on the surface"
+        );
+    }
+
+    /// An identity projective push leaves the pixels exactly as the 2D path does.
+    ///
+    /// This is the "identity is free" half of the pseudo-3D contract: pushing an identity matrix
+    /// must not change the command kind, the rounding, or the raster path, so a caller that always
+    /// records a projective push still gets the historical 2D picture when the control is flat.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn an_identity_projective_push_paints_like_the_2d_path() {
+        use crate::core::Size;
+
+        let images = crate::compat::HashMap::new();
+        let mut with_push = TransformState::default();
+        assert!(transform_command(
+            &BatchCommand::PushProjectiveTransform { matrix: Mat4::IDENTITY },
+            &images,
+            &mut with_push,
+        )
+        .is_none());
+        let pushed = transform_command(
+            &BatchCommand::FillRect { rect: Rect::new(2, 3, 8, 6), color: Color::RED },
+            &images,
+            &mut with_push,
+        )
+        .expect("a fill under an identity push still draws");
+        let mut plain = TransformState::default();
+        let direct = transform_command(
+            &BatchCommand::FillRect { rect: Rect::new(2, 3, 8, 6), color: Color::RED },
+            &images,
+            &mut plain,
+        )
+        .expect("a fill without a push draws");
+        assert!(
+            matches!(&pushed, RenderCommand::FillRect { .. })
+                && matches!(&direct, RenderCommand::FillRect { .. }),
+            "identity must not change the emitted command kind"
+        );
+
+        let paint = |command: &RenderCommand| {
+            let mut backend = SoftwarePaintBackend::new(Size::new(16, 16), 1.0);
+            backend.begin_frame(Color::WHITE);
+            backend.execute_command(command);
+            backend.end_frame();
+            backend.frame_rgba().to_vec()
+        };
+        assert_eq!(
+            paint(&pushed),
+            paint(&direct),
+            "identity must produce the same pixels through either path"
+        );
+    }
+
+    /// A quad that crosses the eye plane is dropped rather than mirrored.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_projective_fill_behind_the_eye_is_dropped() {
+        let images = crate::compat::HashMap::new();
+        let mut state = TransformState::default();
+        let mut behind = Mat4::IDENTITY;
+        behind.m[15] = -1.0;
+        assert!(transform_command(
+            &BatchCommand::PushProjectiveTransform { matrix: behind },
+            &images,
+            &mut state,
+        )
+        .is_none());
+        assert!(
+            transform_command(
+                &BatchCommand::FillRect { rect: Rect::new(0, 0, 10, 10), color: Color::RED },
+                &images,
+                &mut state,
+            )
+            .is_none(),
+            "a quad with no projectable corner must draw nothing"
+        );
+    }
+
+    /// The affine-only path still uses `FillQuad` and never takes the projective branch.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn an_affine_push_still_emits_a_hard_quad() {
+        let images = crate::compat::HashMap::new();
+        let mut state = TransformState::default();
+        let rotation = Mat3::rotation(core::f32::consts::FRAC_PI_6);
+        assert!(transform_command(
+            &BatchCommand::PushTransform { matrix: rotation },
+            &images,
+            &mut state,
+        )
+        .is_none());
+        let command = transform_command(
+            &BatchCommand::FillRect { rect: Rect::new(0, 0, 10, 10), color: Color::RED },
+            &images,
+            &mut state,
+        )
+        .expect("an affine fill produces a command");
+        assert!(
+            matches!(command, RenderCommand::FillQuad { .. }),
+            "the affine path stays on the exact quad, got {command:?}"
+        );
     }
 }

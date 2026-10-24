@@ -28,6 +28,15 @@ const SWATCHES_PER_ROW: u32 = dimensions::COLOR_HISTORY_PER_ROW;
 const SWATCH_SIZE: u32 = dimensions::COLOR_HISTORY_SWATCH;
 const SWATCH_PADDING: u32 = dimensions::COLOR_HISTORY_PADDING;
 
+/// Backspace removes the current swatch.
+const KEY_BACKSPACE: u32 = 8;
+/// Delete removes the current swatch.
+const KEY_DELETE: u32 = 46;
+/// Left arrow moves the selection one swatch toward the start.
+const KEY_LEFT: u32 = 37;
+/// Right arrow moves the selection one swatch toward the end.
+const KEY_RIGHT: u32 = 39;
+
 /// A color history picker that displays recently used colors in a grid.
 pub struct ColorHistory {
     base: BaseWidget,
@@ -39,6 +48,18 @@ pub struct ColorHistory {
     pub color_selected: Signal1<Color>,
     /// Emitted when the pointer hovers over a color swatch.
     pub color_hovered: Signal1<Color>,
+    /// Emitted after the current swatch is removed by `Delete` or `Backspace`.
+    ///
+    /// The history owns its entries, so the key removes the swatch from this control
+    /// immediately and this signal reports the index the entry occupied before removal.
+    /// It is a notification, not a request: a host that mirrors the history can apply
+    /// the same removal to its copy.
+    pub color_removed: Signal1<usize>,
+    /// Emitted when a context-menu request targets a swatch, with its index.
+    ///
+    /// The host supplies the menu. This control only names the swatch the request
+    /// applies to, so one menu implementation can serve several controls.
+    pub context_menu_requested: Signal1<usize>,
 }
 
 impl ColorHistory {
@@ -52,6 +73,8 @@ impl ColorHistory {
             hovered_index: None,
             color_selected: Signal1::new(),
             color_hovered: Signal1::new(),
+            color_removed: Signal1::new(),
+            context_menu_requested: Signal1::new(),
         }
     }
 
@@ -141,6 +164,53 @@ impl ColorHistory {
         if self.selected_index.is_some_and(|i| i >= self.colors.len()) {
             self.selected_index = None;
         }
+        self.base.request_redraw();
+    }
+
+    /// Moves the selection by `delta` swatches, wrapping at both ends.
+    ///
+    /// With no selection, a forward move starts at the first swatch and a backward
+    /// move at the last, so the first arrow press enters the grid rather than
+    /// skipping the first entry. Wrapping rather than clamping keeps a short
+    /// history usable from either direction; the selection signal is emitted on
+    /// every move, including a move in a one-entry history, so a host can treat
+    /// the arrow as a selection action.
+    fn move_selection(&mut self, delta: i32) {
+        let count = self.colors.len();
+        if count == 0 {
+            return;
+        }
+        let next = match self.selected_index {
+            Some(current) => (current as i32 + delta).rem_euclid(count as i32) as usize,
+            None if delta >= 0 => 0,
+            None => count - 1,
+        };
+        self.selected_index = Some(next);
+        self.color_selected.emit(self.colors[next]);
+        self.base.request_redraw();
+    }
+
+    /// Removes the currently selected swatch and reports it.
+    ///
+    /// The history owns its entries, so there is nothing to ask the host: the entry
+    /// is removed here and [`Self::color_removed`] reports the index. The selection
+    /// then moves to the entry that took its place, or to the new last entry when the
+    /// removed one was the tail, and that colour is emitted through
+    /// [`Self::color_selected`]. A key press with nothing selected is a no-op.
+    fn remove_selected(&mut self) {
+        let Some(index) = self.selected_index else {
+            return;
+        };
+        if !self.remove_color(index) {
+            return;
+        }
+        self.color_removed.emit(index);
+        if self.colors.is_empty() {
+            return;
+        }
+        let next = index.min(self.colors.len() - 1);
+        self.selected_index = Some(next);
+        self.color_selected.emit(self.colors[next]);
         self.base.request_redraw();
     }
 
@@ -386,6 +456,21 @@ impl EventHandler for ColorHistory {
                     self.base.request_redraw();
                 }
             }
+            // Arrow keys walk the grid and wrap at both ends; see `move_selection`.
+            Event::KeyDown((key, _)) | Event::KeyPress { key, .. } => match *key {
+                KEY_LEFT => self.move_selection(-1),
+                KEY_RIGHT => self.move_selection(1),
+                KEY_DELETE | KEY_BACKSPACE => self.remove_selected(),
+                _ => {}
+            },
+            // A context-menu request names the swatch under the pointer, or the
+            // current selection when the request came from the keyboard (the
+            // translator anchors that form at the window origin).
+            Event::ContextMenu { pos } => {
+                if let Some(index) = self.swatch_at(pos.x, pos.y).or(self.selected_index) {
+                    self.context_menu_requested.emit(index);
+                }
+            }
             _ => {
                 self.base.handle_event(event);
             }
@@ -584,5 +669,103 @@ mod tests {
         history.add_color(Color::BLUE);
         assert_eq!(history.colors().len(), 2);
         assert_eq!(history.colors(), &[Color::GREEN, Color::BLUE], "the oldest entry was evicted");
+    }
+
+    /// Arrow keys move the current swatch and wrap at both ends.
+    ///
+    /// The selection signal is what a host listens to, so the test asserts the
+    /// emitted colour as well as the index. A first Right press enters at index 0
+    /// rather than skipping to index 1, and a first Left press enters at the tail.
+    #[test]
+    fn arrow_keys_move_the_selection_and_wrap() {
+        let mut history = ColorHistory::new(Rect::new(0, 0, 200, 40));
+        history.add_color(Color::RED);
+        history.add_color(Color::GREEN);
+        history.add_color(Color::BLUE);
+
+        let selected = Arc::new(std::sync::Mutex::new(Vec::<Color>::new()));
+        let sink = Arc::clone(&selected);
+        history.color_selected.connect(move |color| {
+            sink.lock().unwrap().push(*color);
+        });
+
+        history.handle_event(&Event::KeyDown((KEY_RIGHT, 0)));
+        assert_eq!(history.selected_index(), Some(0), "a first Right enters at the start");
+        history.handle_event(&Event::KeyPress { key: KEY_RIGHT, modifiers: 0 });
+        assert_eq!(history.selected_index(), Some(1));
+        history.handle_event(&Event::KeyPress { key: KEY_RIGHT, modifiers: 0 });
+        assert_eq!(history.selected_index(), Some(2));
+        // Wrapping forward from the tail returns to the head.
+        history.handle_event(&Event::KeyPress { key: KEY_RIGHT, modifiers: 0 });
+        assert_eq!(history.selected_index(), Some(0));
+        // Wrapping backward from the head returns to the tail.
+        history.handle_event(&Event::KeyPress { key: KEY_LEFT, modifiers: 0 });
+        assert_eq!(history.selected_index(), Some(2));
+
+        assert_eq!(
+            *selected.lock().unwrap(),
+            vec![Color::RED, Color::GREEN, Color::BLUE, Color::RED, Color::BLUE],
+            "every move emits the colour it landed on"
+        );
+    }
+
+    /// `Delete` and `Backspace` remove the current swatch and report the index.
+    ///
+    /// The history owns its entries, so removal is immediate; the notification
+    /// carries the index the entry occupied and the selection moves to the entry
+    /// that took its place.
+    #[test]
+    fn delete_and_backspace_remove_the_current_swatch() {
+        let mut history = ColorHistory::new(Rect::new(0, 0, 200, 40));
+        history.add_color(Color::RED);
+        history.add_color(Color::GREEN);
+        history.add_color(Color::BLUE);
+        history.set_selected_index(Some(1));
+
+        let removed = Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&removed);
+        history.color_removed.connect(move |index| {
+            sink.lock().unwrap().push(*index);
+        });
+
+        history.handle_event(&Event::KeyPress { key: KEY_DELETE, modifiers: 0 });
+        assert_eq!(history.colors(), &[Color::RED, Color::BLUE]);
+        assert_eq!(history.selected_index(), Some(1), "the next entry takes the slot");
+
+        history.handle_event(&Event::KeyPress { key: KEY_BACKSPACE, modifiers: 0 });
+        assert_eq!(history.colors(), &[Color::RED]);
+        assert_eq!(history.selected_index(), Some(0), "the new tail is selected");
+        assert_eq!(*removed.lock().unwrap(), vec![1, 1]);
+
+        // A key with nothing selected does not remove anything.
+        history.set_selected_index(None);
+        history.handle_event(&Event::KeyPress { key: KEY_DELETE, modifiers: 0 });
+        assert_eq!(history.colors(), &[Color::RED]);
+    }
+
+    /// A context-menu request names the swatch under the pointer.
+    #[test]
+    fn context_menu_request_names_the_swatch() {
+        let mut history = ColorHistory::new(Rect::new(10, 10, 200, 40));
+        history.add_color(Color::RED);
+        history.add_color(Color::GREEN);
+
+        let requested = Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&requested);
+        history.context_menu_requested.connect(move |index| {
+            sink.lock().unwrap().push(*index);
+        });
+
+        // The second swatch's centre, using the same grid arithmetic the painter uses.
+        let x = 10 + (SWATCH_SIZE + SWATCH_PADDING) as i32 + SWATCH_PADDING as i32 / 2;
+        let y = 10 + SWATCH_PADDING as i32 / 2;
+        history.handle_event(&Event::ContextMenu { pos: Point::new(x, y) });
+
+        // A keyboard request is anchored at the origin, which is outside this
+        // control, so it falls back to the current selection.
+        history.set_selected_index(Some(0));
+        history.handle_event(&Event::ContextMenu { pos: Point::new(0, 0) });
+
+        assert_eq!(*requested.lock().unwrap(), vec![1, 0]);
     }
 }

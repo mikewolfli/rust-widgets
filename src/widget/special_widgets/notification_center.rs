@@ -39,6 +39,11 @@ pub struct NotificationItem {
     pub level: NotificationLevel,
     /// Whether this item has been read.
     pub read: bool,
+    /// Wall-clock time the notification arrived, in milliseconds since the Unix epoch.
+    ///
+    /// Zero means "no timestamp": the row then omits its time and is grouped with the
+    /// previous row when day grouping is on.
+    pub timestamp_ms: u64,
 }
 
 impl NotificationItem {
@@ -49,7 +54,25 @@ impl NotificationItem {
         message: impl Into<String>,
         level: NotificationLevel,
     ) -> Self {
-        Self { id: id.into(), title: title.into(), message: message.into(), level, read: false }
+        Self {
+            id: id.into(),
+            title: title.into(),
+            message: message.into(),
+            level,
+            read: false,
+            timestamp_ms: 0,
+        }
+    }
+
+    /// Sets the arrival time, in milliseconds since the Unix epoch.
+    pub fn with_timestamp(mut self, timestamp_ms: u64) -> Self {
+        self.timestamp_ms = timestamp_ms;
+        self
+    }
+
+    /// The calendar day (days since the epoch) the notification arrived on, if it has a time.
+    pub fn day_index(&self) -> Option<u64> {
+        (self.timestamp_ms > 0).then_some(self.timestamp_ms / 86_400_000)
     }
 }
 
@@ -67,12 +90,24 @@ pub struct NotificationCenter {
     /// *arriving*. A driver per row would be N state machines for one visible movement plus the
     /// bookkeeping to retire them; one driver re-aimed on `push` says the same thing.
     reveal: PopupReveal,
+    /// Rows scrolled out of view at the top.
+    scroll_offset: usize,
+    /// Whether each row shows its arrival time.
+    show_timestamps: bool,
+    /// Whether the header paints a "Clear all" button.
+    show_clear_all: bool,
+    /// Whether rows are preceded by a day header.
+    group_by_day: bool,
     /// Emitted when selected notification changes. Payload is id.
     pub notification_selected: Signal1<String>,
     /// Emitted when notification is activated. Payload is id.
     pub notification_activated: Signal1<String>,
     /// Emitted when unread count changes.
     pub unread_count_changed: Signal1<usize>,
+    /// Emitted with the id of a notification removed by the user.
+    pub notification_dismissed: Signal1<String>,
+    /// Emitted when the "Clear all" affordance is activated.
+    pub clear_all_requested: Signal1<()>,
 }
 
 impl NotificationCenter {
@@ -84,10 +119,148 @@ impl NotificationCenter {
             selected_index: None,
             row_height: 36,
             reveal: PopupReveal::new(true),
+            scroll_offset: 0,
+            show_timestamps: false,
+            show_clear_all: false,
+            group_by_day: false,
             notification_selected: Signal1::new(),
             notification_activated: Signal1::new(),
             unread_count_changed: Signal1::new(),
+            notification_dismissed: Signal1::new(),
+            clear_all_requested: Signal1::new(),
         }
+    }
+
+    /// Enables the time shown at the trailing edge of each row.
+    pub fn set_show_timestamps(&mut self, show: bool) {
+        if self.show_timestamps == show {
+            return;
+        }
+        self.show_timestamps = show;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether row timestamps are shown.
+    pub fn show_timestamps(&self) -> bool {
+        self.show_timestamps
+    }
+
+    /// Enables the header's "Clear all" button.
+    pub fn set_show_clear_all(&mut self, show: bool) {
+        if self.show_clear_all == show {
+            return;
+        }
+        self.show_clear_all = show;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the "Clear all" button is shown.
+    pub fn show_clear_all(&self) -> bool {
+        self.show_clear_all
+    }
+
+    /// Enables a day header before the first row of each day.
+    pub fn set_group_by_day(&mut self, group: bool) {
+        if self.group_by_day == group {
+            return;
+        }
+        self.group_by_day = group;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether rows are grouped by day.
+    pub fn group_by_day(&self) -> bool {
+        self.group_by_day
+    }
+
+    /// Returns how many rows are scrolled out of view.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Scrolls the list by `delta` rows.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let capacity = (self.geometry().height / self.row_height.max(1)) as usize;
+        let max = self.items.len().saturating_sub(capacity.max(1));
+        let next = (self.scroll_offset as isize + delta).clamp(0, max as isize) as usize;
+        if self.scroll_offset == next {
+            return;
+        }
+        self.scroll_offset = next;
+        self.base.request_redraw();
+    }
+
+    /// Removes the notification owning `id`, publishing it.
+    pub fn remove(&mut self, id: &str) -> bool {
+        let Some(index) = self.items.iter().position(|item| item.id == id) else {
+            return false;
+        };
+        let removed = self.items.remove(index);
+        if self.items.is_empty() {
+            self.selected_index = None;
+        } else if self.selected_index.is_some_and(|selected| selected >= self.items.len()) {
+            self.selected_index = Some(self.items.len() - 1);
+        }
+        let capacity = (self.geometry().height / self.row_height.max(1)) as usize;
+        self.scroll_offset =
+            self.scroll_offset.min(self.items.len().saturating_sub(capacity.max(1)));
+        self.notification_dismissed.emit(removed.id);
+        if !removed.read {
+            self.unread_count_changed.emit(self.unread_count());
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The header height reserved for the "Clear all" button, or zero when it is hidden.
+    fn header_height(&self) -> i32 {
+        if self.show_clear_all && !self.items.is_empty() {
+            18
+        } else {
+            0
+        }
+    }
+
+    /// The "Clear all" button rectangle.
+    fn clear_all_rect(&self) -> Option<Rect> {
+        if !self.show_clear_all || self.items.is_empty() {
+            return None;
+        }
+        let rect = self.geometry();
+        let width = 64.min(rect.width);
+        Some(Rect::new(rect.x + rect.width as i32 - width as i32 - 4, rect.y + 2, width, 14))
+    }
+
+    /// The laid-out rows, in paint and hit-test order.
+    fn layout_rows(&self) -> Vec<(usize, Rect)> {
+        let rect = self.geometry();
+        let mut y = rect.y + self.header_height();
+        let mut rows = Vec::new();
+        let mut previous_day = None;
+        for (index, item) in self.items.iter().enumerate().skip(self.scroll_offset) {
+            if self.group_by_day && item.day_index().is_some() && item.day_index() != previous_day {
+                y += 14;
+            }
+            if item.day_index().is_some() {
+                previous_day = item.day_index();
+            }
+            if y >= rect.y + rect.height as i32 {
+                break;
+            }
+            rows.push((index, Rect::new(rect.x, y, rect.width, self.row_height)));
+            y += self.row_height as i32;
+        }
+        rows
+    }
+
+    /// The day-header label for `item`, or `None` when grouping is off or the item has no time.
+    fn day_label(item: &NotificationItem) -> Option<String> {
+        let day = item.day_index()?;
+        let seconds = item.timestamp_ms / 1000;
+        let hour = (seconds / 3600) % 24;
+        let minute = (seconds / 60) % 60;
+        Some(format!("Day {day}  {hour:02}:{minute:02}"))
     }
 
     /// Returns all notifications.
@@ -200,16 +373,10 @@ impl NotificationCenter {
     }
 
     fn row_at(&self, pos: Point) -> Option<usize> {
-        let rect = self.geometry();
-        if pos.x < rect.x
-            || pos.x >= rect.x + rect.width as i32
-            || pos.y < rect.y
-            || pos.y >= rect.y + rect.height as i32
-        {
-            return None;
-        }
-        let index = ((pos.y - rect.y) / self.row_height as i32) as usize;
-        (index < self.items.len()).then_some(index)
+        self.layout_rows()
+            .into_iter()
+            .find(|(_, rect)| rect.contains_point(pos))
+            .map(|(index, _)| index)
     }
 
     /// Returns the height of one notification row, in logical pixels.
@@ -383,7 +550,19 @@ impl EventHandler for NotificationCenter {
 
         match event {
             Event::MousePress { pos, button: 1, .. } => {
-                if let Some(index) = self.row_at(*pos) {
+                if self.clear_all_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.clear_all_requested.emit(());
+                    return;
+                }
+                if let Some((index, rect)) =
+                    self.layout_rows().into_iter().find(|(_, rect)| rect.contains_point(*pos))
+                {
+                    // The trailing band is the row's remove affordance.
+                    if pos.x >= rect.x + rect.width as i32 - 22 {
+                        let id = self.items[index].id.clone();
+                        let _ = self.remove(&id);
+                        return;
+                    }
                     let _ = self.select_index(index);
                 }
             }
@@ -391,6 +570,11 @@ impl EventHandler for NotificationCenter {
                 if let Some(index) = self.row_at(*pos) {
                     let _ = self.select_index(index);
                     let _ = self.activate_selected();
+                }
+            }
+            Event::Wheel { delta, .. } => {
+                if delta.y != 0 {
+                    self.scroll_by(if delta.y > 0 { 1 } else { -1 });
                 }
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
@@ -414,6 +598,11 @@ impl EventHandler for NotificationCenter {
                 }
                 13 => {
                     let _ = self.activate_selected();
+                }
+                46 => {
+                    if let Some(id) = self.selected_id().map(str::to_owned) {
+                        let _ = self.remove(&id);
+                    }
                 }
                 // Unknown key; ignore
                 _ => {}
@@ -473,12 +662,42 @@ impl Draw for NotificationCenter {
         );
         context.draw_rect(rect, border);
 
-        for (index, item) in self.items.iter().enumerate() {
-            let y = rect.y + index as i32 * self.row_height as i32;
-            if y >= rect.y + rect.height as i32 {
-                break;
+        if let Some(button) = self.clear_all_rect() {
+            context.fill_rect(button, background.blend(&text_color, 0.10));
+            context.draw_rect(button, separator);
+            context.draw_text_line_cow(
+                button,
+                "Clear all",
+                effective_font(style),
+                text_color,
+                HorizontalAlignment::Center,
+            );
+        }
+
+        let mut previous_day = None;
+        for (index, row_rect) in self.layout_rows() {
+            let Some(item) = self.items.get(index) else {
+                continue;
+            };
+            // A day header is drawn in the strip `layout_rows` reserved above the first row of
+            // that day. Grouping is a reading aid, so it is opt-in.
+            if self.group_by_day && item.day_index().is_some() && item.day_index() != previous_day {
+                let header = Rect::new(row_rect.x + 4, row_rect.y - 14, row_rect.width, 12);
+                if let Some(label) = Self::day_label(item) {
+                    context.draw_text_line_cow(
+                        header,
+                        &label,
+                        effective_font(style),
+                        text_color.blend(&background, 0.2),
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
-            let row_rect = Rect::new(rect.x, y, rect.width, self.row_height);
+            if item.day_index().is_some() {
+                previous_day = item.day_index();
+            }
+            let y = row_rect.y;
+            let rect = self.geometry();
             // # Why only the newest row moves
             //
             // The reveal is re-aimed on every `push`, so applying it to every row would make the
@@ -528,13 +747,16 @@ impl Draw for NotificationCenter {
                 badge_color,
             );
             let text_x = rect.x + indent + badge_size as i32 + 6;
+            // Trailing chrome: the remove affordance always, the timestamp when asked for.
+            // Both are reserved out of the title band so a long title cannot run under them.
+            let trailing = 22 + if self.show_timestamps && item.timestamp_ms > 0 { 40 } else { 0 };
             // Two stacked lines: the title on the row's upper half, the message on the lower,
             // each fitted to the room the row actually has.
             let line_height = (self.row_height / 2).max(1);
             let title_band = Rect::new(
                 text_x,
                 y,
-                rect.width.saturating_sub(text_x as u32 - rect.x as u32),
+                (rect.width as i32 - (text_x - rect.x) - trailing).max(0) as u32,
                 line_height,
             );
             context.draw_text_fitted_cow(
@@ -548,7 +770,7 @@ impl Draw for NotificationCenter {
                 let message_band = Rect::new(
                     text_x,
                     y + line_height as i32,
-                    rect.width.saturating_sub(text_x as u32 - rect.x as u32),
+                    (rect.width as i32 - (text_x - rect.x) - trailing).max(0) as u32,
                     line_height,
                 );
                 context.draw_text_fitted_cow(
@@ -567,6 +789,42 @@ impl Draw for NotificationCenter {
                 Point::new(rect.x + rect.width as i32, y + self.row_height as i32),
                 separator,
             );
+
+            // Trailing remove ×, in the band the press handler reserves.
+            let close_x = row_rect.x + row_rect.width as i32 - 14;
+            let close_y = row_rect.y + row_rect.height as i32 / 2;
+            let close_ink = text_color.with_alpha(150);
+            context.draw_line_stroke(
+                Point::new(close_x - 3, close_y - 3),
+                Point::new(close_x + 3, close_y + 3),
+                close_ink,
+                1,
+            );
+            context.draw_line_stroke(
+                Point::new(close_x + 3, close_y - 3),
+                Point::new(close_x - 3, close_y + 3),
+                close_ink,
+                1,
+            );
+            if self.show_timestamps && item.timestamp_ms > 0 {
+                let seconds = item.timestamp_ms / 1000;
+                let hour = (seconds / 3600) % 24;
+                let minute = (seconds / 60) % 60;
+                let stamp = format!("{hour:02}:{minute:02}");
+                let band = Rect::new(
+                    row_rect.x + row_rect.width as i32 - 56,
+                    row_rect.y,
+                    36,
+                    row_rect.height,
+                );
+                context.draw_text_line_cow(
+                    band,
+                    &stamp,
+                    effective_font(style),
+                    text_color.blend(&background, 0.25),
+                    HorizontalAlignment::Right,
+                );
+            }
         }
     }
 }

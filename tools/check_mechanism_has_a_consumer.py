@@ -141,7 +141,6 @@ MECHANISMS: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
 # shrink. Every row is a live grep of `src/`, not a snapshot of a report.
 ACKNOWLEDGED: dict[str, str] = {
     "AnimationDriver": "BLUE21 P0-4 (AR7) — drive it from the widget tick",
-    "AnimationGroup": "BLUE21 P0-4 (AR7) — drive it from the widget tick",
 }
 
 # `#[cfg(test)]` and the test module it gates. Blanked before searching so a test's use of a symbol

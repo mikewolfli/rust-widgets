@@ -19,16 +19,15 @@ pub mod rotate;
 pub mod swipe;
 pub mod tap;
 
-pub use engine::{GestureEngine, GestureRecognizer};
+pub use engine::{
+    set_tuning, tuning, GestureConflictPolicy, GestureEngine, GestureKind, GestureRecognizer,
+    GestureState, GestureTuning, GestureUpdate,
+};
 pub use pinch::{PinchGesture, PinchTouch};
 pub use press::{LongPressDragGesture, LongPressGesture, PanGesture};
 pub use rotate::RotateGesture;
 pub use swipe::{FlingGesture, SwipeGesture, TwoFingerSwipeGesture};
 pub use tap::{DoubleTapGesture, TapGesture, TwoFingerTapGesture};
 
-// Re-export constants and helpers used by sub-modules.
-pub(crate) use engine::{
-    distance, point_delta, point_delta_abs, DOUBLE_TAP_TIMEOUT_MS, LONG_PRESS_MAX_MOVE,
-    LONG_PRESS_MIN_MS, MAX_STATIONARY_DISTANCE, PAN_MIN_DISTANCE, SWIPE_MIN_DISTANCE,
-    SWIPE_MIN_VELOCITY, TAP_TIMEOUT_MS,
-};
+// Re-export helpers used by sub-modules.
+pub(crate) use engine::{distance, point_delta, point_delta_abs};

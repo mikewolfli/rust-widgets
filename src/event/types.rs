@@ -328,6 +328,17 @@ pub enum Event {
     },
     /// Event loop shutdown signal.
     Quit,
+    /// The host's window has been asked to close (a close button, a window-manager shortcut,
+    /// or a platform terminate request).
+    ///
+    /// # Why this is an event and not a `Quit`
+    ///
+    /// [`Event::Quit`] is the loop's **shutdown** signal: the loop has already decided to stop
+    /// and the event is the notification. A close request is the opposite — a *proposal* the
+    /// application may refuse (unsaved changes, a running job), which is why it must reach the
+    /// target's handlers first. A framework with no such variant could only terminate, so an
+    /// application could not implement "save before quit".
+    WindowCloseRequest,
     // ── Touch / Gesture events (gated behind `touch` feature) ──
     /// Finger touched surface (replaces MouseDown on touch devices).
     #[cfg(feature = "touch")]
@@ -385,9 +396,19 @@ pub enum Event {
     /// Two-finger pinch (scale < 1 = zoom out, > 1 = zoom in).
     #[cfg(feature = "touch")]
     Pinch {
-        /// Size ratio against the initial finger separation: `1.0` means no
-        /// change, below `1.0` is a pinch in, above `1.0` a spread out.
+        /// Size ratio against the previous emitted separation: `1.0` means no
+        /// change, below `1.0` is a pinch in, above `1.0` a spread out. The
+        /// value is **incremental** — each event is relative to the last one
+        /// emitted — so a consumer that wants a total multiplies the values it
+        /// receives rather than reading one cumulative number.
         scale: f32,
+        /// The midpoint between the two touches in window coordinates.
+        ///
+        /// A pinch that is only a scale cannot place what it zooms: this is the
+        /// anchor a map or an image zooms around. Carried on the event rather
+        /// than derived by the consumer, because the recogniser is the only
+        /// party that has both touch positions at the moment it emits.
+        center: Point,
     },
     /// Two-finger rotation in radians.
     #[cfg(feature = "touch")]
@@ -419,6 +440,25 @@ pub enum Event {
         /// Midpoint between the two fingers when the swipe started.
         centroid_start: Point,
         /// Midpoint between the two fingers when the swipe ended.
+        centroid_end: Point,
+        /// Swipe speed, in logical pixels per second.
+        velocity: f32,
+    },
+    /// Three or more fingers moving together in one direction.
+    ///
+    /// # Why this is not a `TwoFingerSwipe` with a count
+    ///
+    /// A two-finger swipe is a distinct, widely-matched gesture (page back/forward, a
+    /// trackpad's two-finger scroll). Folding a three-finger gesture into the same variant
+    /// would make every existing consumer treat it as that gesture; a separate variant lets a
+    /// host opt in to the three-finger meaning without changing what the two-finger one means.
+    #[cfg(feature = "touch")]
+    MultiFingerSwipe {
+        /// How many fingers took part, at least 3.
+        fingers: u8,
+        /// Midpoint of the contacts when the swipe started.
+        centroid_start: Point,
+        /// Midpoint of the contacts when the swipe ended.
         centroid_end: Point,
         /// Swipe speed, in logical pixels per second.
         velocity: f32,
@@ -635,10 +675,19 @@ impl Event {
     pub fn swipe(start_x: i32, start_y: i32, end_x: i32, end_y: i32, velocity: f32) -> Self {
         Self::Swipe { start: Point::new(start_x, start_y), end: Point::new(end_x, end_y), velocity }
     }
-    /// Creates a pinch gesture event.
+    /// Creates a pinch gesture event anchored at the window origin.
     #[cfg(feature = "touch")]
     pub fn pinch(scale: f32) -> Self {
-        Self::Pinch { scale }
+        Self::Pinch { scale, center: Point::new(0, 0) }
+    }
+    /// Creates a pinch gesture event anchored at `(x, y)`.
+    #[cfg(feature = "touch")]
+    pub fn pinch_at(scale: f32, x: i32, y: i32) -> Self {
+        Self::Pinch { scale, center: Point::new(x, y) }
+    }
+    /// Creates a window-close request event.
+    pub fn window_close_request() -> Self {
+        Self::WindowCloseRequest
     }
     /// Creates a rotate gesture event.
     #[cfg(feature = "touch")]
@@ -665,6 +714,23 @@ impl Event {
         velocity: f32,
     ) -> Self {
         Self::TwoFingerSwipe {
+            centroid_start: Point::new(start_x, start_y),
+            centroid_end: Point::new(end_x, end_y),
+            velocity,
+        }
+    }
+    /// Creates a swipe event for three or more fingers.
+    #[cfg(feature = "touch")]
+    pub fn multi_finger_swipe(
+        fingers: u8,
+        start_x: i32,
+        start_y: i32,
+        end_x: i32,
+        end_y: i32,
+        velocity: f32,
+    ) -> Self {
+        Self::MultiFingerSwipe {
+            fingers: fingers.max(3),
             centroid_start: Point::new(start_x, start_y),
             centroid_end: Point::new(end_x, end_y),
             velocity,
@@ -728,7 +794,8 @@ impl Event {
             Self::Pinch { .. }
             | Self::Rotate { .. }
             | Self::TwoFingerTap { .. }
-            | Self::TwoFingerSwipe { .. } => Some(GestureClass::Multi),
+            | Self::TwoFingerSwipe { .. }
+            | Self::MultiFingerSwipe { .. } => Some(GestureClass::Multi),
             #[cfg(feature = "holographic")]
             Self::HolographicTouch { .. } => Some(GestureClass::Holographic),
             _ => None,
@@ -753,6 +820,7 @@ impl Event {
                     | Self::Drag { .. }
                     | Self::TwoFingerTap { .. }
                     | Self::TwoFingerSwipe { .. }
+                    | Self::MultiFingerSwipe { .. }
                     | Self::Fling { .. }
             ) || {
                 #[cfg(feature = "holographic")]

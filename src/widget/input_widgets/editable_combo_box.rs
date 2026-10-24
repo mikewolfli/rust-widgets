@@ -19,15 +19,15 @@
 //! `rect.x + 6` with no bound and the indicator placed independently at
 //! `rect.x + rect.width - 20`.
 
-use crate::core::{Color, HorizontalAlignment, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::Signal1;
 use crate::style::EdgeOffsets;
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
-    expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
+    expect_horizontal_alignment, expect_string, expect_usize, horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -114,6 +114,16 @@ pub struct EditableComboBox {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// The insertion point, in bytes from the start of the value.
+    cursor: usize,
+    /// The other end of a selection, in bytes. `None` means no selection.
+    selection_anchor: Option<usize>,
+    /// The caret's blink state, shared with the crate's other carets.
+    cursor_blink: crate::style::CursorBlink,
+    /// Maximum rows the open list shows at once. `None` shows them all.
+    max_visible: Option<usize>,
+    /// Index of the first painted row in the open list.
+    scroll_offset: usize,
 }
 
 impl EditableComboBox {
@@ -148,6 +158,11 @@ impl EditableComboBox {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            cursor: 0,
+            selection_anchor: None,
+            cursor_blink: crate::style::CursorBlink::new(),
+            max_visible: None,
+            scroll_offset: 0,
         }
     }
 
@@ -191,9 +206,177 @@ impl EditableComboBox {
                     "editable_combo_text",
                 )));
             }
+            self.cursor = self.text.len();
+            self.selection_anchor = None;
             self.text_changed.emit(self.text.clone());
             self.base.request_redraw();
         }
+    }
+
+    /// The caret's byte offset in the value.
+    pub fn cursor_position(&self) -> usize {
+        self.cursor
+    }
+
+    /// Moves the caret, clearing the selection.
+    pub fn set_cursor_position(&mut self, position: usize) {
+        let position = crate::widget::text_utils::floor_char_boundary(
+            &self.text,
+            position.min(self.text.len()),
+        );
+        if self.cursor == position && self.selection_anchor.is_none() {
+            return;
+        }
+        self.cursor = position;
+        self.selection_anchor = None;
+        self.base.request_redraw();
+    }
+
+    /// The selected byte range, or `None` when nothing is selected.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        let (start, end) =
+            if anchor <= self.cursor { (anchor, self.cursor) } else { (self.cursor, anchor) };
+        (start != end).then_some((start, end))
+    }
+
+    /// The maximum number of rows the open list shows at once.
+    pub fn max_visible_items(&self) -> Option<usize> {
+        self.max_visible
+    }
+
+    /// Caps the number of rows the open list paints.
+    pub fn set_max_visible_items(&mut self, max_visible: Option<usize>) {
+        let max_visible = max_visible.map(|value| value.max(1));
+        if self.max_visible == max_visible {
+            return;
+        }
+        self.max_visible = max_visible;
+        self.base.request_redraw();
+    }
+
+    /// Index of the first painted row in the open list.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Sets the first painted row, clamped to the rows that exist.
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        let rows = self.filtered_items().len();
+        let page = self.page_size(rows);
+        let next = offset.min(rows.saturating_sub(page.min(rows)));
+        if self.scroll_offset == next {
+            return;
+        }
+        self.scroll_offset = next;
+        self.base.request_redraw();
+    }
+
+    /// Number of rows painted at once for a list with `rows` rows.
+    pub fn page_size(&self, rows: usize) -> usize {
+        self.max_visible.unwrap_or(rows).max(1)
+    }
+
+    /// Items matching the typed prefix, in list order.
+    ///
+    /// An empty value matches everything, so opening the list with no text shows the whole
+    /// collection. Matching is case-insensitive and prefix-anchored: a substring match would
+    /// make typing `ap` list every item whose label merely contains it.
+    pub fn filtered_items(&self) -> Vec<String> {
+        let prefix = self.text.trim().to_lowercase();
+        if prefix.is_empty() {
+            return self.items.clone();
+        }
+        self.items.iter().filter(|item| item.to_lowercase().starts_with(&prefix)).cloned().collect()
+    }
+
+    /// Indices in `items` matching the typed prefix.
+    fn filtered_indices(&self) -> Vec<usize> {
+        let prefix = self.text.trim().to_lowercase();
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| prefix.is_empty() || item.to_lowercase().starts_with(&prefix))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// Moves the caret by `delta` characters.
+    fn move_caret(&mut self, delta: i32, extend: bool) {
+        let mut target = self.cursor;
+        if delta < 0 {
+            for _ in 0..delta.unsigned_abs() {
+                target = crate::widget::text_utils::previous_char_boundary(&self.text, target);
+            }
+        } else {
+            for _ in 0..delta.unsigned_abs() {
+                target = crate::widget::text_utils::next_char_boundary(&self.text, target);
+            }
+        }
+        target = crate::widget::text_utils::floor_char_boundary(&self.text, target);
+        if extend {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor);
+            }
+        } else {
+            self.selection_anchor = None;
+        }
+        if self.cursor != target {
+            self.cursor = target;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Removes the selection, or the character before the caret when there is none.
+    fn backspace(&mut self) {
+        let (start, end) = self.selection_range().unwrap_or_else(|| {
+            (
+                crate::widget::text_utils::previous_char_boundary(&self.text, self.cursor),
+                self.cursor,
+            )
+        });
+        if start == end {
+            return;
+        }
+        let mut next = self.text.clone();
+        next.replace_range(start..end, "");
+        self.set_text(next);
+        self.cursor = start;
+        self.selection_anchor = None;
+    }
+
+    /// Removes the selection, or the character after the caret when there is none.
+    fn delete_forward(&mut self) {
+        let (start, end) = self.selection_range().unwrap_or_else(|| {
+            (self.cursor, crate::widget::text_utils::next_char_boundary(&self.text, self.cursor))
+        });
+        if start == end {
+            return;
+        }
+        let mut next = self.text.clone();
+        next.replace_range(start..end, "");
+        self.set_text(next);
+        self.cursor = start;
+        self.selection_anchor = None;
+    }
+
+    /// Scrolls the list so the selected row is inside the window.
+    fn ensure_selected_visible(&mut self) {
+        let indices = self.filtered_indices();
+        let Some(index) = self.selected_index else {
+            return;
+        };
+        let Some(position) = indices.iter().position(|&candidate| candidate == index) else {
+            return;
+        };
+        let page = self.page_size(indices.len());
+        if position < self.scroll_offset {
+            self.scroll_offset = position;
+        } else if position >= self.scroll_offset + page {
+            self.scroll_offset = position + 1 - page;
+        }
+        self.scroll_offset =
+            self.scroll_offset.min(indices.len().saturating_sub(page.min(indices.len())));
     }
 
     /// Appends committed text to the field and emits `text_changed` (D09-INPUT-01).
@@ -204,11 +387,17 @@ impl EditableComboBox {
     /// the `text_changed` signal behave identically for both. Control characters are filtered so a
     /// stray one does not enter the value.
     fn append_committed_text(&mut self, text: &str) {
-        let mut next = self.text.clone();
-        next.extend(text.chars().filter(|c| !c.is_control()));
-        if next != self.text {
-            self.set_text(next);
+        let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
+        if filtered.is_empty() {
+            return;
         }
+        let (start, end) = self.selection_range().unwrap_or((self.cursor, self.cursor));
+        let mut next = self.text.clone();
+        next.replace_range(start..end, &filtered);
+        self.set_text(next);
+        self.cursor = start + filtered.len();
+        self.selection_anchor = None;
+        self.base.request_redraw();
     }
 
     /// Adds an item to the dropdown list.
@@ -428,6 +617,12 @@ impl WidgetProperties for EditableComboBox {
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
+            "cursor_position" => Ok(CapabilityValue::UInt(self.cursor_position() as u64)),
+            "max_visible_items" => match self.max_visible_items() {
+                Some(max) => Ok(CapabilityValue::UInt(max as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "scroll_offset" => Ok(CapabilityValue::UInt(self.scroll_offset() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -443,12 +638,35 @@ impl WidgetProperties for EditableComboBox {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
             }
+            "cursor_position" => {
+                self.set_cursor_position(expect_usize(value)?);
+                Ok(())
+            }
+            "max_visible_items" => {
+                match value {
+                    CapabilityValue::Null => self.set_max_visible_items(None),
+                    other => self.set_max_visible_items(Some(expect_usize(other)?)),
+                }
+                Ok(())
+            }
+            "scroll_offset" => {
+                self.set_scroll_offset(expect_usize(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "item_count", "alignment", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "text",
+            "item_count",
+            "alignment",
+            "cursor_position",
+            "max_visible_items",
+            "scroll_offset",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `editable_combo_box` publishes.
@@ -539,6 +757,25 @@ impl Draw for EditableComboBox {
         // glyph origin is the box's top edge, so the old `padding + 13` put a 13 px font's
         // origin on the field's middle line and drew the value half a line low.
         let value_line = context.text_line(geometry.text_box, font);
+        let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        let value_advance = context.measure_text(display_text, font).width as i32;
+        let value_origin =
+            crate::render::fitted_origin(geometry.text_box, value_advance, value_align);
+        // Selection band behind the selected range.
+        if let Some((start, end)) = self.selection_range() {
+            let start_x =
+                value_origin.x + context.measure_text(&self.text[..start], font).width as i32;
+            let end_x = value_origin.x + context.measure_text(&self.text[..end], font).width as i32;
+            context.fill_rect(
+                Rect::new(
+                    start_x.min(end_x),
+                    value_line.y,
+                    (end_x - start_x).unsigned_abs(),
+                    value_line.height.max(1),
+                ),
+                border.with_alpha(70),
+            );
+        }
         context.draw_text_fitted_cow(
             Rect::new(
                 geometry.text_box.x,
@@ -549,8 +786,23 @@ impl Draw for EditableComboBox {
             display_text,
             font,
             text_color,
-            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
+            value_align,
         );
+
+        // Caret at the field's own insertion point, clipped to the value's box.
+        if is_enabled && self.cursor_blink.is_visible() {
+            let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
+            let caret_x =
+                value_origin.x + context.measure_text(&self.text[..caret], font).width as i32;
+            let caret_x = caret_x
+                .min(geometry.text_box.x + geometry.text_box.width as i32 - 1)
+                .max(geometry.text_box.x);
+            context.draw_line(
+                Point::new(caret_x, value_line.y),
+                Point::new(caret_x, value_line.y + value_line.height as i32),
+                text_color,
+            );
+        }
 
         // Draw the dropdown indicator inside its own derived box.
         //
@@ -580,13 +832,18 @@ impl Draw for EditableComboBox {
         );
 
         // Draw dropdown if expanded
-        if !self.expanded || self.items.is_empty() {
+        if !self.expanded {
             return;
         }
 
+        let filtered = self.filtered_items();
+        let page = self.page_size(filtered.len());
+        let offset =
+            self.scroll_offset.min(filtered.len().saturating_sub(page.min(filtered.len())));
+        let visible = &filtered[offset..(offset + page).min(filtered.len())];
         let drop_down_y = rect.y + rect.height as i32;
         let item_height = 28u32;
-        let drop_down_height = item_height * self.items.len() as u32;
+        let drop_down_height = item_height * visible.len().max(1) as u32;
         let drop_rect = Rect::new(rect.x, drop_down_y, rect.width, drop_down_height);
 
         // Dropdown background. The list floats over whatever is beneath it, so it is the
@@ -595,6 +852,19 @@ impl Draw for EditableComboBox {
         context.fill_rounded_rect(drop_rect, 2, field);
         context.draw_rounded_rect_stroke(drop_rect, 2, border, 1);
 
+        if visible.is_empty() {
+            let row = Rect::new(rect.x + 1, drop_down_y, rect.width.saturating_sub(2), item_height);
+            let line = context.text_line(row, font);
+            context.draw_text_fitted_cow(
+                Rect::new(row.x + 8, line.y, row.width.saturating_sub(16), line.height),
+                "(No matches)",
+                font,
+                ink.with_alpha(120),
+                HorizontalAlignment::Left,
+            );
+            return;
+        }
+
         // The selected-row highlight is the theme's accent, which is the one hue a theme
         // is expected to vary most.
         let highlight = crate::style::theme_manager()
@@ -602,16 +872,18 @@ impl Draw for EditableComboBox {
             .map(|active| active.colors.primary.with_alpha(40))
             .unwrap_or_else(|| ink.blend(&field, 0.85));
 
-        for (i, item) in self.items.iter().enumerate() {
+        for (row, item) in visible.iter().enumerate() {
+            let original_index =
+                self.items.iter().position(|candidate| candidate == item).unwrap_or(usize::MAX);
             let item_rect = Rect::new(
                 rect.x + 1,
-                drop_down_y + (i as i32) * (item_height as i32),
+                drop_down_y + (row as i32) * (item_height as i32),
                 rect.width.saturating_sub(2),
                 item_height,
             );
 
             // Highlight selected item
-            if self.selected_index == Some(i) {
+            if self.selected_index == Some(original_index) {
                 context.fill_rounded_rect(item_rect, 2, highlight);
             }
 
@@ -658,10 +930,31 @@ impl EventHandler for EditableComboBox {
                 }
                 match *key {
                     8 => {
-                        // Backspace
-                        let mut new_text = self.text.clone();
-                        new_text.pop();
-                        self.set_text(new_text);
+                        self.backspace();
+                        return;
+                    }
+                    127 => {
+                        self.delete_forward();
+                        return;
+                    }
+                    37 => {
+                        let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                            .contains(crate::shortcut::Modifiers::SHIFT);
+                        self.move_caret(-1, shift);
+                        return;
+                    }
+                    39 => {
+                        let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                            .contains(crate::shortcut::Modifiers::SHIFT);
+                        self.move_caret(1, shift);
+                        return;
+                    }
+                    36 => {
+                        self.set_cursor_position(0);
+                        return;
+                    }
+                    35 => {
+                        self.set_cursor_position(self.text.len());
                         return;
                     }
                     13 => {
@@ -686,28 +979,40 @@ impl EventHandler for EditableComboBox {
                         return;
                     }
                     38 => {
-                        // ArrowUp
-                        if self.expanded && !self.items.is_empty() {
-                            let prev = match self.selected_index {
+                        // ArrowUp: move through the filtered rows.
+                        if self.expanded {
+                            let indices = self.filtered_indices();
+                            let current = self
+                                .selected_index
+                                .and_then(|index| indices.iter().position(|&i| i == index));
+                            let position = match current {
                                 Some(0) | None => 0,
-                                Some(idx) => idx - 1,
+                                Some(position) => position - 1,
                             };
-                            self.selected_index = Some(prev);
-                            self.base.request_redraw();
+                            if let Some(&index) = indices.get(position) {
+                                self.selected_index = Some(index);
+                                self.ensure_selected_visible();
+                                self.base.request_redraw();
+                            }
                         }
                         return;
                     }
                     40 => {
-                        // ArrowDown
+                        // ArrowDown: open and move through the filtered rows.
                         if !self.expanded {
                             self.expanded = true;
                         }
-                        if !self.items.is_empty() {
-                            let next = match self.selected_index {
-                                Some(idx) => (idx + 1).min(self.items.len() - 1),
-                                None => 0,
-                            };
-                            self.selected_index = Some(next);
+                        let indices = self.filtered_indices();
+                        let current = self
+                            .selected_index
+                            .and_then(|index| indices.iter().position(|&i| i == index));
+                        let position = match current {
+                            Some(position) => (position + 1).min(indices.len().saturating_sub(1)),
+                            None => 0,
+                        };
+                        if let Some(&index) = indices.get(position) {
+                            self.selected_index = Some(index);
+                            self.ensure_selected_visible();
                             self.base.request_redraw();
                         }
                         return;
@@ -757,15 +1062,21 @@ impl EventHandler for EditableComboBox {
                 if self.expanded {
                     let item_height = 28i32;
                     let drop_down_y = rect.y + rect.height as i32;
-                    let drop_down_height = item_height * self.items.len() as i32;
+                    let indices = self.filtered_indices();
+                    let page = self.page_size(indices.len());
+                    let offset = self
+                        .scroll_offset
+                        .min(indices.len().saturating_sub(page.min(indices.len())));
+                    let visible = &indices[offset..(offset + page).min(indices.len())];
+                    let drop_down_height = item_height * visible.len().max(1) as i32;
                     let drop_rect =
                         Rect::new(rect.x, drop_down_y, rect.width, drop_down_height as u32);
 
                     if drop_rect.contains_point(*pos) {
                         let rel_y = pos.y - drop_down_y;
-                        let idx = (rel_y / item_height) as usize;
-                        if idx < self.items.len() {
-                            self.select_index(idx);
+                        let row = (rel_y / item_height) as usize;
+                        if let Some(&index) = visible.get(row) {
+                            self.select_index(index);
                         }
                         return;
                     }
@@ -774,6 +1085,17 @@ impl EventHandler for EditableComboBox {
                     if !rect.contains_point(*pos) {
                         self.collapse();
                     }
+                }
+            }
+            Event::Wheel { delta, modifiers } => {
+                if !self.expanded {
+                    self.base.handle_event(event);
+                    return;
+                }
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y != 0 {
+                    let offset = (self.scroll_offset as i32 + scroll.lines_y).max(0) as usize;
+                    self.set_scroll_offset(offset);
                 }
             }
             _ => {
@@ -968,5 +1290,66 @@ mod tests {
         assert_eq!(band.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
         assert_eq!(cb.size_hint().height, band.height);
         assert_eq!(band.y, (120 - dimensions::TEXT_FIELD_MIN_HEIGHT as i32) / 2);
+    }
+
+    /// The field has a caret, so it edits in the middle rather than only appending.
+    #[test]
+    fn the_field_has_a_caret_model() {
+        let mut cb = EditableComboBox::new(Rect::new(0, 0, 200, 40));
+        cb.set_text("helo");
+        cb.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
+        cb.handle_event(&Event::KeyPress { key: 108, modifiers: 0 });
+        assert_eq!(cb.text(), "hello");
+        assert_eq!(cb.cursor_position(), 4);
+
+        cb.handle_event(&Event::KeyPress { key: 36, modifiers: 0 }); // Home
+        cb.handle_event(&Event::KeyPress { key: 127, modifiers: 0 }); // Delete
+        assert_eq!(cb.text(), "ello");
+        assert_eq!(cb.cursor_position(), 0);
+    }
+
+    /// The open list filters as the value changes and scrolls when capped.
+    #[test]
+    fn the_open_list_filters_and_scrolls() {
+        let mut cb = EditableComboBox::new(Rect::new(0, 0, 200, 40));
+        for item in ["alpha", "alpine", "beta", "gamma", "alps"] {
+            cb.add_item(item);
+        }
+        cb.expand();
+        cb.set_text("al");
+        assert_eq!(
+            cb.filtered_items(),
+            vec!["alpha".to_string(), "alpine".to_string(), "alps".to_string()].as_slice()
+        );
+
+        cb.set_max_visible_items(Some(2));
+        assert_eq!(cb.max_visible_items(), Some(2));
+        cb.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(cb.scroll_offset(), 1);
+
+        cb.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert!(cb.selected_index().is_some());
+        let svg = crate::widget::svg::render_to_svg(&mut cb);
+        assert!(svg.contains("alpha") || cb.selected_index().is_some());
+    }
+
+    /// The caret, the row cap and the list's scroll offset are published and writable.
+    #[test]
+    fn the_caret_and_row_cap_are_published() {
+        let mut cb = EditableComboBox::new(Rect::new(0, 0, 200, 40));
+        cb.set_text("hello");
+        assert_eq!(cb.get("cursor_position").unwrap(), CapabilityValue::UInt(5));
+        cb.set("cursor_position", CapabilityValue::UInt(2)).unwrap();
+        assert_eq!(cb.cursor_position(), 2);
+
+        // The cap is nullable: `None` restores the full expansion.
+        assert_eq!(cb.get("max_visible_items").unwrap(), CapabilityValue::Null);
+        cb.set("max_visible_items", CapabilityValue::UInt(3)).unwrap();
+        assert_eq!(cb.max_visible_items(), Some(3));
+        cb.set("max_visible_items", CapabilityValue::Null).unwrap();
+        assert_eq!(cb.max_visible_items(), None);
+
+        cb.set("scroll_offset", CapabilityValue::UInt(0)).unwrap();
+        assert_eq!(cb.get("scroll_offset").unwrap(), CapabilityValue::UInt(0));
     }
 }

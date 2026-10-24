@@ -56,6 +56,23 @@ pub struct StatusBar {
     /// see that method's "Disabled contract" section. Changing the permanent message does
     /// **not** emit it.
     pub message_changed: Signal1<String>,
+    /// Child widgets shown on the strip.
+    widgets: Vec<StatusSlot>,
+    /// The press origin of an active size-grip drag and the last delta reported.
+    grip_drag: Option<(Point, (i32, i32))>,
+    /// Emitted while the size grip is dragged, with the total delta since the press.
+    ///
+    /// The status bar does not resize anything itself: it has no window handle and no
+    /// layout authority, so it reports the gesture and the host applies it. Emitting a
+    /// total delta (rather than per-frame increments) lets a host that missed a frame
+    /// still resize to the right place.
+    pub size_grip_dragged: Signal1<(i32, i32)>,
+}
+
+/// One child placed on the status strip.
+struct StatusSlot {
+    widget: Box<dyn Widget>,
+    permanent: bool,
 }
 impl StatusBar {
     /// Creates an empty status bar with the size grip enabled.
@@ -70,6 +87,9 @@ impl StatusBar {
             message_deadline_ms: None,
             elapsed_ms: 0,
             message_changed: Signal1::new(),
+            widgets: Vec::new(),
+            grip_drag: None,
+            size_grip_dragged: Signal1::new(),
         }
     }
     /// Returns the transient message, or `""` when none is shown.
@@ -170,6 +190,100 @@ impl StatusBar {
         self.size_grip_enabled = enabled;
         self.base.request_redraw();
     }
+    /// Appends a transient child widget and returns its index.
+    ///
+    /// A transient widget sits in the message column, right-aligned, and yields to the
+    /// permanent segment and the grip. It does not affect the default strip: with no
+    /// children installed every box is exactly where it was.
+    pub fn add_widget(&mut self, widget: Box<dyn Widget>) -> usize {
+        self.widgets.push(StatusSlot { widget, permanent: false });
+        self.base.request_redraw();
+        self.widgets.len() - 1
+    }
+
+    /// Appends a permanent child widget and returns its index.
+    ///
+    /// A permanent widget sits in the permanent column, right-aligned before the grip.
+    pub fn add_permanent_widget(&mut self, widget: Box<dyn Widget>) -> usize {
+        self.widgets.push(StatusSlot { widget, permanent: true });
+        self.base.request_redraw();
+        self.widgets.len() - 1
+    }
+
+    /// Removes the child at `index`, returning it when the index was in range.
+    pub fn remove_widget(&mut self, index: usize) -> Option<Box<dyn Widget>> {
+        if index >= self.widgets.len() {
+            return None;
+        }
+        let slot = self.widgets.remove(index);
+        self.base.request_redraw();
+        Some(slot.widget)
+    }
+
+    /// The number of child widgets on the strip.
+    pub fn widget_count(&self) -> usize {
+        self.widgets.len()
+    }
+
+    /// The child at `index`.
+    pub fn widget(&self, index: usize) -> Option<&dyn Widget> {
+        self.widgets.get(index).map(|slot| slot.widget.as_ref())
+    }
+
+    /// The child at `index`, mutably.
+    pub fn widget_mut(&mut self, index: usize) -> Option<&mut (dyn Widget + '_)> {
+        self.widgets.get_mut(index).map(|slot| slot.widget.as_mut())
+    }
+
+    /// Whether the child at `index` is permanent.
+    pub fn widget_is_permanent(&self, index: usize) -> Option<bool> {
+        self.widgets.get(index).map(|slot| slot.permanent)
+    }
+
+    /// The box every child occupies, in insertion order.
+    fn slot_bands(&self) -> Vec<(usize, Rect)> {
+        let band = self.geometry();
+        let (message, permanent) = self.segment_boxes(band);
+        let mut placed = Vec::with_capacity(self.widgets.len());
+        for want_permanent in [true, false] {
+            let area = if want_permanent { permanent } else { message };
+            let mut cursor = area.x + area.width as i32;
+            for (index, slot) in self.widgets.iter().enumerate() {
+                if slot.permanent != want_permanent {
+                    continue;
+                }
+                let width = slot.widget.size_hint().width.min(area.width);
+                let rect = Rect::new(cursor - width as i32, area.y, width, area.height);
+                cursor = rect.x - 4;
+                placed.push((index, rect));
+            }
+        }
+        placed.sort_by_key(|(index, _)| *index);
+        placed
+    }
+
+    /// The box of the child at `index`, or `None` when the index is out of range.
+    pub fn widget_rect(&self, index: usize) -> Option<Rect> {
+        self.slot_bands().into_iter().find(|(slot, _)| *slot == index).map(|(_, rect)| rect)
+    }
+
+    /// The part of `area` left after the children of one kind on its trailing side.
+    fn text_area(&self, area: Rect, permanent: bool) -> Rect {
+        let mut right = area.x + area.width as i32;
+        for (index, rect) in self.slot_bands() {
+            if self.widgets[index].permanent != permanent {
+                continue;
+            }
+            right = right.min(rect.x - 4);
+        }
+        Rect::new(area.x, area.y, (right - area.x).max(0) as u32, area.height)
+    }
+
+    /// Whether a size-grip drag is in progress.
+    pub fn is_grip_dragging(&self) -> bool {
+        self.grip_drag.is_some()
+    }
+
     /// The size grip's own box, or `None` when the grip is off.
     ///
     /// # Why the grip is a box and not a `- 14` literal
@@ -348,6 +462,45 @@ impl WidgetProperties for StatusBar {
 impl EventHandler for StatusBar {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        match event {
+            Event::MousePress { pos, button: 1, .. } => {
+                if self
+                    .size_grip_rect(self.geometry())
+                    .is_some_and(|grip| grip.contains_point(*pos))
+                {
+                    self.grip_drag = Some((*pos, (0, 0)));
+                }
+            }
+            Event::MouseMove { pos } => {
+                let Some((origin, _)) = self.grip_drag else {
+                    return;
+                };
+                let delta = (pos.x - origin.x, pos.y - origin.y);
+                if let Some((_, last)) = self.grip_drag.as_mut() {
+                    *last = delta;
+                }
+                self.size_grip_dragged.emit(delta);
+            }
+            Event::MouseRelease { .. } => {
+                self.grip_drag = None;
+            }
+            _ => {}
+        }
+        // A child takes the events aimed at its own box. The boxes are recomputed here
+        // rather than cached, so a relayout cannot leave a stale hit region behind.
+        if let Event::MousePress { pos, .. }
+        | Event::MouseRelease { pos, .. }
+        | Event::MouseMove { pos } = event
+        {
+            let bands = self.slot_bands();
+            for (index, band) in bands {
+                if band.contains_point(*pos) {
+                    let slot = &mut self.widgets[index];
+                    slot.widget.set_geometry(band);
+                    slot.widget.handle_event(event);
+                }
+            }
+        }
     }
 }
 
@@ -387,7 +540,9 @@ impl Draw for StatusBar {
         // and the permanent message is anchored to the trailing edge. One derivation for both, so
         // neither can be positioned against the other's assumption.
         let (message_box, permanent_box) = self.segment_boxes(rect);
-        // Temporary message (left side).
+        // Temporary message (left side). Child widgets occupy the column's trailing
+        // side, so the text yields to them; with no children the box is unchanged.
+        let message_box = self.text_area(message_box, false);
         if !self.message.is_empty() {
             context.draw_text_fitted_cow(
                 context.text_line(message_box, font),
@@ -398,6 +553,7 @@ impl Draw for StatusBar {
             );
         }
         // Permanent message (right side, before the size grip).
+        let permanent_box = self.text_area(permanent_box, true);
         if !self.permanent_message.is_empty() {
             // Muted relative to the main message. The old form blended the ink *toward the
             // band*, which on a dark appearance pulled light text 40% of the way toward a dark
@@ -433,6 +589,17 @@ impl Draw for StatusBar {
                     Point::new(grip.x + grip.width as i32 - 1, grip.y + offset),
                     grip_ink,
                 );
+            }
+        }
+
+        // Child widgets are painted last, each in the box the same band derivation reports,
+        // so their hit boxes and their pixels agree.
+        let bands = self.slot_bands();
+        for (index, band) in bands {
+            let slot = &mut self.widgets[index];
+            slot.widget.set_geometry(band);
+            if let Some(drawable) = crate::widget::draw_bridge::draw_of(slot.widget.as_mut()) {
+                drawable.draw(context);
             }
         }
     }
@@ -727,5 +894,73 @@ mod tests {
         sb.clear_message();
         assert_eq!(seen.load(Ordering::SeqCst), 2, "re-enabling restores the signal");
         assert_eq!(sb.message(), "");
+    }
+
+    /// Child widgets take the trailing side of their own segment; with none, both
+    /// message boxes are exactly where they always were.
+    #[test]
+    fn child_widgets_claim_the_trailing_side_of_their_segment() {
+        use crate::widget::Label;
+
+        let band = Rect::new(0, 0, 300, 24);
+        let mut bar = StatusBar::new(band);
+        let (before_message, before_permanent) = bar.segment_boxes(band);
+
+        let transient =
+            bar.add_widget(Box::new(Label::new("st".to_string(), Rect::new(0, 0, 0, 0))));
+        assert_eq!(bar.widget_count(), 1);
+        assert_eq!(bar.widget_is_permanent(transient), Some(false));
+        let transient_box = bar.widget_rect(transient).expect("a placed child has a box");
+        assert_eq!(
+            transient_box.x + transient_box.width as i32,
+            before_message.x + before_message.width as i32,
+            "a transient child is right-aligned in the message column"
+        );
+        let message = bar.text_area(before_message, false);
+        assert!(message.width <= before_message.width);
+        assert_eq!(message.x, before_message.x);
+
+        let permanent =
+            bar.add_permanent_widget(Box::new(Label::new("p".to_string(), Rect::new(0, 0, 0, 0))));
+        assert_eq!(bar.widget_is_permanent(permanent), Some(true));
+        let permanent_box = bar.widget_rect(permanent).expect("the permanent child has a box");
+        assert_eq!(
+            permanent_box.x + permanent_box.width as i32,
+            before_permanent.x + before_permanent.width as i32,
+            "a permanent child is right-aligned in the permanent column"
+        );
+
+        assert!(bar.remove_widget(transient).is_some());
+        assert!(bar.remove_widget(99).is_none());
+        assert_eq!(bar.widget_count(), 1);
+    }
+
+    /// Dragging the grip reports the total delta since the press and stops on release.
+    #[test]
+    fn the_size_grip_reports_a_drag() {
+        use std::sync::{Arc, Mutex};
+
+        let band = Rect::new(0, 0, 300, 24);
+        let mut bar = StatusBar::new(band);
+        let drags = Arc::new(Mutex::new(Vec::new()));
+        let sink = drags.clone();
+        bar.size_grip_dragged.connect(move |delta| {
+            sink.lock().unwrap().push(*delta);
+        });
+
+        let grip = bar.size_grip_rect(band).expect("the grip is enabled");
+        bar.handle_event(&Event::mouse_press(grip.x + 2, grip.y + 2, 1));
+        assert!(bar.is_grip_dragging());
+        bar.handle_event(&Event::mouse_move(grip.x + 12, grip.y + 7));
+        bar.handle_event(&Event::mouse_move(grip.x + 22, grip.y + 9));
+        assert_eq!(
+            &*drags.lock().unwrap(),
+            &[(10, 5), (20, 7)],
+            "deltas are from the press origin"
+        );
+        bar.handle_event(&Event::mouse_release(grip.x + 22, grip.y + 9, 1));
+        assert!(!bar.is_grip_dragging());
+        bar.handle_event(&Event::mouse_move(grip.x + 40, grip.y + 40));
+        assert_eq!(drags.lock().unwrap().len(), 2, "a released grip reports nothing more");
     }
 }

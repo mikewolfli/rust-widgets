@@ -128,6 +128,10 @@ pub struct KeySequenceEdit {
     base: BaseWidget,
     key_sequence: KeySequence,
     recording: bool,
+    /// The chords recorded so far. One chord unless multi-chord recording is enabled.
+    chords: Vec<KeySequence>,
+    /// How many chords one recording may collect (`1..=4`).
+    max_chords: usize,
     /// How the field's value is aligned within its own box.
     ///
     /// Horizontal only: the value is centred vertically in the field by the field's own layout,
@@ -157,6 +161,8 @@ impl KeySequenceEdit {
             base: BaseWidget::new(WidgetKind::LineEdit, geometry, "KeySequenceEdit"),
             key_sequence: KeySequence::empty(),
             recording: false,
+            chords: Vec::new(),
+            max_chords: 1,
             alignment: crate::core::Alignment::Left,
             editing_finished: GenericSignal::new(),
             key_sequence_changed: Signal1::new(),
@@ -206,6 +212,7 @@ impl KeySequenceEdit {
         }
         let before = self.key_sequence.clone();
         self.key_sequence = seq.clone();
+        self.chords = if seq.is_empty() { Vec::new() } else { vec![seq.clone()] };
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.key_sequence.clone();
             self.undo_stack.push(Box::new(ValueCommand::new(
@@ -225,6 +232,97 @@ impl KeySequenceEdit {
     /// and is a no-op when the sequence is already empty.
     pub fn clear(&mut self) {
         self.set_key_sequence(KeySequence::empty());
+    }
+
+    /// The chords the recorded sequence contains, in order.
+    pub fn chords(&self) -> &[KeySequence] {
+        &self.chords
+    }
+
+    /// How many chords are recorded.
+    pub fn sequence_len(&self) -> usize {
+        self.chords.len()
+    }
+
+    /// How many chords one recording may collect (`1..=4`).
+    pub fn max_chords(&self) -> usize {
+        self.max_chords
+    }
+
+    /// Sets the multi-chord limit, clamped to `1..=4`.
+    ///
+    /// The default of `1` keeps the historical single-chord recording: the first key
+    /// press ends the capture. A larger limit lets a user enter a sequence such as
+    /// `Ctrl+X, Ctrl+C`, and recording then ends on Escape, focus loss, or the
+    /// [`KeySequenceEdit::commit_recording`] call.
+    pub fn set_max_chords(&mut self, max_chords: usize) {
+        let max_chords = max_chords.clamp(1, 4);
+        if self.max_chords == max_chords {
+            return;
+        }
+        self.max_chords = max_chords;
+        self.chords.truncate(max_chords);
+        if let Some(last) = self.chords.last().cloned() {
+            self.key_sequence = last;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Replaces the chord list.
+    ///
+    /// The last chord becomes [`KeySequenceEdit::key_sequence`], so the single-chord
+    /// accessors keep answering the effective shortcut. An empty list clears the
+    /// sequence.
+    pub fn set_chords(&mut self, chords: Vec<KeySequence>) {
+        let mut chords: Vec<KeySequence> =
+            chords.into_iter().filter(|chord| !chord.is_empty()).collect();
+        chords.truncate(4);
+        match chords.last().cloned() {
+            Some(last) => {
+                self.set_key_sequence(last);
+                self.chords = chords;
+                self.base.request_redraw();
+            }
+            None => self.clear(),
+        }
+    }
+
+    /// Ends a multi-chord recording and keeps what was captured.
+    ///
+    /// With no captured chord this only stops recording, which is the same answer
+    /// Escape gives.
+    pub fn commit_recording(&mut self) {
+        self.stop_recording();
+    }
+
+    /// Whether any chord in `self` has the same chord in `other`.
+    ///
+    /// A host uses this to refuse a duplicate binding before it is saved; the control
+    /// itself cannot know the other shortcuts in the application.
+    pub fn conflicts_with(&self, other: &KeySequenceEdit) -> bool {
+        self.chords.iter().any(|mine| other.chords.iter().any(|theirs| mine == theirs))
+    }
+
+    /// Translates an event modifier bitmask into this type's bitmask.
+    ///
+    /// The event convention is shift `1`, ctrl `2`, alt `4`, meta `8`; the sequence
+    /// convention is ctrl `0x01`, alt `0x02`, shift `0x04`, meta `0x08`. Keeping the
+    /// translation here removes the raw bit tests the recording path used.
+    pub fn modifiers_from_event(bits: u32) -> u32 {
+        let mut modifiers = 0;
+        if bits & 0b0001 != 0 {
+            modifiers |= 0x04; // shift
+        }
+        if bits & 0b0010 != 0 {
+            modifiers |= 0x01; // ctrl
+        }
+        if bits & 0b0100 != 0 {
+            modifiers |= 0x02; // alt
+        }
+        if bits & 0b1000 != 0 {
+            modifiers |= 0x08; // meta
+        }
+        modifiers
     }
     /// Begins capturing the next key press. Idempotent, and does not emit
     /// anything. If no `Event::FocusLost` or key press follows, recording
@@ -324,9 +422,21 @@ impl EventHandler for KeySequenceEdit {
                     return;
                 } // Shift/Ctrl/Alt
                 let key_name = key_code_to_name(*key);
-                let seq = KeySequence::new(*modifiers, *key, key_name);
-                self.set_key_sequence(seq);
-                self.stop_recording();
+                let modifiers = Self::modifiers_from_event(*modifiers);
+                let chord = KeySequence::new(modifiers, *key, key_name);
+                if self.max_chords <= 1 {
+                    self.set_key_sequence(chord);
+                    self.stop_recording();
+                } else {
+                    if self.chords.len() < self.max_chords {
+                        self.chords.push(chord.clone());
+                    }
+                    self.key_sequence = chord;
+                    self.base.request_redraw();
+                    if self.chords.len() >= self.max_chords {
+                        self.stop_recording();
+                    }
+                }
             }
             // Undo and redo are the platform primary chord: Control+Z/Y on
             // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
@@ -430,9 +540,20 @@ impl Draw for KeySequenceEdit {
         );
         context.draw_rect(rect, if self.recording { error } else { divider });
         let display = if self.recording {
-            "Recording...".to_string()
+            let mut out = String::from("Recording...");
+            if !self.chords.is_empty() {
+                out.push(' ');
+                let captured: Vec<String> =
+                    self.chords.iter().map(KeySequence::to_display_string).collect();
+                out.push_str(&captured.join(", "));
+            }
+            out
         } else if self.key_sequence.is_empty() {
             "Click to set shortcut...".to_string()
+        } else if self.chords.len() > 1 {
+            let captured: Vec<String> =
+                self.chords.iter().map(KeySequence::to_display_string).collect();
+            captured.join(", ")
         } else {
             self.key_sequence.to_display_string()
         };
@@ -709,9 +830,10 @@ mod tests {
         assert!(kse.is_recording());
 
         // Press 'A' (key code 65) with Ctrl modifier
-        kse.handle_event(&Event::KeyPress { key: 65, modifiers: 0x01 });
+        kse.handle_event(&Event::KeyPress { key: 65, modifiers: 0x02 });
 
-        // Recording stops, sequence captured
+        // Recording stops, sequence captured. The event convention puts Control on bit 1,
+        // and the sequence's own mask puts it on 0x01.
         assert!(!kse.is_recording());
         assert_eq!(kse.key_sequence().key_code(), 65);
         assert_eq!(kse.key_sequence().modifiers(), 0x01);
@@ -865,5 +987,59 @@ mod tests {
         seq.set_key_name("Z");
         assert_eq!(seq.key_name(), "Z");
         assert!(!seq.is_empty());
+    }
+
+    /// Multi-chord recording collects up to the configured limit.
+    #[test]
+    fn multi_chord_recording_collects_a_sequence() {
+        let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+        kse.set_max_chords(3);
+        assert_eq!(kse.max_chords(), 3);
+        kse.start_recording();
+
+        // Ctrl+X, then Ctrl+C.
+        kse.handle_event(&Event::KeyPress { key: 88, modifiers: 0x02 });
+        assert!(kse.is_recording(), "a multi-chord capture keeps recording");
+        kse.handle_event(&Event::KeyPress { key: 67, modifiers: 0x02 });
+        assert_eq!(kse.sequence_len(), 2);
+        assert_eq!(kse.chords()[0].key_name(), "X");
+        assert_eq!(kse.chords()[1].key_name(), "C");
+        assert_eq!(kse.key_sequence().key_name(), "C", "the last chord is the effective one");
+        assert!(kse.is_recording());
+
+        kse.handle_event(&Event::KeyPress { key: 86, modifiers: 0x02 });
+        assert_eq!(kse.sequence_len(), 3);
+        assert!(!kse.is_recording(), "the limit ends the capture");
+
+        // The limit is clamped, and a redundant write is a no-op.
+        kse.set_max_chords(99);
+        assert_eq!(kse.max_chords(), 4);
+        kse.set_max_chords(0);
+        assert_eq!(kse.max_chords(), 1);
+        assert_eq!(kse.sequence_len(), 1, "lowering the limit truncates the list");
+    }
+
+    /// Event modifier bits are translated into the sequence's own mask.
+    #[test]
+    fn event_modifiers_are_translated() {
+        assert_eq!(KeySequenceEdit::modifiers_from_event(0b0001), 0x04, "shift");
+        assert_eq!(KeySequenceEdit::modifiers_from_event(0b0010), 0x01, "control");
+        assert_eq!(KeySequenceEdit::modifiers_from_event(0b0100), 0x02, "alt");
+        assert_eq!(KeySequenceEdit::modifiers_from_event(0b1000), 0x08, "meta");
+        assert_eq!(KeySequenceEdit::modifiers_from_event(0), 0);
+    }
+
+    /// Two editors that share a chord report the conflict.
+    #[test]
+    fn conflicting_sequences_are_reported() {
+        let mut first = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+        let mut second = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+        first.set_chords(vec![KeySequence::new(0x01, 83, "S"), KeySequence::new(0x01, 67, "C")]);
+        second.set_chords(vec![KeySequence::new(0x01, 67, "C")]);
+        assert!(first.conflicts_with(&second));
+
+        second.set_chords(vec![KeySequence::new(0x01, 86, "V")]);
+        assert!(!first.conflicts_with(&second));
+        assert_eq!(first.sequence_len(), 2, "set_chords keeps every chord");
     }
 }

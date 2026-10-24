@@ -177,6 +177,10 @@ pub struct ShortcutEditor {
     table_generation: u64,
     /// The draw path's grouping, reused while the table and the filter are unchanged.
     grouping_cache: RefCell<GroupingCache>,
+    /// The entry currently being recorded, if any.
+    capture_id: Option<String>,
+    /// Keys captured so far in the current recording.
+    capture_keys: Vec<String>,
 }
 
 /// Cached category grouping for one table generation and filter string.
@@ -207,6 +211,8 @@ impl ShortcutEditor {
             history_target: Rc::new(RefCell::new(Vec::new())),
             table_generation: 0,
             grouping_cache: RefCell::new(GroupingCache::default()),
+            capture_id: None,
+            capture_keys: Vec::new(),
         }
     }
 
@@ -385,6 +391,129 @@ impl ShortcutEditor {
             }
         }
         self.grouping_cache.borrow()
+    }
+
+    /// The entry currently being recorded, if any.
+    pub fn capture_id(&self) -> Option<&str> {
+        self.capture_id.as_deref()
+    }
+
+    /// The keys captured so far in the current recording.
+    pub fn capture_keys(&self) -> &[String] {
+        &self.capture_keys
+    }
+
+    /// Whether a recording is in progress.
+    pub fn is_capturing(&self) -> bool {
+        self.capture_id.is_some()
+    }
+
+    /// Begins recording keys for the entry with `id`.
+    ///
+    /// Returns whether the id named a shortcut. Recording is per row, so a capture can only
+    /// affect the entry the user opened.
+    pub fn begin_capture(&mut self, id: &str) -> bool {
+        if !self.shortcuts.iter().any(|entry| entry.id == id) {
+            return false;
+        }
+        self.capture_id = Some(id.to_string());
+        self.capture_keys.clear();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Cancels the recording without changing the binding.
+    pub fn cancel_capture(&mut self) {
+        if self.capture_id.take().is_none() {
+            return;
+        }
+        self.capture_keys.clear();
+        self.base.request_redraw();
+    }
+
+    /// Ends the recording and writes the captured sequence to its entry.
+    ///
+    /// Returns whether a binding was written. An empty sequence leaves the entry alone:
+    /// clicking into and out of a row must not silently unbind it.
+    pub fn commit_capture(&mut self) -> bool {
+        let Some(id) = self.capture_id.take() else {
+            return false;
+        };
+        let keys = std::mem::take(&mut self.capture_keys);
+        if keys.is_empty() {
+            self.base.request_redraw();
+            return false;
+        }
+        self.update_shortcut_keys(&id, keys)
+    }
+
+    /// Clears one entry's binding, leaving the rest of the table alone.
+    pub fn clear_shortcut(&mut self, id: &str) -> bool {
+        self.update_shortcut_keys(id, Vec::new())
+    }
+
+    /// Restores one entry's shipped default binding.
+    ///
+    /// Returns `false` when the entry has no declared default or is already at it.
+    pub fn reset_shortcut(&mut self, id: &str) -> bool {
+        let Some(defaults) = self
+            .shortcuts
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.default_keys.clone())
+        else {
+            return false;
+        };
+        if defaults.is_empty() {
+            return false;
+        }
+        self.update_shortcut_keys(id, defaults)
+    }
+
+    /// The ids of entries whose binding collides with the entry named by `id`.
+    ///
+    /// A collision is an identical, non-empty key sequence. An unbound entry collides with
+    /// nothing, because "no keys" is not a binding.
+    pub fn conflicting_shortcuts(&self, id: &str) -> Vec<String> {
+        let Some(entry) = self.shortcuts.iter().find(|entry| entry.id == id) else {
+            return Vec::new();
+        };
+        if entry.keys.is_empty() {
+            return Vec::new();
+        }
+        self.shortcuts
+            .iter()
+            .filter(|other| other.id != id && other.keys == entry.keys)
+            .map(|other| other.id.clone())
+            .collect()
+    }
+
+    /// Whether the entry's binding collides with another entry's.
+    pub fn has_conflict(&self, id: &str) -> bool {
+        !self.conflicting_shortcuts(id).is_empty()
+    }
+
+    /// Formats a key sequence with the modifier symbols a platform shows.
+    ///
+    /// The stored tokens stay stable, portable names (`Ctrl+T`); this is the display form, so
+    /// a binding reads as `⌃T` rather than as a concatenation of English words.
+    pub fn format_keys(keys: &[String]) -> String {
+        keys.iter()
+            .map(|sequence| {
+                let mut out = String::new();
+                for part in sequence.split('+') {
+                    match part {
+                        "Shift" => out.push('⇧'),
+                        "Ctrl" | "Control" => out.push('⌃'),
+                        "Alt" | "Option" => out.push('⌥'),
+                        "Meta" | "Cmd" | "Command" => out.push('⌘'),
+                        other => out.push_str(other),
+                    }
+                }
+                out
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// Reverts the most recent shortcut-table change.
@@ -689,6 +818,25 @@ impl Draw for ShortcutEditor {
         let margin = 8;
         let mut y = rect.y + margin;
 
+        // A recording session is announced before the rows: the user needs to know the next
+        // keys are being captured rather than typed into a filter.
+        if self.is_capturing() {
+            let capture_font = role_font(style, 13.0);
+            let prompt = if self.capture_keys.is_empty() {
+                "Press a key sequence (Esc cancels, Backspace clears)".to_string()
+            } else {
+                format!("Recording: {}", Self::format_keys(&self.capture_keys))
+            };
+            context.draw_text_fitted_cow(
+                Rect::new(rect.x + margin, y, rect.width.saturating_sub(margin as u32 * 2), 18),
+                &prompt,
+                &capture_font,
+                crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(ink),
+                HorizontalAlignment::Left,
+            );
+            y += 20;
+        }
+
         // Draw filter bar
         let filter_font = role_font(style, 13.0);
         // Borrowed when idle — the placeholder is a literal, so owning it cost a string per
@@ -766,16 +914,25 @@ impl Draw for ShortcutEditor {
                 if entry.keys.is_empty() {
                     key_text.push_str("unbound");
                 } else {
-                    for (i, key) in entry.keys.iter().enumerate() {
-                        if i > 0 {
-                            key_text.push_str(", ");
-                        }
-                        key_text.push_str(key);
-                    }
+                    // The display form uses the platform's modifier symbols, so a binding
+                    // reads as `⌃⇧T` rather than as concatenated English words.
+                    key_text.push_str(&Self::format_keys(&entry.keys));
                 }
+                // A collision is called out on the row it affects, because the conflict is the
+                // one thing about a binding that must be noticed before saving.
+                let conflict = !entry.keys.is_empty()
+                    && self.shortcuts.iter().any(|other| {
+                        other.id != entry.id && !other.keys.is_empty() && other.keys == entry.keys
+                    });
                 // Unbound rows are de-emphasised rather than hidden, so "this shortcut has no key"
                 // reads differently from "this shortcut has a key".
-                let key_color = if entry.keys.is_empty() { muted_ink } else { ink };
+                let key_color = if entry.keys.is_empty() {
+                    muted_ink
+                } else if conflict {
+                    crate::style::semantic_color(crate::style::SemanticColor::Error).unwrap_or(ink)
+                } else {
+                    ink
+                };
                 // Measured, not estimated: the binding was placed from a UTF-8 byte count at
                 // 8 px/byte, capped at 150 px, so a wide font, a text-scale preference or a
                 // non-ASCII key name made the two columns overlap.
@@ -824,6 +981,33 @@ impl EventHandler for ShortcutEditor {
         }
         match event {
             Event::KeyPress { key, modifiers } => {
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                // A recording session owns every key: Escape cancels it, Backspace clears the
+                // captured sequence, Primary+Enter commits it, and anything else is appended.
+                if self.is_capturing() {
+                    if *key == 27 {
+                        self.cancel_capture();
+                        return;
+                    }
+                    if *key == 8 {
+                        self.capture_keys.clear();
+                        self.base.request_redraw();
+                        return;
+                    }
+                    if *key == 13
+                        && (mods.contains(crate::shortcut::Modifiers::CTRL)
+                            || mods.contains(crate::shortcut::Modifiers::PRIMARY))
+                    {
+                        self.commit_capture();
+                        return;
+                    }
+                    let key_name = keycode_to_name(*key, *modifiers);
+                    if !key_name.is_empty() {
+                        self.capture_keys.push(key_name);
+                        self.base.request_redraw();
+                    }
+                    return;
+                }
                 // Undo and redo are the platform primary chord: Control+Z/Y on
                 // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
                 // different binding and stays unbound here.
@@ -847,6 +1031,12 @@ impl EventHandler for ShortcutEditor {
                 }
                 self.base.handle_event(event);
             }
+            Event::FocusLost => {
+                if self.is_capturing() {
+                    self.commit_capture();
+                }
+                self.base.handle_event(event);
+            }
             _ => {
                 self.base.handle_event(event);
             }
@@ -856,18 +1046,19 @@ impl EventHandler for ShortcutEditor {
 
 /// Converts a keycode and modifier mask to a human-readable key name.
 fn keycode_to_name(key: u32, modifiers: u32) -> String {
+    let mods = crate::shortcut::Modifiers::from_event_bits(modifiers);
     let mut parts: Vec<&str> = Vec::new();
-    if modifiers & 0x01 != 0 {
+    let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
+    if mods.contains(crate::shortcut::Modifiers::SHIFT) {
         parts.push("Shift");
     }
-    if modifiers & 0x02 != 0 {
+    if primary {
+        parts.push("Meta");
+    } else if mods.contains(crate::shortcut::Modifiers::CTRL) {
         parts.push("Ctrl");
     }
-    if modifiers & 0x04 != 0 {
+    if mods.contains(crate::shortcut::Modifiers::ALT) {
         parts.push("Alt");
-    }
-    if modifiers & 0x08 != 0 {
-        parts.push("Meta");
     }
 
     let modifier_prefix =
@@ -1253,5 +1444,60 @@ mod tests {
 
         se.handle_event(&Event::KeyPress { key: 89, modifiers: primary_modifier_event_bits() });
         assert_eq!(se.shortcuts()[0].keys, vec!["Ctrl+Shift+S"]);
+    }
+
+    /// A recording session captures every key, supports sequences and can be abandoned.
+    #[test]
+    fn recording_captures_a_multi_key_sequence() {
+        let mut se = ShortcutEditor::new(Rect::new(0, 0, 400, 300));
+        se.add_shortcut(ShortcutEntry::new("save", "Save", "File").with_keys(vec!["Ctrl+S"]));
+        assert!(se.begin_capture("save"));
+        assert!(se.is_capturing());
+
+        se.handle_event(&Event::KeyPress { key: 75, modifiers: 2 }); // Ctrl+K
+        se.handle_event(&Event::KeyPress { key: 83, modifiers: 2 }); // Ctrl+S
+        assert_eq!(se.capture_keys().len(), 2);
+        se.handle_event(&Event::KeyPress { key: 13, modifiers: 2 }); // Ctrl+Enter commits
+        assert!(!se.is_capturing());
+        assert_eq!(se.shortcuts()[0].keys, vec!["Ctrl+K", "Ctrl+S"]);
+
+        // Escape abandons the next session, and Backspace clears what was captured so far.
+        assert!(se.begin_capture("save"));
+        se.handle_event(&Event::KeyPress { key: 65, modifiers: 0 });
+        assert_eq!(se.capture_keys().len(), 1);
+        se.handle_event(&Event::KeyPress { key: 8, modifiers: 0 });
+        assert!(se.capture_keys().is_empty());
+        se.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert!(!se.is_capturing());
+        assert_eq!(se.shortcuts()[0].keys, vec!["Ctrl+K", "Ctrl+S"]);
+    }
+
+    /// Conflicts are reported, and one binding can be cleared or reset without the table.
+    #[test]
+    fn conflicts_and_per_entry_clear_and_reset() {
+        let mut se = ShortcutEditor::new(Rect::new(0, 0, 400, 300));
+        se.add_shortcut(
+            ShortcutEntry::new("open", "Open", "File")
+                .with_keys(vec!["Ctrl+O"])
+                .with_default_keys(vec!["Ctrl+O"]),
+        );
+        se.add_shortcut(ShortcutEntry::new("other", "Other", "File").with_keys(vec!["Ctrl+O"]));
+        assert_eq!(se.conflicting_shortcuts("open"), vec!["other"]);
+        assert!(se.has_conflict("other"));
+
+        assert!(se.clear_shortcut("open"));
+        assert!(se.shortcuts()[0].keys.is_empty());
+        assert!(!se.has_conflict("other"), "an unbound entry collides with nothing");
+        assert!(se.reset_shortcut("open"));
+        assert_eq!(se.shortcuts()[0].keys, vec!["Ctrl+O"]);
+    }
+
+    /// The display form uses modifier symbols while the stored tokens stay portable.
+    #[test]
+    fn key_sequences_are_rendered_with_modifier_symbols() {
+        assert_eq!(
+            ShortcutEditor::format_keys(&["Ctrl+Shift+T".to_string(), "Alt+F4".to_string()]),
+            "⌃⇧T, ⌥F4"
+        );
     }
 }

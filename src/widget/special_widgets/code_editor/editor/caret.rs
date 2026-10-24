@@ -95,6 +95,10 @@ impl CodeEditor {
         if clamped == self.cursor.head && self.cursor.is_collapsed() && !extend_selection {
             return;
         }
+        if self.config.animate_brackets {
+            self.bracket_flash = 1.0;
+        }
+        self.active_typing = None;
         self.cursor.head = clamped;
         if !extend_selection {
             self.cursor.anchor = clamped;
@@ -128,6 +132,35 @@ impl CodeEditor {
         self.goal.active = false;
         self.emit_cursor_and_selection();
         self.base.request_redraw();
+    }
+
+    /// Selects the whole-line range between the gutter drag anchor and `focus`.
+    ///
+    /// Dragging down the gutter is how a reader picks several whole lines; the
+    /// previous gutter handler only ever selected the line under the pointer.
+    pub(crate) fn select_line_range(&mut self, focus: usize) {
+        let last = self.line_count().saturating_sub(1);
+        let focus = focus.min(last);
+        let anchor = self.gutter_anchor.unwrap_or(focus).min(last);
+        let (start, end) = if anchor <= focus { (anchor, focus) } else { (focus, anchor) };
+        self.cursor.anchor = TextPosition::new(start, 0);
+        self.cursor.head = if end < last {
+            TextPosition::new(end + 1, 0)
+        } else {
+            TextPosition::new(end, self.line_len(end))
+        };
+        self.goal.active = false;
+        self.emit_cursor_and_selection();
+        self.base.request_redraw();
+    }
+
+    /// Returns whether `position` lies inside the current selection.
+    pub(crate) fn selection_contains(&self, position: TextPosition) -> bool {
+        if self.cursor.is_collapsed() {
+            return false;
+        }
+        let (start, end) = self.cursor.bounds();
+        position >= start && position < end
     }
 
     /// Selects the word under a character position.
@@ -186,6 +219,11 @@ impl CodeEditor {
         delta_column: isize,
         extend_selection: bool,
     ) {
+        self.active_typing = None;
+        if !self.extra_cursors.is_empty() {
+            self.move_all_carets(delta_line, delta_column, extend_selection);
+            return;
+        }
         let mut head = self.cursor.head;
         if delta_line != 0 {
             let lines = self.line_count();
@@ -216,8 +254,40 @@ impl CodeEditor {
         self.base.request_redraw();
     }
 
+    /// Moves every caret, not just the primary one.
+    ///
+    /// VS Code and Zed apply a movement to the whole caret set; moving only the
+    /// primary caret silently broke the selection the user had built up.
+    fn move_all_carets(&mut self, delta_line: isize, delta_column: isize, extend_selection: bool) {
+        let carets = self.carets_for_edit();
+        let mut moved: Vec<Cursor> = Vec::with_capacity(carets.len());
+        for caret in carets {
+            let mut head = caret.head;
+            if delta_line != 0 {
+                let last = self.line_count().saturating_sub(1) as isize;
+                let line = (head.line as isize + delta_line).clamp(0, last) as usize;
+                let column = self.model.borrow().clamp_column(line, head.column);
+                head = TextPosition::new(line, column);
+            } else {
+                let direction: isize = if delta_column < 0 { -1 } else { 1 };
+                for _ in 0..delta_column.unsigned_abs() {
+                    head = self.step_horizontal(head, direction);
+                }
+            }
+            let anchor = if extend_selection { caret.anchor } else { head };
+            moved.push(Cursor { head, anchor });
+        }
+        let primary = moved.pop().unwrap_or(self.cursor);
+        self.cursor = primary;
+        self.extra_cursors = moved;
+        self.goal.active = false;
+        self.ensure_caret_visible();
+        self.emit_cursor_and_selection();
+        self.base.request_redraw();
+    }
+
     /// Crosses line boundaries, which is what every real editor does.
-    pub(super) fn step_horizontal(&self, position: TextPosition, direction: isize) -> TextPosition {
+    pub(crate) fn step_horizontal(&self, position: TextPosition, direction: isize) -> TextPosition {
         let provider = self.model.borrow();
         if direction < 0 {
             if position.column > 0 {
@@ -239,6 +309,28 @@ impl CodeEditor {
 
     /// Moves the caret one word left (`direction < 0`) or right.
     pub fn move_word(&mut self, direction: isize, extend_selection: bool) {
+        self.active_typing = None;
+        if !self.extra_cursors.is_empty() {
+            let carets = self.carets_for_edit();
+            let mut moved = Vec::with_capacity(carets.len());
+            for caret in carets {
+                let head = if direction < 0 {
+                    self.previous_word_boundary(caret.head)
+                } else {
+                    self.next_word_boundary(caret.head)
+                };
+                let anchor = if extend_selection { caret.anchor } else { head };
+                moved.push(Cursor { head, anchor });
+            }
+            let primary = moved.pop().unwrap_or(self.cursor);
+            self.cursor = primary;
+            self.extra_cursors = moved;
+            self.goal.active = false;
+            self.ensure_caret_visible();
+            self.emit_cursor_and_selection();
+            self.base.request_redraw();
+            return;
+        }
         let head = if direction < 0 {
             self.previous_word_boundary(self.cursor.head)
         } else {
@@ -304,25 +396,71 @@ impl CodeEditor {
     /// user rarely wants. With a selection the destination is the line edge, because the
     /// press is collapsing the selection rather than navigating within the line.
     pub fn move_to_line_edge(&mut self, direction: isize, extend_selection: bool) {
+        self.active_typing = None;
         let line = self.cursor.head.line;
         let head = if direction < 0 {
+            let (segment_start, _) = self.visual_segment_bounds(self.cursor.head);
             let text = self.model.borrow().line(line).to_string();
-            let first_content = text.chars().take_while(|ch| *ch == ' ' || *ch == '\t').count();
+            let chars: Vec<char> = text.chars().collect();
+            let first_content = segment_start
+                + chars[segment_start.min(chars.len())..]
+                    .iter()
+                    .take_while(|ch| **ch == ' ' || **ch == '\t')
+                    .count();
             let collapsed = self.cursor.is_collapsed();
             let column = if collapsed && self.cursor.head.column != first_content {
                 first_content
             } else {
-                0
+                segment_start
             };
             TextPosition::new(line, column)
         } else {
-            TextPosition::new(line, self.line_len(line))
+            let (_, segment_end) = self.visual_segment_bounds(self.cursor.head);
+            TextPosition::new(line, segment_end)
         };
         self.cursor.head = head;
         if !extend_selection {
             self.cursor.anchor = head;
         }
         self.goal.active = false;
+        self.ensure_caret_visible();
+        self.emit_cursor_and_selection();
+        self.base.request_redraw();
+    }
+
+    /// Character range of the visual row the caret occupies.
+    ///
+    /// Without wrapping this is the whole line. With wrapping it is the wrap
+    /// segment, so `Home`/`End` stop at the row the reader can see instead of
+    /// jumping to a column that is on another row.
+    pub(super) fn visual_segment_bounds(&self, position: TextPosition) -> (usize, usize) {
+        let length = self.line_len(position.line);
+        if !self.config.word_wrap {
+            return (0, length);
+        }
+        let text = self.line_text(position.line).unwrap_or_default();
+        let grid = LineGrid::new(&text, self.config.tab_width);
+        let columns = self.text_columns().max(1);
+        grid.segment_range(grid.segment_of_char(position.column.min(length), columns).0, columns)
+    }
+
+    /// Moves the caret by `pages` viewport heights in one step.
+    ///
+    /// Paging used to be a loop of single-line moves, which both re-ran the
+    /// viewport and every selection signal once per line. One clamp of the target
+    /// line is the whole operation.
+    pub fn move_page(&mut self, pages: isize, extend_selection: bool) {
+        let rows = self.visible_rows().max(1) as isize;
+        let last = self.line_count().saturating_sub(1) as isize;
+        let target = (self.cursor.head.line as isize + pages * rows).clamp(0, last) as usize;
+        let column = if self.goal.active { self.goal.column } else { self.cursor.head.column };
+        let column = self.model.borrow().clamp_column(target, column);
+        let head = TextPosition::new(target, column);
+        self.goal = CursorGoal { active: true, column };
+        self.cursor.head = head;
+        if !extend_selection {
+            self.cursor.anchor = head;
+        }
         self.ensure_caret_visible();
         self.emit_cursor_and_selection();
         self.base.request_redraw();

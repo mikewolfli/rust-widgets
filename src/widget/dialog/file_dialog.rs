@@ -83,6 +83,38 @@ impl std::fmt::Display for FileFilter {
         write!(f, "{} ({})", self.description, exts.join(" "))
     }
 }
+/// One row in the host-supplied directory listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEntry {
+    /// The entry's name, without its directory prefix.
+    pub name: String,
+    /// Whether the entry is a directory.
+    pub is_directory: bool,
+}
+
+impl FileEntry {
+    /// Builds a listing row.
+    pub fn new(name: impl Into<String>, is_directory: bool) -> Self {
+        Self { name: name.into(), is_directory }
+    }
+}
+
+/// The host's directory listing.
+///
+/// The library never reads the filesystem: a host that owns a listing implements this and
+/// installs it with [`FileDialog::set_source`]. The dialog then draws, scrolls and selects the
+/// rows, and reports the user's choice through its existing signals.
+pub trait FileEntrySource {
+    /// The entries of `directory`, in display order.
+    fn entries(&self, directory: &str) -> Vec<FileEntry>;
+
+    /// Whether `path` exists. Used by the save-mode overwrite check.
+    fn exists(&self, path: &str) -> bool {
+        let _ = path;
+        false
+    }
+}
+
 /// `FileDialog`'s list top gap below the title bar.
 ///
 /// The strip between the title bar's bottom edge and the list's own top edge. Named once
@@ -120,6 +152,32 @@ pub struct FileDialog {
     pub accepted: GenericSignal,
     /// Emitted by [`FileDialog::reject`].
     pub rejected: GenericSignal,
+    /// Emitted when a save would overwrite an existing path and the dialog is asking first.
+    pub overwrite_requested: Signal1<String>,
+    /// Emitted on a double-click of a non-directory row, so a host can open a preview.
+    pub quick_look_requested: Signal1<String>,
+    /// The host's directory listing, if one was installed.
+    source: Option<Box<dyn FileEntrySource>>,
+    /// The listing last read from `source`.
+    entries: Vec<FileEntry>,
+    /// The selected row, indexing `entries`.
+    selected_row: Option<usize>,
+    /// The first visible row.
+    scroll: usize,
+    /// A caller-supplied label for the file-name strip; empty uses the catalogue string.
+    label_text: String,
+    /// The extension appended to a save path that has none; empty disables it.
+    default_suffix: String,
+    /// Visited directories, oldest first.
+    history: Vec<String>,
+    /// The index into `history` of the current directory.
+    history_index: usize,
+    /// Favorite directories shown as a sidebar; empty hides the sidebar.
+    favorites: Vec<String>,
+    /// Whether a save asks before overwriting an existing path.
+    overwrite_confirmation: bool,
+    /// A save waiting on the overwrite answer.
+    pending_overwrite: Option<String>,
 }
 impl FileDialog {
     /// Creates an open-file dialog in `geometry`.
@@ -141,6 +199,19 @@ impl FileDialog {
             current_changed: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
+            overwrite_requested: Signal1::new(),
+            quick_look_requested: Signal1::new(),
+            source: None,
+            entries: Vec::new(),
+            selected_row: None,
+            scroll: 0,
+            label_text: String::new(),
+            default_suffix: String::new(),
+            history: Vec::new(),
+            history_index: 0,
+            favorites: Vec::new(),
+            overwrite_confirmation: false,
+            pending_overwrite: None,
         }
     }
     /// Whether the dialog blocks interaction with its owner while open.
@@ -248,14 +319,183 @@ impl FileDialog {
     }
     /// Sets the directory the dialog reports as current and repaints.
     ///
-    /// Purely informational — see [`FileDialog::directory`].
+    /// With a listing installed, this also re-reads it. It does not record history; use
+    /// [`FileDialog::navigate_to`] for a user-driven move.
     pub fn set_directory(&mut self, dir: impl Into<String>) {
         let dir = dir.into();
         if self.directory == dir {
             return;
         }
         self.directory = dir;
+        self.refresh_entries();
         self.base.request_redraw();
+    }
+
+    /// Installs the host's directory listing and reads the current directory.
+    pub fn set_source(&mut self, source: Box<dyn FileEntrySource>) {
+        self.source = Some(source);
+        self.refresh_entries();
+        self.base.request_redraw();
+    }
+
+    /// The rows last read from the host's listing.
+    pub fn entries(&self) -> &[FileEntry] {
+        &self.entries
+    }
+
+    /// The selected row, if one is selected.
+    pub fn selected_row(&self) -> Option<usize> {
+        self.selected_row
+    }
+
+    /// The first visible row.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll
+    }
+
+    /// Re-reads the listing and resets the selection and scroll.
+    fn refresh_entries(&mut self) {
+        self.entries = match self.source.as_ref() {
+            Some(source) => source.entries(&self.directory),
+            None => Vec::new(),
+        };
+        self.selected_row = None;
+        self.scroll = 0;
+    }
+
+    /// The label painted beside the file-name strip, or `""` when the catalogue string is used.
+    pub fn label_text(&self) -> &str {
+        &self.label_text
+    }
+
+    /// Replaces the file-name strip's label and repaints when it changes.
+    pub fn set_label_text(&mut self, label: impl Into<String>) {
+        let label = label.into();
+        if self.label_text == label {
+            return;
+        }
+        self.label_text = label;
+        self.base.request_redraw();
+    }
+
+    /// The extension appended to a save path that has none.
+    pub fn default_suffix(&self) -> &str {
+        &self.default_suffix
+    }
+
+    /// Sets the save-path suffix and repaints when it changes.
+    pub fn set_default_suffix(&mut self, suffix: impl Into<String>) {
+        let suffix = suffix.into().trim_start_matches('.').to_string();
+        if self.default_suffix == suffix {
+            return;
+        }
+        self.default_suffix = suffix;
+        self.base.request_redraw();
+    }
+
+    /// Whether a save asks before overwriting an existing path.
+    pub fn overwrite_confirmation(&self) -> bool {
+        self.overwrite_confirmation
+    }
+
+    /// Enables or disables the save-mode overwrite question.
+    pub fn set_overwrite_confirmation(&mut self, enabled: bool) {
+        if self.overwrite_confirmation == enabled {
+            return;
+        }
+        self.overwrite_confirmation = enabled;
+        self.base.request_redraw();
+    }
+
+    /// The sidebar's favorite directories.
+    pub fn sidebar(&self) -> &[String] {
+        &self.favorites
+    }
+
+    /// Replaces the sidebar and repaints when it changes. An empty list hides the sidebar.
+    pub fn set_sidebar(&mut self, favorites: Vec<String>) {
+        if self.favorites == favorites {
+            return;
+        }
+        self.favorites = favorites;
+        self.base.request_redraw();
+    }
+
+    /// The visited directories, oldest first.
+    pub fn history(&self) -> &[String] {
+        &self.history
+    }
+
+    /// Whether a previous directory is available.
+    pub fn can_go_back(&self) -> bool {
+        self.history_index > 0
+    }
+
+    /// Whether a forward directory is available.
+    pub fn can_go_forward(&self) -> bool {
+        self.history_index + 1 < self.history.len()
+    }
+
+    /// Moves to `directory` and records it in the history.
+    pub fn navigate_to(&mut self, directory: impl Into<String>) {
+        let directory = directory.into();
+        if directory == self.directory {
+            return;
+        }
+        // The history is the list of *current* directories, so the entry the dialog is leaving
+        // is pushed once and the new one is appended after it. Without the second push the
+        // current directory was never in the list and "forward" had nothing to return to.
+        if self.history.is_empty() {
+            self.history.push(self.directory.clone());
+            self.history_index = 0;
+        }
+        self.history.truncate(self.history_index + 1);
+        self.history.push(directory.clone());
+        self.history_index = self.history.len() - 1;
+        self.directory = directory;
+        self.refresh_entries();
+        self.base.request_redraw();
+    }
+
+    /// Moves to the previous directory in the history.
+    pub fn go_back(&mut self) {
+        if !self.can_go_back() {
+            return;
+        }
+        self.history_index -= 1;
+        self.directory = self.history[self.history_index].clone();
+        self.refresh_entries();
+        self.base.request_redraw();
+    }
+
+    /// Moves to the next directory in the history.
+    pub fn go_forward(&mut self) {
+        if !self.can_go_forward() {
+            return;
+        }
+        self.history_index += 1;
+        self.directory = self.history[self.history_index].clone();
+        self.refresh_entries();
+        self.base.request_redraw();
+    }
+
+    /// Confirms a pending overwrite and completes the save.
+    pub fn confirm_overwrite(&mut self) {
+        if self.pending_overwrite.take().is_some() {
+            self.accept_impl(false);
+        }
+    }
+
+    /// Cancels a pending overwrite, leaving the dialog open.
+    pub fn cancel_overwrite(&mut self) {
+        if self.pending_overwrite.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The path a pending overwrite question is about.
+    pub fn pending_overwrite(&self) -> Option<&str> {
+        self.pending_overwrite.as_deref()
     }
     /// Replaces the filter list and repaints.
     ///
@@ -307,10 +547,40 @@ impl FileDialog {
     /// nothing at all when the selection is empty), then `accepted`, then hides
     /// the dialog.
     ///
+    /// In [`FileDialogMode::SaveFile`] a configured default suffix is appended to a path that
+    /// has none, and — when [`FileDialog::overwrite_confirmation`] is on — an existing path
+    /// asks first by emitting `overwrite_requested` instead of accepting.
+    ///
     /// The selection is **not** cleared, so it can be read back after the dialog
     /// closes. Pressing Enter (key code 13) while the dialog is enabled and
     /// visible does the same.
     pub fn accept(&mut self) {
+        self.accept_impl(true);
+    }
+
+    /// The shared accept path; `check_overwrite` is false only for the confirmed retry.
+    fn accept_impl(&mut self, check_overwrite: bool) {
+        if self.mode == FileDialogMode::SaveFile && !self.default_suffix.is_empty() {
+            if let Some(path) = self.selected_files.first_mut() {
+                let last = path.rsplit(['/', '\\']).next().unwrap_or(path.as_str());
+                if !last.contains('.') {
+                    path.push('.');
+                    path.push_str(&self.default_suffix);
+                }
+            }
+        }
+        if check_overwrite && self.overwrite_confirmation {
+            if let Some(path) = self.selected_files.first().cloned() {
+                let exists = self.source.as_ref().is_some_and(|source| source.exists(&path));
+                if exists {
+                    self.pending_overwrite = Some(path.clone());
+                    self.overwrite_requested.emit(path);
+                    self.base.request_redraw();
+                    return;
+                }
+            }
+        }
+        self.pending_overwrite = None;
         if !self.selected_files.is_empty() {
             self.files_selected.emit(self.selected_files.clone());
         }
@@ -420,6 +690,11 @@ impl WidgetProperties for FileDialog {
                 Some(path) => CapabilityValue::String(path.to_string()),
                 None => CapabilityValue::Null,
             }),
+            "label_text" => Ok(CapabilityValue::String(self.label_text().to_string())),
+            "default_suffix" => Ok(CapabilityValue::String(self.default_suffix().to_string())),
+            "file_count" => Ok(CapabilityValue::UInt(self.entries.len() as u64)),
+            "can_go_back" => Ok(CapabilityValue::Bool(self.can_go_back())),
+            "can_go_forward" => Ok(CapabilityValue::Bool(self.can_go_forward())),
             _ => base_property_get(self, name),
         }
     }
@@ -479,6 +754,17 @@ impl WidgetProperties for FileDialog {
                     Ok(())
                 }
             },
+            "label_text" => {
+                self.set_label_text(expect_string(value)?);
+                Ok(())
+            }
+            "default_suffix" => {
+                self.set_default_suffix(expect_string(value)?);
+                Ok(())
+            }
+            "file_count" | "can_go_back" | "can_go_forward" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -490,6 +776,11 @@ impl WidgetProperties for FileDialog {
             "mode",
             "directory",
             "selected_file",
+            "label_text",
+            "default_suffix",
+            "file_count",
+            "can_go_back",
+            "can_go_forward",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -532,6 +823,39 @@ impl EventHandler for FileDialog {
                     } else {
                         self.reject();
                     }
+                    return;
+                }
+                if let Some(index) = self.sidebar_row_at(*pos) {
+                    if let Some(favorite) = self.favorites.get(index).cloned() {
+                        self.navigate_to(favorite);
+                    }
+                    return;
+                }
+                if self.list_rect().contains_point(*pos) {
+                    self.press_list_row(*pos, false);
+                }
+            }
+            Event::MouseDoubleClick { pos, button: 1 } => {
+                if self.list_rect().contains_point(*pos) {
+                    self.press_list_row(*pos, true);
+                }
+            }
+            Event::Wheel { delta, .. } => {
+                if self.entries.is_empty() || self.list_rect().height == 0 {
+                    return;
+                }
+                let row_h = self.list_row_height().max(1);
+                let visible = (self.list_rect().height / row_h) as usize;
+                let max_scroll = self.entries.len().saturating_sub(visible.max(1));
+                let step = delta.y.unsigned_abs() as usize * 2;
+                let next = if delta.y > 0 {
+                    (self.scroll + step).min(max_scroll)
+                } else {
+                    self.scroll.saturating_sub(step)
+                };
+                if next != self.scroll {
+                    self.scroll = next;
+                    self.base.request_redraw();
                 }
             }
             Event::KeyPress { key, .. } => {
@@ -539,6 +863,23 @@ impl EventHandler for FileDialog {
                     self.accept();
                 } else if *key == key_codes::ESCAPE {
                     self.reject();
+                } else if *key == key_codes::UP && self.selected_row.is_some() {
+                    let next = self.selected_row.unwrap_or(0).saturating_sub(1);
+                    self.selected_row = Some(next);
+                    if next < self.scroll {
+                        self.scroll = next;
+                    }
+                    self.base.request_redraw();
+                } else if *key == key_codes::DOWN && self.selected_row.is_some() {
+                    let next = (self.selected_row.unwrap_or(0) + 1)
+                        .min(self.entries.len().saturating_sub(1));
+                    self.selected_row = Some(next);
+                    let row_h = self.list_row_height().max(1);
+                    let visible = (self.list_rect().height / row_h) as usize;
+                    if next >= self.scroll + visible.max(1) {
+                        self.scroll = next + 1 - visible.max(1);
+                    }
+                    self.base.request_redraw();
                 }
             }
             _ => { /* Other events are not relevant */ }
@@ -597,6 +938,117 @@ impl FileDialog {
             self.base.geometry(),
             Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
         )
+    }
+
+    /// The sidebar's width: zero when no favorites were supplied.
+    fn sidebar_width(&self) -> u32 {
+        if self.favorites.is_empty() {
+            0
+        } else {
+            96.min(self.base.geometry().width / 3)
+        }
+    }
+
+    /// The list well's rectangle, derived from the same bands `draw` paints.
+    fn list_rect(&self) -> Rect {
+        let rect = self.frame_rect();
+        let button_top = super::message_box::inset_action_band(
+            ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
+            rect.y,
+        )
+        .y;
+        let list_y = rect.y + dimensions::DIALOG_TITLE_BAR_HEIGHT as i32 + LIST_TOP_GAP;
+        let sidebar = self.sidebar_width();
+        let x = rect.x + 10 + sidebar as i32;
+        let width = rect.width.saturating_sub(20 + sidebar);
+        let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
+        let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
+        let context = RenderContext::new(&mut backend);
+        let line_h =
+            context.measure_text("M", effective_font(self.base.style())).height.max(1) as i32;
+        let list_min_h = line_h + 4;
+        let reserved_below = SEL_H + SELECTED_STRIP_GAP;
+        let list_h = if button_top - list_y >= list_min_h {
+            (button_top - reserved_below - list_y).max(list_min_h) as u32
+        } else {
+            (button_top - list_y).max(0) as u32
+        };
+        Rect::new(x, list_y, width, list_h)
+    }
+
+    /// The height of one listing row.
+    fn list_row_height(&self) -> u32 {
+        let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
+        let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
+        let context = RenderContext::new(&mut backend);
+        let line_h = context.measure_text("M", effective_font(self.base.style())).height.max(1);
+        (line_h + 6).max(18)
+    }
+
+    /// The visible rows and their indices into `entries`.
+    fn visible_rows(&self) -> Vec<(usize, Rect)> {
+        let list = self.list_rect();
+        if list.height == 0 || self.entries.is_empty() {
+            return Vec::new();
+        }
+        let row_h = self.list_row_height();
+        let count = (list.height / row_h) as usize;
+        let start = self.scroll.min(self.entries.len().saturating_sub(1));
+        (0..count)
+            .filter_map(|row| {
+                let index = start + row;
+                self.entries.get(index).map(|_| {
+                    (
+                        index,
+                        Rect::new(list.x, list.y + row as i32 * row_h as i32, list.width, row_h),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// The sidebar row that contains `pos`.
+    fn sidebar_row_at(&self, pos: Point) -> Option<usize> {
+        let width = self.sidebar_width();
+        if width == 0 {
+            return None;
+        }
+        let rect = self.frame_rect();
+        let list_y = rect.y + dimensions::DIALOG_TITLE_BAR_HEIGHT as i32 + LIST_TOP_GAP;
+        let list_h = self.list_rect().height;
+        if pos.x < rect.x + 10 || pos.x >= rect.x + 10 + width as i32 {
+            return None;
+        }
+        if pos.y < list_y || pos.y >= list_y + list_h as i32 {
+            return None;
+        }
+        let row_h = self.list_row_height();
+        let index = ((pos.y - list_y) / row_h as i32) as usize;
+        (index < self.favorites.len()).then_some(index)
+    }
+
+    /// Applies a press on the listing: select a row, enter a directory, or report a preview.
+    fn press_list_row(&mut self, pos: Point, double_click: bool) {
+        let Some((index, _)) =
+            self.visible_rows().into_iter().find(|(_, rect)| rect.contains_point(pos))
+        else {
+            return;
+        };
+        self.selected_row = Some(index);
+        let Some(entry) = self.entries.get(index).cloned() else { return };
+        if double_click {
+            if entry.is_directory {
+                let base = self.directory.trim_end_matches(['/', '\\']);
+                let separator = if base.is_empty() { "" } else { "/" };
+                self.navigate_to(format!("{base}{separator}{}", entry.name));
+            } else {
+                self.select_file(entry.name.clone());
+                self.quick_look_requested.emit(entry.name);
+            }
+        } else {
+            self.select_file(entry.name);
+        }
+        self.base.request_redraw();
     }
 
     /// The action labels this dialog paints, in row order.
@@ -760,62 +1212,91 @@ impl Draw for FileDialog {
             rect.y,
         );
         let button_top = button_band.y;
-        // The list top is the title bar's bottom edge plus the frame's own padding.
-        let list_y = rect.y + dimensions::DIALOG_TITLE_BAR_HEIGHT as i32 + LIST_TOP_GAP;
-        // The list has to hold at least the placeholder's own line box, since that is the
-        // only thing it draws when empty. The selected-file strip below it is the element
-        // that yields when the two cannot both have room: a 6 px list under a 14 px line
-        // would be the same defect in miniature, with the list's own explanation hanging
-        // out of it. Only when even a line does not fit is the list clamped to what
-        // remains, rather than reaching below the button row.
-        let placeholder_line_h = context.measure_text("M", font).height.max(1) as i32;
-        let list_min_h = placeholder_line_h + 4;
-        let reserved_below = SEL_H + SELECTED_STRIP_GAP;
-        let list_h = if button_top - list_y >= list_min_h {
-            // The list's own remainder once the strip below is reserved, floored at one
-            // line so an empty list can always draw the text that explains it.
-            (button_top - reserved_below - list_y).max(list_min_h) as u32
-        } else {
-            // Not even a line fits: the list takes what is left and the strip yields.
-            (button_top - list_y).max(0) as u32
-        };
-        let list_rect = Rect::new(rect.x + 10, list_y, rect.width.saturating_sub(20), list_h);
+        let list_rect = self.list_rect();
+        let list_y = list_rect.y;
+        let list_h = list_rect.height;
+        // The sidebar is a host-supplied favorite list; with none, its width is zero and the
+        // list keeps the full frame, so the default appearance is unchanged.
+        let sidebar_width = self.sidebar_width();
+        if sidebar_width > 0 && list_h > 0 {
+            let sidebar = Rect::new(rect.x + 10, list_y, sidebar_width, list_h);
+            context.fill_rect(sidebar, field);
+            context.draw_rect(sidebar, border);
+            context.push_clip(sidebar.x, sidebar.y, sidebar.width, sidebar.height);
+            let row_h = self.list_row_height();
+            for (index, favorite) in self.favorites.iter().enumerate() {
+                let row = Rect::new(
+                    sidebar.x,
+                    sidebar.y + index as i32 * row_h as i32,
+                    sidebar.width,
+                    row_h,
+                );
+                if row.y >= sidebar.y + sidebar.height as i32 {
+                    break;
+                }
+                let band = Rect::new(row.x + 6, row.y, row.width.saturating_sub(12), row.height);
+                context.draw_text_fitted_cow(band, favorite, font, ink, HorizontalAlignment::Left);
+            }
+            context.pop_clip();
+        }
         if list_rect.height > 0 {
             context.fill_rect(list_rect, field);
             context.draw_rect(list_rect, border);
         }
-        // The placeholder lives inside the list it describes, so it truncates at the
-        // list's edge rather than at a coordinate chosen for a wider default size. Its
-        // line box is centred in the list via the shared primitive: the glyph origin is
-        // the box's top-left, so the old fixed `list_rect.y + 6` placed a 14 px line
-        // from y=44 to 58 inside a list ending at 46 — twelve pixels of the text that
-        // explains the empty list were outside the well it belongs to. Drawn only when the
-        // list is non-empty, so a squeezed dialog emits no `<text …></text>`.
-        let placeholder = tr!("dialog.file_dialog.file_list_placeholder");
-        let placeholder_font = font;
-        if list_rect.height > 0 && !placeholder.is_empty() {
-            let placeholder_band = Rect::new(
-                list_rect.x + 6,
-                list_rect.y,
-                list_rect.width.saturating_sub(12),
-                list_rect.height,
-            );
-            let placeholder_line = context.text_line(placeholder_band, placeholder_font);
-            context.draw_text_fitted_cow(
-                Rect::new(
-                    placeholder_band.x,
-                    placeholder_line.y,
-                    placeholder_band.width.max(1),
-                    placeholder_line.height.max(1),
-                ),
-                &placeholder,
-                placeholder_font,
-                // Dimmed toward the field, then held to the text floor: a fixed 50% blend
-                // measured 3.65:1 on the light field, so the line explaining what the empty
-                // list is for was itself hard to read.
-                ink.blend(&field, 0.5).legible_on(field, 4.5),
-                HorizontalAlignment::Left,
-            );
+        if !self.entries.is_empty() && list_rect.height > 0 {
+            // Only the visible rows are painted: a directory with thousands of entries costs
+            // the rows on screen, not the rows in the model.
+            context.push_clip(list_rect.x, list_rect.y, list_rect.width, list_rect.height);
+            for (index, row) in self.visible_rows() {
+                if self.selected_row == Some(index) {
+                    context.fill_rect(row, accent.with_alpha_f32(0.18));
+                }
+                let Some(entry) = self.entries.get(index) else { continue };
+                let band = Rect::new(row.x + 6, row.y, row.width.saturating_sub(12), row.height);
+                let line = context.text_line(band, font);
+                context.draw_text_fitted_cow(
+                    Rect::new(band.x, line.y, band.width.max(1), line.height.max(1)),
+                    &entry.name,
+                    font,
+                    if entry.is_directory { accent } else { ink },
+                    HorizontalAlignment::Left,
+                );
+            }
+            context.pop_clip();
+        } else if self.entries.is_empty() {
+            // The placeholder lives inside the list it describes, so it truncates at the
+            // list's edge rather than at a coordinate chosen for a wider default size. Its
+            // line box is centred in the list via the shared primitive: the glyph origin is
+            // the box's top-left, so the old fixed `list_rect.y + 6` placed a 14 px line
+            // from y=44 to 58 inside a list ending at 46 — twelve pixels of the text that
+            // explains the empty list were outside the well it belongs to. Drawn only when the
+            // list is non-empty, so a squeezed dialog emits no `<text …></text>`.
+            let placeholder = tr!("dialog.file_dialog.file_list_placeholder");
+            let placeholder_font = font;
+            if list_rect.height > 0 && !placeholder.is_empty() {
+                let placeholder_band = Rect::new(
+                    list_rect.x + 6,
+                    list_rect.y,
+                    list_rect.width.saturating_sub(12),
+                    list_rect.height,
+                );
+                let placeholder_line = context.text_line(placeholder_band, placeholder_font);
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        placeholder_band.x,
+                        placeholder_line.y,
+                        placeholder_band.width.max(1),
+                        placeholder_line.height.max(1),
+                    ),
+                    &placeholder,
+                    placeholder_font,
+                    // Dimmed toward the field, then held to the text floor: a fixed 50% blend
+                    // measured 3.65:1 on the light field, so the line explaining what the empty
+                    // list is for was itself hard to read.
+                    ink.blend(&field, 0.5).legible_on(field, 4.5),
+                    HorizontalAlignment::Left,
+                );
+            }
         }
         // Selected files display: a 70 px label column followed by the file-name field.
         // The strip is placed above the button row rather than eight pixels below the
@@ -828,7 +1309,11 @@ impl Draw for FileDialog {
         let sel_y = button_top - sel_h - SELECTED_STRIP_GAP;
         let sel_fits = sel_y >= list_y + list_h as i32 + 4;
         if sel_fits {
-            let sel_label = tr!("dialog.file_dialog.file_name");
+            let sel_label = if self.label_text.is_empty() {
+                tr!("dialog.file_dialog.file_name")
+            } else {
+                self.label_text.clone()
+            };
             let sel_label_font = font;
             let sel_band = Rect::new(rect.x + 10, sel_y, 66, sel_h as u32);
             let sel_line = context.text_line(sel_band, sel_label_font);
@@ -915,6 +1400,7 @@ impl Draw for FileDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Point;
     use crate::event::Event;
     use std::sync::{Arc, Mutex};
 
@@ -1069,5 +1555,112 @@ mod tests {
         );
         // Moving the cursor is not a selection.
         assert_eq!(dialog.selected_file(), None);
+    }
+
+    /// A host-owned listing: the dialog never touches the filesystem itself.
+    struct FakeSource {
+        path_exists: bool,
+    }
+
+    impl FileEntrySource for FakeSource {
+        fn entries(&self, directory: &str) -> Vec<FileEntry> {
+            if directory == "/docs" {
+                vec![FileEntry::new("another.txt", false)]
+            } else {
+                vec![
+                    FileEntry::new("src", true),
+                    FileEntry::new("a.txt", false),
+                    FileEntry::new("b.txt", false),
+                ]
+            }
+        }
+
+        fn exists(&self, _path: &str) -> bool {
+            self.path_exists
+        }
+    }
+
+    fn dialog_with_source() -> FileDialog {
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 320));
+        dialog.set_source(Box::new(FakeSource { path_exists: false }));
+        dialog
+    }
+
+    #[test]
+    fn the_host_listing_is_drawn_and_selectable() {
+        let mut dialog = dialog_with_source();
+        assert_eq!(dialog.entries().len(), 3);
+        let list = dialog.list_rect();
+        dialog.handle_event(&Event::mouse_press(list.x + 4, list.y + 2, 1));
+        assert_eq!(dialog.selected_row(), Some(0));
+        assert_eq!(dialog.selected_file(), Some("src"));
+        let svg = crate::widget::svg::render_to_svg(&mut dialog);
+        assert!(svg.contains("data-text"), "the listing must paint its rows: {svg}");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_listing() {
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 200));
+        dialog.set_source(Box::new(FakeSource { path_exists: false }));
+        let list = dialog.list_rect();
+        let visible = (list.height / dialog.list_row_height()) as usize;
+        if visible < dialog.entries().len() {
+            dialog.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+            assert!(dialog.scroll_offset() > 0);
+        }
+    }
+
+    #[test]
+    fn a_save_appends_the_default_suffix() {
+        let mut dialog = FileDialog::save_file(Rect::new(0, 0, 420, 320));
+        dialog.set_default_suffix(".txt");
+        dialog.select_file("/tmp/report");
+        dialog.accept();
+        assert_eq!(dialog.selected_file(), Some("/tmp/report.txt"));
+    }
+
+    #[test]
+    fn a_save_asks_before_overwriting_an_existing_path() {
+        let mut dialog = FileDialog::save_file(Rect::new(0, 0, 420, 320));
+        dialog.set_source(Box::new(FakeSource { path_exists: true }));
+        dialog.set_overwrite_confirmation(true);
+        dialog.select_file("/tmp/existing.txt");
+        let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&asked);
+        dialog.overwrite_requested.connect(move |path| {
+            sink.lock().expect("lock").push((*path).clone());
+        });
+        dialog.show();
+        dialog.accept();
+        assert_eq!(*asked.lock().expect("lock"), vec!["/tmp/existing.txt".to_string()]);
+        assert!(dialog.is_visible(), "the dialog waits for the answer");
+        assert_eq!(dialog.pending_overwrite(), Some("/tmp/existing.txt"));
+        dialog.confirm_overwrite();
+        assert!(!dialog.is_visible());
+        assert_eq!(dialog.pending_overwrite(), None);
+    }
+
+    #[test]
+    fn history_moves_back_and_forward() {
+        let mut dialog = dialog_with_source();
+        dialog.navigate_to("/docs");
+        assert_eq!(dialog.directory(), "/docs");
+        assert!(dialog.can_go_back());
+        dialog.go_back();
+        assert_eq!(dialog.directory(), "");
+        assert!(dialog.can_go_forward());
+        dialog.go_forward();
+        assert_eq!(dialog.directory(), "/docs");
+    }
+
+    #[test]
+    fn a_sidebar_favorite_navigates() {
+        let mut dialog = dialog_with_source();
+        dialog.set_sidebar(vec!["/docs".to_string()]);
+        assert_eq!(dialog.sidebar_width(), 96);
+        let rect = dialog.frame_rect();
+        let list_y = rect.y + dimensions::DIALOG_TITLE_BAR_HEIGHT as i32 + LIST_TOP_GAP;
+        dialog.handle_event(&Event::mouse_press(rect.x + 14, list_y + 2, 1));
+        assert_eq!(dialog.directory(), "/docs");
     }
 }

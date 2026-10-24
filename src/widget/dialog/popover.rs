@@ -48,17 +48,125 @@ const SHADOW_OFFSET_Y: i32 = 4;
 /// previous hard offset rectangle read as a second border.
 const SHADOW_BLUR_RADIUS: u32 = 12;
 
+/// The alpha the card's fill carries in translucent mode, out of 255.
+///
+/// A translucent card composites with the page behind it, which is the closest the render
+/// path's per-shape alpha gets to a material: the renderer has no backdrop-blur primitive, so
+/// the bubble is genuinely semi-transparent but its backdrop is not sampled and blurred.
+const TRANSLUCENT_CARD_ALPHA: u8 = 217;
+
+/// How a popover decides to close itself.
+///
+/// The three names mirror the behaviour families a floating card is usually offered:
+/// a transient card closes on any outside interaction, a semi-transient one tolerates the
+/// keyboard's Escape, and a permanent one closes only when the caller says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PopoverBehavior {
+    /// Closes on an outside click and on Escape. The default, and the behaviour the control
+    /// had before the property existed.
+    #[default]
+    Transient,
+    /// Closes on an outside click; Escape is left to the owner.
+    SemiTransient,
+    /// Never closes itself; the owner calls [`Popover::hide`] (or clears `shown`).
+    Permanent,
+}
+
+impl PopoverBehavior {
+    /// The spelling used by the `behavior` property.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transient => "transient",
+            Self::SemiTransient => "semi_transient",
+            Self::Permanent => "permanent",
+        }
+    }
+
+    /// Parses the `behavior` property's spelling.
+    pub fn from_token(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "transient" => Some(Self::Transient),
+            "semi_transient" | "semitransient" => Some(Self::SemiTransient),
+            "permanent" => Some(Self::Permanent),
+            _ => None,
+        }
+    }
+
+    /// Whether an outside click closes the card.
+    pub fn closes_on_outside_click(self) -> bool {
+        !matches!(self, Self::Permanent)
+    }
+
+    /// Whether Escape closes the card.
+    pub fn closes_on_escape(self) -> bool {
+        matches!(self, Self::Transient)
+    }
+}
+
+/// Where the caller wants the arrow, and therefore the card, to sit relative to the anchor.
+///
+/// `Auto` is the default and keeps the original placement rule (below the anchor, flipped
+/// above when there is no room). The four fixed directions make the card's side a caller
+/// decision, which is what a vertical-only arrow could not express.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PopoverArrow {
+    /// Below the anchor when it fits, otherwise above it.
+    #[default]
+    Auto,
+    /// The card sits below the anchor and the arrow points up.
+    Up,
+    /// The card sits above the anchor and the arrow points down.
+    Down,
+    /// The card sits to the right of the anchor and the arrow points left.
+    Left,
+    /// The card sits to the left of the anchor and the arrow points right.
+    Right,
+}
+
+impl PopoverArrow {
+    /// The spelling used by the `arrow_direction` property.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+
+    /// Parses the `arrow_direction` property's spelling.
+    pub fn from_token(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "up" => Some(Self::Up),
+            "down" => Some(Self::Down),
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            _ => None,
+        }
+    }
+}
+
 /// Popover widget — a floating bubble card with an anchor arrow.
 ///
 /// Shows a rounded rectangle with a triangular arrow pointing toward an
 /// anchor rectangle. When visible, it can contain an optional child widget
 /// rendered inside the card body. Clicking outside the popover area
-/// automatically hides it.
+/// automatically hides it; [`Popover::set_behavior`] changes that rule.
 pub struct Popover {
     base: BaseWidget,
     content: Option<Box<dyn Widget>>,
     anchor_rect: Rect,
     visible: bool,
+    /// How the card decides to close itself.
+    behavior: PopoverBehavior,
+    /// The caller's arrow placement preference.
+    arrow: PopoverArrow,
+    /// Caller-supplied placeholder shown when no content is installed.
+    placeholder: Option<String>,
+    /// Whether the card is painted semi-transparently.
+    translucent: bool,
     /// Cached popover body rectangle (computed during draw).
     body_rect: Rect,
     /// How far the card has unfolded, `0.0` closed and `1.0` fully open.
@@ -82,6 +190,10 @@ impl Popover {
             content: None,
             anchor_rect: Rect::default(),
             visible: false,
+            behavior: PopoverBehavior::default(),
+            arrow: PopoverArrow::default(),
+            placeholder: None,
+            translucent: false,
             body_rect: Rect::default(),
             // At rest at the closed end: a freshly built popover is hidden, so it must not
             // animate itself away on its first frame.
@@ -178,6 +290,90 @@ impl Popover {
         self.anchor_rect
     }
 
+    /// Returns how the card decides to close itself.
+    pub fn behavior(&self) -> PopoverBehavior {
+        self.behavior
+    }
+
+    /// Sets how the card decides to close itself and requests a redraw.
+    ///
+    /// A same-value write is a no-op. [`PopoverBehavior::Transient`] is the default and
+    /// preserves the original outside-click-and-Escape dismissal.
+    pub fn set_behavior(&mut self, behavior: PopoverBehavior) {
+        if self.behavior == behavior {
+            return;
+        }
+        self.behavior = behavior;
+        self.base.request_redraw();
+    }
+
+    /// Returns the caller's arrow placement preference.
+    pub fn arrow_direction(&self) -> PopoverArrow {
+        self.arrow
+    }
+
+    /// Sets the arrow placement preference and requests a redraw.
+    ///
+    /// `Auto` keeps the original rule (below the anchor, flipped above when there is no
+    /// room); the fixed directions pin the card to one side of the anchor.
+    pub fn set_arrow_direction(&mut self, arrow: PopoverArrow) {
+        if self.arrow == arrow {
+            return;
+        }
+        self.arrow = arrow;
+        self.base.request_redraw();
+    }
+
+    /// Returns the caller-supplied placeholder, if any.
+    pub fn placeholder_text(&self) -> Option<&str> {
+        self.placeholder.as_deref()
+    }
+
+    /// Overrides the placeholder label; `None` restores the built-in labels.
+    ///
+    /// The built-in text distinguishes an empty card from a content-bearing one, so a
+    /// caller that supplies its own string is choosing to lose that distinction. The
+    /// placeholder is never painted once real content is installed unless the caller sets
+    /// it explicitly.
+    pub fn set_placeholder_text(&mut self, text: Option<String>) {
+        let text = text.filter(|value| !value.is_empty());
+        if self.placeholder == text {
+            return;
+        }
+        self.placeholder = text;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the card is painted semi-transparently.
+    pub fn is_translucent(&self) -> bool {
+        self.translucent
+    }
+
+    /// Enables or disables the translucent card fill and requests a redraw.
+    ///
+    /// The renderer has no backdrop-blur primitive, so this paints a genuinely
+    /// semi-transparent card over the page rather than sampling and blurring it. The
+    /// default is opaque, which is the frame the control has always painted.
+    pub fn set_translucent(&mut self, translucent: bool) {
+        if self.translucent == translucent {
+            return;
+        }
+        self.translucent = translucent;
+        self.base.request_redraw();
+    }
+
+    /// The label painted inside an open card.
+    ///
+    /// A caller-supplied placeholder wins; otherwise the built-in text reports whether
+    /// content is installed.
+    fn placeholder_label(&self) -> &str {
+        match self.placeholder.as_deref() {
+            Some(text) => text,
+            None if self.content.is_some() => "Popover",
+            None => "Popover (empty)",
+        }
+    }
+
     /// Sets the anchor rectangle.
     pub fn set_anchor_rect(&mut self, rect: Rect) {
         if self.anchor_rect == rect {
@@ -187,7 +383,11 @@ impl Popover {
         self.base.request_redraw();
     }
 
-    /// Computes the popover body rectangle below/above the anchor.
+    /// Computes the popover body rectangle beside the anchor and the arrow's tip.
+    ///
+    /// `Auto` derives the side from the available space (below first, above when below does
+    /// not fit), which is the historical rule. A fixed direction is honoured even when it
+    /// places the card outside the control, because the caller asked for that side.
     fn compute_layout(&self) -> (Rect, Point, ArrowDirection) {
         let geom = self.geometry();
         let body_width = geom.width.clamp(100, 400);
@@ -198,28 +398,61 @@ impl Popover {
             geom.y + geom.height as i32 - (self.anchor_rect.y + self.anchor_rect.height as i32);
         let above_space = self.anchor_rect.y - geom.y;
 
-        let (body_y, arrow_dir) = if below_space >= body_height as i32 + ARROW_SIZE {
-            (self.anchor_rect.y + self.anchor_rect.height as i32 + ARROW_SIZE, ArrowDirection::Up)
+        let auto_dir = if below_space >= body_height as i32 + ARROW_SIZE {
+            ArrowDirection::Up
         } else if above_space >= body_height as i32 + ARROW_SIZE {
-            (self.anchor_rect.y - body_height as i32 - ARROW_SIZE, ArrowDirection::Down)
+            ArrowDirection::Down
         } else {
-            // Default: below
-            (self.anchor_rect.y + self.anchor_rect.height as i32 + ARROW_SIZE, ArrowDirection::Up)
+            ArrowDirection::Up
+        };
+        let arrow_dir = match self.arrow {
+            PopoverArrow::Auto => auto_dir,
+            PopoverArrow::Up => ArrowDirection::Up,
+            PopoverArrow::Down => ArrowDirection::Down,
+            PopoverArrow::Left => ArrowDirection::Left,
+            PopoverArrow::Right => ArrowDirection::Right,
         };
 
-        // Center horizontally on anchor
+        // Center on the anchor along the cross axis of the chosen side.
         let anchor_center_x = self.anchor_rect.x + self.anchor_rect.width as i32 / 2;
-        let body_x = (anchor_center_x - body_width as i32 / 2).max(geom.x);
-        let body_rect = Rect::new(body_x, body_y, body_width, body_height);
+        let anchor_center_y = self.anchor_rect.y + self.anchor_rect.height as i32 / 2;
+        let body_rect = match arrow_dir {
+            ArrowDirection::Up => Rect::new(
+                (anchor_center_x - body_width as i32 / 2).max(geom.x),
+                self.anchor_rect.y + self.anchor_rect.height as i32 + ARROW_SIZE,
+                body_width,
+                body_height,
+            ),
+            ArrowDirection::Down => Rect::new(
+                (anchor_center_x - body_width as i32 / 2).max(geom.x),
+                self.anchor_rect.y - body_height as i32 - ARROW_SIZE,
+                body_width,
+                body_height,
+            ),
+            ArrowDirection::Left => Rect::new(
+                self.anchor_rect.x + self.anchor_rect.width as i32 + ARROW_SIZE,
+                (anchor_center_y - body_height as i32 / 2).max(geom.y),
+                body_width,
+                body_height,
+            ),
+            ArrowDirection::Right => Rect::new(
+                self.anchor_rect.x - body_width as i32 - ARROW_SIZE,
+                (anchor_center_y - body_height as i32 / 2).max(geom.y),
+                body_width,
+                body_height,
+            ),
+        };
 
-        // Arrow tip points to anchor center
-        let arrow_tip = Point::new(
-            anchor_center_x,
-            match arrow_dir {
-                ArrowDirection::Up => body_y - ARROW_SIZE,
-                ArrowDirection::Down => body_y + body_height as i32 + ARROW_SIZE,
-            },
-        );
+        let arrow_tip = match arrow_dir {
+            ArrowDirection::Up => Point::new(anchor_center_x, body_rect.y - ARROW_SIZE),
+            ArrowDirection::Down => {
+                Point::new(anchor_center_x, body_rect.y + body_rect.height as i32 + ARROW_SIZE)
+            }
+            ArrowDirection::Left => Point::new(body_rect.x - ARROW_SIZE, anchor_center_y),
+            ArrowDirection::Right => {
+                Point::new(body_rect.x + body_rect.width as i32 + ARROW_SIZE, anchor_center_y)
+            }
+        };
 
         (body_rect, arrow_tip, arrow_dir)
     }
@@ -278,6 +511,12 @@ impl WidgetProperties for Popover {
         match name {
             "shown" => Ok(CapabilityValue::Bool(self.is_shown())),
             "text" => Ok(CapabilityValue::String(self.content_text())),
+            "behavior" => Ok(CapabilityValue::String(self.behavior.as_str().to_string())),
+            "arrow_direction" => Ok(CapabilityValue::String(self.arrow.as_str().to_string())),
+            "placeholder_text" => {
+                Ok(CapabilityValue::String(self.placeholder.clone().unwrap_or_default()))
+            }
+            "translucent" => Ok(CapabilityValue::Bool(self.is_translucent())),
             _ => base_property_get(self, name),
         }
     }
@@ -293,12 +532,43 @@ impl WidgetProperties for Popover {
             // caller never asked for. A caller that means to set it installs the
             // content widget through `set_content`.
             "text" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "behavior" => {
+                let text = crate::widget::capability::coercion::expect_string(value)?;
+                let behavior =
+                    PopoverBehavior::from_token(&text).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_behavior(behavior);
+                Ok(())
+            }
+            "arrow_direction" => {
+                let text = crate::widget::capability::coercion::expect_string(value)?;
+                let arrow =
+                    PopoverArrow::from_token(&text).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_arrow_direction(arrow);
+                Ok(())
+            }
+            "placeholder_text" => {
+                let text = crate::widget::capability::coercion::expect_string(value)?;
+                self.set_placeholder_text(Some(text));
+                Ok(())
+            }
+            "translucent" => {
+                self.set_translucent(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["shown", "text", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "shown",
+            "text",
+            "behavior",
+            "arrow_direction",
+            "placeholder_text",
+            "translucent",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `popover` publishes.
@@ -402,6 +672,7 @@ impl Draw for Popover {
             body_rect.width,
             revealed_height.max(closed_height),
         );
+        let card = if self.translucent { card.with_alpha(TRANSLUCENT_CARD_ALPHA) } else { card };
         // One value drives the body, the shadow, the arrow and the ink alike, so they cannot get
         // out of step: a half-open card with a full-strength shadow would read as a rendering fault.
         let card = if visible { card } else { window_fill.blend(&card, 0.45) };
@@ -468,7 +739,7 @@ impl Draw for Popover {
         // The **effective font** — the resolved theme/caller font — rather than the fixed 13 px
         // sans-serif this used to build (D09-STYLE-01).
         let font = effective_font(style);
-        let label = if self.content.is_some() { "Popover" } else { "Popover (empty)" };
+        let label = self.placeholder_label();
         // The label is centred on the content box — **both ways**. `draw_text_fitted` aligns
         // horizontally only, so passing the padded content box pinned the label to the card's
         // top edge: `popover.svg` drew a 13 px line at `y = 8` inside a 120 px card. Deriving
@@ -485,6 +756,8 @@ impl Draw for Popover {
 enum ArrowDirection {
     Up,
     Down,
+    Left,
+    Right,
 }
 
 impl Popover {
@@ -512,6 +785,18 @@ impl Popover {
                 let base_center = Point::new(tip.x, tip.y - ARROW_SIZE);
                 let base_left = Point::new(tip.x - half_base, tip.y - ARROW_SIZE);
                 let base_right = Point::new(tip.x + half_base, tip.y - ARROW_SIZE);
+                (base_center, base_left, base_right)
+            }
+            ArrowDirection::Left => {
+                let base_center = Point::new(tip.x + ARROW_SIZE, tip.y);
+                let base_left = Point::new(tip.x + ARROW_SIZE, tip.y - half_base);
+                let base_right = Point::new(tip.x + ARROW_SIZE, tip.y + half_base);
+                (base_center, base_left, base_right)
+            }
+            ArrowDirection::Right => {
+                let base_center = Point::new(tip.x - ARROW_SIZE, tip.y);
+                let base_left = Point::new(tip.x - ARROW_SIZE, tip.y - half_base);
+                let base_right = Point::new(tip.x - ARROW_SIZE, tip.y + half_base);
                 (base_center, base_left, base_right)
             }
         };
@@ -553,13 +838,16 @@ impl EventHandler for Popover {
 
         match event {
             Event::MousePress { pos, button, .. } => {
-                if *button == 1 && !self.body_rect.contains_point(*pos) {
+                if *button == 1
+                    && self.behavior.closes_on_outside_click()
+                    && !self.body_rect.contains_point(*pos)
+                {
                     // Auto-dismiss on click outside
                     self.hide();
                 }
             }
             Event::KeyPress { key, modifiers: _ } => {
-                if *key == key_codes::ESCAPE {
+                if *key == key_codes::ESCAPE && self.behavior.closes_on_escape() {
                     // Escape key
                     self.hide();
                 }
@@ -937,5 +1225,120 @@ mod tests {
         assert_eq!(popover.reveal_progress(), 0.0);
         let svg = render_to_svg(&mut popover);
         assert!(!svg.contains("shadow_blur_"), "a closed popover must not cast a shadow: {svg}");
+    }
+
+    /// The close rules are a property, not a hard-coded pair of arms.
+    #[test]
+    fn behavior_decides_which_gestures_close_the_card() {
+        let outside = Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 };
+        let escape = Event::KeyPress { key: 27, modifiers: 0 };
+
+        let mut semi = Popover::new(Rect::new(0, 0, 400, 400));
+        semi.show(Rect::new(150, 100, 50, 20));
+        semi.set_behavior(PopoverBehavior::SemiTransient);
+        semi.handle_event(&escape);
+        assert!(semi.is_visible(), "a semi-transient popover ignores Escape");
+        semi.handle_event(&outside);
+        assert!(!semi.is_visible(), "an outside click still closes it");
+
+        let mut permanent = Popover::new(Rect::new(0, 0, 400, 400));
+        permanent.show(Rect::new(150, 100, 50, 20));
+        permanent.set_behavior(PopoverBehavior::Permanent);
+        permanent.handle_event(&escape);
+        assert!(permanent.is_visible());
+        permanent.handle_event(&outside);
+        assert!(permanent.is_visible(), "a permanent popover closes only when asked");
+
+        assert!(PopoverBehavior::from_token("semi-transient")
+            .expect("hyphenated spelling")
+            .closes_on_outside_click());
+        assert_eq!(
+            PopoverBehavior::from_token("semi_transient").map(PopoverBehavior::as_str),
+            Some("semi_transient")
+        );
+    }
+
+    /// The horizontal arrow variants place the card beside the anchor, not above/below it.
+    #[test]
+    fn a_horizontal_arrow_places_the_card_beside_the_anchor() {
+        let anchor = Rect::new(150, 150, 40, 20);
+
+        let mut left = Popover::new(Rect::new(0, 0, 400, 400));
+        left.set_arrow_direction(PopoverArrow::Left);
+        left.show(anchor);
+        while left.tick(1000) {}
+        let _ = render_to_svg(&mut left);
+        assert!(
+            left.body_rect.x >= anchor.x + anchor.width as i32,
+            "a left-pointing arrow puts the card to the anchor's right: card x={}, anchor right={}",
+            left.body_rect.x,
+            anchor.x + anchor.width as i32
+        );
+
+        let mut right = Popover::new(Rect::new(0, 0, 400, 400));
+        right.set_arrow_direction(PopoverArrow::Right);
+        right.show(anchor);
+        while right.tick(1000) {}
+        let _ = render_to_svg(&mut right);
+        assert!(
+            right.body_rect.x + right.body_rect.width as i32 <= anchor.x,
+            "a right-pointing arrow puts the card to the anchor's left: card right={}, anchor x={}",
+            right.body_rect.x + right.body_rect.width as i32,
+            anchor.x
+        );
+        assert_eq!(PopoverArrow::from_token("left"), Some(PopoverArrow::Left));
+    }
+
+    /// The placeholder is caller-configurable instead of hard-coded.
+    #[test]
+    fn the_placeholder_text_is_configurable() {
+        let mut popover = Popover::new(Rect::new(0, 0, 300, 400));
+        popover.show(Rect::new(100, 20, 50, 20));
+        while popover.tick(1000) {}
+        let built_in = render_to_svg(&mut popover);
+
+        popover.set_placeholder_text(Some("No notifications".to_string()));
+        let custom = render_to_svg(&mut popover);
+        assert_ne!(built_in, custom, "a custom placeholder must reach the pixels");
+        // An empty string means "use the built-in label", not "paint nothing".
+        popover.set_placeholder_text(Some(String::new()));
+        assert_eq!(popover.placeholder_text(), None);
+    }
+
+    /// The translucent material is opt-in and paints a genuinely alpha-blended card.
+    #[test]
+    fn the_translucent_material_is_opt_in() {
+        fn card_alpha(svg: &str) -> f32 {
+            let rect = svg
+                .split("<rect ")
+                .filter(|chunk| chunk.contains("rx=\""))
+                .find(|chunk| chunk.contains("fill=\"rgba("))
+                .expect("the card carries a fill");
+            let fill = rect.split("rgba(").nth(1).expect("rgba fill");
+            let channels: Vec<&str> =
+                fill.split(')').next().expect("close paren").split(',').collect();
+            channels[3].trim().parse::<f32>().expect("an alpha channel")
+        }
+
+        let mut opaque = Popover::new(Rect::new(0, 0, 300, 400));
+        opaque.show(Rect::new(100, 20, 50, 20));
+        while opaque.tick(1000) {}
+        assert!(!opaque.is_translucent(), "the default card is opaque");
+        let opaque_svg = render_to_svg(&mut opaque);
+
+        let mut translucent = Popover::new(Rect::new(0, 0, 300, 400));
+        translucent.set_translucent(true);
+        translucent.show(Rect::new(100, 20, 50, 20));
+        while translucent.tick(1000) {}
+        let translucent_svg = render_to_svg(&mut translucent);
+
+        assert_eq!(card_alpha(&opaque_svg), 1.0, "an opaque card is fully opaque");
+        let expected = f32::from(TRANSLUCENT_CARD_ALPHA) / 255.0;
+        assert!(
+            (card_alpha(&translucent_svg) - expected).abs() < 0.01,
+            "the translucent card must carry the material's alpha: got {}",
+            card_alpha(&translucent_svg)
+        );
+        assert_ne!(opaque_svg, translucent_svg);
     }
 }

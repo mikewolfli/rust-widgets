@@ -716,6 +716,28 @@ full = [
     "video-codecs",
 ]
 
+## "All features that compose with a desktop build" — decision C5's all-on target.
+##
+## `--all-features` cannot compile and is not a supported command: it turns on every device
+## profile at once (`desktop` and `mini` together, and `mini` is `no_std`), so the result is the
+## `String`/`Vec`-not-in-scope failure rather than a build. This feature is the honest spelling of
+## the question a caller actually means — "enable everything a desktop host can use" — and it is
+## what CI builds instead.
+##
+## The excluded features are the ones that need a different host: the non-desktop device
+## profiles, `holographic`, and the codec features that link system libraries
+## (`symphonia-codecs`, `audio-output`, `video-codecs`). Everything `desktop` already lists
+## (icons, image, designer, serde, the text faces, …) comes in through that one name.
+all-desktop-features = [
+    "desktop",
+    "3d",
+    "gpu-wgpu",
+    "projection",
+    "runtime-fonts",
+    "unstable-pipeline-routing",
+    "unstable-special-widgets",
+]
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # DEPENDENCIES
@@ -839,6 +861,7 @@ winapi = { version = "0.3", features = [
     "commctrl",
     "commdlg",
     "winbase",
+    "winerror",
     "synchapi",
     "wingdi",
     "winnls",

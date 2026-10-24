@@ -3,16 +3,25 @@
 
 //! Popup window widget.
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+/// Corner radius of the floating chrome, in logical pixels.
+const FLOATING_CORNER_RADIUS: u32 = 8;
+/// The blur radius of the floating chrome's shadow, in logical pixels.
+const FLOATING_SHADOW_BLUR: u32 = 12;
+/// The floating chrome's shadow offset below the popup, in logical pixels.
+const FLOATING_SHADOW_OFFSET_Y: i32 = 4;
+
 /// Popup window widget.
 pub struct PopupWindow {
     base: BaseWidget,
@@ -26,6 +35,23 @@ pub struct PopupWindow {
     pub opened: GenericSignal,
     /// Emitted when the popup is closed.
     pub closed: GenericSignal,
+    /// Whether this popup is modal: a modal popup is not dismissed by an outside click.
+    modal: bool,
+    /// The window this popup is transient for, if any.
+    ///
+    /// The link is declarative: the popup does not query the owner, but a host can read it
+    /// to close the popup with its parent or to raise it above that window. `None` means the
+    /// popup stands alone.
+    transient_parent: Option<ObjectId>,
+    /// Whether the popup paints floating chrome (rounded corners and a blurred shadow).
+    ///
+    /// Opt-in, so the default frame remains the square-bordered rectangle it has always
+    /// been.
+    floating_chrome: bool,
+    /// Pointer position where a title-bar drag began, in window coordinates.
+    drag_origin: Option<Point>,
+    /// The popup's geometry at the moment that drag began.
+    drag_geometry: Option<Rect>,
 }
 impl PopupWindow {
     /// Creates a popup window with geometry and no title.
@@ -41,7 +67,126 @@ impl PopupWindow {
             title,
             opened: GenericSignal::new(),
             closed: GenericSignal::new(),
+            modal: false,
+            transient_parent: None,
+            floating_chrome: false,
+            drag_origin: None,
+            drag_geometry: None,
         }
+    }
+
+    /// Returns whether the popup is modal.
+    ///
+    /// A modal popup stays up when the pointer clicks outside it; a non-modal one is
+    /// dismissed by that click, which is the convention for a transient popup.
+    pub fn is_modal(&self) -> bool {
+        self.modal
+    }
+
+    /// Sets whether the popup is modal and requests a redraw.
+    pub fn set_modal(&mut self, modal: bool) {
+        if self.modal == modal {
+            return;
+        }
+        self.modal = modal;
+        self.base.request_redraw();
+    }
+
+    /// Returns the window this popup is transient for, if any.
+    pub fn transient_parent(&self) -> Option<ObjectId> {
+        self.transient_parent
+    }
+
+    /// Sets (or clears) the window this popup is transient for.
+    pub fn set_transient_parent(&mut self, parent: Option<ObjectId>) {
+        if self.transient_parent == parent {
+            return;
+        }
+        self.transient_parent = parent;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the popup paints floating chrome.
+    pub fn is_floating_chrome(&self) -> bool {
+        self.floating_chrome
+    }
+
+    /// Enables or disables rounded corners plus a blurred shadow.
+    ///
+    /// Off by default: the square border is the frame this control has always painted, and
+    /// the floating form is a visual choice a caller makes.
+    pub fn set_floating_chrome(&mut self, floating: bool) {
+        if self.floating_chrome == floating {
+            return;
+        }
+        self.floating_chrome = floating;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the pointer is over the popup.
+    ///
+    /// Hover is tracked from `MouseEnter`/`MouseLeave` and changes the painted surface by
+    /// one step, so the flag has a visible consequence rather than being bookkeeping only.
+    pub fn is_hovered(&self) -> bool {
+        self.base.is_hovered()
+    }
+
+    /// Sets the pointer-hover flag; the setter exists for a host that synthesises hover.
+    ///
+    /// Named for the pointer rather than `set_hovered` so it does not shadow
+    /// [`Widget::set_hovered`]: that trait entry re-resolves the widget's theme state,
+    /// which would replace a caller's own style on the first hover, while this control's
+    /// hover cue is derived in `draw` and needs only the flag and a repaint.
+    pub fn set_pointer_hovered(&mut self, hovered: bool) {
+        if self.base.is_hovered() == hovered {
+            return;
+        }
+        self.base.set_hovered(hovered);
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the title-bar drag is in flight.
+    pub fn is_dragging(&self) -> bool {
+        self.drag_origin.is_some()
+    }
+
+    /// Ends a title-bar drag without moving the popup further.
+    pub fn end_drag(&mut self) {
+        if self.drag_origin.take().is_some() {
+            self.drag_geometry = None;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Advances an in-flight title-bar drag to `pos` (window coordinates).
+    ///
+    /// The geometry is recomputed from the drag's origin rather than accumulated, so a
+    /// pointer that moves back to where it started restores the original position exactly.
+    pub fn drag_to(&mut self, pos: Point) {
+        let (Some(origin), Some(start)) = (self.drag_origin, self.drag_geometry) else {
+            return;
+        };
+        let next = Rect::new(
+            start.x + (pos.x - origin.x),
+            start.y + (pos.y - origin.y),
+            start.width,
+            start.height,
+        );
+        if self.base.geometry() == next {
+            return;
+        }
+        self.base.set_geometry(next);
+        self.base.request_redraw();
+    }
+
+    /// Whether `pos` is inside the popup's title bar.
+    fn is_in_title_bar(&self, pos: Point) -> bool {
+        let rect = self.base.geometry();
+        if self.title.is_empty() || !rect.contains_point(pos) {
+            return false;
+        }
+        let bar_height = TITLE_BAR_HEIGHT.min(rect.height) as i32;
+        pos.y < rect.y + bar_height
     }
 
     /// Returns the popup's title.
@@ -153,6 +298,11 @@ impl WidgetProperties for PopupWindow {
         match name {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
             "has_content" => Ok(CapabilityValue::Bool(self.content_widget().is_some())),
+            "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
+            // `0` means "no transient parent", so the relationship is clearable over the
+            // property route as well as through the setter.
+            "transient_parent" => Ok(CapabilityValue::UInt(self.transient_parent().unwrap_or(0))),
+            "floating_chrome" => Ok(CapabilityValue::Bool(self.is_floating_chrome())),
             _ => base_property_get(self, name),
         }
     }
@@ -166,12 +316,32 @@ impl WidgetProperties for PopupWindow {
             // A popup's content is supplied by its owner via `set_content_widget`,
             // not through the property layer: the property reports presence only.
             "has_content" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "modal" => {
+                self.set_modal(expect_bool(value)?);
+                Ok(())
+            }
+            "transient_parent" => {
+                let id = expect_u32(value)?;
+                self.set_transient_parent(if id == 0 { None } else { Some(u64::from(id)) });
+                Ok(())
+            }
+            "floating_chrome" => {
+                self.set_floating_chrome(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "has_content", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "has_content",
+            "modal",
+            "transient_parent",
+            "floating_chrome",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `popup_window` publishes.
@@ -241,6 +411,10 @@ impl Draw for PopupWindow {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.08),
         };
+        // Hover is a state the control tracks, so it has to change something. One step toward
+        // the ink is enough to read as "the pointer is over this window" without altering the
+        // resting frame, which is what keeps the default snapshot valid.
+        let surface = if self.base.is_hovered() { surface.blend(&ink, 0.03) } else { surface };
         let border = style
             .border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
@@ -254,15 +428,32 @@ impl Draw for PopupWindow {
         // translucency has to say so through its own background property, and the
         // earlier "semi-transparent effect" comment described something this code
         // never did.
-        context.face_with_gradient(
-            rect,
-            surface,
-            self.style().background_gradient.as_ref(),
-            self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
-            Color::BLACK,
-        );
-        context.draw_rect(rect, border);
+        //
+        // Two chrome forms: the historical square panel, and the floating form a detachable
+        // window uses (rounded corners over a blurred shadow). The floating form is opt-in so
+        // the default frame is byte-identical.
+        if self.floating_chrome {
+            context.draw_box_shadow(
+                rect,
+                Color::rgba(0, 0, 0, 48),
+                0,
+                FLOATING_SHADOW_OFFSET_Y,
+                FLOATING_SHADOW_BLUR,
+                0,
+            );
+            context.fill_rounded_rect(rect, FLOATING_CORNER_RADIUS, surface);
+            context.draw_rounded_rect_stroke(rect, FLOATING_CORNER_RADIUS, border, 1);
+        } else {
+            context.face_with_gradient(
+                rect,
+                surface,
+                self.style().background_gradient.as_ref(),
+                self.style().surface.unwrap_or_default(),
+                self.style().border_radius.unwrap_or(0),
+                Color::BLACK,
+            );
+            context.draw_rect(rect, border);
+        }
 
         if self.title.is_empty() {
             return;
@@ -270,10 +461,21 @@ impl Draw for PopupWindow {
         // Title bar height is clamped to the popup so a short popup shows the title
         // rather than painting outside itself.
         let bar_height = TITLE_BAR_HEIGHT.min(rect.height);
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, bar_height), title_bar);
+        // On the rounded form the band is inset by the corner radius, which is exactly the
+        // width of the card's flat top edge; the square form keeps the full width.
+        let bar_inset = if self.floating_chrome { FLOATING_CORNER_RADIUS } else { 0 };
+        context.fill_rect(
+            Rect::new(
+                rect.x + bar_inset as i32,
+                rect.y,
+                rect.width.saturating_sub(bar_inset * 2),
+                bar_height,
+            ),
+            title_bar,
+        );
         context.draw_line(
-            Point::new(rect.x, rect.y + bar_height as i32),
-            Point::new(rect.x + rect.width as i32, rect.y + bar_height as i32),
+            Point::new(rect.x + bar_inset as i32, rect.y + bar_height as i32),
+            Point::new(rect.x + rect.width as i32 - bar_inset as i32, rect.y + bar_height as i32),
             border,
         );
         // The title is centred inside the bar. The origin is the glyph's **top** edge, so the
@@ -319,17 +521,52 @@ impl PopupWindow {
         Rect::new(rect.x, rect.y + inset as i32, rect.width, rect.height - inset)
     }
 }
-impl crate::event::EventHandler for PopupWindow {
-    fn handle_event(&mut self, event: &crate::event::Event) {
+impl EventHandler for PopupWindow {
+    fn handle_event(&mut self, event: &Event) {
+        match event {
+            Event::MouseEnter { .. } => {
+                self.set_pointer_hovered(true);
+            }
+            Event::MouseLeave { .. } => {
+                self.end_drag();
+                self.set_pointer_hovered(false);
+            }
+            _ => {}
+        }
         if !self.base.is_enabled() {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos: _, button, .. } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(true);
+                // Click-outside dismissal: a non-modal popup is a transient surface, so a
+                // press anywhere else closes it. A modal one is kept up by definition.
+                if !self.modal
+                    && self.base.is_visible()
+                    && !self.base.geometry().contains_point(*pos)
+                {
+                    self.close();
+                    return;
+                }
+                // A press on the title bar starts moving the window; a press in the body is
+                // the content's business.
+                if self.is_in_title_bar(*pos) {
+                    self.drag_origin = Some(*pos);
+                    self.drag_geometry = Some(self.base.geometry());
+                }
             }
-            crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
+            Event::MouseMove { pos } => {
+                self.drag_to(*pos);
+            }
+            Event::MouseRelease { button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
+                self.end_drag();
+            }
+            // Escape is the keyboard's close affordance. A popup is a floating surface with
+            // no other keyboard exit, so the key goes through the same `close` path as the
+            // host's own close request (which emits both lifecycle signals).
+            Event::KeyPress { key, .. } if *key == key_codes::ESCAPE && self.base.is_visible() => {
+                self.close();
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -339,7 +576,10 @@ impl crate::event::EventHandler for PopupWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::Event;
     use crate::object::Object;
+    use crate::widget::capability::types::CapabilityValue;
+    use crate::widget::capability::WidgetProperties;
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -444,5 +684,122 @@ mod tests {
         // the clamp is what makes the second half true.
         let _ = crate::widget::svg::render_to_svg(&mut tiny);
         assert_eq!(tiny.content_rect().height, 0);
+    }
+
+    /// Escape closes the popup through the same path as a host close request.
+    #[test]
+    fn popup_escape_closes_once() {
+        let mut popup = PopupWindow::new(Rect::new(0, 0, 120, 80));
+        popup.open();
+        let closed = Arc::new(Mutex::new(0usize));
+        popup.closed.connect({
+            let sink = Arc::clone(&closed);
+            move || {
+                if let Ok(mut count) = sink.lock() {
+                    *count += 1;
+                }
+            }
+        });
+
+        popup.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+        assert!(!popup.is_visible());
+        assert_eq!(*closed.lock().expect("closed lock"), 1);
+
+        popup.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+        assert_eq!(*closed.lock().expect("closed lock"), 1, "a hidden popup stays quiet");
+    }
+
+    /// An outside click dismisses a transient popup but not a modal one.
+    #[test]
+    fn popup_outside_click_respects_modality() {
+        let outside = Event::MousePress { pos: Point::new(400, 400), button: 1, modifiers: 0 };
+
+        let mut transient = PopupWindow::new(Rect::new(0, 0, 120, 80));
+        transient.open();
+        transient.handle_event(&outside);
+        assert!(!transient.is_visible(), "a non-modal popup is dismissed by an outside click");
+
+        let mut modal = PopupWindow::new(Rect::new(0, 0, 120, 80));
+        modal.set_modal(true);
+        modal.open();
+        modal.handle_event(&outside);
+        assert!(modal.is_visible(), "a modal popup is kept up by an outside click");
+        assert!(modal.is_modal());
+
+        // The transient-parent link is declarative state a host can read.
+        modal.set_transient_parent(Some(7));
+        assert_eq!(modal.transient_parent(), Some(7));
+        assert_eq!(
+            modal.get("transient_parent"),
+            Ok(CapabilityValue::UInt(7)),
+            "the property route reports the owner id"
+        );
+        modal.set_transient_parent(None);
+        assert_eq!(modal.get("transient_parent"), Ok(CapabilityValue::UInt(0)));
+    }
+
+    /// The title bar drags the popup; the body does not.
+    #[test]
+    fn popup_title_bar_drags_the_window() {
+        let mut popup = PopupWindow::with_title("Drag me".to_string(), Rect::new(0, 0, 160, 100));
+
+        // A press below the title bar is the content's business.
+        popup.handle_event(&Event::MousePress {
+            pos: Point::new(10, TITLE_BAR_HEIGHT as i32 + 10),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(!popup.is_dragging(), "only the title bar starts a drag");
+
+        popup.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        assert!(popup.is_dragging());
+        popup.handle_event(&Event::MouseMove { pos: Point::new(30, 25) });
+        assert_eq!(popup.geometry(), Rect::new(20, 15, 160, 100));
+        // Moving back restores the original position exactly, because the delta is taken
+        // from the press origin rather than accumulated.
+        popup.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
+        assert_eq!(popup.geometry(), Rect::new(0, 0, 160, 100));
+
+        popup.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        assert!(!popup.is_dragging());
+    }
+
+    /// The floating chrome is opt-in: rounded corners and a real blurred shadow.
+    #[test]
+    fn popup_floating_chrome_is_opt_in() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut square = PopupWindow::with_title("T".to_string(), Rect::new(0, 0, 160, 100));
+        let square_svg = crate::widget::svg::render_to_svg(&mut square);
+        assert!(!square_svg.contains("shadow_blur_"), "the default frame casts no shadow");
+        assert!(!square_svg.contains("rx=\""), "the default frame is square");
+
+        let mut floating = PopupWindow::with_title("T".to_string(), Rect::new(0, 0, 160, 100));
+        floating.set_floating_chrome(true);
+        let floating_svg = crate::widget::svg::render_to_svg(&mut floating);
+        assert!(floating.is_floating_chrome());
+        assert!(
+            floating_svg.contains("shadow_blur_"),
+            "the floating frame must cast a blurred shadow: {floating_svg}"
+        );
+        assert!(floating_svg.contains("rx=\""), "the floating frame is rounded");
+        assert_ne!(square_svg, floating_svg);
+    }
+
+    /// Hover is tracked and has a visible consequence.
+    #[test]
+    fn popup_hover_changes_the_painted_frame() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut popup = PopupWindow::with_title("T".to_string(), Rect::new(0, 0, 160, 100));
+        let resting = crate::widget::svg::render_to_svg(&mut popup);
+        assert!(!popup.is_hovered());
+
+        popup.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
+        assert!(popup.is_hovered());
+        let hovered = crate::widget::svg::render_to_svg(&mut popup);
+        assert_ne!(resting, hovered, "hover must be visible, not just a flag");
+
+        popup.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert!(!popup.is_hovered());
+        assert_eq!(resting, crate::widget::svg::render_to_svg(&mut popup));
     }
 }

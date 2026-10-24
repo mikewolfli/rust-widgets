@@ -24,6 +24,8 @@ impl CodeEditor {
             model.all_buffers.push(EditorBuffer::new(title, text));
             model.all_buffers.len() - 1
         };
+        self.buffer_histories.push(UndoStack::new());
+        self.buffer_views.push(BufferViewState::default());
         self.activate_buffer(index);
         index
     }
@@ -34,45 +36,86 @@ impl CodeEditor {
         self.model.borrow().active_tab
     }
 
-    /// Activates a buffer, pushing an undoable tab-switch entry.
+    /// Activates a buffer, restoring that buffer's own history and view.
+    ///
+    /// A tab switch is navigation, not an edit, so it no longer pushes a
+    /// `TabSwitchCommand`: undo used to walk back through tabs before it could
+    /// undo text. Each buffer keeps its own undo stack, caret and scroll state
+    /// instead.
     pub fn activate_buffer(&mut self, index: usize) -> bool {
         let count = self.model.borrow().all_buffers.len();
         if index >= count || index == self.active_buffer() {
             return false;
         }
         let before = self.active_buffer();
-        self.undo_stack.push(Box::new(TabSwitchCommand {
-            editor: Rc::clone(&self.model),
-            before,
-            after: index,
-        }));
+        self.switch_buffer_state(before, index);
         self.model.borrow_mut().apply_tab_switch(index);
         self.after_buffer_switch(index);
         true
     }
 
     /// Activates a buffer without recording an undo entry.
+    ///
+    /// History is per buffer, so a switch cannot make one document's commands
+    /// replay against another; nothing has to be cleared.
     pub fn activate_buffer_untracked(&mut self, index: usize) -> bool {
         let count = self.model.borrow().all_buffers.len();
         if index >= count || index == self.active_buffer() {
             return false;
         }
+        let before = self.active_buffer();
+        self.switch_buffer_state(before, index);
         self.model.borrow_mut().apply_tab_switch(index);
-        // An untracked switch records no `TabSwitchCommand`, so any range or
-        // snapshot commands still on the stack belong to the previous document.
-        // Replaying them against this one would splice by the wrong offsets, so
-        // the history is invalidated on the cross-document boundary.
-        self.undo_stack.clear();
         self.after_buffer_switch(index);
         true
     }
 
+    /// Saves the active buffer's caret, scroll and folds into its slot.
+    fn save_active_view(&mut self) {
+        let active = self.active_buffer();
+        let view = BufferViewState {
+            cursor: self.cursor,
+            extra_cursors: self.extra_cursors.clone(),
+            goal: self.goal,
+            scroll_line: self.scroll_line,
+            scroll_column: self.scroll_column,
+            scroll_visual_row: self.scroll_visual_row,
+            folds: self.model.borrow().folds.clone(),
+        };
+        match self.buffer_views.get_mut(active) {
+            Some(slot) => *slot = view,
+            None => self.buffer_views.push(view),
+        }
+    }
+
+    /// Saves the outgoing buffer's view and swaps its history for the incoming one.
+    fn switch_buffer_state(&mut self, from: usize, to: usize) {
+        self.save_active_view();
+        let mut incoming = UndoStack::new();
+        if let Some(slot) = self.buffer_histories.get_mut(to) {
+            core::mem::swap(slot, &mut incoming);
+        }
+        let outgoing = core::mem::replace(&mut self.undo_stack, incoming);
+        match self.buffer_histories.get_mut(from) {
+            Some(slot) => *slot = outgoing,
+            None => self.buffer_histories.push(outgoing),
+        }
+        self.active_typing = None;
+    }
+
     pub(super) fn after_buffer_switch(&mut self, index: usize) {
-        self.cursor = Cursor::default();
-        self.goal = CursorGoal::default();
-        self.scroll_line = 0;
-        self.scroll_column = 0;
-        self.scroll_visual_row = 0;
+        let view = self.buffer_views.get(index).cloned().unwrap_or_default();
+        self.cursor = view.cursor;
+        self.extra_cursors = view.extra_cursors;
+        self.goal = view.goal;
+        self.scroll_line = view.scroll_line;
+        self.scroll_column = view.scroll_column;
+        self.scroll_visual_row = view.scroll_visual_row;
+        {
+            let mut model = self.model.borrow_mut();
+            model.folds = view.folds;
+            model.normalize_folds();
+        }
         self.find = FindState {
             visible: self.find.visible,
             replace_visible: self.find.replace_visible,
@@ -105,17 +148,22 @@ impl CodeEditor {
             self.set_text(String::new());
             return true;
         }
-        // Closing a tab mutates slot indices and removes a document, so any
-        // pending history — which may reference a removed slot or the removed
-        // document's text mirror — is invalidated rather than left to mis-target
-        // a surviving buffer.
-        self.undo_stack.clear();
+        // A closed buffer's history and view belong to that document and are
+        // dropped with it; the surviving buffers keep their own.
+        if index < self.buffer_histories.len() {
+            self.buffer_histories.remove(index);
+        }
+        if index < self.buffer_views.len() {
+            self.buffer_views.remove(index);
+        }
+        self.active_typing = None;
 
         // Persist the active buffer's text to its own slot *before* the index
         // shifts, unless the active buffer itself is the one being closed — its
         // text must not be written into a surviving slot.
         let closed_is_active = self.model.borrow().active_tab == index;
         if !closed_is_active {
+            self.save_active_view();
             self.model.borrow_mut().persist_active();
         }
 
@@ -130,6 +178,15 @@ impl CodeEditor {
             model.active_tab
         };
 
+        if closed_is_active {
+            // The closed buffer's history goes away with it; the survivor's own
+            // history becomes the active one.
+            let mut incoming = UndoStack::new();
+            if let Some(slot) = self.buffer_histories.get_mut(next_active) {
+                core::mem::swap(slot, &mut incoming);
+            }
+            self.undo_stack = incoming;
+        }
         self.model.borrow_mut().load_buffer(next_active);
         self.after_buffer_switch(next_active);
         true

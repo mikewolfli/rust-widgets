@@ -20,6 +20,22 @@ use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// Which edge the drawer panel slides in from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DrawerSide {
+    /// The leading edge (left in a left-to-right interface).
+    #[default]
+    Start,
+    /// The trailing edge (right in a left-to-right interface).
+    End,
+}
+
+/// Width of the edge strip that opens a closed drawer, in pixels.
+///
+/// The strip is the gesture target, not the painted handle: a 4 px stripe is what the edge
+/// affordance *looks* like, and a 20 px band is what a pointing device can actually grab.
+const DRAWER_EDGE_STRIP: u32 = 20;
+
 /// A single item in the navigation drawer, consisting of an icon and a label.
 #[derive(Clone, Debug)]
 pub struct DrawerItem {
@@ -46,6 +62,24 @@ pub struct NavigationDrawer {
     selected_index: usize,
     /// Panel width in pixels.
     panel_width: u32,
+    /// The edge the panel slides in from.
+    side: DrawerSide,
+    /// Whether selecting an item also closes the drawer.
+    ///
+    /// Defaults to `true`, which is the modal drawer's contract: a destination was chosen, so
+    /// the panel that offered it has done its job. Set it to `false` for a persistent drawer
+    /// that should stay open beside the content.
+    auto_close_on_select: bool,
+    /// The press that began the current gesture, when it began on the modal scrim.
+    ///
+    /// A release on the scrim only dismisses when the *press* also landed there; otherwise a
+    /// drag that started on the panel and ended outside it would close the drawer, which is the
+    /// opposite of what the user did.
+    press_on_overlay: bool,
+    /// An in-flight edge drag: `(origin_x, progress_at_press)`.
+    drag: Option<(f32, f32)>,
+    /// Whether the current press has moved far enough to count as a drag.
+    drag_moved: bool,
     /// How far the panel has slid in, `0.0` fully closed and `1.0` fully open.
     ///
     /// # Why this is separate from `open`
@@ -77,6 +111,11 @@ impl NavigationDrawer {
             item_icon_sources: Vec::new(),
             selected_index: 0,
             panel_width: 280,
+            side: DrawerSide::Start,
+            auto_close_on_select: true,
+            press_on_overlay: false,
+            drag: None,
+            drag_moved: false,
             // At rest at the closed end: a freshly built drawer is closed, so it must not animate
             // its panel away on the first frame.
             slide: PropertyDriver::at(0.0, MotionSlot::Normal),
@@ -198,6 +237,83 @@ impl NavigationDrawer {
         }
         self.panel_width = width;
         self.base.request_redraw();
+    }
+
+    /// Returns the edge the panel slides in from.
+    pub fn side(&self) -> DrawerSide {
+        self.side
+    }
+
+    /// Sets the edge the panel slides in from.
+    pub fn set_side(&mut self, side: DrawerSide) {
+        if self.side == side {
+            return;
+        }
+        self.side = side;
+        self.base.request_redraw();
+    }
+
+    /// Whether selecting an item closes the drawer.
+    pub fn auto_close_on_select(&self) -> bool {
+        self.auto_close_on_select
+    }
+
+    /// Sets whether selecting an item closes the drawer.
+    pub fn set_auto_close_on_select(&mut self, auto_close: bool) {
+        self.auto_close_on_select = auto_close;
+    }
+
+    /// Begins an edge drag from `x`, adopting the current drawn progress as its origin.
+    fn begin_drag(&mut self, x: f32) {
+        self.drag = Some((x, self.slide.value()));
+        self.drag_moved = false;
+    }
+
+    /// Advances an in-flight drag to `x`, following the pointer.
+    fn drag_to(&mut self, x: f32) {
+        let Some((origin, start)) = self.drag else {
+            return;
+        };
+        let width = self.panel_width.max(1) as f32;
+        let delta = match self.side {
+            DrawerSide::Start => x - origin,
+            DrawerSide::End => origin - x,
+        };
+        let progress = (start + delta / width).clamp(0.0, 1.0);
+        if (progress - start).abs() > 0.01 {
+            self.drag_moved = true;
+        }
+        self.slide.jump_to(progress);
+        self.base.request_redraw();
+    }
+
+    /// Releases an in-flight drag, committing to the nearer end.
+    fn end_drag(&mut self) {
+        if self.drag.take().is_none() {
+            return;
+        }
+        let open = self.slide.value() >= 0.5;
+        let was_open = self.open;
+        self.open = open;
+        self.slide.set_target(if open { 1.0 } else { 0.0 });
+        if open && !was_open {
+            self.opened.emit();
+        } else if !open && was_open {
+            self.base.closed.emit();
+            self.closed.emit();
+        }
+        self.base.request_redraw();
+    }
+
+    /// The panel's rectangle at the current slide, on the configured edge.
+    fn panel_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let width = self.panel_width.min(rect.width);
+        let x = match self.side {
+            DrawerSide::Start => rect.x,
+            DrawerSide::End => rect.x + rect.width as i32 - width as i32,
+        };
+        Rect::new(x, rect.y, width, rect.height)
     }
 }
 
@@ -359,14 +475,25 @@ impl Draw for NavigationDrawer {
         // the slide calls for. The old code branched on the boolean, so the panel was either absent
         // or complete and the closing animation would have had nothing to draw.
         let slide = self.slide.value();
-        let full_width = self.panel_width.min(rect.width);
+        let panel_band = self.panel_rect();
+        let full_width = panel_band.width.min(rect.width);
         let panel_width = (full_width as f32 * slide) as u32;
         if panel_width == 0 {
+            // The closed-state affordance is the painted edge stripe plus the edge strip that
+            // actually accepts the opening gesture. Its side follows the drawer's own side.
             let handle_width = full_width.max(1);
-            let handle_rect = Rect::new(rect.x, rect.y, handle_width, rect.height);
+            let handle_rect = Rect::new(panel_band.x, rect.y, handle_width, rect.height);
             context.fill_rect(handle_rect, panel.blend(&ink, 0.04));
-            // Leading edge stripe: the affordance that says "this opens".
-            context.fill_rect(Rect::new(rect.x, rect.y, 4.min(handle_width), rect.height), accent);
+            let stripe = match self.side {
+                DrawerSide::Start => Rect::new(rect.x, rect.y, 4.min(handle_width), rect.height),
+                DrawerSide::End => Rect::new(
+                    rect.x + rect.width as i32 - 4.min(handle_width) as i32,
+                    rect.y,
+                    4.min(handle_width),
+                    rect.height,
+                ),
+            };
+            context.fill_rect(stripe, accent);
             context.draw_rect_stroke(handle_rect, border, 1);
             return;
         }
@@ -392,9 +519,19 @@ impl Draw for NavigationDrawer {
             );
         }
 
-        // Draw side panel on the left, at the width the slide calls for.
-        let panel_rect = Rect::new(rect.x, rect.y, panel_width, rect.height);
+        // Draw the side panel on the configured edge, at the width the slide calls for.
+        let panel_rect = match self.side {
+            DrawerSide::Start => Rect::new(panel_band.x, rect.y, panel_width, rect.height),
+            DrawerSide::End => Rect::new(
+                panel_band.x + panel_band.width as i32 - panel_width as i32,
+                rect.y,
+                panel_width,
+                rect.height,
+            ),
+        };
         context.fill_rect(panel_rect, panel);
+        // Everything inside the panel is positioned from the panel's own origin.
+        let rect = panel_rect;
 
         // Draw a subtle right border on the panel
         context.draw_rect_stroke(panel_rect, border.with_alpha_f32(0.2), 1);
@@ -515,51 +652,115 @@ impl Draw for NavigationDrawer {
 
 impl EventHandler for NavigationDrawer {
     fn handle_event(&mut self, event: &Event) {
-        if !self.base.is_enabled() || !self.open {
+        if !self.base.is_enabled() {
             self.base.handle_event(event);
             return;
         }
 
+        let rect = self.geometry();
+        let panel_band = self.panel_rect();
+
+        // A closed drawer is reachable: the edge strip starts an opening drag, and a plain
+        // click on it opens the panel. Before this the handle was painted but could not be
+        // used, so a mouse-only user had no way to open the drawer at all.
+        if !self.open {
+            let edge = match self.side {
+                DrawerSide::Start => {
+                    Rect::new(rect.x, rect.y, DRAWER_EDGE_STRIP.min(rect.width), rect.height)
+                }
+                DrawerSide::End => Rect::new(
+                    rect.x + rect.width as i32 - DRAWER_EDGE_STRIP.min(rect.width) as i32,
+                    rect.y,
+                    DRAWER_EDGE_STRIP.min(rect.width),
+                    rect.height,
+                ),
+            };
+            match event {
+                Event::MousePress { pos, button, .. } if *button == 1 => {
+                    if edge.contains_point(*pos) {
+                        self.begin_drag(pos.x as f32);
+                    } else {
+                        self.base.handle_event(event);
+                    }
+                }
+                Event::MouseMove { pos } => self.drag_to(pos.x as f32),
+                Event::MouseRelease { pos, button } if *button == 1 => {
+                    if self.drag.is_some() {
+                        self.drag_to(pos.x as f32);
+                        // A tap on the handle (no meaningful travel) opens rather than snaps
+                        // back, which is what makes the closed affordance clickable.
+                        if self.slide.value() < 0.01 {
+                            self.slide.jump_to(1.0);
+                            self.open = true;
+                            self.opened.emit();
+                            self.base.request_redraw();
+                        } else {
+                            self.end_drag();
+                        }
+                    } else {
+                        self.base.handle_event(event);
+                    }
+                }
+                _ => self.base.handle_event(event),
+            }
+            return;
+        }
+
         match event {
-            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
-
-                let rect = self.geometry();
-                let panel_width = self.panel_width.min(rect.width);
-
-                // Check if click is on the overlay (outside the side panel)
-                if pos.x > rect.x + panel_width as i32 {
-                    if let Event::MouseRelease { .. } = event {
-                        self.close();
-                    }
+                // Record where the gesture began: only a gesture that starts on the scrim may
+                // dismiss on release. A drag from the panel that happens to end outside it is
+                // not a dismissal.
+                self.press_on_overlay =
+                    !panel_band.contains_point(*pos) && rect.contains_point(*pos);
+                self.begin_drag(pos.x as f32);
+            }
+            Event::MouseMove { pos } => {
+                self.drag_to(pos.x as f32);
+            }
+            Event::MouseRelease { pos, button } => {
+                if *button != 1 {
                     return;
                 }
+                if self.drag.is_some() {
+                    self.drag_to(pos.x as f32);
+                    let dragged = self.drag_moved;
+                    if self.press_on_overlay && !dragged {
+                        // A tap on the scrim is a dismissal, not a commit to the nearer end —
+                        // the panel is fully open, so "nearer" would leave it open forever.
+                        self.drag = None;
+                        self.press_on_overlay = false;
+                        self.close();
+                        return;
+                    }
+                    if dragged {
+                        self.end_drag();
+                        self.press_on_overlay = false;
+                        return;
+                    }
+                    self.press_on_overlay = false;
+                }
 
-                // Check if click is inside the panel on an item
+                // Item selection uses the panel's own band, so a right-side drawer selects at
+                // the coordinates it paints at rather than at the left edge.
                 let header_height: u32 = 60;
                 let item_height: u32 = 48;
-                let start_y = rect.y + header_height as i32;
-
-                // Exclusive far edge, matching `Rect::contains_point`. A `<=` here put
-                // the panel's boundary column inside it, so a click one pixel past the
-                // panel still selected an item.
-                if pos.x >= rect.x && pos.x < rect.x + panel_width as i32 {
+                let start_y = panel_band.y + header_height as i32;
+                if panel_band.contains_point(*pos) {
                     let relative_y = pos.y - start_y;
                     if relative_y >= 0 {
                         let item_index = (relative_y as u32) / item_height;
                         if (item_index as usize) < self.items.len() {
-                            if let Event::MouseRelease { .. } = event {
-                                self.set_selected_index(item_index as usize);
+                            self.set_selected_index(item_index as usize);
+                            if self.auto_close_on_select {
+                                self.close();
                             }
-                            return;
                         }
                     }
                 }
-
-                // Fall through to base handler for other events
-                self.base.handle_event(event);
             }
             _ => {
                 self.base.handle_event(event);
@@ -939,5 +1140,42 @@ mod tests {
         assert!(drawer.is_animating(), "closing is also a slide");
         while drawer.tick(60) {}
         assert_eq!(drawer.slide_progress(), 0.0, "back to closed");
+    }
+
+    #[test]
+    fn tapping_the_closed_handle_opens_the_drawer() {
+        let mut drawer = make_drawer();
+        assert!(!drawer.is_open());
+        drawer.handle_event(&Event::MousePress {
+            pos: Point::new(2, 200),
+            button: 1,
+            modifiers: 0,
+        });
+        drawer.handle_event(&Event::MouseRelease { pos: Point::new(2, 200), button: 1 });
+        assert!(drawer.is_open(), "the edge affordance must be usable, not decorative");
+    }
+
+    #[test]
+    fn selecting_a_destination_closes_a_modal_drawer() {
+        let mut drawer = make_drawer();
+        drawer.open();
+        while drawer.tick(60) {}
+        let y = 60 + 48 + 24;
+        drawer.handle_event(&Event::MousePress { pos: Point::new(20, y), button: 1, modifiers: 0 });
+        drawer.handle_event(&Event::MouseRelease { pos: Point::new(20, y), button: 1 });
+        assert_eq!(drawer.selected_index(), Some(1));
+        assert!(!drawer.is_open(), "a chosen destination dismisses the modal drawer");
+    }
+
+    #[test]
+    fn an_end_drawer_slides_in_from_the_trailing_edge() {
+        let mut drawer = make_drawer();
+        drawer.set_side(DrawerSide::End);
+        assert_eq!(drawer.side(), DrawerSide::End);
+        drawer.open();
+        while drawer.tick(60) {}
+        let svg = render_to_svg(&mut drawer);
+        assert!(svg.starts_with("<svg"));
+        assert!(drawer.panel_rect().x > 0, "the end drawer is not at the leading edge");
     }
 }

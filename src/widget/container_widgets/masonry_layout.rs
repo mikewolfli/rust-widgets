@@ -6,9 +6,10 @@
 //! Items are arranged in a vertical waterfall across a configurable number of
 //! columns. Each item is drawn as a filled rounded rectangle with a label.
 
-use crate::core::{Color, Font, HorizontalAlignment, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::signal::Signal1;
 use crate::widget::capability::coercion::expect_u32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -37,11 +38,20 @@ const ITEM_SPACING: u32 = 4;
 /// have concluded cards are rounded by 4 px. There is one radius and it belongs here.
 const CARD_CORNER_RADIUS: u32 = 6;
 
+/// A cached arrangement paired with the layout version that produced it.
+type CachedArrangement = Option<(u64, std::rc::Rc<Vec<(MasonryItem, Rect)>>)>;
+
 /// MasonryLayout widget — a Pinterest-style waterfall grid.
 pub struct MasonryLayout {
     base: BaseWidget,
     columns: u32,
     items: Vec<MasonryItem>,
+    /// Bumped by every input that changes the arrangement (items, columns, geometry).
+    layout_version: u64,
+    /// Cached arrangement and the version it was produced under.
+    cache: std::cell::RefCell<CachedArrangement>,
+    /// Emitted with the item index when a card is clicked.
+    pub item_clicked: Signal1<usize>,
 }
 
 impl MasonryLayout {
@@ -51,6 +61,9 @@ impl MasonryLayout {
             base: BaseWidget::new(WidgetKind::MasonryLayout, geometry, "MasonryLayout"),
             columns: 2,
             items: Vec::new(),
+            layout_version: 0,
+            cache: std::cell::RefCell::new(None),
+            item_clicked: Signal1::new(),
         }
     }
 
@@ -66,6 +79,7 @@ impl MasonryLayout {
             return;
         }
         self.columns = columns;
+        self.layout_version = self.layout_version.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -77,17 +91,43 @@ impl MasonryLayout {
     /// Adds an item to the masonry layout.
     pub fn add_item(&mut self, label: &str, height: u32, color: Color) {
         self.items.push(MasonryItem { label: label.to_string(), height, color });
+        self.layout_version = self.layout_version.wrapping_add(1);
         self.base.request_redraw();
     }
 
     /// Removes all items from the layout.
     pub fn clear_items(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
         self.items.clear();
+        self.layout_version = self.layout_version.wrapping_add(1);
         self.base.request_redraw();
     }
 
-    /// Calculate positions for all items (waterfall layout).
-    fn layout_items(&self) -> Vec<(MasonryItem, Rect)> {
+    /// The cached arrangement, recomputed only when an input changed.
+    ///
+    /// The draw path calls this every frame; `layout_items` used to walk the whole list
+    /// (and rebuild every `MasonryItem`) on each of those frames. The cache is keyed by a
+    /// version bumped by the three mutation entry points and by `set_geometry`.
+    fn layout_items_shared(&self) -> std::rc::Rc<Vec<(MasonryItem, Rect)>> {
+        if let Some((version, cached)) = self.cache.borrow().as_ref() {
+            if *version == self.layout_version {
+                return std::rc::Rc::clone(cached);
+            }
+        }
+        let layout = std::rc::Rc::new(self.compute_items());
+        *self.cache.borrow_mut() = Some((self.layout_version, std::rc::Rc::clone(&layout)));
+        layout
+    }
+
+    /// The item index under `point`, or `None` when the point misses every card.
+    pub fn item_at(&self, point: Point) -> Option<usize> {
+        let layout = self.layout_items_shared();
+        layout.iter().position(|(_, rect)| rect.contains_point(point))
+    }
+
+    fn compute_items(&self) -> Vec<(MasonryItem, Rect)> {
         if self.items.is_empty() {
             return Vec::new();
         }
@@ -124,6 +164,15 @@ impl MasonryLayout {
 
         result
     }
+
+    /// Calculate positions for all items (waterfall layout).
+    ///
+    /// Returns an owned copy for callers that need one; the draw and hit-test paths share
+    /// the cached `Rc` instead.
+    #[cfg(test)]
+    fn layout_items(&self) -> Vec<(MasonryItem, Rect)> {
+        (*self.layout_items_shared()).clone()
+    }
 }
 
 impl Widget for MasonryLayout {
@@ -135,6 +184,11 @@ impl Widget for MasonryLayout {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.layout_version = self.layout_version.wrapping_add(1);
     }
 
     fn size_hint(&self) -> crate::core::Size {
@@ -205,7 +259,7 @@ impl Draw for MasonryLayout {
         let ink = style.text_color.or(themed_text).unwrap_or_else(|| base.contrast_color());
         let container_bg = base.blend(&ink, 0.04);
 
-        let layout = self.layout_items();
+        let layout = self.layout_items_shared();
 
         // The panel is drawn first so an empty layout still shows where the control is
         // rather than being indistinguishable from the frame behind it.
@@ -223,7 +277,7 @@ impl Draw for MasonryLayout {
         // they would land on whatever is behind it (BLUE21 D12). The clip is the control's own
         // rectangle, and `layout_items` unchanged; only what is *painted* is bounded.
         context.push_clip(rect.x, rect.y, rect.width, rect.height);
-        for (_item, item_rect) in &layout {
+        for (_item, item_rect) in layout.iter() {
             // A card that starts below the visible area is dropped rather than clipped: the
             // clip already handles the partial case, and skipping the fully-hidden ones keeps a
             // long list from emitting drawing commands for pixels nobody can see.
@@ -276,6 +330,11 @@ impl Draw for MasonryLayout {
 impl EventHandler for MasonryLayout {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if let Event::MousePress { pos, button: 1, .. } = event {
+            if let Some(index) = self.item_at(*pos) {
+                self.item_clicked.emit(index);
+            }
+        }
     }
 }
 
@@ -350,6 +409,37 @@ mod tests {
         // Should not panic.
         ml.handle_event(&Event::MouseMove { pos: Point::new(50, 50) });
         ml.handle_event(&Event::KeyDown((65, 0)));
+    }
+
+    /// The cached arrangement is reusable, and a click names the card under the pointer.
+    #[test]
+    fn the_arrangement_is_cached_and_cards_are_clickable() {
+        let mut ml = MasonryLayout::new(Rect::new(0, 0, 300, 400));
+        ml.set_columns(1);
+        ml.add_item("A", 60, Color::RED);
+        ml.add_item("B", 80, Color::GREEN);
+        let first = ml.layout_items_shared();
+        let second = ml.layout_items_shared();
+        assert!(std::rc::Rc::ptr_eq(&first, &second), "a second frame reuses the cache");
+        let first_rect = first[0].1;
+        assert_eq!(ml.item_at(Point::new(first_rect.x + 1, first_rect.y + 1)), Some(0));
+        assert_eq!(ml.item_at(Point::new(299, 399)), None, "past the last card");
+
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        let sink = std::sync::Arc::clone(&seen);
+        ml.item_clicked.connect(move |index| {
+            sink.store(*index, std::sync::atomic::Ordering::SeqCst);
+        });
+        ml.handle_event(&Event::MousePress {
+            pos: Point::new(first_rect.x + 1, first_rect.y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        ml.add_item("C", 40, Color::BLUE);
+        let third = ml.layout_items_shared();
+        assert!(!std::rc::Rc::ptr_eq(&first, &third), "a mutation invalidates the cache");
     }
 
     /// A list taller than the control is painted inside it, not over whatever is behind it.

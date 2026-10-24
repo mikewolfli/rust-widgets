@@ -116,7 +116,13 @@ impl Widget for CodeEditor {
     }
 
     fn is_animating(&self) -> bool {
-        self.is_editable()
+        (self.is_editable() && self.focused)
+            || self.smooth_scroll_target.is_some()
+            || (self.config.fade_popups
+                && (self.completion.visible || self.context_menu.visible)
+                && self.popup_reveal < 1.0)
+            || (self.config.animate_folds && self.fold_reveal < 1.0)
+            || (self.config.animate_brackets && self.bracket_flash > 0.0)
     }
     /// Resolves a published event name to the control's own signal.
     ///
@@ -233,14 +239,78 @@ impl WidgetProperties for CodeEditor {
     /// assign state through the property route, so those are refused the same way
     /// — the names are right and the payload is what is missing.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        match name {
-            "undo" => {
-                if self.undo() {
-                    Ok(())
-                } else {
-                    Err(CapabilityAccessError::OutOfRange)
-                }
+        let handled = match name {
+            "undo" => self.undo(),
+            "redo" => self.redo(),
+            "copy" => self.copy(),
+            "cut" => self.cut(),
+            "paste" => self.paste(),
+            "select_all" => {
+                self.select_all();
+                true
             }
+            "find" => {
+                self.open_find(false);
+                true
+            }
+            "replace" => {
+                self.open_find(true);
+                true
+            }
+            "find_next" => self.find_next(false),
+            "find_previous" => self.find_next(true),
+            "toggle_comment" => {
+                self.toggle_line_comment();
+                true
+            }
+            "toggle_block_comment" => {
+                self.toggle_block_comment();
+                true
+            }
+            "duplicate_line" => {
+                self.duplicate_line();
+                true
+            }
+            "delete_line" => {
+                self.delete_line();
+                true
+            }
+            "indent" => {
+                self.indent_selection();
+                true
+            }
+            "outdent" => {
+                self.outdent_selection();
+                true
+            }
+            "sort_lines" => {
+                self.sort_lines();
+                true
+            }
+            "fold_all" => self.fold_all() > 0,
+            "unfold_all" => {
+                self.unfold_all();
+                true
+            }
+            "complete" => self.trigger_completion() > 0,
+            "close_find" => {
+                self.close_find();
+                true
+            }
+            _ => return self.command_with_payload(name),
+        };
+        if handled {
+            Ok(())
+        } else {
+            Err(CapabilityAccessError::OutOfRange)
+        }
+    }
+}
+
+impl CodeEditor {
+    /// Answers the commands that take their value through the property route.
+    fn command_with_payload(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
             "append_line" | "set_text" | "set_markers" | "set_cursor" => {
                 Err(CapabilityAccessError::OutOfRange)
             }

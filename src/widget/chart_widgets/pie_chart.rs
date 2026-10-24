@@ -10,6 +10,7 @@
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::signal::Signal1;
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -55,6 +56,18 @@ pub struct PieChart {
     show_percentages: bool,
     donut: bool,
     donut_ratio: f32,
+    /// The slice under the pointer.
+    hovered_slice: Option<usize>,
+    /// Whether hovering a slice pulls it out of the ring.
+    explode_on_hover: bool,
+    /// Per-slice explosion progress, in `0.0..=1.0`, advanced by [`Widget::tick`].
+    explode_progress: Vec<f32>,
+    /// Emitted with the slice index when hover enters a slice.
+    pub slice_hovered: Signal1<usize>,
+    /// Emitted with the slice index when hover leaves it.
+    pub slice_unhovered: Signal1<usize>,
+    /// Emitted with the slice index of a clicked slice.
+    pub slice_clicked: Signal1<usize>,
 }
 
 impl PieChart {
@@ -69,18 +82,27 @@ impl PieChart {
             show_percentages: true,
             donut: false,
             donut_ratio: 0.0,
+            hovered_slice: None,
+            explode_on_hover: false,
+            explode_progress: Vec::new(),
+            slice_hovered: Signal1::new(),
+            slice_unhovered: Signal1::new(),
+            slice_clicked: Signal1::new(),
         }
     }
 
     /// Sets the slices to display. Clears any previous slices.
     pub fn set_slices(&mut self, entries: Vec<PieSlice>) {
         self.slices = entries;
+        self.sync_explode_progress();
+        self.revalidate_hover();
         self.base.request_redraw();
     }
 
     /// Adds a single slice to the chart.
     pub fn add_slice(&mut self, slice: PieSlice) {
         self.slices.push(slice);
+        self.sync_explode_progress();
         self.base.request_redraw();
     }
 
@@ -89,6 +111,8 @@ impl PieChart {
     pub fn remove_slice(&mut self, index: usize) -> bool {
         if index < self.slices.len() {
             self.slices.remove(index);
+            self.sync_explode_progress();
+            self.revalidate_hover();
             self.base.request_redraw();
             true
         } else {
@@ -99,7 +123,86 @@ impl PieChart {
     /// Removes all slices from the chart.
     pub fn clear_slices(&mut self) {
         self.slices.clear();
+        self.explode_progress.clear();
+        self.revalidate_hover();
         self.base.request_redraw();
+    }
+
+    /// Enables pulling the hovered slice out of the ring.
+    pub fn set_explode_on_hover(&mut self, explode: bool) {
+        if self.explode_on_hover == explode {
+            return;
+        }
+        self.explode_on_hover = explode;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether hovering a slice pulls it out.
+    pub fn explode_on_hover(&self) -> bool {
+        self.explode_on_hover
+    }
+
+    /// The slice under the pointer, if any.
+    pub fn hovered_slice(&self) -> Option<usize> {
+        self.hovered_slice
+    }
+
+    /// Keeps the per-slice animation table the same length as the slice list.
+    fn sync_explode_progress(&mut self) {
+        self.explode_progress.resize(self.slices.len(), 0.0);
+    }
+
+    /// Drops a hover index the slice list no longer has.
+    fn revalidate_hover(&mut self) {
+        if self.hovered_slice.is_some_and(|index| index >= self.slices.len()) {
+            if let Some(index) = self.hovered_slice.take() {
+                self.slice_unhovered.emit(index);
+            }
+        }
+    }
+
+    /// The explosion distance for slice `index`, in logical pixels.
+    fn explode_offset_for(&self, index: usize) -> f32 {
+        let armed = self.slices.get(index).is_some_and(|slice| slice.exploded)
+            || (self.explode_on_hover && self.hovered_slice == Some(index));
+        let target = if armed { 1.0 } else { 0.0 };
+        let progress = self.explode_progress.get(index).copied().unwrap_or(target);
+        progress * 6.0
+    }
+
+    /// Maps a pointer position to the slice under it.
+    fn slice_at(&self, pos: Point) -> Option<usize> {
+        let center = self.center()?;
+        let dx = f64::from(pos.x - center.x);
+        let dy = f64::from(pos.y - center.y);
+        let distance = (dx * dx + dy * dy).sqrt() as f32;
+        let outer = self.outer_radius();
+        let inner = if self.donut { outer * self.donut_ratio } else { 0.0 };
+        if distance > outer || distance < inner {
+            return None;
+        }
+        let total = self.total_value();
+        if total <= 0.0 {
+            return None;
+        }
+        // atan2 measures from 3 o'clock; the first slice starts at 12 o'clock and the
+        // sweep runs clockwise, which is the same direction `atan2` grows in screen space.
+        let mut angle = dy.atan2(dx) as f32 + std::f32::consts::FRAC_PI_2;
+        if angle < 0.0 {
+            angle += std::f32::consts::TAU;
+        }
+        let mut cursor = 0.0f32;
+        for (index, slice) in self.slices.iter().enumerate() {
+            if slice.value <= 0.0 || !slice.value.is_finite() {
+                continue;
+            }
+            let sweep = (slice.value / total * f64::from(std::f32::consts::TAU)) as f32;
+            if angle >= cursor && angle < cursor + sweep {
+                return Some(index);
+            }
+            cursor += sweep;
+        }
+        self.slices.len().checked_sub(1)
     }
 
     /// Returns the number of slices.
@@ -450,6 +553,49 @@ impl Widget for PieChart {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(300, 300)
     }
+
+    /// Advances the per-slice explosion animation.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.sync_explode_progress();
+        let step = (delta_ms as f32 / 150.0).clamp(0.0, 1.0);
+        let mut moving = false;
+        for index in 0..self.explode_progress.len() {
+            let target = if self.slices.get(index).is_some_and(|slice| slice.exploded)
+                || (self.explode_on_hover && self.hovered_slice == Some(index))
+            {
+                1.0
+            } else {
+                0.0
+            };
+            let current = self.explode_progress[index];
+            if (current - target).abs() > f32::EPSILON {
+                let next = if current < target {
+                    (current + step).min(target)
+                } else {
+                    (current - step).max(target)
+                };
+                self.explode_progress[index] = next;
+                moving = true;
+            }
+        }
+        if moving {
+            self.base.request_redraw();
+        }
+        moving
+    }
+
+    /// Whether any slice is still exploding or collapsing.
+    fn is_animating(&self) -> bool {
+        let armed = |index: usize| {
+            self.slices.get(index).is_some_and(|slice| slice.exploded)
+                || (self.explode_on_hover && self.hovered_slice == Some(index))
+        };
+        (0..self.explode_progress.len()).any(|index| {
+            (self.explode_progress[index] - if armed(index) { 1.0 } else { 0.0 }).abs()
+                > f32::EPSILON
+        })
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -523,7 +669,7 @@ impl Draw for PieChart {
                                                             // One reused buffer for the percentage labels: `format!` built a fresh `String` per sector
                                                             // per frame, and the text is at most four characters.
         let mut pct_text = crate::compat::String::new();
-        for slice in &self.slices {
+        for (slice_index, slice) in self.slices.iter().enumerate() {
             if slice.value <= 0.0 || !slice.value.is_finite() {
                 continue;
             }
@@ -533,8 +679,9 @@ impl Draw for PieChart {
             let slice_color =
                 if is_enabled { slice.color } else { Color::rgba(200, 200, 200, 200) };
 
-            // Exploded slice: shift the sector outward
-            let explode_offset = if slice.exploded { 6.0 } else { 0.0 };
+            // Exploded slice: shift the sector outward. The distance animates, so a hover
+            // pull-out grows over the next few frames instead of popping.
+            let explode_offset = self.explode_offset_for(slice_index);
             let mid_angle = start_angle + sweep * 0.5;
             let offset_x = (explode_offset * mid_angle.cos()) as i32;
             let offset_y = (explode_offset * mid_angle.sin()) as i32;
@@ -661,6 +808,40 @@ impl Draw for PieChart {
 impl EventHandler for PieChart {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MouseMove { pos } => {
+                let next = self.slice_at(*pos);
+                if next != self.hovered_slice {
+                    if let Some(index) = self.hovered_slice {
+                        self.slice_unhovered.emit(index);
+                    }
+                    self.hovered_slice = next;
+                    if let Some(index) = next {
+                        self.slice_hovered.emit(index);
+                    }
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if let Some(index) = self.hovered_slice.take() {
+                    self.slice_unhovered.emit(index);
+                    self.base.request_redraw();
+                }
+            }
+            Event::MousePress { pos, button, .. } if *button == 1 => {
+                self.base.set_mouse_pressed(true);
+                if let Some(index) = self.slice_at(*pos) {
+                    self.slice_clicked.emit(index);
+                }
+            }
+            Event::MouseRelease { button, .. } if *button == 1 => {
+                self.base.set_mouse_pressed(false);
+            }
+            _ => { /* Other events are not relevant */ }
+        }
     }
 }
 
@@ -827,5 +1008,50 @@ mod tests {
         pc.add_slice(PieSlice::new("NaN", f64::NAN, Color::GREEN));
         let svg = render_to_svg(&mut pc);
         assert!(svg.starts_with("<svg"));
+    }
+
+    /// The slice under the pointer is identified from the angle and radius.
+    #[test]
+    fn a_pointer_position_maps_to_its_slice() {
+        let mut pc = PieChart::new(Rect::new(0, 0, 200, 200));
+        pc.set_slices(vec![
+            PieSlice::new("A", 50.0, Color::RED),
+            PieSlice::new("B", 50.0, Color::BLUE),
+        ]);
+        let center = pc.center().unwrap();
+        // The first half starts at 12 o'clock and sweeps clockwise, so the point to the
+        // right of the centre belongs to slice A and the point to the left to slice B.
+        assert_eq!(pc.slice_at(Point::new(center.x + 60, center.y)), Some(0));
+        assert_eq!(pc.slice_at(Point::new(center.x - 60, center.y)), Some(1));
+        assert_eq!(pc.slice_at(Point::new(0, 0)), None, "the corner is outside the disc");
+    }
+
+    /// Hover and click publish the slice index; hover is cleared on leave.
+    #[test]
+    fn hover_and_click_emit_slice_signals() {
+        use std::sync::{Arc, Mutex};
+        let mut pc = PieChart::new(Rect::new(0, 0, 200, 200));
+        pc.set_slices(vec![
+            PieSlice::new("A", 50.0, Color::RED),
+            PieSlice::new("B", 50.0, Color::BLUE),
+        ]);
+        let center = pc.center().unwrap();
+        let hovered = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let clicked = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&hovered);
+        pc.slice_hovered.connect(move |index| sink.lock().unwrap().push(*index));
+        let sink = Arc::clone(&clicked);
+        pc.slice_clicked.connect(move |index| sink.lock().unwrap().push(*index));
+        pc.handle_event(&Event::MouseMove { pos: Point::new(center.x + 60, center.y) });
+        assert_eq!(pc.hovered_slice(), Some(0));
+        pc.handle_event(&Event::MousePress {
+            pos: Point::new(center.x - 60, center.y),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(*hovered.lock().unwrap(), vec![0]);
+        assert_eq!(*clicked.lock().unwrap(), vec![1]);
+        pc.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert_eq!(pc.hovered_slice(), None);
     }
 }

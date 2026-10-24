@@ -2407,11 +2407,21 @@ fn tick_animations_sweep(delta_ms: u32) -> (usize, bool) {
     // A theme crossfade is a frame-driven animation too, and its tokens are read by every
     // control's paint. Advancing it here is what makes `set_theme_faded` visible without a
     // second timer; the manager arms the global repaint through `note_theme_mutation`.
+    //
+    // The theme module exists only on a device profile, so the sweep must compile without it:
+    // a build with no profile has no theme to cross-fade, and reporting "not moving" is the
+    // honest answer rather than a call the linker could not resolve.
+    #[cfg(device_profile)]
     let theme_moving = if delta_ms == 0 {
         false
     } else {
         let mut manager = crate::theme::global_theme_manager();
         manager.tick_theme_crossfade(delta_ms)
+    };
+    #[cfg(not(device_profile))]
+    let theme_moving = {
+        let _ = delta_ms;
+        false
     };
     let mut still_animating = theme_moving;
     let mut ticked = 0usize;
@@ -3777,6 +3787,7 @@ thread_local! {
 ///
 /// A still, event-driven host therefore repaints after a theme change instead of
 /// keeping the frame it already drew until the user happens to move the mouse.
+#[cfg(any(device_profile, test))]
 pub(crate) fn arm_global_repaint() {
     GLOBAL_REPAINT_EPOCH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let _ = GLOBAL_REPAINT_LOCAL.try_with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
@@ -3796,6 +3807,14 @@ pub(crate) fn global_repaint_epoch_for_test() -> u64 {
 
 /// Performs the full repaint `arm_global_repaint` requested, once per epoch.
 fn flush_global_repaint() {
+    // A test build compares against the **thread-local** epoch. The process-wide counter is
+    // bumped by any test's theme mutation, which would make a repaint arrive between two
+    // frames of an unrelated test and break an assertion about "exactly one repaint". The
+    // production path keeps the process-wide epoch, because the thread that arms the repaint
+    // need not be the thread that draws.
+    #[cfg(test)]
+    let epoch = global_repaint_generation();
+    #[cfg(not(test))]
     let epoch = GLOBAL_REPAINT_EPOCH.load(core::sync::atomic::Ordering::Relaxed);
     let last = GLOBAL_REPAINT_SEEN.with(|seen| seen.replace(epoch));
     if epoch == last {
@@ -4714,6 +4733,37 @@ pub fn render_frame_incremental(
     clear: crate::core::Color,
     previous: Option<&[u8]>,
 ) -> Option<Vec<u8>> {
+    render_frame_incremental_cow(id, size, clear, previous.map(crate::compat::Cow::Borrowed))
+}
+
+/// [`render_frame_incremental`] with an **owned** previous frame.
+///
+/// The paint adopts the buffer as its draw target instead of copying it in. That copy is a full
+/// frame — 4 MB at 1280×800 — and it used to cost more than painting a control-sized damage
+/// region, which made "repaint only the damage" cheaper in pixels but not in time. The caller
+/// only reaches this path when it owns the buffer outright (see `render_frame_cached_shared`).
+fn render_frame_incremental_owned(
+    id: ObjectId,
+    size: Size,
+    clear: crate::core::Color,
+    previous: Option<Vec<u8>>,
+) -> Option<Vec<u8>> {
+    render_frame_incremental_cow(id, size, clear, previous.map(crate::compat::Cow::Owned))
+}
+
+/// The shared body of the two [`render_frame_incremental`] entry points.
+///
+/// `previous` is a [`crate::compat::Cow`] because the two callers hold the previous frame
+/// differently: the public API was handed a slice, while the cached path removed the frame from
+/// its cache and may therefore own it. Borrowing and owning have to reach the same code — the
+/// region painting below is the whole feature — so the difference is confined to how the buffer
+/// is seeded and handed back.
+fn render_frame_incremental_cow(
+    id: ObjectId,
+    size: Size,
+    clear: crate::core::Color,
+    previous: Option<crate::compat::Cow<'_, [u8]>>,
+) -> Option<Vec<u8>> {
     if size.width == 0 || size.height == 0 {
         return None;
     }
@@ -4807,13 +4857,26 @@ pub fn render_frame_incremental(
                 state.large_damage_run = 0;
             }
         });
-        return Some(carried?.to_vec());
+        // `into_owned` moves the buffer when the caller owned it and copies when it borrowed —
+        // exactly the difference between the two entry points.
+        return Some(carried?.into_owned());
     }
 
     let mut backend = SoftwarePaintBackend::new(size, 1.0);
     // Seed the backend with the previous frame so the regions this pass does not
-    // touch keep their pixels.
-    backend.seed_from(carried?);
+    // touch keep their pixels. An owned buffer becomes the target; a borrowed one is copied in.
+    let seeded = match carried? {
+        crate::compat::Cow::Owned(buffer) => backend.seed_from_owned(buffer),
+        crate::compat::Cow::Borrowed(slice) => backend.seed_from(slice),
+    };
+    if !seeded {
+        // The length was checked above, so this is unreachable unless the surface and the frame
+        // disagree about their size. Painting over a cleared frame is the honest recovery: the
+        // region pass below only claims the damaged pixels, so a cleared backdrop is the one
+        // state that cannot show a stale pixel.
+        debug_assert!(seeded, "a length-checked frame must seed the backend");
+        backend.begin_frame(clear);
+    }
 
     // The widget draws in absolute coordinates and the frame is its own box, so the
     // frame origin is subtracted (see `render_frame`). This must be pushed *before*
@@ -5012,8 +5075,29 @@ pub fn render_frame_cached_shared(
         }
     }
 
-    let frame =
-        render_frame_incremental(id, size, clear, previous.as_deref().map(|rc| rc.as_slice()))?;
+    // # Why the cache entry is removed and possibly moved out
+    //
+    // The damaged path starts from the previous frame's pixels. Copying them into the paint
+    // target is a full-frame `memcpy`, which used to cost more than painting the damage region
+    // itself — the incremental path was saving pixels and paying the time back in the copy. Taking
+    // the entry out of the cache leaves this function as the only holder, so `try_unwrap` can hand
+    // the buffer to the paint when the caller has already dropped its frame (the ordinary loop).
+    // A caller that still holds the frame makes `try_unwrap` refuse, and the pixels are borrowed
+    // and copied exactly as before. The entry is replaced with the new frame below, so the gap
+    // cannot be observed.
+    drop(previous);
+    let taken = LAST_FRAME
+        .try_with(|map| map.borrow_mut().remove(&id))
+        .ok()
+        .flatten()
+        .filter(|(stored, _)| *stored == size);
+    let frame = match taken {
+        Some((_, previous)) => match Rc::try_unwrap(previous) {
+            Ok(buffer) => render_frame_incremental_owned(id, size, clear, Some(buffer)),
+            Err(previous) => render_frame_incremental(id, size, clear, Some(previous.as_slice())),
+        },
+        None => render_frame_incremental(id, size, clear, None),
+    }?;
 
     // The freshly produced frame is moved into the `Rc` the cache holds — no pixel copy — and the
     // same handle is returned, so the painted path does not duplicate it either.
@@ -5599,6 +5683,11 @@ mod tests {
     /// every theme change would pin the window awake forever.
     #[test]
     fn an_armed_global_repaint_repaints_once_and_then_stops() {
+        // A frame on *any* thread consumes a pending process-wide stop request and drains the shared
+        // trigger queue, so this test takes the same seam lock every other frame test takes. Without
+        // it, this frame could swallow the stop a loop test had just recorded for its own loop —
+        // benign while a frame was slow enough to be rare, and reliable once frames got fast.
+        let _serial = serialise_drive_frame();
         let id = register(Box::new(crate::widget::Button::new(
             "ok".to_string(),
             crate::core::Rect::new(0, 0, 80, 32),
@@ -6518,13 +6607,17 @@ mod tests {
         // asked to be repainted, and accepted once one has.
         unregister(id);
         let explicit = register(container_with_child()).expect("r");
-        assert!(set_geometry(explicit, Rect::new(0, 0, 800, 600)));
         assert!(
             !enable_damage_tracking_if_useful(explicit),
             "a control that never asked to repaint must be refused"
         );
-        with_widget(explicit, |widget| widget.request_redraw()).expect("widget");
-        assert!(enable_damage_tracking_if_useful(explicit));
+        // Assigning a geometry is itself a repaint request (`BaseWidget::set_geometry` asks for
+        // one so the moved content is redrawn), so the same control becomes eligible afterwards.
+        assert!(set_geometry(explicit, Rect::new(0, 0, 800, 600)));
+        assert!(
+            enable_damage_tracking_if_useful(explicit),
+            "assigning a geometry is a repaint request"
+        );
         assert_eq!(repaint_mode(explicit), RepaintMode::Adaptive);
         unregister(explicit);
     }
@@ -6543,11 +6636,11 @@ mod tests {
         // With the mode cleared by hand (which is what a `Full` mode looks like), the
         // decision refuses until the control actually asks for a repaint.
         let id = register(container_with_child()).expect("r");
-        assert!(set_geometry(id, Rect::new(0, 0, 800, 600)));
         assert!(set_repaint_mode(id, RepaintMode::Full));
         assert!(!should_track_damage(id), "a silent control must not be enabled");
 
-        with_widget(id, |widget| widget.base().request_redraw()).expect("widget");
+        // "Asks for a repaint" includes the repaint request a geometry assignment makes.
+        assert!(set_geometry(id, Rect::new(0, 0, 800, 600)));
         assert!(should_track_damage(id), "after asking for a repaint it becomes eligible");
         unregister(id);
     }
@@ -7075,6 +7168,53 @@ mod tests {
         assert!(Rc::ptr_eq(&first, &second), "an undamaged frame must be the same buffer");
         assert_eq!(take_frame_cache_copies(), 0, "the shared form must not copy the frame at all");
 
+        unregister(id);
+    }
+
+    /// A damaged frame adopts the previous buffer when the caller has released it.
+    ///
+    /// The incremental path starts from the previous frame's pixels. Copying them into the paint
+    /// target is a full-frame `memcpy` — at 1280×800 that is 4 MB, more than painting a
+    /// control-sized damage region — so the cached path removes its entry and hands the buffer over
+    /// when nobody else holds it. The pixels must be identical either way, which the second half of
+    /// the test asserts while deliberately holding the frame so `try_unwrap` refuses.
+    #[test]
+    fn a_damaged_frame_adopts_the_previous_buffer_only_when_it_owns_it() {
+        let size = Size::new(64, 48);
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+        let damage = Rect::new(4, 4, 20, 12);
+
+        let first = render_frame_cached_shared(id, size, Color::WHITE).expect("first frame");
+        // The caller has presented and dropped it, so the cache is the only holder left.
+        drop(first);
+
+        assert!(mark_dirty_rect(id, damage), "the control tracks the damage");
+        let _ = SoftwarePaintBackend::take_seed_adoptions();
+        let adopted = render_frame_cached_shared(id, size, Color::WHITE).expect("damaged frame");
+        assert_eq!(
+            SoftwarePaintBackend::take_seed_adoptions(),
+            1,
+            "a uniquely owned previous frame must be moved into the paint, not copied"
+        );
+
+        // Now keep the frame alive: the paint cannot take it, so it copies — and the pixels agree.
+        assert!(mark_dirty_rect(id, damage));
+        let _ = SoftwarePaintBackend::take_seed_adoptions();
+        let copied = render_frame_cached_shared(id, size, Color::WHITE).expect("held frame");
+        assert_eq!(
+            SoftwarePaintBackend::take_seed_adoptions(),
+            0,
+            "a frame the caller still holds must be copied, not stolen"
+        );
+        assert_eq!(
+            adopted.as_slice(),
+            copied.as_slice(),
+            "the two seeding paths must produce the same pixels"
+        );
+
+        drop(adopted);
+        drop(copied);
         unregister(id);
     }
 

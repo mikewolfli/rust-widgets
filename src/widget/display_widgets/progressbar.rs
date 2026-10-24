@@ -27,6 +27,20 @@ pub struct ProgressBar {
     maximum: i32,
     value: i32,
     text_visible: bool,
+    /// The label's format string. `{}` is replaced by the rounded percentage.
+    ///
+    /// Only the **first** placeholder is substituted; any later `{}` is literal text, so a
+    /// caller can print a template without the value being repeated into every slot. The
+    /// default is `"{}%"`, which is byte-identical to the label this control drew before the
+    /// format existed.
+    format: String,
+    /// The label shown when `minimum == maximum`.
+    ///
+    /// A zero-width range means the amount of work cannot be expressed as a percentage, so the
+    /// bar shows a word instead of a fabricated number. This is a **label convention only**: it
+    /// does not switch the control into the indeterminate sweep, and the fill geometry, the
+    /// value, and [`ProgressBar::is_indeterminate`] are all unchanged.
+    busy_text: String,
     orientation: Orientation,
     inverted_appearance: bool,
     /// The writing direction the value axis runs in.
@@ -76,6 +90,8 @@ impl ProgressBar {
             maximum: 100,
             value: 0,
             text_visible: true,
+            format: "{}%".to_string(),
+            busy_text: "Busy".to_string(),
             orientation: Orientation::Horizontal,
             inverted_appearance: false,
             direction: crate::core::TextDirection::default(),
@@ -92,11 +108,17 @@ impl ProgressBar {
     }
     /// Sets minimum value.
     pub fn set_minimum(&mut self, minimum: i32) {
+        if self.minimum == minimum {
+            return;
+        }
         self.minimum = minimum;
         if self.maximum < self.minimum {
             self.maximum = self.minimum;
         }
         self.set_value(self.value); // Re-clamp
+                                    // The fill's proportion and the busy label both depend on the range, so a range change
+                                    // is paint-worthy even when the value itself did not need re-clamping.
+        self.base.request_redraw();
     }
     /// Returns maximum value.
     pub fn maximum(&self) -> i32 {
@@ -104,20 +126,31 @@ impl ProgressBar {
     }
     /// Sets maximum value.
     pub fn set_maximum(&mut self, maximum: i32) {
+        if self.maximum == maximum {
+            return;
+        }
         self.maximum = maximum;
         if self.minimum > self.maximum {
             self.minimum = self.maximum;
         }
         self.set_value(self.value); // Re-clamp
+                                    // See `set_minimum`: the range is part of the painted state.
+        self.base.request_redraw();
     }
     /// Sets both minimum and maximum in one call.
     /// This is a convenience writer; query bounds via `minimum()` and `maximum()`.
     ///
     /// Not gated by `enabled` for the same reason as [`ProgressBar::set_value`].
     pub fn set_range(&mut self, minimum: i32, maximum: i32) {
+        let maximum = maximum.max(minimum);
+        if self.minimum == minimum && self.maximum == maximum {
+            return;
+        }
         self.minimum = minimum;
-        self.maximum = maximum.max(minimum);
+        self.maximum = maximum;
         self.set_value(self.value); // Re-clamp
+                                    // See `set_minimum`: the range is part of the painted state.
+        self.base.request_redraw();
     }
     /// Returns current value.
     pub fn value(&self) -> i32 {
@@ -154,6 +187,45 @@ impl ProgressBar {
         self.text_visible = visible;
         self.base.request_redraw();
     }
+    /// Returns the label's format string.
+    ///
+    /// See [`ProgressBar::set_format`] for the supported placeholder convention.
+    pub fn format(&self) -> &str {
+        &self.format
+    }
+
+    /// Sets the label's format string and repaints.
+    ///
+    /// The first `{}` in the string is replaced by the rounded percentage; the rest of the
+    /// string, including any further `{}` occurrences, is emitted unchanged. The default is
+    /// `"{}%"`, so an untouched bar keeps its existing label exactly.
+    pub fn set_format(&mut self, format: impl Into<String>) {
+        let format = format.into();
+        if self.format == format {
+            return;
+        }
+        self.format = format;
+        self.base.request_redraw();
+    }
+
+    /// Returns the label shown when `minimum == maximum`.
+    pub fn busy_text(&self) -> &str {
+        &self.busy_text
+    }
+
+    /// Sets the label shown when `minimum == maximum`, and repaints.
+    ///
+    /// The zero-width range is a label convention, not a mode switch: the bar stays
+    /// determinate and its fill geometry is unchanged. The default is `"Busy"`.
+    pub fn set_busy_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.busy_text == text {
+            return;
+        }
+        self.busy_text = text;
+        self.base.request_redraw();
+    }
+
     /// Returns orientation.
     pub fn orientation(&self) -> Orientation {
         self.orientation
@@ -370,8 +442,36 @@ impl ProgressBar {
         if self.indeterminate {
             return;
         }
+        // A zero-width range has no meaningful percentage. Showing the caller's busy text is a
+        // label decision only; the fill geometry and the indeterminate flag are untouched.
+        if self.minimum == self.maximum {
+            out.push_str(&self.busy_text);
+            return;
+        }
         let percentage = self.progress() * 100.0;
-        let _ = write!(out, "{}%", percentage.round() as i32);
+        self.write_formatted_value(out, percentage.round() as i32);
+    }
+
+    /// Writes `value` into `out` using the format string, replacing only the first `{}`.
+    ///
+    /// Written by hand rather than through `format!` because the format string is runtime
+    /// data, not a literal: a caller-supplied template cannot be handed to the macro. Any
+    /// placeholder after the first is preserved verbatim, which is what makes a template such
+    /// as `"{} of {} tasks"` print one value rather than inventing a second.
+    fn write_formatted_value(&self, out: &mut String, value: i32) {
+        let mut rest = self.format.as_str();
+        let mut substituted = false;
+        while let Some(index) = rest.find("{}") {
+            out.push_str(&rest[..index]);
+            if substituted {
+                out.push_str("{}");
+            } else {
+                let _ = write!(out, "{}", value);
+                substituted = true;
+            }
+            rest = &rest[index + 2..];
+        }
+        out.push_str(rest);
     }
 
     /// The display text; see [`Self::write_text`].
@@ -817,6 +917,46 @@ mod tests {
         assert!(pb.is_inverted_appearance());
         pb.set_inverted_appearance(false);
         assert!(!pb.is_inverted_appearance());
+    }
+
+    /// Only the first placeholder is substituted, and the default format is unchanged.
+    #[test]
+    fn the_format_string_replaces_only_the_first_placeholder() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        pb.set_value(50);
+
+        assert_eq!(pb.format(), "{}%", "the default keeps the existing label");
+        assert_eq!(pb.format_text(), "50%", "the default label is byte-identical");
+
+        pb.set_format("{} of {}");
+        assert_eq!(pb.format(), "{} of {}");
+        assert_eq!(
+            pb.format_text(),
+            "50 of {}",
+            "only the first placeholder takes the value; the second stays literal"
+        );
+
+        pb.set_format("done {}%");
+        assert_eq!(pb.format_text(), "done 50%");
+    }
+
+    /// A zero-width range shows the busy label without becoming an indeterminate bar.
+    #[test]
+    fn a_zero_span_bar_shows_its_busy_label() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        pb.set_range(7, 7);
+
+        assert_eq!(pb.busy_text(), "Busy");
+        assert_eq!(pb.format_text(), "Busy", "a zero-width range has no percentage to show");
+
+        pb.set_busy_text("Working");
+        assert_eq!(pb.busy_text(), "Working");
+        assert_eq!(pb.format_text(), "Working");
+
+        // The label convention must not change the control's mode or its animation contract.
+        assert!(!pb.is_indeterminate(), "busy text is not the indeterminate sweep");
+        assert!(pb.indeterminate_band().is_none());
+        assert!(!pb.tick(16), "a zero-width determinate bar owes no frames");
     }
 
     #[test]

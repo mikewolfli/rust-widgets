@@ -240,10 +240,55 @@ impl FilterCondition {
         Self { column, operator, operand: operand.into() }
     }
 
-    /// Evaluates this condition against one row.
-    fn accepts(&self, row: &[Option<String>]) -> bool {
+    /// Evaluates this condition against one row with an explicit case policy.
+    fn accepts_with(&self, row: &[Option<String>], case_sensitive: bool) -> bool {
         let cell = row.get(self.column).and_then(|cell| cell.as_deref());
-        self.operator.accepts(cell, &self.operand)
+        if !case_sensitive {
+            return self.operator.accepts(cell, &self.operand);
+        }
+        let Some(cell) = cell else {
+            return self.operator == FilterOperator::NotContains;
+        };
+        if cell.is_empty() {
+            return self.operator == FilterOperator::NotContains;
+        }
+        match self.operator {
+            FilterOperator::Contains => cell.contains(&self.operand),
+            FilterOperator::Equals => cell == self.operand,
+            FilterOperator::StartsWith => cell.starts_with(&self.operand),
+            FilterOperator::EndsWith => cell.ends_with(&self.operand),
+            FilterOperator::NotContains => !cell.contains(&self.operand),
+            numeric => numeric.accepts(Some(cell), &self.operand),
+        }
+    }
+}
+
+/// A precomputed match bitmap for a filter over a fixed row set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterIndex {
+    bits: Vec<bool>,
+    case_sensitive: bool,
+}
+
+impl FilterIndex {
+    /// Whether row `index` matches. Out-of-range rows do not match.
+    pub fn accepts(&self, index: usize) -> bool {
+        self.bits.get(index).copied().unwrap_or(false)
+    }
+
+    /// The number of matching rows.
+    pub fn match_count(&self) -> usize {
+        self.bits.iter().filter(|bit| **bit).count()
+    }
+
+    /// Whether the index was built with the case-sensitive policy.
+    pub fn is_case_sensitive(&self) -> bool {
+        self.case_sensitive
+    }
+
+    /// The row indices that match, in ascending order.
+    pub fn matching_rows(&self) -> Vec<usize> {
+        self.bits.iter().enumerate().filter_map(|(index, bit)| bit.then_some(index)).collect()
     }
 }
 
@@ -350,13 +395,50 @@ impl FilterExpr {
     /// A row is a slice of optional cell strings, which is the shape
     /// `DataGrid::apply_filter_sort` already works with.
     pub fn accepts(&self, row: &[Option<String>]) -> bool {
+        self.accepts_with(row, false)
+    }
+
+    /// Evaluates the tree with an explicit case policy.
+    ///
+    /// `case_sensitive` affects only the textual operators; numeric comparisons are
+    /// unaffected. The default ([`Self::accepts`]) is case-insensitive, which is what the
+    /// grid has always done.
+    pub fn accepts_with(&self, row: &[Option<String>], case_sensitive: bool) -> bool {
         match self {
-            FilterExpr::Predicate(condition) => condition.accepts(row),
-            FilterExpr::And(children) => children.iter().all(|child| child.accepts(row)),
-            FilterExpr::Or(children) => children.iter().any(|child| child.accepts(row)),
-            FilterExpr::Not(inner) => !inner.accepts(row),
+            FilterExpr::Predicate(condition) => condition.accepts_with(row, case_sensitive),
+            FilterExpr::And(children) => {
+                children.iter().all(|child| child.accepts_with(row, case_sensitive))
+            }
+            FilterExpr::Or(children) => {
+                children.iter().any(|child| child.accepts_with(row, case_sensitive))
+            }
+            FilterExpr::Not(inner) => !inner.accepts_with(row, case_sensitive),
             FilterExpr::MatchAll => true,
             FilterExpr::MatchNothing => false,
+        }
+    }
+
+    /// Evaluates the tree once for every row and returns a reusable bitmap.
+    ///
+    /// A virtualized grid asks "does this row match?" for every row it paints and again
+    /// for every scroll step. Building the bitmap once turns each of those questions into
+    /// an index, and lets a caller do the whole projection in one pass.
+    pub fn build_index(&self, rows: &[Vec<Option<String>>]) -> FilterIndex {
+        FilterIndex {
+            bits: rows.iter().map(|row| self.accepts(row)).collect(),
+            case_sensitive: false,
+        }
+    }
+
+    /// Builds an index with an explicit case policy.
+    pub fn build_index_with(
+        &self,
+        rows: &[Vec<Option<String>>],
+        case_sensitive: bool,
+    ) -> FilterIndex {
+        FilterIndex {
+            bits: rows.iter().map(|row| self.accepts_with(row, case_sensitive)).collect(),
+            case_sensitive,
         }
     }
 
@@ -871,5 +953,27 @@ mod tests {
         assert!(!expr.accepts(&row("zzz", "zzz", "eee")));
         // The AND with e fails.
         assert!(!expr.accepts(&row("aaa", "bbb", "zzz")));
+    }
+
+    /// Case sensitivity is a policy, and the bitmap index answers in O(1) after one pass.
+    #[test]
+    fn case_sensitivity_and_the_bitmap_index_are_real_inputs() {
+        let rows = vec![
+            vec![Some("Alpha".to_string())],
+            vec![Some("alpha".to_string())],
+            vec![Some("beta".to_string())],
+        ];
+        let expr = FilterExpr::Predicate(FilterCondition::contains(0, "Alpha"));
+        assert!(expr.accepts(&rows[1]), "the default is case-insensitive");
+        assert!(!expr.accepts_with(&rows[1], true), "the explicit policy is case-sensitive");
+        assert!(expr.accepts_with(&rows[0], true));
+
+        let index = expr.build_index(&rows);
+        assert_eq!(index.match_count(), 2);
+        assert_eq!(index.matching_rows(), vec![0, 1]);
+        assert!(index.accepts(0));
+        assert!(!index.accepts(99));
+        assert!(!index.is_case_sensitive());
+        assert_eq!(expr.build_index_with(&rows, true).match_count(), 1);
     }
 }

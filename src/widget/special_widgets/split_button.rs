@@ -38,12 +38,28 @@ pub struct SplitAction {
     pub id: String,
     /// Display label.
     pub label: String,
+    /// Optional leading icon.
+    pub icon: Option<IconName>,
+    /// Whether a separator rule is drawn above this row.
+    pub separator_above: bool,
 }
 
 impl SplitAction {
     /// Creates a split action.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into() }
+        Self { id: id.into(), label: label.into(), icon: None, separator_above: false }
+    }
+
+    /// Sets the action's leading icon.
+    pub fn with_icon(mut self, icon: IconName) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// Draws a separator rule above this action.
+    pub fn with_separator_above(mut self) -> Self {
+        self.separator_above = true;
+        self
     }
 }
 
@@ -853,12 +869,41 @@ impl Draw for SplitButton {
                     // `SPLIT_BUTTON_PADDING_H` the trigger uses, so a menu row and the trigger
                     // it hangs from share their leading space rather than each naming it.
                     let row_box = self.primary_label_box(action_rect);
+                    let label_box = if action.icon.is_some() {
+                        Rect::new(
+                            row_box.x + 16,
+                            row_box.y,
+                            row_box.width.saturating_sub(16),
+                            row_box.height,
+                        )
+                    } else {
+                        row_box
+                    };
+                    if let Some(icon) = action.icon {
+                        let side = 12u32.min(row_box.height.max(1));
+                        let icon_rect = Rect::new(
+                            row_box.x,
+                            row_box.y + (row_box.height.saturating_sub(side) / 2) as i32,
+                            side,
+                            side,
+                        );
+                        crate::widget::draw_icon_at(context, icon_rect, ink, icon);
+                    }
                     context.draw_text_fitted_cow(
-                        context.text_line(row_box, font),
+                        context.text_line(label_box, font),
                         &action.label,
                         font,
                         ink,
                         HorizontalAlignment::Left,
+                    );
+                }
+                if action_rect.y > menu.y
+                    && self.actions.get(index).is_some_and(|a| a.separator_above)
+                {
+                    context.draw_line(
+                        Point::new(menu.x + 6, action_rect.y),
+                        Point::new(menu.x + menu.width as i32 - 6, action_rect.y),
+                        ink.with_alpha(60),
                     );
                 }
             }

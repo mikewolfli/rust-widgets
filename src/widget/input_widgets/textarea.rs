@@ -11,7 +11,7 @@ use crate::event::FocusReason;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::undo::{UndoStack, ValueCommand};
+use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -28,6 +28,90 @@ use crate::{impl_widget_property_hooks, property_names_of};
 type LineSpan = (usize, usize, usize);
 /// A line table shared between readers.
 type LineSpanTable = Rc<Vec<LineSpan>>;
+
+/// A text edit recorded as a splice rather than a whole-document snapshot.
+///
+/// # Why this exists
+///
+/// Every edit used to push two full copies of the document (the before and the after text), so a
+/// keystroke in a megabyte file cost a megabyte of undo memory and an O(document) copy. A splice
+/// records only the changed run — a single character for ordinary typing — which makes both the
+/// snapshot and the replay proportional to the edit rather than to the file.
+struct TextDeltaCommand {
+    id: CommandId,
+    target: Rc<RefCell<String>>,
+    offset: usize,
+    removed: String,
+    inserted: String,
+}
+
+impl TextDeltaCommand {
+    /// Builds a command for a mutation that has already been applied.
+    fn new(target: Rc<RefCell<String>>, before: &str, after: &str) -> Self {
+        // The common prefix and suffix are found on character boundaries, so the recorded middle
+        // is always a whole number of characters.
+        let mut prefix = 0usize;
+        for (old, new) in before.chars().zip(after.chars()) {
+            if old != new {
+                break;
+            }
+            prefix += old.len_utf8();
+        }
+        let mut suffix = 0usize;
+        for ((_, old), (_, new)) in
+            before[prefix..].char_indices().rev().zip(after[prefix..].char_indices().rev())
+        {
+            if old != new {
+                break;
+            }
+            suffix += old.len_utf8();
+        }
+        Self {
+            id: CommandId(NEXT_TEXT_COMMAND_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)),
+            target,
+            offset: prefix,
+            removed: before[prefix..before.len() - suffix].to_string(),
+            inserted: after[prefix..after.len() - suffix].to_string(),
+        }
+    }
+
+    /// Replaces the recorded range with `insert`.
+    fn splice(&self, remove_len: usize, insert: &str) {
+        let mut text = self.target.borrow_mut();
+        let start = self.offset.min(text.len());
+        let end = (start + remove_len).min(text.len());
+        if start <= end {
+            text.replace_range(start..end, insert);
+        }
+    }
+}
+
+/// Counter for [`TextDeltaCommand`] ids.
+static NEXT_TEXT_COMMAND_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+impl UndoCommand for TextDeltaCommand {
+    fn id(&self) -> CommandId {
+        self.id
+    }
+
+    fn description(&self) -> CommandDescription {
+        CommandDescription {
+            text: "Edit text".to_string(),
+            timestamp_ms: 0,
+            command_type: "text_area_text",
+        }
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        self.splice(self.removed.len(), &self.inserted.clone());
+        Ok(())
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        self.splice(self.inserted.len(), &self.removed.clone());
+        Ok(())
+    }
+}
 
 /// Multi-line text input widget.
 ///
@@ -100,6 +184,58 @@ pub struct TextArea {
     /// by the one funnel every text mutation passes through, so a hit is always the current
     /// text's table; the `Rc` makes a hit a refcount bump rather than a copy.
     line_spans_cache: RefCell<Option<LineSpanTable>>,
+    /// Whether long lines wrap at word boundaries instead of being clipped.
+    ///
+    /// Off by default, which keeps the original one-row-per-logical-line layout pixel for pixel.
+    soft_wrap: bool,
+    /// Extra inset, in logical pixels, between the field's border and its text.
+    ///
+    /// Zero by default; a positive margin moves the text, the selection and the hit test together.
+    content_margin: i32,
+    /// The largest number of logical lines the value may hold, or `None` for no limit.
+    ///
+    /// When an insertion pushes the document past the limit, the oldest lines are dropped — the
+    /// ring-buffer behaviour a log or console pane needs.
+    max_block_count: Option<usize>,
+    /// Horizontal scroll offset in logical pixels, for an unwrapped line wider than the field.
+    ///
+    /// Zero unless the caret has been driven past the field's trailing edge, so an ordinary
+    /// document never scrolls sideways.
+    scroll_x: i32,
+    /// Bumped on every value change, so the display-row and prefix-width caches can identify the
+    /// document in O(1).
+    revision: u64,
+    /// Memoised display rows: the soft-wrapped rows the paint, caret and hit test share.
+    display_rows_cache: RefCell<Option<DisplayRowCache>>,
+    /// Measured advances for the selection band's two edges, keyed by the revision.
+    ///
+    /// The band used to re-shape its line prefix and its selected run on every frame, which is two
+    /// full text measurements per visible line per paint. The cached values are the *same*
+    /// measurements — an entry is only reused while the document is unchanged — so the band's
+    /// pixels do not move.
+    band_width_cache: RefCell<(u64, Vec<(usize, usize, i32)>)>,
+}
+
+/// One display row: the byte range of the value it paints.
+///
+/// A logical line is one row unless soft wrap is on and the line is wider than the field, in which
+/// case the same line contributes several rows. `end` excludes the line's terminator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DisplayRow {
+    /// First byte of the row's text.
+    start: usize,
+    /// One past the last byte of the row's text, excluding a newline.
+    end: usize,
+}
+
+/// Memoised display rows, keyed by the inputs the wrapping reads.
+struct DisplayRowCache {
+    revision: u64,
+    width: u32,
+    soft_wrap: bool,
+    margin: i32,
+    font_size_bits: u32,
+    rows: Rc<Vec<DisplayRow>>,
 }
 
 impl TextArea {
@@ -124,6 +260,13 @@ impl TextArea {
             history_target,
             restoring_history: false,
             line_spans_cache: RefCell::new(None),
+            soft_wrap: false,
+            content_margin: 0,
+            max_block_count: None,
+            scroll_x: 0,
+            revision: 0,
+            display_rows_cache: RefCell::new(None),
+            band_width_cache: RefCell::new((0, Vec::new())),
         }
     }
 
@@ -309,16 +452,18 @@ impl TextArea {
         if self.restoring_history {
             return;
         }
-        // Every mutating path funnels through here, so this is also the single place the
-        // line table is invalidated (see `line_spans_cache`).
+        // Apply the line budget before the snapshot, so the recorded "after" is the value the
+        // control actually keeps. The caches are invalidated first: the budget reads the line
+        // table, and a stale one would cut at an offset from the previous document.
         self.line_spans_cache.borrow_mut().take();
+        self.display_rows_cache.borrow_mut().take();
+        self.revision = self.revision.wrapping_add(1);
+        self.enforce_max_block_count();
         *self.history_target.borrow_mut() = self.text.clone();
-        self.undo_stack.push(Box::new(ValueCommand::new(
+        self.undo_stack.push(Box::new(TextDeltaCommand::new(
             self.history_target.clone(),
-            before,
-            self.text.clone(),
-            "Edit text",
-            "text_area_text",
+            &before,
+            &self.text,
         )));
         // Every edit funnels through here, so this is the one place the viewport has to follow the
         // caret. Keeping it at the call sites would let the next edit path added forget it, and the
@@ -351,14 +496,15 @@ impl TextArea {
         let before = self.text.clone();
         self.text = next;
         self.line_spans_cache.borrow_mut().take();
+        self.display_rows_cache.borrow_mut().take();
+        self.revision = self.revision.wrapping_add(1);
+        self.enforce_max_block_count();
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.text.clone();
-            self.undo_stack.push(Box::new(ValueCommand::new(
+            self.undo_stack.push(Box::new(TextDeltaCommand::new(
                 self.history_target.clone(),
-                before,
-                self.text.clone(),
-                "Edit text",
-                "text_area_text",
+                &before,
+                &self.text,
             )));
         }
         self.cursor_pos = self.text.len();
@@ -514,8 +660,9 @@ impl TextArea {
 
     /// The logical line a caret at `offset` sits on.
     ///
-    /// A binary search over [`Self::line_spans`], so a caret at the end of a long document does not
-    /// count every newline before it.
+    /// Used by the tests and retained as documentation of the line index space; the paint and hit
+    /// test now read [`Self::display_row_of`], which accounts for soft wrap.
+    #[cfg(test)]
     fn line_index_of(&self, offset: usize) -> usize {
         let caret = floor_char_boundary(&self.text, offset.min(self.text.len()));
         let spans = self.line_spans();
@@ -535,12 +682,13 @@ impl TextArea {
     /// The scroll is *minimal*: the viewport moves only when the caret is above or below the window
     /// it currently shows, so reading text near the top does not make the field jump.
     fn scroll_caret_into_view(&mut self) {
-        let caret_line = self.line_index_of(self.cursor_pos);
+        let caret_row = self.display_row_of(self.cursor_pos);
         self.first_visible_line = crate::widget::text_utils::first_visible_row_for(
-            caret_line,
+            caret_row,
             self.first_visible_line,
             self.visible_line_count(),
         );
+        self.ensure_caret_visible();
     }
 
     /// Scrolls the viewport by `lines` rows toward the end of the document.
@@ -553,7 +701,7 @@ impl TextArea {
         if lines == 0 {
             return false;
         }
-        let max_first = self.line_count().saturating_sub(self.visible_line_count());
+        let max_first = self.display_rows().len().saturating_sub(self.visible_line_count());
         let next =
             (self.first_visible_line as i64 + lines as i64).clamp(0, max_first as i64) as usize;
         if next == self.first_visible_line {
@@ -563,19 +711,209 @@ impl TextArea {
         true
     }
 
-    /// The logical line that a viewport row paints, or `None` for this control's own layout.
-    ///
-    /// Returned as an owned index rather than a slice so the paint path can iterate rows without
-    /// re-deriving the scroll each time, and so `None` unambiguously means "no line here" — an empty
-    /// row below the last line of the value, which must paint nothing.
-    fn visible_line_index(&self, row: usize) -> Option<usize> {
-        let index = self.first_visible_line + row;
-        (index < self.line_count()).then_some(index)
-    }
-
     /// The number of logical lines in the value, counting a trailing newline's empty line.
     pub fn line_count(&self) -> usize {
         self.line_spans().len()
+    }
+
+    /// Whether long lines wrap at word boundaries.
+    pub fn soft_wrap(&self) -> bool {
+        self.soft_wrap
+    }
+
+    /// Enables or disables word-boundary soft wrapping.
+    ///
+    /// Off by default: a line wider than the field is clipped, which is the layout a source editor
+    /// wants and the one this control shipped with. Turning it on lays each long line out over as
+    /// many display rows as it needs.
+    pub fn set_soft_wrap(&mut self, wrap: bool) {
+        if self.soft_wrap == wrap {
+            return;
+        }
+        self.soft_wrap = wrap;
+        self.display_rows_cache.borrow_mut().take();
+        self.first_visible_line = 0;
+        self.base.request_redraw();
+    }
+
+    /// The extra inset between the border and the text, in logical pixels.
+    pub fn content_margin(&self) -> i32 {
+        self.content_margin
+    }
+
+    /// Sets the content margin. Negative values are clamped to zero.
+    pub fn set_content_margin(&mut self, margin: i32) {
+        let margin = margin.max(0);
+        if self.content_margin == margin {
+            return;
+        }
+        self.content_margin = margin;
+        self.display_rows_cache.borrow_mut().take();
+        self.base.request_redraw();
+    }
+
+    /// The maximum number of logical lines the value may hold, or `None` for no limit.
+    pub fn max_block_count(&self) -> Option<usize> {
+        self.max_block_count
+    }
+
+    /// Sets the maximum number of logical lines, trimming the oldest ones immediately.
+    ///
+    /// `None` and `Some(0)` both mean no limit; a log pane that only needs a bound passes the
+    /// number of lines it wants to keep.
+    pub fn set_max_block_count(&mut self, max: Option<usize>) {
+        let max = max.filter(|value| *value > 0);
+        if self.max_block_count == max {
+            return;
+        }
+        self.max_block_count = max;
+        if self.enforce_max_block_count() {
+            self.changed.emit();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Drops the oldest lines when the value is over [`Self::max_block_count`].
+    ///
+    /// Returns whether anything was removed. The caret and the selection anchor move with the
+    /// surviving text so an edit cannot be left pointing into a line that no longer exists.
+    fn enforce_max_block_count(&mut self) -> bool {
+        let Some(max) = self.max_block_count else {
+            return false;
+        };
+        let spans = self.line_spans();
+        if spans.len() <= max {
+            return false;
+        }
+        let drop_lines = spans.len() - max;
+        let cut = spans.get(drop_lines).map(|span| span.0).unwrap_or(self.text.len());
+        if cut == 0 {
+            return false;
+        }
+        self.text.drain(..cut);
+        self.cursor_pos = self.cursor_pos.saturating_sub(cut);
+        self.selection_anchor = self.selection_anchor.map(|anchor| anchor.saturating_sub(cut));
+        self.line_spans_cache.borrow_mut().take();
+        self.display_rows_cache.borrow_mut().take();
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    /// The width a display row has for text, after the field's padding and the content margin.
+    fn content_width(&self) -> u32 {
+        let inset = dimensions::TEXT_FIELD_PADDING_H as i32 + self.content_margin;
+        self.geometry().width.saturating_sub((inset * 2).max(0) as u32)
+    }
+
+    /// The display rows the paint, the caret and the hit test all read.
+    ///
+    /// With soft wrap off this is exactly one row per logical line, which is what keeps the
+    /// existing layout and its pixels unchanged. The cache is keyed by the mutation counter rather
+    /// than the document text, so a hit is an integer comparison.
+    fn display_rows(&self) -> Rc<Vec<DisplayRow>> {
+        let width = self.content_width();
+        let font_size_bits = self.text_font().size().to_bits();
+        if let Some(cache) = self.display_rows_cache.borrow().as_ref() {
+            if cache.revision == self.revision
+                && cache.width == width
+                && cache.soft_wrap == self.soft_wrap
+                && cache.margin == self.content_margin
+                && cache.font_size_bits == font_size_bits
+            {
+                return Rc::clone(&cache.rows);
+            }
+        }
+        let rows = Rc::new(self.build_display_rows(width));
+        *self.display_rows_cache.borrow_mut() = Some(DisplayRowCache {
+            revision: self.revision,
+            width,
+            soft_wrap: self.soft_wrap,
+            margin: self.content_margin,
+            font_size_bits,
+            rows: Rc::clone(&rows),
+        });
+        rows
+    }
+
+    /// Builds the display-row table for `width`, wrapping long lines when soft wrap is on.
+    fn build_display_rows(&self, width: u32) -> Vec<DisplayRow> {
+        let spans = self.line_spans();
+        let font = self.text_font().clone();
+        let mut measurement =
+            crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
+        let context = RenderContext::new(&mut measurement);
+        let advance_of = |ch: char| {
+            let mut glyph = [0u8; 4];
+            context.measure_text(ch.encode_utf8(&mut glyph), &font).width as f32
+        };
+        let mut rows = Vec::new();
+        for &(start, content_end, _) in spans.iter() {
+            if !self.soft_wrap || width == 0 || content_end <= start {
+                rows.push(DisplayRow { start, end: content_end });
+                continue;
+            }
+            let mut row_start = start;
+            let mut row_width = 0.0f32;
+            let mut last_break: Option<usize> = None;
+            for (offset, ch) in self.text[start..content_end].char_indices() {
+                let absolute = start + offset;
+                let advance = advance_of(ch);
+                if row_width + advance > width as f32 && absolute > row_start {
+                    let break_at = last_break
+                        .filter(|boundary| *boundary > row_start && *boundary <= absolute)
+                        .unwrap_or(absolute);
+                    rows.push(DisplayRow { start: row_start, end: break_at });
+                    row_start = break_at;
+                    row_width = 0.0;
+                    for (_, carried) in self.text[row_start..absolute].char_indices() {
+                        row_width += advance_of(carried);
+                    }
+                    last_break = None;
+                }
+                if ch.is_whitespace() || ch == '-' {
+                    last_break = Some(absolute + ch.len_utf8());
+                }
+                row_width += advance;
+            }
+            rows.push(DisplayRow { start: row_start, end: content_end });
+        }
+        if rows.is_empty() {
+            rows.push(DisplayRow { start: 0, end: 0 });
+        }
+        rows
+    }
+
+    /// The display row a caret at `offset` belongs to.
+    fn display_row_of(&self, offset: usize) -> usize {
+        let rows = self.display_rows();
+        let offset = floor_char_boundary(&self.text, offset.min(self.text.len()));
+        rows.iter().rposition(|row| row.start <= offset).unwrap_or(0)
+    }
+
+    /// The display row a viewport row paints.
+    fn display_row(&self, row: usize) -> Option<DisplayRow> {
+        self.display_rows().get(self.first_visible_line + row).copied()
+    }
+
+    /// Scrolls the value horizontally so the caret is visible.
+    ///
+    /// Soft-wrapped rows never scroll sideways, because they have no overflow to reveal.
+    fn ensure_caret_visible(&mut self) {
+        if self.soft_wrap {
+            self.scroll_x = 0;
+            return;
+        }
+        let width = self.content_width() as i32;
+        let caret = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
+        let line_start = self.text[..caret].rfind('\n').map(|index| index + 1).unwrap_or(0);
+        let advance = self.text_advance(&self.text[line_start..caret]);
+        let room = 8.min(width / 4);
+        if advance - self.scroll_x > width - room {
+            self.scroll_x = (advance - width + room).max(0);
+        } else if advance < self.scroll_x {
+            self.scroll_x = advance;
+        }
+        self.scroll_x = self.scroll_x.max(0);
     }
 
     /// The byte offset of the character *before* the caret.
@@ -658,6 +996,17 @@ impl TextArea {
         self.text[line_start..caret].chars().count()
     }
 
+    /// The caret's column within its own display row, counted in characters.
+    ///
+    /// With soft wrap a logical line can occupy several rows, so the column has to be measured
+    /// from the row's start rather than from the line's.
+    fn column_in_display_row(&self, offset: usize) -> usize {
+        let offset = floor_char_boundary(&self.text, offset.min(self.text.len()));
+        let row_start =
+            self.display_rows().iter().rfind(|row| row.start <= offset).map_or(0, |row| row.start);
+        self.text[row_start..offset].chars().count()
+    }
+
     /// The byte offset of `column` characters into `text[line_start..line_end]`, saturating at
     /// `line_end` when the line is shorter.
     fn byte_index_at_column(&self, line_start: usize, line_end: usize, column: usize) -> usize {
@@ -690,6 +1039,8 @@ impl TextArea {
             let boundary = floor_char_boundary(&self.text, max);
             self.text.truncate(boundary);
             self.line_spans_cache.borrow_mut().take();
+            self.display_rows_cache.borrow_mut().take();
+            self.revision = self.revision.wrapping_add(1);
             // The caret must stay on a boundary inside what is left.
             self.cursor_pos = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
             // A shrinking limit makes every longer value unreachable, so the
@@ -766,6 +1117,67 @@ impl TextArea {
             self.record_edit(before);
         }
         self.base.request_redraw();
+    }
+
+    /// Copies the selected text to the platform clipboard, returning it.
+    #[cfg(not(alloc_frugal))]
+    fn copy_selection_to_clipboard(&self) -> Option<String> {
+        let selected = self.selected_text();
+        if selected.is_empty() {
+            return None;
+        }
+        crate::set_clipboard_text(&selected);
+        Some(selected)
+    }
+
+    /// The allocation-frugal build has no clipboard integration.
+    #[cfg(alloc_frugal)]
+    fn copy_selection_to_clipboard(&self) -> Option<String> {
+        None
+    }
+
+    /// Inserts the platform clipboard's text at the caret.
+    #[cfg(not(alloc_frugal))]
+    fn paste_from_clipboard(&mut self) {
+        let text = crate::get_clipboard_text();
+        if !text.is_empty() {
+            self.insert_str(&text);
+        }
+    }
+
+    /// The allocation-frugal build has no clipboard integration.
+    #[cfg(alloc_frugal)]
+    fn paste_from_clipboard(&mut self) {}
+
+    /// The byte range of the word around `offset`, for a double-click selection.
+    fn word_range_at(&self, offset: usize) -> (usize, usize) {
+        let offset = floor_char_boundary(&self.text, offset.min(self.text.len()));
+        let sampled = self.text[offset..]
+            .chars()
+            .next()
+            .or_else(|| self.text[..offset].chars().next_back())
+            .unwrap_or(' ');
+        let same_class = |ch: char| ch.is_whitespace() == sampled.is_whitespace();
+        let mut start = offset;
+        for (index, ch) in self.text[..offset].char_indices().rev() {
+            if !same_class(ch) {
+                break;
+            }
+            start = index;
+        }
+        let mut end = offset;
+        for (index, ch) in self.text[offset..].char_indices() {
+            if !same_class(ch) {
+                break;
+            }
+            end = offset + index + ch.len_utf8();
+        }
+        if start == end {
+            if let Some((index, ch)) = self.text[..offset].char_indices().next_back() {
+                return (index, index + ch.len_utf8());
+            }
+        }
+        (start, end)
     }
 
     /// Routes platform-committed text into the ordinary editing path (D09-INPUT-01).
@@ -889,23 +1301,18 @@ impl TextArea {
         let text_top = rect.y + FIRST_LINE_INSET + (LINE_H - self.line_box_height()) / 2;
 
         let row = ((pos.y - text_top).max(0) / LINE_H) as usize;
-        // The viewport row is translated to the logical line it paints, so a click after scrolling
-        // resolves to the line the user sees there rather than to the document's own nth line.
-        let line_index = self.first_visible_line + row;
-        let x = pos.x - origin_x;
+        // The viewport row is translated to the display row it paints, so a click after scrolling
+        // resolves to the row the user sees there rather than to the document's own nth row.
+        let x = pos.x - origin_x + self.scroll_x - self.content_margin;
 
-        // Walk the table the paint path also reads, so the answer is the same line the glyphs are
-        // drawn on rather than a second model of where the newlines are. The per-click rescan this
-        // replaces re-derived both the index and the offsets.
-        let spans = self.line_spans();
-        match spans.get(line_index) {
-            Some(&(start, content_end, _)) => {
-                start + self.column_at_x(&self.text[start..content_end], x)
-            }
-            // The point is below every line the value has, or the value is empty: the caret belongs
-            // at the end.
-            None => self.text.len(),
-        }
+        // Walk the table the paint path also reads, so the answer is the same row the glyphs are
+        // drawn on rather than a second model of where the newlines are.
+        let Some(row) = self.display_row(row) else {
+            return self.text.len();
+        };
+        let start = row.start;
+        let content_end = row.end.min(self.text.len());
+        start + self.column_at_x(&self.text[start..content_end], x)
     }
 
     /// Reverts the most recent text mutation.
@@ -945,6 +1352,8 @@ impl TextArea {
         self.restoring_history = true;
         self.text = self.history_target.borrow().clone();
         self.line_spans_cache.borrow_mut().take();
+        self.display_rows_cache.borrow_mut().take();
+        self.revision = self.revision.wrapping_add(1);
         self.cursor_pos = self.cursor_pos.min(self.text.len());
         self.restoring_history = false;
         self.changed.emit();
@@ -1099,6 +1508,13 @@ impl WidgetProperties for TextArea {
             "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
             "read_only" => Ok(CapabilityValue::Bool(self.is_read_only())),
             "max_length" => Ok(CapabilityValue::UInt(self.max_length() as u64)),
+            "soft_wrap" => Ok(CapabilityValue::Bool(self.soft_wrap())),
+            "content_margin" => Ok(CapabilityValue::UInt(self.content_margin().max(0) as u64)),
+            "max_block_count" => match self.max_block_count() {
+                Some(max) => Ok(CapabilityValue::UInt(max as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "scroll_x" => Ok(CapabilityValue::Int(self.scroll_x as i64)),
             _ => base_property_get(self, name),
         }
     }
@@ -1121,13 +1537,39 @@ impl WidgetProperties for TextArea {
                 self.set_max_length(expect_usize(value)?);
                 Ok(())
             }
+            "soft_wrap" => {
+                self.set_soft_wrap(expect_bool(value)?);
+                Ok(())
+            }
+            "content_margin" => {
+                self.set_content_margin(expect_usize(value)? as i32);
+                Ok(())
+            }
+            "max_block_count" => {
+                match value {
+                    CapabilityValue::Null => self.set_max_block_count(None),
+                    other => self.set_max_block_count(Some(expect_usize(other)?)),
+                }
+                Ok(())
+            }
+            "scroll_x" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `TEXT_AREA_PROPERTIES`.
-        property_names_of!["text", "placeholder", "read_only", "max_length", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "text",
+            "placeholder",
+            "read_only",
+            "max_length",
+            "soft_wrap",
+            "content_margin",
+            "max_block_count",
+            "scroll_x",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `text_area` publishes.
@@ -1211,7 +1653,23 @@ impl EventHandler for TextArea {
                     self.select_all();
                     return;
                 }
+                if primary && *key == 67 {
+                    // Primary+C: copy the selection. Allowed while read-only.
+                    let _ = self.copy_selection_to_clipboard();
+                    return;
+                }
                 if self.read_only {
+                    return;
+                }
+                if primary && *key == 88 {
+                    // Primary+X: copy, then delete the selection.
+                    let _ = self.copy_selection_to_clipboard();
+                    self.delete_char();
+                    return;
+                }
+                if primary && *key == 86 {
+                    // Primary+V: paste at the caret, replacing any selection.
+                    self.paste_from_clipboard();
                     return;
                 }
                 match *key {
@@ -1229,6 +1687,43 @@ impl EventHandler for TextArea {
                         // Enter — insert a newline, over the selection if there is one.
                         self.insert_char('\n');
                         self.request_redraw();
+                    }
+                    9 => {
+                        // Tab is content in a document editor: indentation is text, not a focus
+                        // gesture, so it enters the value instead of being dropped as a control
+                        // character.
+                        self.insert_char('\t');
+                        self.request_redraw();
+                    }
+                    33 => {
+                        // Page Up — one window of display rows toward the start, keeping the
+                        // caret's column within its row.
+                        let rows = self.display_rows();
+                        let page = self.visible_line_count().saturating_sub(1).max(1);
+                        let row = self.display_row_of(self.cursor_pos).saturating_sub(page);
+                        if let Some(display) = rows.get(row).copied() {
+                            let target = self.byte_index_at_column(
+                                display.start,
+                                display.end,
+                                self.column_in_display_row(self.cursor_pos),
+                            );
+                            self.select_with_modifiers(target, mods);
+                        }
+                    }
+                    34 => {
+                        // Page Down — the mirror of Page Up.
+                        let rows = self.display_rows();
+                        let page = self.visible_line_count().saturating_sub(1).max(1);
+                        let row = (self.display_row_of(self.cursor_pos) + page)
+                            .min(rows.len().saturating_sub(1));
+                        if let Some(display) = rows.get(row).copied() {
+                            let target = self.byte_index_at_column(
+                                display.start,
+                                display.end,
+                                self.column_in_display_row(self.cursor_pos),
+                            );
+                            self.select_with_modifiers(target, mods);
+                        }
                     }
                     37 => {
                         // Left — one character back, extending under Shift. At the start the caret
@@ -1322,6 +1817,17 @@ impl EventHandler for TextArea {
                     let index = self.byte_index_at(*pos);
                     self.drag_to(index);
                 }
+            }
+            // A double click selects the word under the pointer.
+            Event::MouseDoubleClick { pos, button } if *button == 1 && self.hit_test(*pos) => {
+                self.focused = true;
+                let index = self.byte_index_at(*pos);
+                let (start, end) = self.word_range_at(index);
+                self.selection_anchor = Some(start);
+                self.cursor_pos = end;
+                self.dragging_selection = false;
+                self.scroll_caret_into_view();
+                self.base.request_redraw();
             }
             // A release anywhere ends the gesture, including outside the control: the anchor stays
             // where the press put it, so the selection the user made is kept.
@@ -1437,27 +1943,23 @@ impl Draw for TextArea {
             // which is why the order here is load-bearing rather than incidental.
             if let Some((sel_start, sel_end)) = self.selection_range() {
                 let highlight = self.selection_color(&text_color, &field_bg);
-                // One pass over the value, then an index per visible row. The loop this replaces
-                // re-split the document per row and counted its offsets from the first *visible*
-                // line, so a scrolled field highlighted a byte range that did not belong to the
-                // line it was drawing.
-                let spans = self.line_spans();
+                // One pass over the display rows, so a scrolled field highlights the same rows it
+                // draws and a soft-wrapped line contributes one band per wrapped row.
                 let mut y = text_top;
                 for row in 0.. {
-                    let Some(&(line_start, line_end, _)) =
-                        self.visible_line_index(row).and_then(|index| spans.get(index))
-                    else {
+                    let Some(display) = self.display_row(row) else {
                         break;
                     };
-                    // The overlap of `[sel_start, sel_end)` with this line's own content.
-                    let from = sel_start.max(line_start).min(line_end);
-                    let to = sel_end.min(line_end).max(from);
+                    // The overlap of `[sel_start, sel_end)` with this display row's own content.
+                    let from = sel_start.max(display.start).min(display.end);
+                    let to = sel_end.min(display.end).max(from);
                     if to > from {
                         // Measured, not multiplied: the band's two edges have to land on the same
                         // pixels the glyphs do, and the glyphs are laid out with the face's own
                         // advances (see `advance_of_caret_prefix` for what a fixed width costs).
-                        let left = origin_x + self.text_advance(&self.text[line_start..from]);
-                        let width = self.text_advance(&self.text[from..to]);
+                        let left = origin_x + self.content_margin - self.scroll_x
+                            + self.band_advance(display.start, from);
+                        let width = self.band_advance(from, to);
                         if width > 0 {
                             // `fill_rect`, not `draw_rect`: the latter is a one-pixel outline,
                             // so a selected run painted a hollow box around the glyphs (the
@@ -1475,22 +1977,19 @@ impl Draw for TextArea {
 
             let mut y = text_top;
             // Rows are drawn from the scroll position, so the field is a window onto the document
-            // rather than always showing its first line. `visible_line_index` is the one lookup of
-            // "which logical line is on row n", shared with the pixel-to-offset map below, so a
-            // click and the glyphs it lands on cannot disagree about the scroll.
-            let spans = self.line_spans();
+            // rather than always showing its first line. `display_row` is the one lookup of
+            // "which text is on row n", shared with the pixel-to-offset map below, so a click and
+            // the glyphs it lands on cannot disagree about the scroll or the wrap.
             for row in 0.. {
-                let Some(&(start, content_end, _)) =
-                    self.visible_line_index(row).and_then(|index| spans.get(index))
-                else {
+                let Some(display) = self.display_row(row) else {
                     break;
                 };
                 if y + LINE_H > rect.y + rect.height as i32 {
                     break;
                 }
                 context.draw_text(
-                    Point::new(origin_x, y),
-                    &self.text[start..content_end],
+                    Point::new(origin_x + self.content_margin - self.scroll_x, y),
+                    &self.text[display.start..display.end],
                     font,
                     text_color,
                     HorizontalAlignment::Left,
@@ -1553,7 +2052,30 @@ impl TextArea {
     /// total whatever the caret holds. A draw that can panic is worse than a caret in the wrong
     /// place — it takes the frame down.
     fn cursor_screen_x(&self, origin_x: i32) -> i32 {
-        origin_x + self.advance_of_caret_prefix(self.cursor_pos)
+        origin_x + self.content_margin - self.scroll_x
+            + self.advance_of_caret_prefix(self.cursor_pos)
+    }
+
+    /// The advance of `text[from..to]`, memoised for the current revision.
+    fn band_advance(&self, from: usize, to: usize) -> i32 {
+        {
+            let cache = self.band_width_cache.borrow();
+            if cache.0 == self.revision {
+                if let Some((_, _, width)) =
+                    cache.1.iter().find(|(start, end, _)| *start == from && *end == to)
+                {
+                    return *width;
+                }
+            }
+        }
+        let width = if from < to { self.text_advance(&self.text[from..to]) } else { 0 };
+        let mut cache = self.band_width_cache.borrow_mut();
+        if cache.0 != self.revision {
+            cache.0 = self.revision;
+            cache.1.clear();
+        }
+        cache.1.push((from, to, width));
+        width
     }
 
     /// The advance of the text on the caret's line, before `offset`, in pixels.
@@ -1575,8 +2097,11 @@ impl TextArea {
     /// construction rather than by a constant that has to be kept in step.
     fn advance_of_caret_prefix(&self, offset: usize) -> i32 {
         let caret = floor_char_boundary(&self.text, offset.min(self.text.len()));
-        let line_start = self.text[..caret].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let prefix = &self.text[line_start..caret];
+        // The display row is the unit the painter advances by: without soft wrap it starts at the
+        // logical line, and with it, at the wrapped segment the caret sits on.
+        let rows = self.display_rows();
+        let row_start = rows.iter().rfind(|row| row.start <= caret).map_or(0, |row| row.start);
+        let prefix = &self.text[row_start..caret];
         if prefix.is_empty() {
             return 0;
         }
@@ -1633,8 +2158,7 @@ impl TextArea {
     /// marker on the row the character is actually painted on rather than at its document position —
     /// which would put it above the field, or below it, once anything had been scrolled past.
     fn cursor_screen_y(&self, origin_y: i32) -> i32 {
-        let line = self.line_index_of(self.cursor_pos);
-        let row = line.saturating_sub(self.first_visible_line);
+        let row = self.display_row_of(self.cursor_pos).saturating_sub(self.first_visible_line);
         origin_y + row as i32 * LINE_H
     }
 
@@ -1653,9 +2177,10 @@ impl TextArea {
         let font = self.text_font();
         let origin_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
         let caret = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
-        let line_start = self.text[..caret].rfind('\n').map(|index| index + 1).unwrap_or(0);
-        let caret_x =
-            origin_x + estimate_text_width(&self.text[line_start..caret], font, 1.0) as i32;
+        let row_start =
+            self.display_rows().iter().rfind(|row| row.start <= caret).map_or(0, |row| row.start);
+        let caret_x = origin_x + self.content_margin - self.scroll_x
+            + estimate_text_width(&self.text[row_start..caret], font, 1.0) as i32;
 
         // The first line's band is the same one `draw` lays the glyphs out in: one line tall, one
         // inset below the top edge. Measuring it through the renderer keeps the anchor on the
@@ -1667,7 +2192,7 @@ impl TextArea {
             let context = RenderContext::new(&mut measurement);
             context.text_line(band, font).y
         };
-        let row = self.line_index_of(self.cursor_pos).saturating_sub(self.first_visible_line);
+        let row = self.display_row_of(self.cursor_pos).saturating_sub(self.first_visible_line);
         InputMethodQuery {
             caret_rect: Rect::new(caret_x, text_top + row as i32 * LINE_H, 1, LINE_H as u32),
             caret_byte: Some(caret),
@@ -2312,8 +2837,8 @@ mod tests {
             assert!(ta.text().is_empty(), "{name}+b must not insert a `b`");
         }
         // A control code on its own is not content either.
-        ta.handle_event(&Event::key_press(9, 0)); // Tab
-        assert!(ta.text().is_empty(), "a bare Tab is a control code, not content");
+        ta.handle_event(&Event::key_press(0, 0)); // NUL
+        assert!(ta.text().is_empty(), "a bare control code is not content");
         ta.handle_event(&Event::key_press(98, 0));
         assert_eq!(ta.text(), "b");
     }
@@ -2592,10 +3117,10 @@ mod tests {
 
     /// A long line is clipped to the field rather than painted over its neighbours.
     ///
-    /// This area has no soft wrap and no horizontal scroll, so the run used to be emitted
-    /// straight across the control's right edge (the runtime only clips a widget whose
-    /// `children_clip()` is set, which a text area does not override). The clip rectangle is the
-    /// field's **inner box**, which is also where the caret and the selection band stop.
+    /// The run used to be emitted straight across the control's right edge (the runtime only
+    /// clips a widget whose `children_clip()` is set, which a text area does not override). The
+    /// clip rectangle is the field's **inner box**, which is also where the caret and the
+    /// selection band stop, and it still bounds the run while the value is scrolled sideways.
     #[cfg(not(alloc_frugal))]
     #[test]
     fn a_long_line_is_clipped_to_the_fields_inner_box() {
@@ -2609,6 +3134,36 @@ mod tests {
         assert!(
             svg.contains(&expected),
             "the value must be clipped to the field's inner box ({expected})"
+        );
+    }
+
+    /// A long unwrapped line scrolls sideways to keep its caret visible.
+    ///
+    /// Without this the caret simply ran past the field's trailing edge: the user could move
+    /// it there but could not see it, and the characters around it were the part of the value
+    /// that disappeared. The offset is driven by the caret, so returning to the start of the
+    /// line brings the leading edge back.
+    #[test]
+    fn a_long_unwrapped_line_scrolls_to_reveal_the_caret() {
+        let mut ta = TextArea::new("x".repeat(200), Rect::new(0, 0, 120, 60));
+        assert_eq!(
+            ta.get("scroll_x").unwrap(),
+            CapabilityValue::Int(0),
+            "a freshly installed value opens at its leading edge"
+        );
+
+        ta.handle_event(&Event::KeyPress { key: 35, modifiers: 0 }); // End
+        let offset = match ta.get("scroll_x").unwrap() {
+            CapabilityValue::Int(offset) => offset,
+            other => panic!("scroll_x must be an Int, got {other:?}"),
+        };
+        assert!(offset > 0, "the end of a 200 px line must be scrolled into view");
+
+        ta.handle_event(&Event::KeyPress { key: 36, modifiers: 0 }); // Home
+        assert_eq!(
+            ta.get("scroll_x").unwrap(),
+            CapabilityValue::Int(0),
+            "returning to the start restores the leading edge"
         );
     }
 
@@ -2838,6 +3393,7 @@ mod tests {
     }
 
     /// The Material profile keeps the text area's historical 60 px minimum.
+    #[cfg(device_profile)]
     #[test]
     fn the_material_profile_keeps_the_text_area_height_floor() {
         let _theme_guard = crate::style::theme_test_guard();
@@ -2897,5 +3453,122 @@ mod tests {
         assert!(crate::theme::global_theme_manager().set_theme("default"));
 
         assert_eq!(hint.height, 60);
+    }
+
+    /// Soft wrap adds display rows and breaks long lines at word boundaries.
+    #[test]
+    fn soft_wrap_adds_word_boundary_rows() {
+        let mut ta = TextArea::new("alpha beta gamma delta".to_string(), Rect::new(0, 0, 90, 200));
+        let unwrapped = ta.display_rows().len();
+        ta.set_soft_wrap(true);
+        let wrapped = ta.display_rows();
+        assert!(wrapped.len() > unwrapped, "wrapping must add rows: {wrapped:?}");
+        let text = ta.text().to_string();
+        for pair in wrapped.windows(2) {
+            let boundary = pair[0].end;
+            if boundary < text.len() && pair[1].start == boundary {
+                assert!(
+                    text[..boundary].ends_with(' ') || text[boundary..].starts_with(' '),
+                    "a soft break must land at a space: {wrapped:?}"
+                );
+            }
+        }
+    }
+
+    /// The line budget drops the oldest lines and moves the caret with the surviving text.
+    #[test]
+    fn a_block_budget_drops_the_oldest_lines() {
+        let mut ta = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
+        ta.set_max_block_count(Some(2));
+        ta.insert_str("one\ntwo\nthree");
+        assert_eq!(ta.line_count(), 2);
+        assert_eq!(ta.text(), "two\nthree");
+        assert!(ta.cursor_pos() <= ta.text().len());
+    }
+
+    /// A content margin moves the ink and the hit test together.
+    #[test]
+    fn a_content_margin_insets_the_value() {
+        use crate::widget::svg::render_to_svg;
+        let mut plain = TextArea::new("margined".to_string(), Rect::new(0, 0, 200, 80));
+        let plain_svg = render_to_svg(&mut plain);
+        plain.set_content_margin(10);
+        assert_eq!(plain.content_margin(), 10);
+        assert_ne!(plain_svg, render_to_svg(&mut plain), "the margin must move the glyphs");
+    }
+
+    /// Primary+C and Primary+V move the selected text through the clipboard.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn clipboard_shortcuts_copy_and_paste() {
+        let _clipboard = crate::clipboard::clipboard_test_guard();
+        let mut source = TextArea::new("copy me".to_string(), Rect::new(0, 0, 200, 80));
+        source
+            .handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
+        source.select_all();
+        source.handle_event(&Event::KeyPress { key: 67, modifiers: 0b1000 });
+        assert_eq!(crate::get_clipboard_text(), "copy me");
+
+        let mut target = TextArea::new(String::new(), Rect::new(0, 0, 200, 80));
+        target
+            .handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
+        target.handle_event(&Event::KeyPress { key: 86, modifiers: 0b1000 });
+        assert_eq!(target.text(), "copy me");
+    }
+
+    /// A double click selects the word under the pointer.
+    #[test]
+    fn a_double_click_selects_a_word() {
+        let mut ta = TextArea::new("alpha beta".to_string(), Rect::new(0, 0, 300, 80));
+        ta.handle_event(&Event::MouseDoubleClick { pos: Point::new(8, 8), button: 1 });
+        assert_eq!(ta.selected_text(), "alpha");
+    }
+
+    /// Page Down and Page Up move the caret by a window of display rows.
+    #[test]
+    fn page_keys_move_the_caret() {
+        let mut ta = TextArea::new(
+            (0..30).map(|n| format!("line {n}\n")).collect::<String>(),
+            Rect::new(0, 0, 200, 80),
+        );
+        ta.set_cursor_pos(0);
+        ta.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
+        ta.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
+        let after_down = ta.cursor_pos();
+        assert!(after_down > 0);
+        ta.handle_event(&Event::KeyPress { key: 33, modifiers: 0 });
+        assert!(ta.cursor_pos() < after_down);
+    }
+
+    /// Tab is content in a document editor, not a focus gesture.
+    #[test]
+    fn tab_inserts_a_tab_character() {
+        let mut ta = TextArea::new(String::new(), Rect::new(0, 0, 200, 80));
+        ta.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
+        ta.handle_event(&Event::KeyPress { key: 9, modifiers: 0 });
+        assert_eq!(ta.text(), "\t");
+    }
+
+    /// The selection-band widths are memoised for the current revision.
+    #[test]
+    fn the_band_width_cache_is_scoped_to_the_revision() {
+        let mut ta = TextArea::new("measured".to_string(), Rect::new(0, 0, 200, 80));
+        let width = ta.band_advance(0, 4);
+        assert_eq!(ta.band_width_cache.borrow().1.len(), 1);
+        assert_eq!(ta.band_advance(0, 4), width);
+        assert_eq!(ta.band_width_cache.borrow().1.len(), 1, "a hit must not append");
+        ta.insert_str("x");
+        let _ = ta.band_advance(0, 4);
+        assert_eq!(ta.band_width_cache.borrow().1.len(), 1, "the new revision starts clean");
+    }
+
+    /// Undo records only the changed run, not a snapshot of the whole document.
+    #[test]
+    fn an_edit_is_recorded_as_a_delta() {
+        let target = Rc::new(RefCell::new(String::new()));
+        let command = TextDeltaCommand::new(target, "hello", "hello!");
+        assert_eq!(command.offset, 5, "the common prefix is not part of the delta");
+        assert_eq!(command.removed, "");
+        assert_eq!(command.inserted, "!");
     }
 }

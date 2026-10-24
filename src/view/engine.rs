@@ -6,8 +6,9 @@
 use crate::core::ObjectId;
 
 use super::apply::ApplyReport;
-use super::diff::{diff, DiffReport};
+use super::diff::{diff, diff_scoped, DiffReport};
 use super::node::{Host, Node};
+use super::row_signal::RowSignal;
 
 /// Values a root supplies to the whole view subtree.
 ///
@@ -161,7 +162,7 @@ pub struct ViewEngine {
     /// Populated when the engine mounts or applies an `Insert`: ids for nodes it created,
     /// and — at mount time — ids the caller supplies for nodes built elsewhere.
     id_of_path: crate::compat::HashMap<Vec<usize>, ObjectId>,
-    /// The id of the engine-owned **overlay layer**, once a portal node has asked for one.
+    /// The engine-owned z-ordered layer stack: name and host control, in first-use order.
     ///
     /// # Why the layer is a sibling of the root, not a second root
     ///
@@ -169,9 +170,13 @@ pub struct ViewEngine {
     /// parent's clip (BLUE23 §5A.2). The place it is created into cannot be the root — a
     /// document has exactly one root, and `Patch::Insert` relies on that — so it is a layer
     /// the engine owns, **beside** the root rather than above it. The layout still sees one
-    /// rooted document; the layer is an additional host the engine keeps for portal
-    /// children, and it exists only when something asks for it.
-    overlay_layer: Option<ObjectId>,
+    /// rooted document; the layer is an additional host the engine keeps, and it exists only
+    /// when something asks for it.
+    ///
+    /// The vector is the z-order: an earlier entry is drawn below a later one, so a host that
+    /// declares `popup` before `tooltip` gets the tooltip above the popup without naming a
+    /// depth per node.
+    layers: Vec<(crate::compat::String, ObjectId)>,
     /// Bumped on every mutation of the mounted tree (mount and update).
     ///
     /// # Why the engine counts
@@ -189,7 +194,8 @@ impl core::fmt::Debug for ViewEngine {
         f.debug_struct("ViewEngine")
             .field("mounted", &self.current.is_some())
             .field("nodes", &self.layout.node_count())
-            .field("overlay", &self.overlay_layer)
+            .field("overlay", &self.overlay_layer())
+            .field("layers", &self.layers.len())
             .finish()
     }
 }
@@ -203,7 +209,7 @@ impl ViewEngine {
             viewport: None,
             last_build_key: None,
             id_of_path: crate::compat::HashMap::new(),
-            overlay_layer: None,
+            layers: Vec::new(),
             generation: 0,
         }
     }
@@ -220,10 +226,23 @@ impl ViewEngine {
     /// [`Self::update`]. Until it does, the tier is `Expanded` and every declared subtree is
     /// included, which is the behaviour a tree had before this existed.
     ///
+    /// # What the return value means
+    ///
+    /// `true` when the reported size moves the classification to a **different tier**. A resize
+    /// that stays inside the current tier can affect layout without affecting which subtrees
+    /// exist, so a host that only rebuilds on a tier change avoids a full `build`+diff per pixel
+    /// of a window drag. [`crate::view::ReactiveHost::resize`] is the ready-made caller of that
+    /// rule.
+    ///
     /// This does **not** itself rebuild the tree: a caller that wants the tier to take effect
     /// calls `update` afterwards, exactly as it would for any other state change.
-    pub fn set_viewport(&mut self, size: crate::core::Size) {
+    pub fn set_viewport(&mut self, size: crate::core::Size) -> bool {
+        let previous = self
+            .viewport
+            .map(crate::view::Breakpoint::of)
+            .unwrap_or_else(crate::view::Breakpoint::current);
         self.viewport = Some(size);
+        previous != crate::view::Breakpoint::of(size)
     }
 
     /// The size the host last reported, or `None` when it has not.
@@ -260,34 +279,54 @@ impl ViewEngine {
         node
     }
 
-    /// The id of the overlay layer, or `None` when no portal node has needed one.
+    /// The id of the default overlay layer, or `None` when no portal node has needed one.
     ///
     /// A host that draws the layer separately (a modal stack, a tooltip rail) reads this to
     /// find the container its portal children were created into. `None` is the honest answer
     /// for a tree that declares no portals: there is no empty layer sitting around.
     pub fn overlay_layer(&self) -> Option<ObjectId> {
-        self.overlay_layer
+        self.layer(crate::view::apply::DEFAULT_LAYER)
     }
 
-    /// The layer a portal node is created into, creating it on first use.
+    /// The id of the named layer, or `None` when nothing has asked for it yet.
+    pub fn layer(&self, name: &str) -> Option<ObjectId> {
+        self.layers.iter().find(|(layer, _)| layer == name).map(|(_, id)| *id)
+    }
+
+    /// The layer names in z-order, bottom first.
+    ///
+    /// A host that composites the stack itself (separate surfaces, one per layer) walks this
+    /// list; the engine never reorders an existing layer, because a `tooltip` that moved below
+    /// its `popup` when a second portal appeared would be a silent visual change.
+    pub fn layer_names(&self) -> Vec<&str> {
+        self.layers.iter().map(|(name, _)| name.as_str()).collect()
+    }
+
+    /// The layer a portal or layered node is created into, creating it on first use.
     ///
     /// The layer is itself a control created through the caller's `create` bridge, named
     /// `"overlay"`, so a host that maps names to controls needs no special case for it. It
     /// is registered with no parent — it is a host the engine owns, not a child of the root.
-    fn overlay_layer_for(
+    fn layer_for(
         &mut self,
+        name: &str,
         create: &dyn Fn(&Node) -> Option<ObjectId>,
     ) -> Option<ObjectId> {
-        if let Some(id) = self.overlay_layer {
+        if let Some(id) = self.layer(name) {
             return Some(id);
         }
-        let layer_node = Node::new("overlay").key("__overlay_layer");
+        let key = layer_key(name);
+        let layer_node = Node::new("overlay").key(key.clone());
         let id = create(&layer_node).filter(|&id| id != 0)?;
-        self.layout.register_node(id, layer_node.widget.clone(), "__overlay_layer", None);
-        // Record the layer as the second host root, so a later lookup for a portal's control can
-        // ask the layer rather than the node the portal was declared under.
-        self.layout.set_overlay_root(id);
-        self.overlay_layer = Some(id);
+        self.layout.register_node(id, layer_node.widget.clone(), key, None);
+        // Record the layer as an additional host root, so a later lookup for a portal's control
+        // can ask the layer rather than the node the portal was declared under. The layout's
+        // `overlay_root` names the default layer; named layers are found through this engine's
+        // own stack.
+        if name == crate::view::apply::DEFAULT_LAYER {
+            self.layout.set_overlay_root(id);
+        }
+        self.layers.push((crate::compat::String::from(name), id));
         Some(id)
     }
 
@@ -491,7 +530,54 @@ impl ViewEngine {
         ctx: &Context,
         create: &dyn Fn(&Node) -> Option<ObjectId>,
     ) -> DiffReport {
-        self.update_with_optional_icon_resolver(view, ctx, create, None)
+        self.update_with_optional_icon_resolver(view, ctx, create, None, None)
+    }
+
+    /// Rebuild `view` and diff **only the subtree a row signal names**.
+    ///
+    /// The signal is the producer's assertion that nothing outside its container changed (see
+    /// [`RowSignal`](crate::view::RowSignal)). When that holds, the comparison is O(container)
+    /// instead of O(tree), which is what makes a 10 000-row list with one appended row cheap.
+    ///
+    /// # What is still full
+    ///
+    /// The `build` call. A [`View`] describes the tree it declares, and the engine has no
+    /// smaller description to ask it for — a view that can *also* build one container is a
+    /// different trait. What the signal removes is the diff's walk over every unchanged
+    /// sibling, which is the cost that grew with the list length.
+    ///
+    /// A signal whose container is missing from either tree falls back to a full diff, so a
+    /// stale or wrong signal costs a rebuild rather than leaving the tree stale.
+    pub fn update_rows(
+        &mut self,
+        view: &dyn View,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+        signal: &RowSignal,
+    ) -> DiffReport {
+        self.update_with_optional_icon_resolver(
+            view,
+            &Context::new(),
+            create,
+            None,
+            Some(signal.container.as_str()),
+        )
+    }
+
+    /// [`Self::update_rows`] with a [`Context`] the view may read while describing its tree.
+    pub fn update_rows_with(
+        &mut self,
+        view: &dyn View,
+        ctx: &Context,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+        signal: &RowSignal,
+    ) -> DiffReport {
+        self.update_with_optional_icon_resolver(
+            view,
+            ctx,
+            create,
+            None,
+            Some(signal.container.as_str()),
+        )
     }
 
     /// [`Self::update_with`] with an explicit resource resolver for inserted and changed icons.
@@ -502,7 +588,7 @@ impl ViewEngine {
         create: &dyn Fn(&Node) -> Option<ObjectId>,
         resolver: &dyn crate::widget::icon_source::IconResourceResolver,
     ) -> DiffReport {
-        self.update_with_optional_icon_resolver(view, ctx, create, Some(resolver))
+        self.update_with_optional_icon_resolver(view, ctx, create, Some(resolver), None)
     }
 
     fn update_with_optional_icon_resolver(
@@ -511,6 +597,7 @@ impl ViewEngine {
         ctx: &Context,
         create: &dyn Fn(&Node) -> Option<ObjectId>,
         resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
+        scope: Option<&str>,
     ) -> DiffReport {
         let Some(_) = self.current.as_ref() else {
             self.mount_with_optional_icon_resolver(view, ctx, create, resolver);
@@ -521,7 +608,13 @@ impl ViewEngine {
         let next = self.build_in_force(view, ctx);
         let previous = self.current.take().expect("checked just above");
         let lookup = |path: &[usize], _index: usize| self.id_of_path.get(path).copied();
-        let report = diff(&previous, &next, &lookup);
+        // A row signal narrows the walk to one keyed container. `diff_scoped` refuses a signal
+        // it cannot honour (a missing key, a differing path, a different control kind), and the
+        // full diff is then the correct, safe answer rather than an empty report.
+        let report = match scope.and_then(|key| diff_scoped(&previous, &next, key, &lookup)) {
+            Some(report) => report,
+            None => diff(&previous, &next, &lookup),
+        };
 
         // Assign ids for the shapes the diff is about to create, so that patches later in the
         // same batch can address them. Done before `apply` so a batched insert-then-write
@@ -551,22 +644,26 @@ impl ViewEngine {
             };
         let mut reserved = self.reserve_ids_for_inserts(&next, &report.patches, create);
 
-        // The overlay resolver is passed so an inserted portal lands in the overlay layer exactly
-        // as it would on `mount`. Without it a tooltip declared behind a breakpoint or a
-        // `child_if` was parented to its declared parent on rebuild and clipped by it, so
-        // `Node::portal`'s contract held only on the first build.
+        // The layer resolver is passed so an inserted portal lands in the layer exactly as it would
+        // on `mount`. Without it a tooltip declared behind a breakpoint or a `child_if` was
+        // parented to its declared parent on rebuild and clipped by it, so `Node::portal`'s
+        // contract held only on the first build.
         //
-        // `overlay_layer` is engine state, but `insert_subtree` is the thing that decides when a
-        // layer is needed, so the id travels through `Cell` — the closure must be callable while
-        // `self.layout` is mutably borrowed by `apply`.
-        let overlay_cell = core::cell::Cell::new(self.overlay_layer);
-        let host: super::apply::OverlayHost<'_> = &|| {
-            if let Some(id) = overlay_cell.get() {
+        // The stack is `Cell`-wrapped because the closure must be callable while `self.layout` is
+        // mutably borrowed by `apply`. A named layer requested here is created through `create`
+        // on first use, exactly as `layer_for` does on the mount path; the stack is synced back
+        // into `self.layers` afterwards so both paths agree about z-order.
+        let layer_cell = core::cell::RefCell::new(self.layers.clone());
+        let host: super::apply::OverlayHost<'_> = &|name: &str| {
+            if let Some(id) =
+                layer_cell.borrow().iter().find(|(layer, _)| layer == name).map(|(_, id)| *id)
+            {
                 return Some(id);
             }
-            let layer_node = Node::new("overlay").key("__overlay_layer");
+            let key = layer_key(name);
+            let layer_node = Node::new("overlay").key(key.clone());
             let id = create(&layer_node).filter(|&id| id != 0)?;
-            overlay_cell.set(Some(id));
+            layer_cell.borrow_mut().push((crate::compat::String::from(name), id));
             Some(id)
         };
         let applied = super::apply::apply_with_reserved_overlay_and_icon_resolver(
@@ -579,19 +676,23 @@ impl ViewEngine {
         );
         // The layer becomes part of the tree the layout knows about, registered with no parent:
         // it is a host the engine owns, not a child of the root (the same shape
-        // `overlay_layer_for` uses on the `mount` path).
-        if let Some(layer) = overlay_cell.get() {
-            if self.overlay_layer.is_none() {
+        // `layer_for` uses on the `mount` path). Only layers created during this batch are
+        // registered; an existing layer was registered when it was made.
+        let created_layers = layer_cell.into_inner();
+        for (name, layer) in &created_layers {
+            if self.layer(name).is_none() {
                 self.layout.register_node(
-                    layer,
+                    *layer,
                     crate::compat::String::from("overlay"),
-                    "__overlay_layer",
+                    layer_key(name),
                     None,
                 );
-                self.layout.set_overlay_root(layer);
-                self.overlay_layer = Some(layer);
+                if name == super::apply::DEFAULT_LAYER {
+                    self.layout.set_overlay_root(*layer);
+                }
             }
         }
+        self.layers = created_layers;
 
         // ── Lifecycle hooks for the subtrees this batch created and destroyed ──
         //
@@ -1030,7 +1131,8 @@ impl ViewEngine {
             // control's *host* moves (BLUE23 §5A.2: identity in the tree, rendering elsewhere).
             let host = match child.host {
                 Host::Declared => Some(node_id),
-                Host::Overlay => self.overlay_layer_for(create),
+                Host::Overlay => self.layer_for(crate::view::apply::DEFAULT_LAYER, create),
+                Host::Layer(ref name) => self.layer_for(name, create),
             };
             self.layout.register_node(child_id, child.widget.clone(), key, host);
             if let Some(host) = host {
@@ -1147,9 +1249,30 @@ impl ViewEngine {
         if let Some(root_id) = self.layout.root() {
             fresh.insert(Vec::new(), root_id);
         }
-        reindex_children(next, &[], self.layout.root(), 0, &self.layout, &mut fresh);
+        reindex_children(next, &[], self.layout.root(), 0, &self.layout, &self.layers, &mut fresh);
         self.id_of_path = fresh;
     }
+}
+
+/// The declared-tree key for an engine-created layer control.
+///
+/// The default layer keeps its historical `__overlay_layer` key; a named layer gets
+/// `__layer_<name>`. Keys are what a host's `create` bridge sees, so keeping the default
+/// spelling stable means an existing host that special-cases that key keeps working.
+fn layer_key(name: &str) -> crate::compat::String {
+    if name == super::apply::DEFAULT_LAYER {
+        crate::compat::String::from("__overlay_layer")
+    } else {
+        crate::compat::format!("__layer_{name}")
+    }
+}
+
+/// Looks up a layer's host id by name in the engine's z-ordered stack.
+fn layer_id(
+    layers: &[(crate::compat::String, crate::core::ObjectId)],
+    name: &str,
+) -> Option<crate::core::ObjectId> {
+    layers.iter().find(|(layer, _)| layer == name).map(|(_, id)| *id)
 }
 
 /// Rebuild `out` by looking each child of `node` up in `layout` by identity.
@@ -1171,6 +1294,7 @@ fn reindex_children(
     host: Option<crate::core::ObjectId>,
     first_slot: usize,
     layout: &crate::json::BoundJsonLayout,
+    layers: &[(crate::compat::String, crate::core::ObjectId)],
     out: &mut crate::compat::HashMap<Vec<usize>, crate::core::ObjectId>,
 ) {
     // Address the children by their parent, using the key when the node declares one and the
@@ -1188,11 +1312,14 @@ fn reindex_children(
         // from the map, and every later patch addressed by its path reports `UnknownWidget`. The
         // declared **path** is still inserted under its position, which is what keeps a keyed
         // rebuild matching it as this parent's child.
-        let lookup_parent = match child.host {
-            // A portal's control lives in the overlay layer, which is a **second host root** and not
-            // a child of the declared root. Asking the layer is what keeps the portal reachable by
+        let lookup_parent = match &child.host {
+            // A portal's control lives in a layer, which is a **additional host root** and not a
+            // child of the declared root. Asking the layer is what keeps the portal reachable by
             // its declared path; without it the lookup failed and the node dropped out of the map.
-            super::Host::Overlay => layout.overlay_root(),
+            super::Host::Overlay => {
+                layer_id(layers, super::apply::DEFAULT_LAYER).or_else(|| layout.overlay_root())
+            }
+            super::Host::Layer(name) => layer_id(layers, name),
             super::Host::Declared => host,
         };
         let resolved = match (child.key_str(), lookup_parent) {
@@ -1207,9 +1334,9 @@ fn reindex_children(
         if super::is_transparent_node(child) {
             // No control of its own: the declaration beneath it is hosted by *this* node's
             // parent, starting where this node would have sat.
-            reindex_children(child, &child_path, lookup_parent, slot, layout, out);
+            reindex_children(child, &child_path, lookup_parent, slot, layout, layers, out);
         } else {
-            reindex_children(child, &child_path, resolved, 0, layout, out);
+            reindex_children(child, &child_path, resolved, 0, layout, layers, out);
         }
         slot += super::mounted_slots(child);
     }
@@ -2797,5 +2924,42 @@ mod tests {
         view.revision.set(1);
         engine.update(&view, &ids.creator());
         assert_eq!(view.builds.get(), 2, "a new revision must rebuild");
+    }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A view declaring two named layers plus no portal.
+    struct Layers;
+
+    impl View for Layers {
+        fn build(&self) -> Node {
+            Node::new("window")
+                .key("root")
+                .child(Node::new("label").key("popup_row").layer("popup"))
+                .child(Node::new("label").key("tip_row").layer("tooltip"))
+        }
+    }
+
+    /// Named layers stack in first-use order and the default overlay is only created on demand.
+    #[test]
+    fn named_layers_stack_in_first_use_order() {
+        let next = Cell::new(1u64);
+        let create = |_node: &Node| {
+            let id = next.get();
+            next.set(id + 1);
+            Some(id)
+        };
+        let mut engine = ViewEngine::new();
+        engine.mount(&Layers, &create);
+
+        assert_eq!(engine.layer_names(), vec!["popup", "tooltip"]);
+        assert!(engine.layer("popup").is_some());
+        assert!(engine.layer("tooltip").is_some());
+        assert_eq!(engine.overlay_layer(), None, "no portal was declared");
+        assert_eq!(engine.layer("missing"), None);
     }
 }

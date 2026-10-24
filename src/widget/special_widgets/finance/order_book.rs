@@ -5,9 +5,10 @@
 //!
 //! # What a reader does with it
 //!
-//! Reads toward the centre rule. The asks stack above the rule with the lowest (best)
-//! ask in the bottom ask row, and the bids stack below it with the highest (best) bid
-//! in the top bid row. The two rows adjacent to the rule are the spread; the size
+//! Reads toward the centre rule. By default the asks stack above the rule with the
+//! lowest (best) ask in the bottom ask row, and the bids stack below it with the
+//! highest (best) bid in the top bid row; [`OrderBookWidget::set_side_order`] mirrors
+//! that for terminals that stack bids on top. The two rows adjacent to the rule are the spread; the size
 //! sitting at each level says how much would have to trade to move the price past it.
 //! A ladder is therefore read row by row, which is why the levels are drawn in a fixed
 //! row order rather than scaled to their prices: the interesting comparison is between
@@ -44,6 +45,20 @@ pub enum BookSide {
     Ask,
 }
 
+/// Which ladder is drawn above the spread rule.
+///
+/// Venues differ on whether the sell side sits above the buy side, so the order is
+/// a display choice rather than part of the data model. The default keeps asks above
+/// bids, which is the layout the widget has always drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BookSideOrder {
+    /// Asks above the rule, bids below it.
+    #[default]
+    AsksAbove,
+    /// Bids above the rule, asks below it.
+    BidsAbove,
+}
+
 /// How many levels of each side the ladder shows.
 ///
 /// Five is the depth Chinese and most European venues publish; ten is the common
@@ -61,6 +76,12 @@ pub struct OrderBookWidget {
     bid_color: Color,
     ask_color: Color,
     hovered: Option<(BookSide, usize)>,
+    /// Rows whose quantity changed on the last book update, with their remaining flash alpha.
+    flashes: Vec<(BookSide, usize, u8)>,
+    /// Whether size bars show cumulative depth rather than the level's own quantity.
+    cumulative_depth: bool,
+    /// Which ladder is drawn above the spread rule.
+    side_order: BookSideOrder,
     /// Emitted with the side and the level index when a row is clicked.
     pub level_clicked: crate::signal::Signal1<(BookSide, usize)>,
     /// Emitted as the pointer moves onto a row.
@@ -80,6 +101,9 @@ impl OrderBookWidget {
             bid_color: Color::rgb(38, 166, 91),
             ask_color: Color::rgb(220, 68, 70),
             hovered: None,
+            flashes: Vec::new(),
+            cumulative_depth: false,
+            side_order: BookSideOrder::default(),
             level_clicked: crate::signal::Signal1::new(),
             level_hovered: crate::signal::Signal1::new(),
             level_unhovered: crate::signal::Signal1::new(),
@@ -97,6 +121,21 @@ impl OrderBookWidget {
     /// the previous book may be past the end of the new one, and a hover highlight on a
     /// row that is not there would point at nothing.
     pub fn set_book(&mut self, book: OrderBook) {
+        // Rows whose size changed flash, so an update is visible without the caller diffing
+        // two books itself. The comparison is per side and index against the depth shown.
+        self.flashes.clear();
+        for side in [BookSide::Bid, BookSide::Ask] {
+            let before = self.level_slice(side).to_vec();
+            let after = match side {
+                BookSide::Bid => book.bids(),
+                BookSide::Ask => book.asks(),
+            };
+            for index in 0..after.len().min(before.len()) {
+                if (before[index].quantity - after[index].quantity).abs() > f64::EPSILON {
+                    self.flashes.push((side, index, 255));
+                }
+            }
+        }
         self.book = book;
         if let Some((side, index)) = self.hovered {
             let count = match side {
@@ -110,9 +149,46 @@ impl OrderBookWidget {
         self.base.request_redraw();
     }
 
+    /// Which ladder is drawn above the spread rule.
+    pub fn side_order(&self) -> BookSideOrder {
+        self.side_order
+    }
+
+    /// Sets which ladder is drawn above the spread rule.
+    ///
+    /// The best price of each block always sits against the rule, so swapping the blocks
+    /// only changes which side a reader looks up for bids; it does not reorder either
+    /// ladder's own levels.
+    pub fn set_side_order(&mut self, order: BookSideOrder) {
+        if self.side_order == order {
+            return;
+        }
+        self.side_order = order;
+        self.base.request_redraw();
+    }
+
     /// How many levels per side are shown.
     pub fn depth(&self) -> usize {
         self.depth
+    }
+
+    /// Makes the size bars show cumulative depth rather than each level's own quantity.
+    pub fn set_cumulative_depth(&mut self, cumulative: bool) {
+        if self.cumulative_depth == cumulative {
+            return;
+        }
+        self.cumulative_depth = cumulative;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether size bars show cumulative depth.
+    pub fn cumulative_depth(&self) -> bool {
+        self.cumulative_depth
+    }
+
+    /// Returns whether any row is still flashing.
+    pub fn is_flashing(&self) -> bool {
+        !self.flashes.is_empty()
     }
 
     /// Sets how many levels per side to show.
@@ -219,6 +295,22 @@ impl OrderBookWidget {
         (height / rows).max(1)
     }
 
+    /// The ladder drawn above the rule.
+    fn first_side(&self) -> BookSide {
+        match self.side_order {
+            BookSideOrder::AsksAbove => BookSide::Ask,
+            BookSideOrder::BidsAbove => BookSide::Bid,
+        }
+    }
+
+    /// The ladder drawn below the rule.
+    fn second_side(&self) -> BookSide {
+        match self.side_order {
+            BookSideOrder::AsksAbove => BookSide::Bid,
+            BookSideOrder::BidsAbove => BookSide::Ask,
+        }
+    }
+
     /// The row index under a screen y, if any.
     ///
     /// Bounded by the widget's own rectangle on both edges, matching `TreeTable::row_at`.
@@ -229,9 +321,10 @@ impl OrderBookWidget {
     /// stated explicitly so the rejection does not depend on that coincidence surviving a
     /// future change to the row-height formula.
     ///
-    /// The mapping follows the drawn layout: ask rows come first (top to bottom, with the
-    /// best ask last because the ask block is drawn reversed), then bid rows in their
-    /// best-first order. The returned index always points into `level_slice(side)`.
+    /// The mapping follows the drawn layout: the upper block comes first (top to bottom,
+    /// with that block's best price last because it is drawn reversed), then the lower
+    /// block in its best-first order. The returned index always points into
+    /// `level_slice(side)`, and which block is upper follows [`Self::side_order`].
     fn row_at(&self, y: i32) -> Option<(BookSide, usize)> {
         let geometry = self.base.geometry();
         if y < geometry.y || y >= geometry.y + geometry.height as i32 {
@@ -243,15 +336,17 @@ impl OrderBookWidget {
             return None;
         }
         let row = (offset / row_height) as usize;
-        let ask_rows = self.level_slice(BookSide::Ask).len();
-        if row < ask_rows {
-            // The ask block is drawn from the deepest level down to the best one, so screen
+        let upper = self.first_side();
+        let upper_rows = self.level_slice(upper).len();
+        if row < upper_rows {
+            // The upper block is drawn from the deepest level down to the best one, so screen
             // row 0 is the last slice entry and the row adjacent to the middle is index 0.
-            return Some((BookSide::Ask, ask_rows - 1 - row));
+            return Some((upper, upper_rows - 1 - row));
         }
-        let bid_row = row - ask_rows;
-        if bid_row < self.level_slice(BookSide::Bid).len() {
-            return Some((BookSide::Bid, bid_row));
+        let lower = self.second_side();
+        let lower_row = row - upper_rows;
+        if lower_row < self.level_slice(lower).len() {
+            return Some((lower, lower_row));
         }
         None
     }
@@ -301,6 +396,26 @@ impl Widget for OrderBookWidget {
     fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
         Some(self)
     }
+
+    /// Fades the quantity-change flashes.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if self.flashes.is_empty() {
+            return false;
+        }
+        let decay = (delta_ms / 4).min(255) as u8;
+        for (_, _, alpha) in &mut self.flashes {
+            *alpha = alpha.saturating_sub(decay);
+        }
+        self.flashes.retain(|(_, _, alpha)| *alpha > 0);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Whether a flash is still fading.
+    fn is_animating(&self) -> bool {
+        !self.flashes.is_empty()
+    }
+
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
     ///
@@ -454,6 +569,22 @@ impl Draw for OrderBookWidget {
         }
 
         let max_quantity = self.book.max_level_quantity();
+        // Cumulative depth per side: the running total from the touch outward, which is what
+        // the bar answers ("how much is available up to this price") when the mode is on.
+        let cumulative: alloc::collections::BTreeMap<(usize, usize), f64> = {
+            let mut map = alloc::collections::BTreeMap::new();
+            for (side_index, side) in [BookSide::Bid, BookSide::Ask].into_iter().enumerate() {
+                let mut running = 0.0f64;
+                for (index, level) in self.level_slice(side).iter().enumerate() {
+                    if level.quantity.is_finite() && level.quantity > 0.0 {
+                        running += level.quantity;
+                    }
+                    map.insert((side_index, index), running);
+                }
+            }
+            map
+        };
+        let cumulative_max = cumulative.values().copied().fold(0.0f64, f64::max);
         let row_height = self.row_height();
         let decimals = self.effective_decimals();
         // The size column occupies the middle band; prices sit outside it, so a long bar
@@ -461,24 +592,24 @@ impl Draw for OrderBookWidget {
         let spine = geometry.x + geometry.width as i32 / 2;
         let bar_span = (geometry.width as i32 / 2 - 40).max(8);
 
-        // Asks first, stacked above the middle; bids follow below it. The ask block is
-        // drawn from the deepest level up to the best one, so the lowest ask lands in the
-        // row touching the spread rule; the bid block keeps its best-first order, so the
-        // highest bid lands in the row just below the rule.
+        // The upper block is drawn first, stacked above the middle; the lower block follows.
+        // The upper block is drawn from its deepest level up to its best one, so the best
+        // price lands in the row touching the spread rule; the lower block keeps its
+        // best-first order, so its best price lands in the row just below the rule.
         // One font for the ladder: `role_font` allocates its family `String`, and it was rebuilt
         // twice per level per frame.
         let level_font = role_font(self.style(), 11.0);
         let mut row = 0;
-        for side in [BookSide::Ask, BookSide::Bid] {
+        for (block, side) in [self.first_side(), self.second_side()].into_iter().enumerate() {
             let levels = self.level_slice(side);
             let color = if side == BookSide::Bid { self.bid_color } else { self.ask_color };
             let level_count = levels.len();
-            // The ask block runs deepest-to-best while the bid block runs best-first. One
+            // The upper block runs deepest-to-best while the lower block runs best-first. One
             // reverse-aware index keeps a single row body for both sides; splitting into
             // `.iter()` and `.iter().rev()` would duplicate the row painter.
             #[allow(clippy::needless_range_loop)]
             for step in 0..level_count {
-                let index = if side == BookSide::Ask { level_count - 1 - step } else { step };
+                let index = if block == 0 { level_count - 1 - step } else { step };
                 let level = &levels[index];
                 let y = geometry.y + row * row_height;
                 let is_hovered = self.hovered == Some((side, index));
@@ -488,11 +619,31 @@ impl Draw for OrderBookWidget {
                         hover_fill,
                     );
                 }
+                // A changed quantity flashes in its side's colour, fading as `tick` runs.
+                if let Some((_, _, alpha)) =
+                    self.flashes.iter().find(|(flash_side, flash_index, _)| {
+                        *flash_side == side && *flash_index == index
+                    })
+                {
+                    let flash = if side == BookSide::Bid { self.bid_color } else { self.ask_color };
+                    context.fill_rect(
+                        Rect::new(geometry.x, y, geometry.width, row_height as u32),
+                        flash.with_alpha(*alpha),
+                    );
+                }
 
                 // The size bar, growing outward from the spine.
-                if max_quantity > 0.0 && level.quantity.is_finite() && level.quantity > 0.0 {
-                    let length =
-                        ((level.quantity / max_quantity) * bar_span as f64).round().max(1.0) as i32;
+                let size = if self.cumulative_depth {
+                    cumulative
+                        .get(&(usize::from(side == BookSide::Ask), index))
+                        .copied()
+                        .unwrap_or(level.quantity)
+                } else {
+                    level.quantity
+                };
+                let scale = if self.cumulative_depth { cumulative_max } else { max_quantity };
+                if scale > 0.0 && size.is_finite() && size > 0.0 {
+                    let length = ((size / scale) * bar_span as f64).round().max(1.0) as i32;
                     let (bar_x, bar_width) = match side {
                         BookSide::Bid => (spine - length, length as u32),
                         BookSide::Ask => (spine, length as u32),
@@ -568,10 +719,10 @@ impl Draw for OrderBookWidget {
             }
         }
 
-        // The spread, drawn across the middle where the ask and bid blocks meet.
+        // The spread, drawn across the middle where the two blocks meet.
         if let Some(spread) = self.book.spread() {
-            let ask_rows = self.level_slice(BookSide::Ask).len();
-            let y = geometry.y + ask_rows as i32 * row_height;
+            let upper_rows = self.level_slice(self.first_side()).len();
+            let y = geometry.y + upper_rows as i32 * row_height;
             context.draw_line_stroke(
                 Point { x: geometry.x, y },
                 Point { x: geometry.x + geometry.width as i32, y },
@@ -985,5 +1136,23 @@ mod tests {
 
         assert_eq!(ask_indices, alloc::vec![4, 3, 2, 1, 0], "asks run deepest to best");
         assert_eq!(bid_indices, alloc::vec![0, 1, 2, 3, 4], "bids run best first");
+    }
+
+    /// The side order can put bids on top while each ladder keeps its own ordering.
+    #[test]
+    fn side_order_can_stack_bids_above_asks() {
+        let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
+        ladder.set_book(fixtures::sample_book(3));
+        ladder.set_depth(3);
+        assert_eq!(ladder.side_order(), BookSideOrder::AsksAbove);
+        assert_eq!(ladder.row_at(1).map(|(side, _)| side), Some(BookSide::Ask));
+
+        ladder.set_side_order(BookSideOrder::BidsAbove);
+        assert_eq!(ladder.side_order(), BookSideOrder::BidsAbove);
+        // The upper block is drawn deepest-first, so its best level is its last row.
+        assert_eq!(ladder.row_at(1), Some((BookSide::Bid, 2)));
+        // The lower block is drawn best-first, so its best level touches the rule.
+        let rule_row = 3 * ladder.row_height();
+        assert_eq!(ladder.row_at(rule_row + 1), Some((BookSide::Ask, 0)));
     }
 }

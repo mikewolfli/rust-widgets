@@ -57,6 +57,13 @@ pub struct ConstraintRef {
     /// rounding the product to a degenerate size (D09-LAYOUT-03). [`ConstraintType::AspectRatio`]
     /// carries its own ratio and applies the same finite-input rule.
     pub multiplier: f32,
+    /// Resolution strength. Constraints are applied in ascending priority so a higher
+    /// value wins when two constraints address the same edge.
+    ///
+    /// This is a deterministic arbitration rule, not a full Cassowary solver: it lets a
+    /// caller express "this edge is stronger than that one" without changing the
+    /// pull-based resolution model. `0` is the default and preserves declaration order.
+    pub priority: i32,
 }
 
 /// A constraint-based layout that resolves anchor relationships between widgets.
@@ -74,6 +81,75 @@ impl ConstraintLayout {
         Self { constraints: Vec::new(), children: Vec::new() }
     }
 
+    /// Adds a constraint with an explicit priority.
+    ///
+    /// A lower priority is applied first, so a later (higher) priority for the same edge
+    /// overrides it. Equal priorities keep declaration order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_constraint_with_priority(
+        &mut self,
+        widget_id: ObjectId,
+        target_id: ObjectId,
+        constraint: ConstraintType,
+        offset: i32,
+        multiplier: f32,
+        priority: i32,
+    ) {
+        self.constraints.push((
+            widget_id,
+            ConstraintRef { target_id, constraint, offset, multiplier, priority },
+        ));
+    }
+
+    /// Whether the constraint graph contains a cycle.
+    ///
+    /// A cycle is legal but unresolvable in one pass: the resolution order below breaks
+    /// it at the first repeated node and logs a warning, rather than recursing forever.
+    pub fn has_constraint_cycle(&self) -> bool {
+        self.resolve_order().is_none()
+    }
+
+    /// Topologically orders the constraints by their target dependency, or `None` when
+    /// the graph has a cycle.
+    fn resolve_order(&self) -> Option<Vec<usize>> {
+        const UNVISITED: u8 = 0;
+        const VISITING: u8 = 1;
+        const DONE: u8 = 2;
+        let count = self.constraints.len();
+        let mut marks = vec![UNVISITED; count];
+        let mut order = Vec::with_capacity(count);
+        fn visit(
+            index: usize,
+            constraints: &[(ObjectId, ConstraintRef)],
+            marks: &mut [u8],
+            order: &mut Vec<usize>,
+        ) -> bool {
+            match marks[index] {
+                DONE => return true,
+                VISITING => return false,
+                _ => {}
+            }
+            marks[index] = VISITING;
+            let target = constraints[index].1.target_id;
+            for (other, (subject, _)) in constraints.iter().enumerate() {
+                if other != index && *subject == target && !visit(other, constraints, marks, order)
+                {
+                    return false;
+                }
+            }
+            marks[index] = DONE;
+            order.push(index);
+            true
+        }
+        for index in 0..count {
+            if marks[index] == UNVISITED && !visit(index, &self.constraints, &mut marks, &mut order)
+            {
+                return None;
+            }
+        }
+        Some(order)
+    }
+
     /// Add a constraint linking `widget_id` to `target_id`.
     pub fn add_constraint(
         &mut self,
@@ -83,8 +159,10 @@ impl ConstraintLayout {
         offset: i32,
         multiplier: f32,
     ) {
-        self.constraints
-            .push((widget_id, ConstraintRef { target_id, constraint, offset, multiplier }));
+        self.constraints.push((
+            widget_id,
+            ConstraintRef { target_id, constraint, offset, multiplier, priority: 0 },
+        ));
     }
 
     /// Remove all constraints associated with the given widget.
@@ -265,9 +343,23 @@ impl Layout for ConstraintLayout {
             resolved.push((child_id, rect));
         }
 
-        // Apply constraints in order. Each constraint references a target that may
-        // have been positioned earlier in the constraints list.
-        for (subject_id, constraint_ref) in &self.constraints {
+        // Apply constraints in dependency order, lowest priority first, so a stronger
+        // constraint is the one that survives on a shared edge. A cycle is broken by
+        // falling back to declaration order; the layout still terminates.
+        let order: Vec<usize> = match self.resolve_order() {
+            Some(order) => order,
+            None => {
+                log::warn!(
+                    "constraint layout has a dependency cycle; resolving in declaration order"
+                );
+                (0..self.constraints.len()).collect()
+            }
+        };
+        let mut ranked: Vec<(usize, i32)> =
+            order.into_iter().map(|index| (index, self.constraints[index].1.priority)).collect();
+        ranked.sort_by_key(|(_, priority)| *priority);
+        for (index, _) in ranked {
+            let (subject_id, constraint_ref) = &self.constraints[index];
             if let Some(pos) = resolved.iter().position(|(id, _)| id == subject_id) {
                 let mut widget_rect = resolved[pos].1;
                 Self::resolve_rect(&mut widget_rect, constraint_ref, rect, &resolved);
@@ -493,5 +585,28 @@ mod tests {
         assert_eq!(height_for(0.0), 0);
         let huge = height_for(f32::MAX);
         assert!(huge <= i32::MAX as u32, "a huge multiplier must saturate, not wrap: {huge}");
+    }
+
+    /// A cycle is detected instead of recursing, and priority decides which constraint
+    /// wins when two rules address the same edge.
+    #[test]
+    fn cycles_are_detected_and_priority_arbitrates() {
+        let mut layout = ConstraintLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.add_constraint(1, 2, ConstraintType::LeftToRight, 0, 1.0);
+        layout.add_constraint(2, 1, ConstraintType::LeftToRight, 0, 1.0);
+        assert!(layout.has_constraint_cycle());
+        let mut placed = Vec::new();
+        layout.update(Rect::new(0, 0, 100, 100), &mut |id, rect| placed.push((id, rect)));
+        assert_eq!(placed.len(), 2, "a cycle must not hang or drop children");
+
+        let mut ranked = ConstraintLayout::new();
+        ranked.add_widget(1, 0);
+        ranked.add_constraint_with_priority(1, 0, ConstraintType::LeftToLeft, 10, 1.0, 0);
+        ranked.add_constraint_with_priority(1, 0, ConstraintType::LeftToLeft, 40, 1.0, 5);
+        let mut placed = Vec::new();
+        ranked.update(Rect::new(0, 0, 100, 100), &mut |id, rect| placed.push((id, rect)));
+        assert_eq!(placed[0].1.x, 40, "the higher-priority rule wins");
     }
 }

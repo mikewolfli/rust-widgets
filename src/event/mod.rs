@@ -29,6 +29,8 @@ pub mod focus;
 /// Named key codes, so a handler does not compare `Event::KeyPress.key` against a literal.
 pub mod key_codes;
 pub mod r#loop;
+/// Capture / target / bubble event routing with an explicit consumed flag.
+pub mod propagation;
 /// A generic, runtime-typed queue used by the event and task plumbing.
 pub mod queue;
 pub mod timer;
@@ -48,10 +50,15 @@ pub use key_codes::{
     BACKSPACE, DELETE, DOWN, END, ENTER, ESCAPE, HOME, LEFT, LINE_FEED, PAGE_DOWN, PAGE_UP, RIGHT,
     SPACE, TAB, UP,
 };
+pub use propagation::{
+    ancestor_chain, consume_event, is_consumed, route_event, take_consumed, DispatchPhase,
+    Propagation,
+};
 pub use r#loop::AnimationFrameRequest;
 pub use r#loop::EventLoop;
 pub use timer::IdleTask;
 pub use timer::TimerManager;
+pub use timer::TimerPrecision;
 /// Named mouse-button codes, re-exported so a widget never writes a bare `2` to
 /// mean "secondary button".
 pub use types::mouse_button;

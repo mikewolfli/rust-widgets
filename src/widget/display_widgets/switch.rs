@@ -7,7 +7,7 @@
 //! similar to iOS UISwitch or Android Switch material widget. It supports
 //! on/off toggling, animated transitions, and accessibility role mapping.
 
-use crate::core::{Color, Rect};
+use crate::core::{Color, Rect, Size};
 // Gated exactly like the test module that uses it: `#[cfg(test)]` alone is true in a build where
 // `full_widgets` is off, and the import would then be unused (a warning, which this crate's
 // profile checks treat as a defect).
@@ -24,10 +24,111 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{
     active_profile, focus_ring_color, profile_metrics, ControlMetrics, ControlMetricsProfile,
-    FocusRing, SwitchGeometry, FOCUS_HALO_BLUR_RADIUS, FOCUS_RING_WIDTH,
+    FocusRing, SwitchGeometry as SwitchShape, FOCUS_HALO_BLUR_RADIUS, FOCUS_RING_WIDTH,
 };
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// A named switch preset.
+///
+/// # Why a preset and not a second control
+///
+/// Every one of these is the same *control* — one boolean, one gesture, one animation — drawn
+/// at different proportions. The exact shape lives in the metrics layer
+/// ([`crate::widget::metrics::SwitchGeometry`]); this enum is the caller-facing name for the
+/// three presets the library ships, so a host can say "draw this switch the macOS way"
+/// without assembling a shape by hand.
+///
+/// [`Material`](Self::Material) is the default and is pixel-identical to the switch this
+/// control has always drawn, including following the active metrics profile's track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SwitchGeometry {
+    /// Material's `52x32` track with a 14 px thumb radius.
+    #[default]
+    Material,
+    /// iOS's `51x31` track with a 13 px thumb radius and a press stretch.
+    Cupertino,
+    /// macOS's `40x22` track with a 9 px thumb radius and a narrow inset.
+    MacOS,
+}
+
+/// macOS's drawn shape: a `40x22` track with an 18 px thumb and a 2 px inset.
+const MACOS_SWITCH_SHAPE: SwitchShape =
+    SwitchShape { track: Size::new(40, 22), thumb_radius: 9, thumb_inset: 2, press_stretch: 0 };
+
+impl SwitchGeometry {
+    /// The token this preset is spelled with.
+    pub const fn token(self) -> &'static str {
+        match self {
+            SwitchGeometry::Material => "material",
+            SwitchGeometry::Cupertino => "cupertino",
+            SwitchGeometry::MacOS => "macos",
+        }
+    }
+
+    /// Parses a preset token published by [`SwitchGeometry::token`].
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "material" => Some(SwitchGeometry::Material),
+            "cupertino" => Some(SwitchGeometry::Cupertino),
+            "macos" => Some(SwitchGeometry::MacOS),
+            _ => None,
+        }
+    }
+
+    /// The exact drawn shape this preset selects.
+    const fn shape(self) -> SwitchShape {
+        match self {
+            SwitchGeometry::Material => SwitchShape::MATERIAL,
+            SwitchGeometry::Cupertino => SwitchShape::CUPERTINO,
+            SwitchGeometry::MacOS => MACOS_SWITCH_SHAPE,
+        }
+    }
+
+    /// The preset that names `shape`, or `Material` for a caller-supplied custom shape.
+    ///
+    /// The enum names presets rather than arbitrary shapes, so a shape built field by field
+    /// has no token; [`Switch::drawn_shape`] remains the exact answer for that case.
+    fn of(shape: SwitchShape) -> Self {
+        if shape == SwitchShape::CUPERTINO {
+            SwitchGeometry::Cupertino
+        } else if shape == MACOS_SWITCH_SHAPE {
+            SwitchGeometry::MacOS
+        } else {
+            SwitchGeometry::Material
+        }
+    }
+}
+
+impl From<SwitchGeometry> for SwitchShape {
+    fn from(preset: SwitchGeometry) -> Self {
+        preset.shape()
+    }
+}
+
+/// The thumb's travel geometry, derived once for the paint path and the drag mapping.
+struct ThumbTravel {
+    track_rect: Rect,
+    thumb_size: u32,
+    inset: u32,
+    drawn_width: u32,
+    span: u32,
+}
+
+/// A press on the thumb that may become a horizontal drag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ThumbDrag {
+    /// The pointer's x at the press, so a drag can be told from a click.
+    origin_x: i32,
+    /// Whether the pointer has moved far enough to count as a drag.
+    moved: bool,
+}
+
+/// How far the pointer must travel before a press counts as a drag rather than a click.
+///
+/// Two pixels: enough to absorb the jitter of a click, small enough that a deliberate drag
+/// is recognised on its first noticeable movement.
+const SWITCH_DRAG_THRESHOLD: i32 = 2;
 
 /// Switch/Toggle widget for binary on/off state selection.
 pub struct Switch {
@@ -61,10 +162,15 @@ pub struct Switch {
     /// The shape the track and thumb are drawn in.
     ///
     /// Defaults to Material's `52x32`; `cupertino_switch` is this same control carrying
-    /// `SwitchGeometry::CUPERTINO`. One control, one gesture, one animation — and the two
+    /// `SwitchShape::CUPERTINO`. One control, one gesture, one animation — and the two
     /// presets cannot drift on the parts that are not about size, because there is only
     /// one implementation of those parts.
-    geometry: SwitchGeometry,
+    geometry: SwitchShape,
+    /// The press that may become a horizontal thumb drag.
+    ///
+    /// `Some` while a press that landed on the thumb is held. A press elsewhere on the control
+    /// leaves this `None`, which is what keeps the historical "press toggles" gesture intact.
+    drag: Option<ThumbDrag>,
     /// The ON track's colour, when the caller wants to name it rather than take the
     /// theme's accent.
     ///
@@ -92,7 +198,8 @@ impl Switch {
             // Starting at rest (0.0) keeps a freshly built switch at the off end instead
             // of fading *out* on its first frame.
             travel: PropertyDriver::at(0.0, MotionSlot::Slow),
-            geometry: SwitchGeometry::MATERIAL,
+            geometry: SwitchShape::MATERIAL,
+            drag: None,
             on_track: None,
             toggled: Signal1::new(),
         }
@@ -212,8 +319,38 @@ impl Switch {
     /// Named `drawn_shape` rather than `geometry` because `Widget::geometry()` already
     /// answers a different question (the control's rectangle), and a same-named accessor
     /// would silently shadow it at every call site.
-    pub fn drawn_shape(&self) -> SwitchGeometry {
+    pub fn drawn_shape(&self) -> SwitchShape {
         self.geometry
+    }
+
+    /// The named preset this switch is drawn with.
+    ///
+    /// Named `switch_geometry` rather than `geometry` for the same reason
+    /// [`Switch::drawn_shape`] is not called `shape`: `Widget::geometry()` answers the
+    /// control's rectangle and must not be shadowed. A caller that supplied a custom shape
+    /// through [`Switch::set_geometry`] has no named preset and is reported as
+    /// [`SwitchGeometry::Material`]; [`Switch::drawn_shape`] is the exact answer for that case.
+    pub fn switch_geometry(&self) -> SwitchGeometry {
+        SwitchGeometry::of(self.geometry)
+    }
+
+    /// Selects a named preset for the track and thumb.
+    ///
+    /// `Material` stores the default shape, which is the one the active metrics profile may
+    /// resize; `Cupertino` and `MacOS` store their own fixed proportions and are therefore
+    /// not profile-resized. The default is `Material`, so a switch that never calls this is
+    /// pixel-identical to the control this library has always drawn.
+    ///
+    /// This is the preset route; [`Switch::set_geometry`] remains the exact-shape route for a
+    /// caller that built its own proportions.
+    pub fn set_switch_geometry(&mut self, preset: SwitchGeometry) {
+        let shape = preset.shape();
+        if self.geometry == shape {
+            return;
+        }
+        self.geometry = shape;
+        self.base.request_redraw();
+        self.base.request_layout();
     }
 
     /// The shape the layout and paint paths actually use.
@@ -221,32 +358,38 @@ impl Switch {
     /// # Why the stored preset is not overwritten
     ///
     /// `geometry` records the shape the **caller** chose, and `drawn_shape` reports that choice.
-    /// A switch still on the default preset, [`SwitchGeometry::MATERIAL`], is the one the metrics
+    /// A switch still on the default preset, [`SwitchShape::MATERIAL`], is the one the metrics
     /// profile may resize: a Macos-profile theme draws macOS's `38x22` track, while Material's
     /// profile answers the same `52x32` the control always drew. An explicitly chosen preset — the
     /// iOS switch's `51x31` — is a platform shape in its own right and is left alone. Comparing
     /// the whole preset rather than the track alone also preserves a caller's custom thumb or
     /// stretch even when its track happens to match the default width and height.
-    fn effective_geometry(&self) -> SwitchGeometry {
-        if self.geometry != SwitchGeometry::MATERIAL {
+    fn effective_geometry(&self) -> SwitchShape {
+        if self.geometry != SwitchShape::MATERIAL {
             return self.geometry;
         }
-        SwitchGeometry { track: profile_metrics(active_profile()).switch_track, ..self.geometry }
+        SwitchShape { track: profile_metrics(active_profile()).switch_track, ..self.geometry }
     }
 
     /// Replaces the drawn shape.
     ///
     /// # What this is for
     ///
-    /// `cupertino_switch` uses it to carry `SwitchGeometry::CUPERTINO`. It is public
+    /// `cupertino_switch` uses it to carry `SwitchShape::CUPERTINO`. It is public
     /// rather than crate-private because a host that wants an iOS-shaped switch under
     /// its own name — or a third preset — should not have to reimplement the gesture and
     /// the animation to get it.
     ///
+    /// It accepts either a named preset ([`SwitchGeometry`], converted to its shape) or an
+    /// exact [`SwitchShape`], so a caller that wants one of the library's presets can spell it
+    /// `set_geometry(SwitchGeometry::MacOS)` and a caller with custom proportions can pass the
+    /// shape itself.
+    ///
     /// It also reports the change as paint-worthy: the thumb's rectangle and the
     /// control's `size_hint` both read this field, so a silent assignment would leave a
     /// laid-out switch painted at the old size.
-    pub fn set_geometry(&mut self, geometry: SwitchGeometry) {
+    pub fn set_geometry<G: Into<SwitchShape>>(&mut self, geometry: G) {
+        let geometry = geometry.into();
         if self.geometry == geometry {
             return;
         }
@@ -287,14 +430,7 @@ impl Switch {
     /// smaller than its own track has no thumb to point at, and the caller must be able to
     /// tell that from a thumb at the origin.
     pub fn thumb_rect(&self, rect: Rect) -> Option<Rect> {
-        let shape = self.effective_geometry();
-        let track_rect = ControlMetrics::center_in(rect, shape.track);
-        let thumb_size = shape.thumb_size();
-        let thumb_inset = shape.thumb_inset;
-        let thumb_size = thumb_size.min(track_rect.height.saturating_sub(thumb_inset * 2));
-        if thumb_size == 0 {
-            return None;
-        }
+        let travel_geometry = self.thumb_travel(rect)?;
         // A disabled switch shows its logical state at rest; an enabled one follows the
         // travel, which is what lets the thumb be seen crossing.
         let travel = if self.base.is_enabled() {
@@ -308,21 +444,54 @@ impl Switch {
         // the shape asks for it. The stretch is applied to the *span* the thumb travels
         // over as well as to the thumb itself, so a stretched thumb still stops at the
         // track's inner edge instead of overhanging it.
-        let held = self.base.is_pressed() && shape.press_stretch > 0;
-        let stretch = if held { shape.press_stretch } else { 0 };
-        let drawn_width = thumb_size + stretch * 2;
-        let travel_span = track_rect
-            .width
-            .saturating_sub(drawn_width + thumb_inset * 2)
-            .max(thumb_size.saturating_sub(drawn_width));
-        let travel_x = thumb_inset as i32 + (travel_span as f32 * travel) as i32;
+        let travel_x = travel_geometry.inset as i32 + (travel_geometry.span as f32 * travel) as i32;
         // The centre travels; the rectangle grows around it. Placing the *left edge* at
         // the travel offset would make a held thumb jump left by its own stretch, which
         // reads as the control twitching on touch-down rather than responding.
-        let centre_x = track_rect.x + travel_x + thumb_size as i32 / 2;
-        let thumb_x = centre_x - drawn_width as i32 / 2;
-        let thumb_y = track_rect.y + thumb_inset as i32;
-        Some(Rect::new(thumb_x, thumb_y, drawn_width, thumb_size))
+        let centre_x =
+            travel_geometry.track_rect.x + travel_x + travel_geometry.thumb_size as i32 / 2;
+        let thumb_x = centre_x - travel_geometry.drawn_width as i32 / 2;
+        let thumb_y = travel_geometry.track_rect.y + travel_geometry.inset as i32;
+        Some(Rect::new(thumb_x, thumb_y, travel_geometry.drawn_width, travel_geometry.thumb_size))
+    }
+
+    /// The track and the span the thumb travels over, derived once.
+    ///
+    /// Both [`Switch::thumb_rect`] and the drag mapping read this, so the grip on screen and
+    /// the travel the pointer addresses are the same geometry rather than two estimates.
+    fn thumb_travel(&self, rect: Rect) -> Option<ThumbTravel> {
+        let shape = self.effective_geometry();
+        let track_rect = ControlMetrics::center_in(rect, shape.track);
+        let thumb_size =
+            shape.thumb_size().min(track_rect.height.saturating_sub(shape.thumb_inset * 2));
+        if thumb_size == 0 {
+            return None;
+        }
+        let held = self.base.is_pressed() && shape.press_stretch > 0;
+        let stretch = if held { shape.press_stretch } else { 0 };
+        let drawn_width = thumb_size + stretch * 2;
+        let span = track_rect
+            .width
+            .saturating_sub(drawn_width + shape.thumb_inset * 2)
+            .max(thumb_size.saturating_sub(drawn_width));
+        Some(ThumbTravel { track_rect, thumb_size, inset: shape.thumb_inset, drawn_width, span })
+    }
+
+    /// The travel fraction a pointer at `x` selects, clamped to `0.0..=1.0`.
+    ///
+    /// The inverse of the placement [`Switch::thumb_rect`] performs: the same origin and the
+    /// same span, so a dragged thumb sits exactly under the pointer that is moving it.
+    fn travel_for_x(&self, rect: Rect, x: i32) -> f32 {
+        let Some(travel_geometry) = self.thumb_travel(rect) else {
+            return 0.0;
+        };
+        if travel_geometry.span == 0 {
+            return 0.0;
+        }
+        let origin = travel_geometry.track_rect.x
+            + travel_geometry.inset as i32
+            + travel_geometry.thumb_size as i32 / 2;
+        ((x - origin) as f32 / travel_geometry.span as f32).clamp(0.0, 1.0)
     }
 
     /// Advances the thumb's travel by `delta_ms` and reports whether another frame is
@@ -343,6 +512,12 @@ impl Switch {
     /// reversal mid-flight re-aims the travel from where it currently is instead of
     /// restarting from the far end.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
+        // While the pointer is dragging the thumb, it — not `checked` — owns the travel. A
+        // tick that re-aimed at the logical state here would pull the thumb out from under
+        // the hand holding it.
+        if self.drag.is_some() {
+            return false;
+        }
         // One place states which end `checked` means, so the tick and the "am I moving?" query
         // cannot disagree about it (`Switch::travel_target`).
         self.travel.set_target(self.travel_target());
@@ -494,7 +669,7 @@ impl Widget for Switch {
     }
 
     fn is_animating(&self) -> bool {
-        self.travel.value() != self.travel_target()
+        self.drag.is_none() && (self.travel.value() - self.travel_target()).abs() > f32::EPSILON
     }
     /// Resolves a published event name to the control's own signal.
     ///
@@ -803,18 +978,54 @@ impl EventHandler for Switch {
                     self.pressed = pressed;
                     self.request_frame_repaint(None);
                 }
+                // A press that landed on the **thumb** may become a horizontal drag. A press
+                // anywhere else keeps the historical click-to-toggle gesture.
+                self.drag = if pressed {
+                    match self.thumb_rect(self.geometry()) {
+                        Some(thumb) if thumb.contains(*pos) => {
+                            Some(ThumbDrag { origin_x: pos.x, moved: false })
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+            }
+            Event::MouseMove { pos } if self.drag.is_some() => {
+                let rect = self.geometry();
+                if let Some(drag) = self.drag.as_mut() {
+                    if (pos.x - drag.origin_x).abs() >= SWITCH_DRAG_THRESHOLD {
+                        drag.moved = true;
+                    }
+                }
+                // The thumb follows the pointer through the **same travel driver** the
+                // animation uses. Jumping — rather than aiming and waiting for a tick — is
+                // what makes it sit under the finger instead of trailing it.
+                let travel = self.travel_for_x(rect, pos.x);
+                self.travel.jump_to(travel);
+                self.request_frame_repaint(None);
             }
             Event::MouseRelease { pos, button: 1 } if self.pressed => {
                 self.pressed = false;
-                // A release off the control cancels, matching the platform convention
-                // that dragging away from a toggle abandons the interaction.
-                if self.base.contains_point_with_touch_expansion(*pos) {
-                    self.toggle();
+                let drag = self.drag.take();
+                match drag {
+                    // A real drag commits the side the thumb was released on: crossing the
+                    // track's midpoint is what turns the switch on (or back off).
+                    Some(drag) if drag.moved => {
+                        self.set_checked(self.travel.value() >= 0.5);
+                    }
+                    // A press that never moved is still a click, which toggles.
+                    _ => {
+                        if self.base.contains_point_with_touch_expansion(*pos) {
+                            self.toggle();
+                        }
+                    }
                 }
                 self.request_frame_repaint(None);
             }
             Event::MouseRelease { button: 1, .. } => {
                 self.pressed = false;
+                self.drag = None;
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } if enabled => {
@@ -859,6 +1070,7 @@ impl EventHandler for Switch {
             // the ring, because the control is no longer the keyboard's target.
             Event::FocusLost => {
                 self.pressed = false;
+                self.drag = None;
                 self.base.request_redraw();
             }
             Event::MouseEnter { .. } => {
@@ -868,6 +1080,13 @@ impl EventHandler for Switch {
                 self.request_frame_repaint(None);
             }
             Event::MouseLeave { .. } => {
+                // A release delivered outside the control never reaches this widget, so a
+                // departed pointer abandons a drag rather than leaving the thumb stranded.
+                if self.drag.is_some() {
+                    self.drag = None;
+                    self.pressed = false;
+                    self.travel.jump_to(self.travel_target());
+                }
                 self.set_hovered(false);
                 self.request_frame_repaint(None);
             }
@@ -1322,7 +1541,7 @@ mod tests {
         assert!(thumb.height <= dimensions::SWITCH_TRACK.height, "the thumb fits the track");
 
         let mut ios = Switch::new(rect);
-        ios.set_geometry(SwitchGeometry::CUPERTINO);
+        ios.set_geometry(SwitchShape::CUPERTINO);
         assert_eq!(
             ios.size_hint().height,
             dimensions::CUPERTINO_SWITCH_TRACK.height,
@@ -1358,7 +1577,7 @@ mod tests {
         assert!(thumb.height <= 22, "the thumb is clamped to the compact track: {thumb:?}");
         assert_eq!(
             sw.drawn_shape(),
-            SwitchGeometry::MATERIAL,
+            SwitchShape::MATERIAL,
             "the profile changes the drawn track, not the preset the caller stored"
         );
     }
@@ -1406,21 +1625,83 @@ mod tests {
         runtime::unregister(id);
     }
 
-    /// `Full` keeps the whole-control path and records no damage rectangle.
-    #[cfg(not(alloc_frugal))]
+    /// A preset names one of the three shipped shapes and `MacOS` changes the proportions.
     #[test]
-    fn a_hover_frame_in_full_mode_keeps_the_whole_control_repaint() {
-        use crate::widget::runtime;
+    fn switch_geometry_presets_select_their_own_proportions() {
+        let rect = crate::widget::census::CENSUS_RECT;
+        let mut sw = Switch::new(rect);
+        assert_eq!(sw.switch_geometry(), SwitchGeometry::Material, "Material is the default");
+        assert_eq!(SwitchGeometry::Material.token(), "material");
+        assert_eq!(SwitchGeometry::Cupertino.token(), "cupertino");
+        assert_eq!(SwitchGeometry::MacOS.token(), "macos");
+        assert_eq!(SwitchGeometry::from_token("macos"), Some(SwitchGeometry::MacOS));
+        assert_eq!(SwitchGeometry::from_token("unknown"), None);
 
-        let id = runtime::register(crate::compat::Box::new(Switch::new(Rect::new(4, 8, 52, 32))))
-            .expect("registry");
-        assert_eq!(runtime::repaint_mode(id), runtime::RepaintMode::Full);
+        sw.set_switch_geometry(SwitchGeometry::MacOS);
+        assert_eq!(sw.switch_geometry(), SwitchGeometry::MacOS);
+        assert_eq!(sw.drawn_shape().track, Size::new(40, 22), "macOS is 40x22 pt");
+        assert_eq!(sw.size_hint().height, 22);
+        let thumb = sw.thumb_rect(rect).expect("the compact track holds a thumb");
+        assert!(thumb.height <= 22, "the thumb is clamped to the macOS track: {thumb:?}");
 
-        assert!(runtime::dispatch_event(id, &Event::mouse_enter(1, 1)));
-        assert!(
-            runtime::dirty_rects(id).is_empty(),
-            "Full mode records no damage, so the control repaints whole"
-        );
-        runtime::unregister(id);
+        sw.set_switch_geometry(SwitchGeometry::Cupertino);
+        assert_eq!(sw.switch_geometry(), SwitchGeometry::Cupertino);
+        assert_eq!(sw.drawn_shape(), SwitchShape::CUPERTINO);
+
+        // Setting the same preset again is a no-op.
+        sw.set_switch_geometry(SwitchGeometry::Cupertino);
+        assert_eq!(sw.switch_geometry(), SwitchGeometry::Cupertino);
+
+        // The exact-shape setter accepts a named preset too, so both spellings select the
+        // same proportions.
+        sw.set_geometry(SwitchGeometry::MacOS);
+        assert_eq!(sw.switch_geometry(), SwitchGeometry::MacOS);
+        assert_eq!(sw.drawn_shape().track, Size::new(40, 22));
+    }
+
+    /// Dragging the thumb past the midpoint commits the state the thumb was released on.
+    ///
+    /// The press arms a drag only when it lands on the thumb; the thumb follows the pointer
+    /// through the travel driver, and a release without movement still toggles.
+    #[test]
+    fn dragging_the_thumb_past_the_midpoint_toggles_on_release() {
+        let rect = crate::widget::census::CENSUS_RECT;
+        let mut sw = Switch::new(rect);
+        let thumb = sw.thumb_rect(rect).expect("a roomy switch has a thumb");
+        let grab = Point::new(thumb.x + thumb.width as i32 / 2, thumb.y + thumb.height as i32 / 2);
+
+        sw.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
+        assert!(!sw.is_checked(), "a press alone does not commit");
+
+        // Drag to the far right, past the midpoint, and release.
+        let shape = sw.drawn_shape();
+        let track = ControlMetrics::center_in(rect, shape.track);
+        let far_right = track.x + track.width as i32 - shape.thumb_inset as i32;
+        sw.handle_event(&Event::MouseMove { pos: Point::new(far_right, grab.y) });
+        assert!(sw.travel_progress() > 0.5, "the thumb follows the pointer across");
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(far_right, grab.y), button: 1 });
+        assert!(sw.is_checked(), "releasing past the midpoint turns the switch on");
+
+        // And the reverse journey turns it back off.
+        let thumb = sw.thumb_rect(rect).expect("thumb");
+        let grab = Point::new(thumb.x + thumb.width as i32 / 2, thumb.y + thumb.height as i32 / 2);
+        sw.handle_event(&Event::MousePress { pos: grab, button: 1, modifiers: 0 });
+        let far_left = track.x + shape.thumb_inset as i32;
+        sw.handle_event(&Event::MouseMove { pos: Point::new(far_left, grab.y) });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(far_left, grab.y), button: 1 });
+        assert!(!sw.is_checked(), "releasing past the midpoint turns it back off");
+    }
+
+    /// A press that does not move is still a click, even though the press landed on the thumb.
+    #[test]
+    fn pressing_the_thumb_without_dragging_still_toggles() {
+        let rect = crate::widget::census::CENSUS_RECT;
+        let mut sw = Switch::new(rect);
+        let thumb = sw.thumb_rect(rect).expect("thumb");
+        let at = Point::new(thumb.x + thumb.width as i32 / 2, thumb.y + thumb.height as i32 / 2);
+
+        sw.handle_event(&Event::MousePress { pos: at, button: 1, modifiers: 0 });
+        sw.handle_event(&Event::MouseRelease { pos: at, button: 1 });
+        assert!(sw.is_checked(), "a click on the thumb keeps the press-toggles gesture");
     }
 }

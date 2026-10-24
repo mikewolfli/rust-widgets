@@ -17,10 +17,26 @@ use crate::widget::numeric::ordered_clamp_u32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// How long one revolution of the indeterminate arc takes, in milliseconds.
+///
+/// The revolution is a loop rather than a state change, so it is paced from the theme's
+/// `slow` token scaled by [`SPIN_SLOW_MULTIPLE`]; `1400` is the value the preset produces
+/// and the fallback when no theme is installed.
+const DEFAULT_SPIN_PERIOD_MS: u32 = 1400;
+
+/// How many `slow` tokens one revolution is worth.
+const SPIN_SLOW_MULTIPLE: u32 = 5;
+
 /// Arc widget for displaying circular progress or angular values.
 pub struct Arc {
     base: BaseWidget,
     /// Current value (0-100 range mapped to arc angle).
+    ///
+    /// When a signed range has been installed with [`Arc::set_range_signed`], this holds the
+    /// **offset** from that range's minimum rather than the absolute reading. The signed
+    /// accessors ([`Arc::signed_value`], [`Arc::set_signed_value`]) are the ones that speak in
+    /// absolute terms; the legacy unsigned accessors keep their historical clamping rule and
+    /// are byte-identical whenever no signed range has ever been set.
     value: u32,
     /// Minimum value.
     min: u32,
@@ -38,6 +54,24 @@ pub struct Arc {
     show_value: bool,
     /// Whether the arc is in indeterminate (spinning) mode.
     indeterminate: bool,
+    /// The indeterminate sweep's rotation, in turns: `0.0` and `1.0` are the same angle.
+    ///
+    /// Advanced by [`Arc::tick`] rather than read from the wall clock, so two frames of the
+    /// same control with the same tick history paint the same picture and a test can assert
+    /// that the arc turns without sleeping.
+    phase: f32,
+    /// Whether the ring is painted as a true arc stroke instead of a filled disc with a
+    /// background-coloured hole.
+    ///
+    /// Defaults to `false`, which is the historical paint order and therefore keeps every
+    /// existing snapshot byte-identical.
+    true_arc: bool,
+    /// Whether a signed range is installed.
+    signed: bool,
+    /// The installed signed range's lower bound.
+    signed_min: i32,
+    /// The installed signed range's upper bound.
+    signed_max: i32,
 }
 
 impl Arc {
@@ -58,6 +92,11 @@ impl Arc {
             rounded: false,
             show_value: true,
             indeterminate: false,
+            phase: 0.0,
+            true_arc: false,
+            signed: false,
+            signed_min: 0,
+            signed_max: 0,
         }
     }
 
@@ -123,10 +162,13 @@ impl Arc {
 
     /// Sets both minimum and maximum values in one call.
     ///
-    /// The current value is re-clamped to the new range.
+    /// The current value is re-clamped to the new range. An unsigned range disables any
+    /// signed range installed by [`Arc::set_range_signed`]: the last writer decides which
+    /// scale the control speaks in, and the historical unsigned behaviour is the default.
     ///
     /// Like [`Arc::set_value`], `changed` is deliberately not gated by `enabled`.
     pub fn set_range(&mut self, min: u32, max: u32) {
+        self.signed = false;
         self.min = min.min(max);
         self.max = max.max(min);
         let clamped = ordered_clamp_u32(self.value, self.min, self.max);
@@ -135,6 +177,74 @@ impl Arc {
             self.base.changed.emit();
         }
         self.base.request_redraw();
+    }
+
+    /// Installs a **signed** value range, allowing negative readings.
+    ///
+    /// The control stores the reading as an offset from `min`, so a range of
+    /// `-40..=40` can be inspected with [`Arc::signed_value`] while the arc fraction — the
+    /// part that decides how much ink is painted — remains the same arithmetic.
+    ///
+    /// # What happens to the legacy accessors
+    ///
+    /// [`Arc::value`], [`Arc::minimum`] and [`Arc::maximum`] keep their `u32` type and their
+    /// historical clamping rule. After this call they describe the *offset scale*: `minimum`
+    /// is `0`, `maximum` is the span, and `value` is the offset the handle sits at. A control
+    /// that never calls this function is completely unaffected — the legacy path is
+    /// byte-identical, including every emitted picture.
+    ///
+    /// Like [`Arc::set_range`], the bounds are normalised (`min > max` is swapped) and the
+    /// current reading is re-clamped into the new range. `changed` is emitted only when that
+    /// re-clamp actually moves the reading.
+    pub fn set_range_signed(&mut self, min: i32, max: i32) {
+        let low = min.min(max);
+        let high = max.max(min);
+        let current = self.signed_value() as i64;
+        let clamped = current.clamp(low as i64, high as i64);
+        let span = (high as i64 - low as i64).min(u32::MAX as i64) as u32;
+        let offset = (clamped - low as i64).clamp(0, span as i64) as u32;
+        if self.signed && self.signed_min == low && self.signed_max == high && self.value == offset
+        {
+            return;
+        }
+        self.signed = true;
+        self.signed_min = low;
+        self.signed_max = high;
+        self.min = 0;
+        self.max = span;
+        if self.value != offset {
+            self.value = offset;
+            self.base.changed.emit();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the current reading on the signed scale.
+    ///
+    /// With a signed range installed this is the absolute reading (`minimum` plus the
+    /// stored offset). Without one it is the historical unsigned reading widened to `i32`;
+    /// a value above `i32::MAX` saturates rather than wrapping.
+    pub fn signed_value(&self) -> i32 {
+        if self.signed {
+            (self.signed_min as i64 + self.value as i64).clamp(i32::MIN as i64, i32::MAX as i64)
+                as i32
+        } else {
+            self.value.min(i32::MAX as u32) as i32
+        }
+    }
+
+    /// Sets the reading on the signed scale.
+    ///
+    /// The value is clamped into the installed signed range. With no signed range, it is
+    /// clamped into the historical unsigned range (negative input therefore stops at the
+    /// minimum). Like [`Arc::set_value`], `changed` fires only on a real transition.
+    pub fn set_signed_value(&mut self, value: i32) {
+        if !self.signed {
+            self.set_value(value.max(0) as u32);
+            return;
+        }
+        let offset = (value as i64 - self.signed_min as i64).max(0) as u32;
+        self.set_value(offset);
     }
 
     /// Sets the total sweep angle in degrees (e.g., 360 for full circle, 270 for gauge).
@@ -185,12 +295,117 @@ impl Arc {
     }
 
     /// Sets whether the arc is in indeterminate (spinning indicator) mode.
+    ///
+    /// Entering the spinning state restarts at the top rather than wherever a previous
+    /// sweep stopped, so two arcs switched on at different times read as one animation.
     pub fn set_indeterminate(&mut self, indeterminate: bool) {
         if self.indeterminate == indeterminate {
             return;
         }
         self.indeterminate = indeterminate;
+        if indeterminate {
+            self.phase = 0.0;
+        }
         self.base.request_redraw();
+    }
+
+    /// Returns whether the ring is painted as a true arc stroke.
+    pub fn true_arc(&self) -> bool {
+        self.true_arc
+    }
+
+    /// Selects whether the ring is painted as a true arc stroke.
+    ///
+    /// The historical picture is a filled disc with a background-coloured disc punched out
+    /// of its middle. That hole is an *opaque* paint, so it shows as a white disc whenever
+    /// the control sits on a non-solid background. With this switched on the track and the
+    /// progress arc are drawn as strokes at the ring's own middle radius, leaving the centre
+    /// genuinely untouched.
+    ///
+    /// Defaults to `false`, so an existing `Arc` keeps the exact pixels it always had.
+    pub fn set_true_arc(&mut self, on: bool) {
+        if self.true_arc == on {
+            return;
+        }
+        self.true_arc = on;
+        self.base.request_redraw();
+    }
+
+    /// The indeterminate sweep's current angle, in radians.
+    ///
+    /// A function of the ticks the control was given, not of the wall clock, so a test can
+    /// assert that the arc turns without sleeping.
+    pub fn spin_angle(&self) -> f32 {
+        self.phase * 2.0 * core::f32::consts::PI
+    }
+
+    /// Advances the indeterminate sweep by `delta_ms`.
+    ///
+    /// Returns `true` while the arc keeps spinning and `false` when it is still, which is
+    /// the contract the frame bus schedules frames from. A determinate arc owes no frames.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.indeterminate {
+            return false;
+        }
+        let period = self.spin_period_ms();
+        // Wrapped into `0.0..1.0`: one turn is one revolution, and keeping the fraction
+        // bounded stops a long-running app losing angle precision.
+        self.phase = (self.phase + delta_ms as f32 / period as f32).fract();
+        self.request_frame_repaint(Some(self.damage_bounds()));
+        true
+    }
+
+    /// Whether the arc owes animation frames.
+    pub fn is_animating(&self) -> bool {
+        self.indeterminate
+    }
+
+    /// The duration of one full revolution, priced by the theme.
+    fn spin_period_ms(&self) -> u32 {
+        let slow = crate::style::motion_tokens().2;
+        if slow == 0 {
+            DEFAULT_SPIN_PERIOD_MS
+        } else {
+            slow.saturating_mul(SPIN_SLOW_MULTIPLE).max(1)
+        }
+    }
+
+    /// Submits one animated frame as damage bounded by the painted box plus the margin.
+    ///
+    /// A control that is unmounted falls back to [`BaseWidget::request_redraw`], keeping the
+    /// redraw signal contract for host-owned controls; a tick frame passes the rectangle it
+    /// already has because the animation sweep holds the registry across `tick`.
+    fn request_frame_repaint(&self, bounds: Option<Rect>) {
+        let _ = bounds;
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                let narrow = crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full;
+                if narrow || bounds.is_none() {
+                    let damage = bounds
+                        .or_else(|| crate::widget::runtime::painted_box_with_damage_margin(id))
+                        .unwrap_or_else(|| self.damage_bounds());
+                    crate::widget::runtime::request_repaint_rect(id, damage);
+                    self.base.redraw_requested.emit();
+                    return;
+                }
+            }
+        }
+        self.base.request_redraw();
+    }
+
+    /// This control's own rectangle grown by the shared damage margin.
+    fn damage_bounds(&self) -> Rect {
+        let rect = self.geometry();
+        let margin = crate::widget::metrics::DAMAGE_MARGIN;
+        let offset = margin as i32;
+        Rect::new(
+            rect.x.saturating_sub(offset),
+            rect.y.saturating_sub(offset),
+            rect.width.saturating_add(margin).saturating_add(margin),
+            rect.height.saturating_add(margin).saturating_add(margin),
+        )
     }
 
     /// Normalizes the current value to a fraction in [0.0, 1.0].
@@ -246,6 +461,16 @@ impl Widget for Arc {
     fn size_hint(&self) -> Size {
         let diameter = self.thickness * 4;
         Size::new(diameter.max(60), diameter.max(60))
+    }
+
+    /// One frame of the indeterminate sweep.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        Arc::tick(self, delta_ms)
+    }
+
+    /// The arc owes frames while it is spinning.
+    fn is_animating(&self) -> bool {
+        Arc::is_animating(self)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -379,68 +604,106 @@ impl Draw for Arc {
             return;
         }
 
-        // Draw the background track as a filled circle (pancake style).
-        context.fill_circle(center, outer_radius, track_color);
-
-        // Draw the progress indicator arc.
-        let (start_rad, end_rad) = self.arc_angles();
+        // The arc's own geometry, shared by the filled-disc and true-stroke paths so the two
+        // cannot disagree about where the ring is.
+        let (start_rad, determinate_end_rad) = self.arc_angles();
         let inner_radius = outer_radius.saturating_sub(self.thickness);
-
-        if self.indeterminate {
-            // In indeterminate mode, draw a quarter-circle arc as a spinning
-            // indicator. The arc covers 90 degrees starting at the computed
-            // start angle (which should be animated externally by advancing
-            // start_angle over time).
-            let indet_sweep = deg_to_rad(90.0);
-            context.execute_command(RenderCommand::DrawArc {
-                center,
-                radius: outer_radius,
-                start_angle: start_rad,
-                end_angle: start_rad + indet_sweep,
-                color: arc_color,
-                filled: true,
-            });
+        let indet_sweep = deg_to_rad(90.0);
+        let (arc_start, arc_end) = if self.indeterminate {
+            // The phase advances in `tick`; at phase zero this is the historical static arc, so
+            // a control that is never ticked keeps its old picture.
+            let start = start_rad + self.spin_angle();
+            (start, start + indet_sweep)
         } else {
-            // Draw the progress arc from start_angle to start_angle + sweep * progress.
-            if (end_rad - start_rad).abs() > 0.001 {
+            (start_rad, determinate_end_rad)
+        };
+
+        if self.true_arc {
+            // A real stroke at the ring's middle radius: no disc, and therefore no opaque
+            // "hole" painted over whatever sits behind the control.
+            let stroke = self.thickness.max(1);
+            let centre_radius = outer_radius as f32 - stroke as f32 / 2.0;
+            if centre_radius <= 0.0 {
+                return;
+            }
+            let centre_radius = centre_radius.round().max(1.0) as u32;
+            context.draw_circle_stroke(center, centre_radius, track_color, stroke);
+            if (arc_end - arc_start).abs() > 0.001 {
+                crate::render::draw_arc_segments(
+                    context,
+                    center,
+                    centre_radius as f32,
+                    arc_start,
+                    arc_end,
+                    arc_color,
+                    stroke,
+                );
+                if self.rounded {
+                    let cap_radius = (stroke / 2).max(1);
+                    let sx = center.x + (centre_radius as f32 * arc_start.cos()) as i32;
+                    let sy = center.y + (centre_radius as f32 * arc_start.sin()) as i32;
+                    context.fill_circle(Point::new(sx, sy), cap_radius, arc_color);
+                    let ex = center.x + (centre_radius as f32 * arc_end.cos()) as i32;
+                    let ey = center.y + (centre_radius as f32 * arc_end.sin()) as i32;
+                    context.fill_circle(Point::new(ex, ey), cap_radius, arc_color);
+                }
+            }
+        } else {
+            // Draw the background track as a filled circle (pancake style).
+            context.fill_circle(center, outer_radius, track_color);
+
+            if self.indeterminate {
+                // In indeterminate mode, draw a quarter-circle arc as a spinning indicator.
                 context.execute_command(RenderCommand::DrawArc {
                     center,
                     radius: outer_radius,
-                    start_angle: start_rad,
-                    end_angle: end_rad,
+                    start_angle: arc_start,
+                    end_angle: arc_end,
                     color: arc_color,
                     filled: true,
                 });
+            } else {
+                // Draw the progress arc from start_angle to start_angle + sweep * progress.
+                if (arc_end - arc_start).abs() > 0.001 {
+                    context.execute_command(RenderCommand::DrawArc {
+                        center,
+                        radius: outer_radius,
+                        start_angle: arc_start,
+                        end_angle: arc_end,
+                        color: arc_color,
+                        filled: true,
+                    });
+                }
+
+                // When rounded ends are enabled, draw small filled circles at the start and
+                // end of the arc to create a rounded cap appearance.
+                if self.rounded && (arc_end - arc_start).abs() > 0.001 {
+                    let half_thick = (self.thickness as f32 / 2.0).max(1.0) as u32;
+                    let cap_radius = half_thick.max(2);
+
+                    // Cap at the start of the arc.
+                    let sx = center.x + (outer_radius as f32 * arc_start.cos()) as i32;
+                    let sy = center.y + (outer_radius as f32 * arc_start.sin()) as i32;
+                    context.fill_circle(Point::new(sx, sy), cap_radius, arc_color);
+
+                    // Cap at the end of the arc.
+                    let ex = center.x + (outer_radius as f32 * arc_end.cos()) as i32;
+                    let ey = center.y + (outer_radius as f32 * arc_end.sin()) as i32;
+                    context.fill_circle(Point::new(ex, ey), cap_radius, arc_color);
+                }
             }
 
-            // When rounded ends are enabled, draw small filled circles at the
-            // start and end of the arc to create a rounded cap appearance.
-            if self.rounded && (end_rad - start_rad).abs() > 0.001 {
-                let half_thick = (self.thickness as f32 / 2.0).max(1.0) as u32;
-                let cap_radius = half_thick.max(2);
-
-                // Cap at the start of the arc.
-                let sx = center.x + (outer_radius as f32 * start_rad.cos()) as i32;
-                let sy = center.y + (outer_radius as f32 * start_rad.sin()) as i32;
-                context.fill_circle(Point::new(sx, sy), cap_radius, arc_color);
-
-                // Cap at the end of the arc.
-                let ex = center.x + (outer_radius as f32 * end_rad.cos()) as i32;
-                let ey = center.y + (outer_radius as f32 * end_rad.sin()) as i32;
-                context.fill_circle(Point::new(ex, ey), cap_radius, arc_color);
+            // Draw the inner hole (clear center) so the arc looks like a ring.
+            // We draw a filled circle in the background color over the center,
+            // simulating a donut punch-out.
+            if inner_radius > 0 {
+                // Use the style background color, or fall back to the track color
+                // (which was already drawn as the full background circle). This
+                // creates a visible donut hole rather than relying on TRANSPARENT
+                // which can't erase the filled circle behind it.
+                let bg = self.style().background_color.unwrap_or(Color::WHITE);
+                context.fill_circle(center, inner_radius, bg);
             }
-        }
-
-        // Draw the inner hole (clear center) so the arc looks like a ring.
-        // We draw a filled circle in the background color over the center,
-        // simulating a donut punch-out.
-        if inner_radius > 0 {
-            // Use the style background color, or fall back to the track color
-            // (which was already drawn as the full background circle). This
-            // creates a visible donut hole rather than relying on TRANSPARENT
-            // which can't erase the filled circle behind it.
-            let bg = self.style().background_color.unwrap_or(Color::WHITE);
-            context.fill_circle(center, inner_radius, bg);
         }
 
         // Draw the value text in the centre of the arc, if enabled.
@@ -731,5 +994,84 @@ mod tests {
         let mut context = RenderContext::new(&mut backend);
         arc.draw(&mut context);
         backend.end_frame();
+    }
+
+    /// The indeterminate arc turns on the ticks it is given, and owes frames while it does.
+    ///
+    /// The sweep is state advanced by `tick`, not a wall-clock read inside `draw`, so the
+    /// angle is a function of the frames the control received and can be asserted without
+    /// sleeping. A determinate arc is a still picture and owes nothing.
+    #[test]
+    fn arc_indeterminate_spins_on_the_ticks_it_is_given() {
+        let mut arc = Arc::new(Rect::new(0, 0, 200, 200));
+        assert!(!arc.is_animating(), "a determinate arc is still");
+        assert!(!arc.tick(16), "and owes no frames");
+        assert_eq!(arc.spin_angle(), 0.0);
+
+        arc.set_indeterminate(true);
+        assert!(arc.is_animating(), "an indeterminate arc always owes frames");
+        let first = arc.spin_angle();
+        assert!(arc.tick(100), "a spin frame reports more work");
+        let second = arc.spin_angle();
+        assert_ne!(first, second, "the sweep must advance with the tick");
+        assert!(second > 0.0 && second < 2.0 * core::f32::consts::PI);
+
+        // Turning the mode off stops the spin and the frame debt with it.
+        arc.set_indeterminate(false);
+        assert!(!arc.is_animating());
+        assert!(!arc.tick(100));
+    }
+
+    /// A signed range reports absolute readings while the legacy accessors keep their
+    /// historical unsigned clamping.
+    #[test]
+    fn arc_signed_range_reports_absolute_readings() {
+        let mut arc = Arc::new(Rect::new(0, 0, 200, 200));
+        arc.set_range_signed(-40, 40);
+        assert_eq!(
+            arc.signed_value(),
+            0,
+            "installing a range preserves a reading that is already inside it"
+        );
+
+        arc.set_signed_value(-10);
+        assert_eq!(arc.signed_value(), -10);
+        assert_eq!(arc.value(), 30, "the legacy accessor reports the offset from the minimum");
+        assert!(
+            (arc.normalized_value() - 30.0 / 80.0).abs() < f32::EPSILON,
+            "the arc fraction is the same arithmetic on the offset scale"
+        );
+
+        // Above and below the signed bounds clamp to the ends.
+        arc.set_signed_value(1000);
+        assert_eq!(arc.signed_value(), 40);
+        arc.set_signed_value(-1000);
+        assert_eq!(arc.signed_value(), -40);
+
+        // An unsigned range switches the control back to its historical scale.
+        arc.set_range(0, 100);
+        arc.set_value(25);
+        assert_eq!(arc.signed_value(), 25);
+    }
+
+    /// The true-arc picture is opt-in and paints a stroke rather than a punched-out disc.
+    #[test]
+    fn arc_true_arc_is_opt_in_and_paints_a_stroke() {
+        let mut arc = Arc::new(Rect::new(0, 0, 200, 200));
+        arc.set_value(50);
+        assert!(!arc.true_arc(), "the historical filled-disc picture is the default");
+        let filled = crate::widget::svg::render_to_svg(&mut arc);
+        assert!(
+            !filled.contains("fill=\"none\""),
+            "the default path paints no ring stroke: {filled}"
+        );
+
+        arc.set_true_arc(true);
+        assert!(arc.true_arc());
+        let stroked = crate::widget::svg::render_to_svg(&mut arc);
+        assert!(
+            stroked.contains("fill=\"none\"") && stroked.contains("stroke-width="),
+            "the true-arc path must paint a real stroke: {stroked}"
+        );
     }
 }

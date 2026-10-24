@@ -14,15 +14,18 @@ impl CodeEditor {
             return;
         }
         let rect = self.completion_rect();
+        let reveal = if self.config.fade_popups { self.popup_reveal } else { 1.0 };
+        let face = chrome.popup_background.blend(&chrome.surface, (1.0 - reveal) * 0.9);
+        let edge = chrome.popup_border.blend(&chrome.surface, (1.0 - reveal) * 0.9);
         context.face_with_gradient(
             rect,
-            chrome.popup_background,
+            face,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, chrome.popup_border);
+        context.draw_rect(rect, edge);
         let font = self.chrome_font();
         let line_box = context.measure_text("M", font).height as i32;
         let label_dy = (MIN_TOUCH_TARGET - line_box).max(0) / 2;
@@ -31,8 +34,10 @@ impl CodeEditor {
         // reuses the capacity across rows and keeps the single draw call per row.
         use core::fmt::Write as _;
         let mut label = String::new();
-        for (index, item) in self.completion.items.iter().enumerate() {
-            let row_y = rect.y + index as i32 * MIN_TOUCH_TARGET;
+        for offset in 0..self.completion_visible_rows() {
+            let index = self.completion.scroll + offset;
+            let Some(item) = self.completion.items.get(index) else { break };
+            let row_y = rect.y + offset as i32 * MIN_TOUCH_TARGET;
             if index == self.completion.selected {
                 context.fill_rect(
                     Rect::new(rect.x + 1, row_y, rect.width - 2, MIN_TOUCH_TARGET as u32),
@@ -66,15 +71,18 @@ impl CodeEditor {
             return;
         }
         let Some(rect) = self.context_menu_rect() else { return };
+        let reveal = if self.config.fade_popups { self.popup_reveal } else { 1.0 };
+        let face = chrome.popup_background.blend(&chrome.surface, (1.0 - reveal) * 0.9);
+        let edge = chrome.popup_border.blend(&chrome.surface, (1.0 - reveal) * 0.9);
         context.face_with_gradient(
             rect,
-            chrome.popup_background,
+            face,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, chrome.popup_border);
+        context.draw_rect(rect, edge);
         let font = self.chrome_font();
         let line_box = context.measure_text("M", font).height as i32;
         let label_dy = (MIN_TOUCH_TARGET - line_box).max(0) / 2;

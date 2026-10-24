@@ -421,7 +421,20 @@ pub fn apply(
 /// such state, so it takes the answer as a callback. Passing it is what makes an inserted portal
 /// land outside its parent's clip on the `update` path the same way `mount` already does —
 /// before this, `Node::portal`'s contract held only on the first build.
-pub type OverlayHost<'a> = &'a dyn Fn() -> Option<ObjectId>;
+/// Resolves the layer a portal or layered node is created into, by name.
+///
+/// The layers are controls the engine creates once and remembers, so only the engine can
+/// answer; this path is given the answer as a callback. The name passed is `"overlay"` for
+/// [`Host::Overlay`](crate::view::Host::Overlay) and the declared name for
+/// [`Host::Layer`](crate::view::Host::Layer), which is what lets a host keep one resolver for
+/// the whole z-ordered stack.
+pub type OverlayHost<'a> = &'a dyn Fn(&str) -> Option<ObjectId>;
+
+/// The name of the default portal layer.
+///
+/// Named rather than inlined because the engine, the apply path and the resolver closure all
+/// have to agree on it; one constant is the agreement.
+pub const DEFAULT_LAYER: &str = "overlay";
 
 #[derive(Clone, Copy)]
 struct ApplyServices<'a> {
@@ -685,9 +698,14 @@ fn insert_subtree(
     // driving `apply` directly — the declared parent is used and the behaviour is the pre-portal
     // one, which is stated rather than accidental.
     let key = node.key.clone().unwrap_or_default();
-    let host = match node.host {
+    let host = match &node.host {
         super::Host::Declared => Some(parent),
-        super::Host::Overlay => services.overlay.and_then(|resolve| resolve()).or(Some(parent)),
+        super::Host::Overlay => {
+            services.overlay.and_then(|resolve| resolve(DEFAULT_LAYER)).or(Some(parent))
+        }
+        super::Host::Layer(name) => {
+            services.overlay.and_then(|resolve| resolve(name)).or(Some(parent))
+        }
     };
     layout.register_node(id, node.widget.clone(), key, host);
     if let Some(host) = host {

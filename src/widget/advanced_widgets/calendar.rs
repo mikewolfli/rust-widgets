@@ -101,6 +101,28 @@ pub struct Calendar {
     /// [`Calendar::show_page`]. the reference toolkit's `currentPageChanged` answers the same question.
     pub current_page_changed: Signal1<(i32, u32)>,
     date_format: String,
+    /// The day cell under the pointer, painted with a subtle highlight.
+    hovered_date: Option<chrono::NaiveDate>,
+    /// Per-date ink override, applied to individual day numbers.
+    ///
+    /// A function pointer rather than a boxed closure so the control stays `Send` and
+    /// cheap to copy into a draw pass; a holiday or weekend palette is a lookup, not a
+    /// captured environment.
+    date_text_color: Option<fn(chrono::NaiveDate) -> Option<Color>>,
+    /// Dates the user cannot select by pointer or keyboard.
+    disabled_dates: Vec<chrono::NaiveDate>,
+    /// Whether the month/year title segments open navigation menus.
+    dropdown_navigation: bool,
+    /// Whether the month menu is open.
+    month_menu_open: bool,
+    /// Whether the year menu is open.
+    year_menu_open: bool,
+    /// Whether the navigation bar paints a Today button.
+    today_button_visible: bool,
+    /// Whether a page change animates its grid.
+    page_animation: bool,
+    /// The grid's page-change reveal.
+    page_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal,
 }
 impl Calendar {
     /// Creates a calendar widget.
@@ -126,6 +148,15 @@ impl Calendar {
             activated: Signal1::new(),
             current_page_changed: Signal1::new(),
             date_format: "%B %Y".to_string(),
+            hovered_date: None,
+            date_text_color: None,
+            disabled_dates: Vec::new(),
+            dropdown_navigation: false,
+            month_menu_open: false,
+            year_menu_open: false,
+            today_button_visible: false,
+            page_animation: false,
+            page_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal::new(true),
         }
     }
     /// Returns the date this calendar paints as "today".
@@ -181,8 +212,16 @@ impl Calendar {
         let before = (self.display_month.year(), self.display_month.month());
         self.display_month = date;
         let after = (date.year(), date.month());
+        self.month_menu_open = false;
+        self.year_menu_open = false;
         self.base.request_redraw();
         if before != after {
+            if self.page_animation {
+                // Start a fresh reveal for the new page. The driver settles at 1, so a
+                // later page change restarts from the closed end.
+                self.page_reveal.jump_to(false);
+                self.page_reveal.set_open(true);
+            }
             self.current_page_changed.emit(after);
         }
     }
@@ -349,6 +388,208 @@ impl Calendar {
         }
         self.date_format = format;
         self.base.request_redraw();
+    }
+
+    /// The ink override applied to individual day numbers, if one was installed.
+    pub fn date_text_color(&self) -> Option<fn(chrono::NaiveDate) -> Option<Color>> {
+        self.date_text_color
+    }
+
+    /// Installs a per-date ink override, or clears it with `None`.
+    ///
+    /// The callback runs once per painted day, so a holiday or a special date can be
+    /// tinted without forking the control. Returning `None` keeps the calendar's own
+    /// colour for that day. The default is `None`, so an unconfigured calendar paints
+    /// exactly as before.
+    pub fn set_date_text_color(
+        &mut self,
+        color_for: Option<fn(chrono::NaiveDate) -> Option<Color>>,
+    ) {
+        // No equality guard: function pointers from different codegen units are not
+        // reliably comparable, and a redundant repaint is cheaper than a guard that can
+        // silently skip a real change.
+        self.date_text_color = color_for;
+        self.base.request_redraw();
+    }
+
+    /// The ink for `date` after the override is applied, or `None` to keep the default.
+    pub fn date_text_color_for(&self, date: chrono::NaiveDate) -> Option<Color> {
+        self.date_text_color.and_then(|color_for| color_for(date))
+    }
+
+    /// The dates the user cannot pick.
+    pub fn disabled_dates(&self) -> &[chrono::NaiveDate] {
+        &self.disabled_dates
+    }
+
+    /// Replaces the user-unselectable dates and requests a repaint.
+    ///
+    /// The list is kept sorted and deduplicated so the paint path can binary-search it.
+    /// A programmatic [`Calendar::set_selected_date`] still accepts these dates — the
+    /// host may own the current value — but a pointer or keyboard selection refuses them.
+    pub fn set_disabled_dates(&mut self, dates: Vec<chrono::NaiveDate>) {
+        let mut sorted = dates;
+        sorted.sort_unstable();
+        sorted.dedup();
+        if self.disabled_dates == sorted {
+            return;
+        }
+        self.disabled_dates = sorted;
+        self.base.request_redraw();
+    }
+
+    /// Whether `date` is in the user-unselectable set.
+    pub fn is_date_disabled(&self, date: chrono::NaiveDate) -> bool {
+        self.disabled_dates.binary_search(&date).is_ok()
+    }
+
+    /// Selects `date` on behalf of the user, refusing a disabled day.
+    fn select_from_user(&mut self, date: chrono::NaiveDate) {
+        if self.is_date_disabled(date) {
+            return;
+        }
+        self.set_selected_date(date);
+    }
+
+    /// Whether the month/year title opens navigation menus.
+    pub fn is_dropdown_navigation_enabled(&self) -> bool {
+        self.dropdown_navigation
+    }
+
+    /// Enables the month/year navigation menus. Off by default, so the navigation bar
+    /// keeps its single centred title.
+    pub fn set_dropdown_navigation(&mut self, enabled: bool) {
+        if self.dropdown_navigation == enabled {
+            return;
+        }
+        self.dropdown_navigation = enabled;
+        if !enabled {
+            self.month_menu_open = false;
+            self.year_menu_open = false;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether the month menu is open.
+    pub fn is_month_menu_open(&self) -> bool {
+        self.month_menu_open
+    }
+
+    /// Whether the year menu is open.
+    pub fn is_year_menu_open(&self) -> bool {
+        self.year_menu_open
+    }
+
+    /// Whether the navigation bar paints a Today button.
+    pub fn is_today_button_visible(&self) -> bool {
+        self.today_button_visible
+    }
+
+    /// Shows or hides the Today button. Off by default.
+    pub fn set_today_button_visible(&mut self, visible: bool) {
+        if self.today_button_visible == visible {
+            return;
+        }
+        self.today_button_visible = visible;
+        self.base.request_redraw();
+    }
+
+    /// Whether a page change animates the grid.
+    pub fn is_page_animation_enabled(&self) -> bool {
+        self.page_animation
+    }
+
+    /// Enables the page-change reveal. Off by default, so a page change stays a hard
+    /// cut as it always was.
+    pub fn set_page_animation(&mut self, enabled: bool) {
+        if self.page_animation == enabled {
+            return;
+        }
+        self.page_animation = enabled;
+        if !enabled {
+            self.page_reveal.jump_to(true);
+        }
+        self.base.request_redraw();
+    }
+
+    /// The navigation bar's inner span: between the arrows, minus the Today button.
+    fn nav_content_span(&self) -> Rect {
+        let nav = self.nav_rect();
+        let arrow_inset = 8 + 30;
+        let today = self.today_button_rect().map(|_| 52).unwrap_or(0);
+        let left = nav.x + arrow_inset;
+        let right = nav.x + nav.width as i32 - arrow_inset - today;
+        Rect::new(left, nav.y, (right - left).max(0) as u32, nav.height)
+    }
+
+    /// The Today button's box, or `None` when it is hidden.
+    pub fn today_button_rect(&self) -> Option<Rect> {
+        if !self.today_button_visible || !self.navigation_bar_visible {
+            return None;
+        }
+        let nav = self.nav_rect();
+        Some(Rect::new(nav.x + nav.width as i32 - 38 - 44, nav.y, 44, nav.height))
+    }
+
+    /// The month segment's box in the navigation bar.
+    pub fn month_title_rect(&self) -> Rect {
+        let span = self.nav_content_span();
+        if self.dropdown_navigation {
+            Rect::new(span.x, span.y, span.width / 2, span.height)
+        } else {
+            span
+        }
+    }
+
+    /// The year segment's box in the navigation bar, when dropdown navigation is on.
+    pub fn year_title_rect(&self) -> Option<Rect> {
+        if !self.dropdown_navigation {
+            return None;
+        }
+        let span = self.nav_content_span();
+        let half = span.width / 2;
+        Some(Rect::new(span.x + half as i32, span.y, span.width - half, span.height))
+    }
+
+    /// The open month menu's panel.
+    pub fn month_menu_rect(&self) -> Option<Rect> {
+        if !self.month_menu_open {
+            return None;
+        }
+        let anchor = self.month_title_rect();
+        Some(Rect::new(anchor.x, anchor.y + anchor.height as i32, anchor.width.max(90), 12 * 20))
+    }
+
+    /// The open year menu's panel.
+    pub fn year_menu_rect(&self) -> Option<Rect> {
+        if !self.year_menu_open {
+            return None;
+        }
+        let anchor = self.year_title_rect()?;
+        Some(Rect::new(anchor.x, anchor.y + anchor.height as i32, anchor.width.max(70), 5 * 20))
+    }
+
+    /// The year at the top of the year menu.
+    fn year_menu_start(&self) -> i32 {
+        use chrono::Datelike;
+        self.display_month.year() - 2
+    }
+
+    /// The date the month menu's row `index` would show.
+    pub fn month_menu_option(&self, index: u32) -> Option<chrono::NaiveDate> {
+        if index == 0 || index > 12 {
+            return None;
+        }
+        use chrono::Datelike;
+        chrono::NaiveDate::from_ymd_opt(self.display_month.year(), index, 1)
+    }
+
+    /// The year the year menu's row `index` would show.
+    pub fn year_menu_option(&self, index: u32) -> Option<i32> {
+        if index >= 5 {
+            return None;
+        }
+        Some(self.year_menu_start() + index as i32)
     }
 
     /// Renders `display_month` through this calendar's `date_format` pattern into `out`.
@@ -575,6 +816,19 @@ impl Widget for Calendar {
         )
     }
 
+    /// Advances the page-change reveal; `true` while it still owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.page_animation {
+            return false;
+        }
+        self.page_reveal.tick(delta_ms)
+    }
+
+    /// Whether the page-change reveal is in flight.
+    fn is_animating(&self) -> bool {
+        self.page_animation && self.page_reveal.is_animating()
+    }
+
     /// Announces the selected date, because that is the calendar's value.
     ///
     /// # Why the trait default cannot answer here
@@ -759,9 +1013,65 @@ impl EventHandler for Calendar {
             return;
         }
         match event {
+            Event::MouseMove { pos } => {
+                let next = self.date_at_position(*pos);
+                if next != self.hovered_date {
+                    self.hovered_date = next;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_date.take().is_some() {
+                    self.base.request_redraw();
+                }
+            }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 // Check nav-bar button clicks
                 if self.navigation_bar_visible {
+                    // The Today button comes first: it is the most specific target in the bar.
+                    if self.today_button_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                        self.show_today();
+                        return;
+                    }
+                    // An open menu takes the press before the title that anchors it.
+                    if let Some(panel) = self.month_menu_rect() {
+                        if panel.contains_point(*pos) {
+                            let row = ((pos.y - panel.y) / 20).clamp(0, 11) as u32 + 1;
+                            if let Some(date) = self.month_menu_option(row) {
+                                self.show_page(date);
+                            }
+                            self.month_menu_open = false;
+                            self.base.request_redraw();
+                            return;
+                        }
+                    }
+                    if let Some(panel) = self.year_menu_rect() {
+                        if panel.contains_point(*pos) {
+                            let row = ((pos.y - panel.y) / 20).clamp(0, 4) as u32;
+                            if let Some(year) = self.year_menu_option(row) {
+                                if let Some(date) = self.display_month.with_year(year) {
+                                    self.show_page(date);
+                                }
+                            }
+                            self.year_menu_open = false;
+                            self.base.request_redraw();
+                            return;
+                        }
+                    }
+                    if self.dropdown_navigation {
+                        if self.month_title_rect().contains_point(*pos) {
+                            self.month_menu_open = !self.month_menu_open;
+                            self.year_menu_open = false;
+                            self.base.request_redraw();
+                            return;
+                        }
+                        if self.year_title_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                            self.year_menu_open = !self.year_menu_open;
+                            self.month_menu_open = false;
+                            self.base.request_redraw();
+                            return;
+                        }
+                    }
                     let nav = self.nav_rect();
                     // ◄ prev month: left 40px of nav bar
                     if pos.y >= nav.y
@@ -782,12 +1092,20 @@ impl EventHandler for Calendar {
                         return;
                     }
                 }
+                // A press anywhere else dismisses an open navigation menu before it
+                // reaches the grid, so the first click only closes the panel.
+                if self.month_menu_open || self.year_menu_open {
+                    self.month_menu_open = false;
+                    self.year_menu_open = false;
+                    self.base.request_redraw();
+                    return;
+                }
                 // Click on day grid
                 if let Some(date) = self.date_at_position(*pos) {
                     if date >= self.minimum_date && date <= self.maximum_date {
                         // `set_selected_date` moves the page with the selection, so the grid
                         // follows the click without a second assignment here.
-                        self.set_selected_date(date);
+                        self.select_from_user(date);
                     }
                 }
             }
@@ -796,7 +1114,10 @@ impl EventHandler for Calendar {
                 // a press first, so the cell is already selected; emitting here is what lets a
                 // date-picker host close its popup on the gesture the user made.
                 if let Some(date) = self.date_at_position(*pos) {
-                    if date >= self.minimum_date && date <= self.maximum_date {
+                    if date >= self.minimum_date
+                        && date <= self.maximum_date
+                        && !self.is_date_disabled(date)
+                    {
                         self.set_selected_date(date);
                         self.activated.emit(date);
                     }
@@ -807,7 +1128,7 @@ impl EventHandler for Calendar {
                     37 => {
                         // Left arrow
                         if let Some(prev_day) = self.selected_date.pred_opt() {
-                            self.set_selected_date(prev_day);
+                            self.select_from_user(prev_day);
                         }
                     }
                     38 => {
@@ -815,13 +1136,13 @@ impl EventHandler for Calendar {
                         if let Some(prev_week) =
                             self.selected_date.checked_sub_signed(chrono::TimeDelta::days(7))
                         {
-                            self.set_selected_date(prev_week);
+                            self.select_from_user(prev_week);
                         }
                     }
                     39 => {
                         // Right arrow
                         if let Some(next_day) = self.selected_date.succ_opt() {
-                            self.set_selected_date(next_day);
+                            self.select_from_user(next_day);
                         }
                     }
                     40 => {
@@ -829,7 +1150,7 @@ impl EventHandler for Calendar {
                         if let Some(next_week) =
                             self.selected_date.checked_add_signed(chrono::TimeDelta::days(7))
                         {
-                            self.set_selected_date(next_week);
+                            self.select_from_user(next_week);
                         }
                     }
                     33 => {
@@ -976,14 +1297,60 @@ impl Draw for Calendar {
                 title_line.height,
             );
             let mut title = String::new();
-            self.write_month_title(&mut title);
-            context.draw_text_fitted_cow(
-                title_bounds,
-                title.as_str(),
-                &title_font,
-                text_color,
-                HorizontalAlignment::Center,
-            );
+            if self.dropdown_navigation || self.today_button_visible {
+                // The navigable layout: a month segment and a year segment, then the
+                // Today button. Every box comes from the same span derivation the hit
+                // test reads.
+                if self.dropdown_navigation {
+                    let month_box = self.month_title_rect();
+                    let month_text = self.display_month.format("%B").to_string();
+                    context.draw_text_fitted_cow(
+                        Rect::new(month_box.x, title_line.y, month_box.width, title_line.height),
+                        month_text.as_str(),
+                        &title_font,
+                        text_color,
+                        HorizontalAlignment::Center,
+                    );
+                    if let Some(year_box) = self.year_title_rect() {
+                        let year_text = self.display_month.format("%Y").to_string();
+                        context.draw_text_fitted_cow(
+                            Rect::new(year_box.x, title_line.y, year_box.width, title_line.height),
+                            year_text.as_str(),
+                            &title_font,
+                            text_color,
+                            HorizontalAlignment::Center,
+                        );
+                    }
+                } else {
+                    self.write_month_title(&mut title);
+                    let span = self.nav_content_span();
+                    context.draw_text_fitted_cow(
+                        Rect::new(span.x, title_line.y, span.width, title_line.height),
+                        title.as_str(),
+                        &title_font,
+                        text_color,
+                        HorizontalAlignment::Center,
+                    );
+                }
+                if let Some(today_rect) = self.today_button_rect() {
+                    context.draw_text_fitted_cow(
+                        Rect::new(today_rect.x, title_line.y, today_rect.width, title_line.height),
+                        "Today",
+                        &role_font(style, 11.0),
+                        text_color,
+                        HorizontalAlignment::Center,
+                    );
+                }
+            } else {
+                self.write_month_title(&mut title);
+                context.draw_text_fitted_cow(
+                    title_bounds,
+                    title.as_str(),
+                    &title_font,
+                    text_color,
+                    HorizontalAlignment::Center,
+                );
+            }
             // ► button
             let next_box = Rect::new(
                 nav.x + nav.width as i32 - 8 - arrow_side as i32,
@@ -1063,6 +1430,20 @@ impl Draw for Calendar {
             let grid = self.grid_rect();
             let cell_w = (grid.width / 7).max(1);
             let cell_h = (grid.height / 6).max(1);
+            // A page change may reveal the new grid rather than hard-cutting to it. The
+            // clip is only pushed while the reveal is in flight, so the settled frame is
+            // byte-identical to the un-animated one.
+            let revealing = self.page_animation && self.page_reveal.is_animating();
+            if revealing {
+                let revealed = self.page_reveal.revealed(
+                    grid,
+                    crate::widget::menu_toolbar::popup_reveal::RevealDirection::Down,
+                    crate::widget::menu_toolbar::popup_reveal::PopupReveal::travel_cap_for(
+                        crate::core::Size::new(grid.width, grid.height),
+                    ),
+                );
+                context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
+            }
 
             // ── 3a. The week-number gutter ──
             //
@@ -1162,6 +1543,8 @@ impl Draw for Calendar {
 
                     // Cell background
                     let in_range = date >= self.minimum_date && date <= self.maximum_date;
+                    let user_disabled = self.is_date_disabled(date);
+                    let blocked = !in_range || user_disabled;
                     // The cell's inner right/bottom edge: what the grid rules and the today
                     // highlight are inset to, so they sit inside the cell rather than on top of
                     // its neighbour's edge.
@@ -1185,6 +1568,15 @@ impl Draw for Calendar {
                     let inner_y = cy + (cell_h as i32 - 2);
                     let today_band =
                         Rect::new(cx, cy, (inner_x - cx) as u32, (inner_y - cy) as u32);
+                    // A hovered cell is a pointer affordance, not a state: one faint wash,
+                    // skipped when the cell already owns a state colour or cannot be chosen.
+                    if !blocked
+                        && self.hovered_date == Some(date)
+                        && date != today
+                        && date != self.selected_date
+                    {
+                        context.fill_rect(cell_rect, calendar_bg.blend(&text_color, 0.06));
+                    }
                     if date == today && date == self.selected_date {
                         // Selected + today: blend selected bg over today bg not possible,
                         // so use a composite visual: fill today bg first, then selected overlay
@@ -1213,6 +1605,10 @@ impl Draw for Calendar {
                         // background stays visible under the veil instead of a fixed
                         // near-white rectangle appearing in a dark calendar.
                         context.fill_rect(cell_rect, calendar_bg.blend(&text_color, 0.9));
+                    } else if user_disabled {
+                        // A user-disabled day keeps the calendar's surface and takes the
+                        // dimmed ink below; it must not look selectable.
+                        context.fill_rect(cell_rect, calendar_bg.blend(&text_color, 0.94));
                     }
 
                     // Grid lines (right + bottom edges)
@@ -1235,7 +1631,7 @@ impl Draw for Calendar {
                     // surface and then asking that result for its contrast colour gives the
                     // legible option on either appearance, and does it without a second
                     // hardcoded pair to keep in sync.
-                    let day_color = if !in_range {
+                    let day_color = if blocked {
                         dim_color
                     } else if date == self.selected_date {
                         let tint = calendar_bg.blend(&selected_bg, selected_bg.a as f32 / 255.0);
@@ -1244,7 +1640,10 @@ impl Draw for Calendar {
                         let tint = calendar_bg.blend(&today_bg, today_bg.a as f32 / 255.0);
                         tint.contrast_color()
                     } else {
-                        text_color
+                        // The per-date override is the caller's semantics (a holiday, a
+                        // billing date), so it wins over the plain ink but never over a
+                        // state colour or a disabled day.
+                        self.date_text_color_for(date).unwrap_or(text_color)
                     };
                     // The day number is **centred in its cell** on both axes, which is what a
                     // calendar cell is for: the mainstream calendar pickers
@@ -1272,6 +1671,56 @@ impl Draw for Calendar {
                         HorizontalAlignment::Center,
                     );
                 }
+            }
+            if revealing {
+                context.pop_clip();
+            }
+        }
+
+        // ── 4. Open navigation menus ──
+        //
+        // Painted last so they sit above the grid, and only when the caller enabled
+        // dropdown navigation; the default bar has neither panel.
+        if let Some(panel) = self.month_menu_rect() {
+            context.fill_rect(panel, calendar_bg);
+            context.draw_rect(panel, border_color);
+            let font = role_font(style, 11.0);
+            for row in 0..12u32 {
+                let band = Rect::new(panel.x + 2, panel.y + row as i32 * 20, panel.width - 4, 20);
+                let Some(option) = self.month_menu_option(row + 1) else { continue };
+                let is_current = option.month() == self.display_month.month()
+                    && option.year() == self.display_month.year();
+                if is_current {
+                    context.fill_rect(band, calendar_bg.blend(&text_color, 0.14));
+                }
+                let label = option.format("%B").to_string();
+                context.draw_text_fitted_cow(
+                    Rect::new(band.x + 6, band.y, band.width - 8, band.height),
+                    label.as_str(),
+                    &font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
+        if let Some(panel) = self.year_menu_rect() {
+            context.fill_rect(panel, calendar_bg);
+            context.draw_rect(panel, border_color);
+            let font = role_font(style, 11.0);
+            for row in 0..5u32 {
+                let Some(year) = self.year_menu_option(row) else { continue };
+                let band = Rect::new(panel.x + 2, panel.y + row as i32 * 20, panel.width - 4, 20);
+                if year == self.display_month.year() {
+                    context.fill_rect(band, calendar_bg.blend(&text_color, 0.14));
+                }
+                let label = year.to_string();
+                context.draw_text_fitted_cow(
+                    Rect::new(band.x + 6, band.y, band.width - 8, band.height),
+                    label.as_str(),
+                    &font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
             }
         }
     }
@@ -1902,5 +2351,117 @@ mod tests {
             announced.contains("2026-03-09"),
             "and it must be the date that was set, got {announced:?}"
         );
+    }
+
+    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(year, month, day).expect("a valid literal date")
+    }
+
+    /// The month menu opens from the title and picks the row that was clicked.
+    #[test]
+    fn dropdown_navigation_opens_the_month_menu_and_picks_a_row() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 260));
+        cal.set_display_month(date(2026, 5, 1));
+        let selection_before = cal.selected_date();
+        assert!(!cal.is_dropdown_navigation_enabled(), "opt-in");
+
+        cal.set_dropdown_navigation(true);
+        let title = cal.month_title_rect();
+        cal.handle_event(&Event::mouse_press(title.x + 4, title.y + 4, 1));
+        assert!(cal.is_month_menu_open());
+        let panel = cal.month_menu_rect().expect("the panel is open");
+
+        // Row 2 is March (1-based month options).
+        cal.handle_event(&Event::mouse_press(panel.x + 4, panel.y + 40 + 4, 1));
+        assert_eq!(cal.display_month().month(), 3);
+        assert!(!cal.is_month_menu_open(), "choosing a month closes the panel");
+        assert_eq!(cal.selected_date(), selection_before, "the page moves only");
+
+        let year_title = cal.year_title_rect().expect("the year segment exists");
+        cal.handle_event(&Event::mouse_press(year_title.x + 4, year_title.y + 4, 1));
+        assert!(cal.is_year_menu_open());
+    }
+
+    /// The Today button is opt-in and returns the page and the selection to today.
+    #[test]
+    fn the_today_button_is_opt_in_and_resets_the_page() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 320, 240));
+        assert!(cal.today_button_rect().is_none());
+        cal.set_today_button_visible(true);
+        let button = cal.today_button_rect().expect("the button exists once enabled");
+        assert!(button.x + button.width as i32 <= cal.nav_rect().x + cal.nav_rect().width as i32);
+
+        cal.set_display_month(date(2020, 1, 1));
+        cal.handle_event(&Event::mouse_press(button.x + 4, button.y + 4, 1));
+        assert_eq!(cal.selected_date(), chrono::Local::now().date_naive());
+        assert_eq!(cal.display_month().month(), cal.selected_date().month());
+    }
+
+    /// A disabled day refuses user selection but stays programmatically settable.
+    #[test]
+    fn disabled_dates_refuse_pointer_and_keyboard_selection() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 280, 240));
+        cal.set_selected_date(date(2026, 6, 10));
+        cal.set_disabled_dates(vec![date(2026, 6, 11)]);
+        assert!(cal.is_date_disabled(date(2026, 6, 11)));
+
+        cal.handle_event(&Event::key_press(39, 0));
+        assert_eq!(cal.selected_date(), date(2026, 6, 10), "Right must skip the disabled day");
+
+        cal.handle_event(&Event::key_press(37, 0));
+        assert_eq!(cal.selected_date(), date(2026, 6, 9));
+
+        // The host may still pin a disabled day as the value.
+        cal.set_selected_date(date(2026, 6, 11));
+        assert_eq!(cal.selected_date(), date(2026, 6, 11));
+    }
+
+    /// Hovering a cell tracks it and clears on leave.
+    #[test]
+    fn the_hovered_day_follows_the_pointer() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 280, 240));
+        let grid = cal.grid_rect();
+        let cell_w = (grid.width / 7) as i32;
+        let cell_h = (grid.height / 6) as i32;
+        let blanks = cal.leading_blank_count() as i32;
+        // Day 15 is always inside the month, whatever day the first falls on.
+        let slot = blanks + 14;
+        let pos = Point::new(grid.x + (slot % 7) * cell_w + 2, grid.y + (slot / 7) * cell_h + 2);
+        cal.handle_event(&Event::mouse_move(pos.x, pos.y));
+        assert_eq!(
+            cal.hovered_date,
+            Some(cal.display_month().with_day(15).expect("day 15 exists")),
+            "the hovered cell must be the date under the pointer"
+        );
+        cal.handle_event(&Event::MouseLeave { pos });
+        assert_eq!(cal.hovered_date, None, "leaving the control clears the highlight");
+    }
+
+    /// A per-date ink and a page reveal are both opt-in and reach the painter.
+    #[test]
+    fn per_date_ink_and_the_page_reveal_are_opt_in() {
+        use crate::widget::Widget;
+
+        fn holiday(date: NaiveDate) -> Option<Color> {
+            (date.day() == 1).then_some(Color::rgb(200, 30, 30))
+        }
+
+        let mut cal = Calendar::new(Rect::new(0, 0, 280, 240));
+        cal.set_display_month(date(2026, 6, 1));
+        let plain = crate::widget::svg::render_to_svg(&mut cal);
+        cal.set_date_text_color(Some(holiday));
+        let tinted = crate::widget::svg::render_to_svg(&mut cal);
+        assert_ne!(plain, tinted, "the per-date ink must reach the painter");
+        assert_eq!(cal.date_text_color_for(date(2026, 6, 1)), Some(Color::rgb(200, 30, 30)));
+        assert_eq!(cal.date_text_color_for(date(2026, 6, 2)), None);
+
+        assert!(!cal.is_page_animation_enabled());
+        cal.set_page_animation(true);
+        cal.show_next_month();
+        assert!(cal.is_animating(), "a page change starts the reveal");
+        for _ in 0..120 {
+            cal.tick(16);
+        }
+        assert!(!cal.is_animating(), "the reveal settles");
     }
 }

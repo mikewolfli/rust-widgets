@@ -33,6 +33,10 @@ pub struct ColorPicker {
     /// a sweep that strays one pixel past the hue rail's edge from silently switching to the alpha
     /// rail — the region a drag edits is the region the press began in.
     drag_target: Option<ColorDragTarget>,
+    /// Whether the hex readout is in editable form.
+    hex_editing: bool,
+    /// The text in the hex field while editing.
+    hex_buffer: String,
     /// Emitted when selected color changes.
     pub color_changed: Signal1<Color>,
     /// Emitted when hex text changes.
@@ -62,6 +66,8 @@ impl ColorPicker {
             alpha: 255,
             show_alpha: true,
             drag_target: None,
+            hex_editing: false,
+            hex_buffer: String::new(),
             presets: vec![
                 Color::rgb(244, 67, 54),
                 Color::rgb(33, 150, 243),
@@ -98,7 +104,58 @@ impl ColorPicker {
         self.base.request_redraw();
     }
 
+    /// Enables the editable hex field.
+    pub fn set_hex_editing(&mut self, editing: bool) {
+        if self.hex_editing == editing {
+            return;
+        }
+        self.hex_editing = editing;
+        if editing {
+            self.hex_buffer = self.hex_rgba();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the hex field is editable.
+    pub fn is_hex_editing(&self) -> bool {
+        self.hex_editing
+    }
+
+    /// Samples the colour at `pos` and applies it, which is the picker's eyedropper.
+    ///
+    /// The sample is read from the same mapping the rails are painted with, so a caller that
+    /// shows its own magnifier cannot pick a colour different from the one under the pixel.
+    pub fn pick_color_at(&mut self, pos: Point) -> bool {
+        if Self::point_in_rect(pos, self.palette_rect()) {
+            self.set_from_palette_point(pos);
+            return true;
+        }
+        if Self::point_in_rect(pos, self.hue_rect()) {
+            self.set_from_hue_point(pos);
+            return true;
+        }
+        if self.show_alpha && Self::point_in_rect(pos, self.alpha_rect()) {
+            self.set_from_alpha_point(pos);
+            return true;
+        }
+        false
+    }
+
+    /// Commits the hex field, leaving edit mode.
+    pub fn commit_hex(&mut self) {
+        if !self.hex_editing {
+            return;
+        }
+        let text = self.hex_buffer.clone();
+        if self.set_hex(&text) {
+            self.hex_editing = false;
+        }
+        self.base.request_redraw();
+    }
     /// Sets HSVA components and updates color.
+    ///
+    /// Each component is taken as the byte the picker's own rails store; the resulting RGB is
+    /// derived through the same conversion the rails paint with.
     pub fn set_hsva(&mut self, hue: u8, saturation: u8, value: u8, alpha: u8) {
         self.hue = hue;
         self.saturation = saturation;
@@ -419,26 +476,59 @@ impl EventHandler for ColorPicker {
             Event::MouseLeave { .. } => {
                 self.drag_target = None;
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                37 => {
-                    self.hue = self.hue.saturating_sub(2);
-                    self.sync_color_from_hsva();
+            Event::KeyPress { key, modifiers } => {
+                if self.hex_editing {
+                    match *key {
+                        8 => {
+                            self.hex_buffer.pop();
+                            self.base.request_redraw();
+                        }
+                        13 => self.commit_hex(),
+                        27 => {
+                            self.hex_editing = false;
+                            self.base.request_redraw();
+                        }
+                        _ => {}
+                    }
+                    return;
                 }
-                39 => {
-                    self.hue = self.hue.saturating_add(2);
-                    self.sync_color_from_hsva();
+                let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                    .contains(crate::shortcut::Modifiers::SHIFT);
+                let step = if shift { 10 } else { 2 };
+                match crate::shortcut::Key::from_key_code(*key) {
+                    Some(crate::shortcut::Key::Left) => {
+                        self.saturation = self.saturation.saturating_sub(step);
+                        self.sync_color_from_hsva();
+                    }
+                    // Right/Left edit saturation while Up/Down edit value: the two axes of the
+                    // palette square, so keyboard navigation reaches every colour a pointer can.
+                    Some(crate::shortcut::Key::Right) => {
+                        self.saturation = self.saturation.saturating_add(step);
+                        self.sync_color_from_hsva();
+                    }
+                    Some(crate::shortcut::Key::Up) => {
+                        self.value = self.value.saturating_add(step);
+                        self.sync_color_from_hsva();
+                    }
+                    Some(crate::shortcut::Key::Down) => {
+                        self.value = self.value.saturating_sub(step);
+                        self.sync_color_from_hsva();
+                    }
+                    Some(crate::shortcut::Key::PageUp) => {
+                        self.hue = self.hue.saturating_add(step);
+                        self.sync_color_from_hsva();
+                    }
+                    Some(crate::shortcut::Key::PageDown) => {
+                        self.hue = self.hue.saturating_sub(step);
+                        self.sync_color_from_hsva();
+                    }
+                    _ => {}
                 }
-                38 => {
-                    self.value = self.value.saturating_add(2);
-                    self.sync_color_from_hsva();
-                }
-                40 => {
-                    self.value = self.value.saturating_sub(2);
-                    self.sync_color_from_hsva();
-                }
-                // Unknown key; ignore
-                _ => {}
-            },
+            }
+            Event::TextInput { text } | Event::ImeCommit { text } if self.hex_editing => {
+                self.hex_buffer.push_str(text);
+                self.base.request_redraw();
+            }
             // Other events are not relevant for this widget
             _ => {}
         }
@@ -466,7 +556,6 @@ impl Draw for ColorPicker {
         // The rails frame a spectrum whose own brightness varies along its length, so they are
         // held at a fixed ± step from the panel rather than derived from the spectrum.
         let frame = panel.blend(&ink, 0.22);
-        let rail = panel.blend(&ink, 0.10);
 
         context.face_with_gradient(
             rect,
@@ -479,17 +568,64 @@ impl Draw for ColorPicker {
         context.draw_rect(rect, frame);
 
         let palette = self.palette_rect();
+        // The saturation/value square: a horizontal white-to-hue ramp overlayed with a vertical
+        // transparent-to-black ramp. That is the same two-dimensional colour space the click
+        // mapping reads, so the pixel under the pointer and the picked colour agree — the flat
+        // grey slab it replaces showed no relationship to the value being selected.
         let base_hue = hsv_to_color(self.hue, 255, 255, 255);
-        context.fill_rect(palette, base_hue.blend(&Color::WHITE, 0.25));
+        let horizontal = crate::style::Gradient::linear(
+            Point::new(palette.x, palette.y),
+            Point::new(palette.x + palette.width as i32, palette.y),
+        )
+        .with_stops(vec![
+            crate::style::GradientStop::new(0.0, Color::WHITE),
+            crate::style::GradientStop::new(1.0, base_hue),
+        ]);
+        context.fill_gradient(palette, &horizontal);
+        let vertical = crate::style::Gradient::linear(
+            Point::new(palette.x, palette.y),
+            Point::new(palette.x, palette.y + palette.height as i32),
+        )
+        .with_stops(vec![
+            crate::style::GradientStop::new(0.0, Color::TRANSPARENT),
+            crate::style::GradientStop::new(1.0, Color::BLACK),
+        ]);
+        context.fill_gradient(palette, &vertical);
         context.draw_rect(palette, panel.blend(&ink, 0.40));
 
+        // The hue rail is the rainbow the hue byte indexes, so the rail and the value cannot
+        // disagree about which colour a position means.
         let hue_rect = self.hue_rect();
-        context.fill_rect(hue_rect, rail);
+        let rainbow = crate::style::Gradient::linear(
+            Point::new(hue_rect.x, hue_rect.y),
+            Point::new(hue_rect.x + hue_rect.width as i32, hue_rect.y),
+        )
+        .with_stops(
+            (0..=6)
+                .map(|step| {
+                    crate::style::GradientStop::new(
+                        step as f32 / 6.0,
+                        hsv_to_color((step * 255 / 6) as u8, 255, 255, 255),
+                    )
+                })
+                .collect(),
+        );
+        context.fill_gradient(hue_rect, &rainbow);
         context.draw_rect(hue_rect, panel.blend(&ink, 0.35));
 
         if self.show_alpha {
             let alpha_rect = self.alpha_rect();
-            context.fill_rect(alpha_rect, rail);
+            // The alpha rail runs from the colour with no alpha to the same colour fully
+            // opaque, so the rail shows exactly what the alpha byte is choosing.
+            let ramp = crate::style::Gradient::linear(
+                Point::new(alpha_rect.x, alpha_rect.y),
+                Point::new(alpha_rect.x + alpha_rect.width as i32, alpha_rect.y),
+            )
+            .with_stops(vec![
+                crate::style::GradientStop::new(0.0, self.color.with_alpha(0)),
+                crate::style::GradientStop::new(1.0, self.color.with_alpha(255)),
+            ]);
+            context.fill_gradient(alpha_rect, &ramp);
             context.draw_rect(alpha_rect, panel.blend(&ink, 0.30));
         }
 
@@ -526,15 +662,28 @@ impl Draw for ColorPicker {
             rect.width.saturating_sub(16),
             hex_height.max(1) as u32,
         );
-        context.draw_text_fitted_cow(
-            hex_band,
-            &hex_text,
-            hex_font,
-            // The readout is chrome sitting on the panel, so it is the resolved ink rather than
-            // a literal that was tuned for one appearance.
-            ink.legible_on(panel, 4.5),
-            HorizontalAlignment::Left,
-        );
+        if self.hex_editing {
+            // Editable form: a field, so the readout can be typed into rather than only read.
+            context.fill_rect(hex_band, panel.blend(&ink, 0.08));
+            context.draw_rect(hex_band, ink.with_alpha(120));
+            context.draw_text_fitted_cow(
+                hex_band,
+                if self.hex_buffer.is_empty() { "#" } else { &self.hex_buffer },
+                hex_font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        } else {
+            context.draw_text_fitted_cow(
+                hex_band,
+                &hex_text,
+                hex_font,
+                // The readout is chrome sitting on the panel, so it is the resolved ink rather than
+                // a literal that was tuned for one appearance.
+                ink.legible_on(panel, 4.5),
+                HorizontalAlignment::Left,
+            );
+        }
     }
 }
 

@@ -27,6 +27,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::collections::HashMap;
 
 /// Height of one section header, in logical pixels.
 const HEADER_HEIGHT: u32 = 30;
@@ -73,6 +74,14 @@ pub struct Accordion {
     base: BaseWidget,
     sections: Vec<AccordionSection>,
     single_expand: bool,
+    /// Per-section body height; a section with no entry uses [`BODY_HEIGHT`].
+    body_heights: HashMap<String, u32>,
+    /// Per-section open fraction while an animation is in flight.
+    open_progress: HashMap<String, f32>,
+    /// Whether toggles animate; off by default so the historical pixels are unchanged.
+    animated: bool,
+    /// Header index carrying the keyboard focus.
+    focused_header: Option<usize>,
     /// Emitted when a section opens or closes, with the section's own id as the payload.
     pub section_toggled: Signal1<String>,
 }
@@ -84,6 +93,10 @@ impl Accordion {
             base: BaseWidget::new(WidgetKind::Accordion, geometry, "Accordion"),
             sections: Vec::new(),
             single_expand: true,
+            body_heights: HashMap::new(),
+            open_progress: HashMap::new(),
+            animated: false,
+            focused_header: None,
             section_toggled: Signal1::new(),
         }
     }
@@ -114,8 +127,11 @@ impl Accordion {
     pub fn remove_section(&mut self, id: &str) -> bool {
         let before = self.sections.len();
         self.sections.retain(|section| section.id != id);
+        self.body_heights.remove(id);
+        self.open_progress.remove(id);
         let removed = self.sections.len() != before;
         if removed {
+            self.focused_header = self.focused_header.filter(|index| *index < self.sections.len());
             self.base.request_layout();
             self.base.request_redraw();
         }
@@ -181,6 +197,11 @@ impl Accordion {
         if let Some(section) = self.sections.iter_mut().find(|section| section.id == id) {
             section.expanded = expanded;
         }
+        if self.animated {
+            self.open_progress.entry(id.to_string()).or_insert(if expanded { 0.0 } else { 1.0 });
+        } else {
+            self.open_progress.remove(id);
+        }
         self.base.request_layout();
         self.base.request_redraw();
         self.section_toggled.emit(id.to_string());
@@ -207,12 +228,104 @@ impl Accordion {
         for (index, section) in self.sections.iter().enumerate() {
             rows.push((index, Rect::new(self.geometry().x, y, width, HEADER_HEIGHT), true));
             y = y.saturating_add(HEADER_HEIGHT as i32);
-            if section.expanded {
-                rows.push((index, Rect::new(self.geometry().x, y, width, BODY_HEIGHT), false));
-                y = y.saturating_add(BODY_HEIGHT as i32);
+            let progress = self.open_progress(section.id());
+            if progress > 0.0 {
+                let body_height = self.body_height(section.id());
+                let visible_height = (body_height as f32 * progress).round() as u32;
+                if visible_height > 0 {
+                    rows.push((
+                        index,
+                        Rect::new(self.geometry().x, y, width, visible_height),
+                        false,
+                    ));
+                    y = y.saturating_add(visible_height as i32);
+                }
             }
         }
         rows
+    }
+
+    /// The draw height of the section body before animation.
+    pub fn body_height(&self, id: &str) -> u32 {
+        self.body_heights.get(id).copied().unwrap_or(BODY_HEIGHT)
+    }
+
+    /// Sets a section's open body height.
+    ///
+    /// Returns `false` when `id` names no section. The value is the fully-open height; an
+    /// animation in flight scales it by the open fraction.
+    pub fn set_body_height(&mut self, id: &str, height: u32) -> bool {
+        if !self.sections.iter().any(|section| section.id == id) {
+            return false;
+        }
+        if self.body_height(id) == height {
+            return true;
+        }
+        self.body_heights.insert(id.to_string(), height);
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// How far the section `id` is open: `0.0` closed, `1.0` fully open.
+    ///
+    /// Without animation enabled this is the logical state. With animation enabled it is
+    /// the in-flight fraction, which is what [`Widget::tick`] advances.
+    pub fn open_progress(&self, id: &str) -> f32 {
+        let expanded = self.is_expanded(id).unwrap_or(false);
+        if !self.animated {
+            return if expanded { 1.0 } else { 0.0 };
+        }
+        self.open_progress.get(id).copied().unwrap_or(if expanded { 1.0 } else { 0.0 })
+    }
+
+    /// Enables or disables open/close animation. Off by default.
+    pub fn set_animated(&mut self, animated: bool) {
+        self.animated = animated;
+    }
+
+    /// Whether toggles animate.
+    pub fn animated(&self) -> bool {
+        self.animated
+    }
+
+    /// The header index carrying keyboard focus, if any.
+    pub fn focused_header(&self) -> Option<usize> {
+        self.focused_header
+    }
+
+    /// Sets the header index carrying keyboard focus, clamped to the section list.
+    pub fn set_focused_header(&mut self, index: Option<usize>) {
+        let next = index.filter(|index| *index < self.sections.len());
+        if self.focused_header == next {
+            return;
+        }
+        self.focused_header = next;
+        self.base.request_redraw();
+    }
+
+    /// Moves focus by `delta`, wrapping at both ends.
+    pub fn move_focus(&mut self, delta: isize) -> bool {
+        if self.sections.is_empty() {
+            return false;
+        }
+        let count = self.sections.len() as isize;
+        let current = self.focused_header.map(|index| index as isize).unwrap_or(0);
+        let next = (current + delta).rem_euclid(count) as usize;
+        self.set_focused_header(Some(next));
+        true
+    }
+
+    /// Toggles the focused section. Returns whether a section was focused and toggled.
+    pub fn toggle_focused(&mut self) -> bool {
+        let Some(index) = self.focused_header else {
+            return false;
+        };
+        let Some(section) = self.sections.get(index) else {
+            return false;
+        };
+        let id = section.id.clone();
+        self.toggle(&id)
     }
 }
 
@@ -232,11 +345,67 @@ impl Widget for Accordion {
         let mut height: u32 = 0;
         for section in &self.sections {
             height = height.saturating_add(HEADER_HEIGHT);
-            if section.expanded {
-                height = height.saturating_add(BODY_HEIGHT);
+            if self.open_progress(section.id()) > 0.0 {
+                height = height.saturating_add(self.body_height(section.id()));
             }
         }
         Size::new(240, height.max(HEADER_HEIGHT))
+    }
+
+    /// Advances any open/close animation; `true` while a section is still moving.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.animated || self.open_progress.is_empty() {
+            return false;
+        }
+        // The tempo is a theme token, not a literal: a reduced-motion preference shortens
+        // every motion token, so the same section opens faster without this control knowing
+        // about the preference. `180` is the no-theme fallback the preset produces.
+        let duration_ms = crate::style::theme_manager()
+            .current_theme()
+            .map(|theme| theme.motion.normal)
+            .unwrap_or(180)
+            .max(1) as f32;
+        let step = delta_ms as f32 / duration_ms;
+        let mut moving = false;
+        for section in &self.sections {
+            let target = if section.expanded { 1.0 } else { 0.0 };
+            let Some(progress) = self.open_progress.get_mut(&section.id) else {
+                continue;
+            };
+            if (*progress - target).abs() <= f32::EPSILON {
+                continue;
+            }
+            if *progress < target {
+                *progress = (*progress + step).min(target);
+            } else {
+                *progress = (*progress - step).max(target);
+            }
+            if (*progress - target).abs() > f32::EPSILON {
+                moving = true;
+            }
+        }
+        let targets: Vec<(String, f32)> = self
+            .sections
+            .iter()
+            .map(|section| (section.id.clone(), if section.expanded { 1.0 } else { 0.0 }))
+            .collect();
+        self.open_progress.retain(|id, progress| {
+            targets
+                .iter()
+                .find(|(target_id, _)| target_id == id)
+                .is_some_and(|(_, target)| (*progress - *target).abs() > f32::EPSILON)
+        });
+        if !moving {
+            self.open_progress.clear();
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
+        moving
+    }
+
+    /// Whether any section is mid-animation.
+    fn is_animating(&self) -> bool {
+        self.animated && !self.open_progress.is_empty()
     }
 
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
@@ -326,6 +495,9 @@ impl Draw for Accordion {
             let section = &self.sections[index];
             if is_header {
                 ctx.fill_rect(row, header_fill);
+                if self.focused_header == Some(index) {
+                    ctx.draw_rect_stroke(row, accent, 1);
+                }
                 ctx.draw_line(
                     crate::core::Point::new(row.x, row.y.saturating_add(row.height as i32 - 1)),
                     crate::core::Point::new(
@@ -424,7 +596,27 @@ impl EventHandler for Accordion {
                 .find(|(_, row, is_header)| *is_header && row.contains(*pos))
                 .map(|(index, _, _)| self.sections[index].id.clone());
             if let Some(id) = hit {
+                if let Some(index) = self.sections.iter().position(|section| section.id == id) {
+                    self.focused_header = Some(index);
+                }
                 self.toggle(&id);
+            }
+        }
+        if let Event::KeyPress { key, .. } = event {
+            if self.base.focus_reason().is_none() {
+                return;
+            }
+            match *key {
+                crate::event::key_codes::UP => {
+                    let _ = self.move_focus(-1);
+                }
+                crate::event::key_codes::DOWN => {
+                    let _ = self.move_focus(1);
+                }
+                crate::event::key_codes::SPACE | crate::event::key_codes::ENTER => {
+                    let _ = self.toggle_focused();
+                }
+                _ => {}
             }
         }
     }
@@ -553,5 +745,33 @@ mod tests {
         assert!(accordion.remove_section("a"));
         assert!(accordion.size_hint().height < tall);
         assert!(!accordion.remove_section("a"));
+    }
+
+    /// A body height is per section, an animation advances over frames, and keyboard focus
+    /// can move and toggle a section.
+    #[test]
+    fn body_height_animation_and_keyboard_are_wired() {
+        let mut accordion = accordion();
+        assert!(accordion.set_body_height("a", 80));
+        assert!(!accordion.set_body_height("missing", 80));
+        accordion.set_expanded("a", true);
+        assert_eq!(accordion.size_hint().height, 30 + 80 + 30);
+
+        accordion.set_animated(true);
+        assert_eq!(accordion.open_progress("b"), 0.0);
+        accordion.set_expanded("b", true);
+        assert_eq!(accordion.open_progress("b"), 0.0);
+        assert!(accordion.tick(90));
+        assert!(accordion.is_animating());
+        assert!(accordion.open_progress("b") > 0.0);
+        accordion.tick(1000);
+        assert_eq!(accordion.open_progress("b"), 1.0);
+        assert!(!accordion.is_animating());
+
+        accordion.set_focused_header(Some(1));
+        assert!(accordion.move_focus(1), "focus wraps to the first header");
+        assert_eq!(accordion.focused_header(), Some(0));
+        assert!(accordion.toggle_focused(), "the focused section toggles");
+        assert_eq!(accordion.is_expanded("a"), Some(true));
     }
 }

@@ -8,6 +8,7 @@ use crate::core::Point;
 use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -158,6 +159,25 @@ pub trait TreeModel: Send + Sync {
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         None
     }
+
+    /// Whether the model can fetch more children below `index`.
+    ///
+    /// The flat `node_count`/`node` protocol describes what is already known; a lazy tree
+    /// needs to say "there may be more here". The default answers `false`, so an eager model
+    /// is unchanged.
+    fn can_fetch_more(&self, index: usize) -> bool {
+        let _ = index;
+        false
+    }
+
+    /// Asks the model to fetch more children for `index`.
+    ///
+    /// Takes `&self` so a model can own its storage behind a `Mutex`; returns whether the
+    /// node's child count changed. The default is a no-op `false`.
+    fn fetch_more(&self, index: usize) -> bool {
+        let _ = index;
+        false
+    }
 }
 /// In-memory tree model backed by a vector of nodes.
 pub struct VecTreeModel {
@@ -282,6 +302,28 @@ pub struct TreeView {
     pub selection_changed: Signal1<usize>,
     /// Emitted when focused node changed.
     pub focused_node_changed: Signal1<Option<usize>>,
+    /// Emitted with the model index when a branch opens.
+    pub expanded: Signal1<usize>,
+    /// Emitted with the model index when a branch closes.
+    pub collapsed: Signal1<usize>,
+    /// Emitted when the user activates a node (Enter or double-click).
+    pub activated: Signal1<usize>,
+    /// Emitted when a node is double-clicked.
+    pub node_double_clicked: Signal1<usize>,
+    /// First visible row; wheel and keyboard scrolling move it.
+    scroll_row: usize,
+    /// Whether the source-list (sidebar) presentation is used.
+    source_list: bool,
+    /// Whether an expansion fades its newly revealed rows in.
+    animated: bool,
+    /// The fade applied to rows revealed by the most recent expansion.
+    expansion_progress: PropertyDriver,
+    /// The first visible row the fade applies to.
+    animation_start: Option<usize>,
+    /// How many rows the fade covers.
+    animation_len: usize,
+    /// Whether a vertical scroll-bar thumb is painted.
+    show_scrollbar: bool,
 }
 impl TreeView {
     /// Creates an empty tree view.
@@ -298,6 +340,17 @@ impl TreeView {
             editing: None,
             selection_changed: Signal1::new(),
             focused_node_changed: Signal1::new(),
+            expanded: Signal1::new(),
+            collapsed: Signal1::new(),
+            activated: Signal1::new(),
+            node_double_clicked: Signal1::new(),
+            scroll_row: 0,
+            source_list: false,
+            animated: false,
+            expansion_progress: PropertyDriver::at(1.0, MotionSlot::Normal),
+            animation_start: None,
+            animation_len: 0,
+            show_scrollbar: false,
         }
     }
     /// Binds an external tree model.
@@ -470,10 +523,30 @@ impl TreeView {
         if self.is_expanded(model_index) == expanded {
             return true;
         }
+        let before = self.visible_row_count();
         self.expanded_override.insert(model_index, expanded);
+        if expanded {
+            self.expanded.emit(model_index);
+        } else {
+            self.collapsed.emit(model_index);
+        }
         // A collapse can hide the selected or focused node; the projection state has to follow, the
         // same way it follows a model swap.
         self.normalize_projection_state();
+        if self.animated {
+            let after = self.visible_row_count();
+            if expanded && after > before {
+                // Only the rows that appeared fade; the rows that were already painted keep
+                // their resting ink, so the tree does not flash on every expansion.
+                self.animation_start = Some(visible_index + 1);
+                self.animation_len = after - before;
+                self.expansion_progress.jump_to(0.0);
+                self.expansion_progress.set_target(1.0);
+            } else {
+                self.animation_start = None;
+                self.animation_len = 0;
+            }
+        }
         self.base.request_layout();
         self.base.request_redraw();
         true
@@ -482,6 +555,103 @@ impl TreeView {
     /// Returns the current visible node count.
     pub fn node_count(&self) -> usize {
         self.visible_row_count()
+    }
+
+    /// Asks the model whether `model_index` can fetch more children.
+    pub fn can_fetch_more(&self, model_index: usize) -> bool {
+        self.model.as_ref().is_some_and(|model| model.can_fetch_more(model_index))
+    }
+
+    /// Asks the model to fetch more children for `model_index`.
+    ///
+    /// Returns whether the model changed. A successful fetch is followed by a layout/redraw
+    /// request, because the visible projection may have grown.
+    pub fn fetch_more(&mut self, model_index: usize) -> bool {
+        let Some(model) = self.model.as_ref() else {
+            return false;
+        };
+        if !model.fetch_more(model_index) {
+            return false;
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The first visible row.
+    pub fn scroll_row(&self) -> usize {
+        self.scroll_row
+    }
+
+    /// Sets the first visible row, clamped to the projection.
+    pub fn set_scroll_row(&mut self, row: usize) {
+        let lines = self.visible_row_count();
+        let max = lines.saturating_sub(1);
+        let next = row.min(max);
+        if next == self.scroll_row {
+            return;
+        }
+        self.scroll_row = next;
+        self.base.request_redraw();
+    }
+
+    /// Whether the source-list (sidebar) presentation is used.
+    pub fn source_list(&self) -> bool {
+        self.source_list
+    }
+
+    /// Enables or disables the source-list presentation.
+    pub fn set_source_list(&mut self, source_list: bool) {
+        if self.source_list == source_list {
+            return;
+        }
+        self.source_list = source_list;
+        self.base.request_redraw();
+    }
+
+    /// Whether an expansion fades its newly revealed rows in.
+    pub fn animated(&self) -> bool {
+        self.animated
+    }
+
+    /// Enables or disables the expansion fade.
+    ///
+    /// Off by default: the settled drawing is the historical pixels, and the fade only changes
+    /// the frames between an expansion and its end.
+    pub fn set_animated(&mut self, animated: bool) {
+        if self.animated == animated {
+            return;
+        }
+        self.animated = animated;
+        if !animated {
+            self.animation_start = None;
+            self.animation_len = 0;
+            self.expansion_progress.jump_to(1.0);
+        }
+        self.base.request_redraw();
+    }
+
+    /// The progress of the running expansion fade, `0.0..=1.0`.
+    pub fn expansion_progress(&self) -> f32 {
+        if self.animated {
+            self.expansion_progress.value()
+        } else {
+            1.0
+        }
+    }
+
+    /// Whether the vertical scroll-bar thumb is painted.
+    pub fn show_scrollbar(&self) -> bool {
+        self.show_scrollbar
+    }
+
+    /// Enables or disables the vertical scroll-bar thumb.
+    pub fn set_show_scrollbar(&mut self, show: bool) {
+        if self.show_scrollbar == show {
+            return;
+        }
+        self.show_scrollbar = show;
+        self.base.request_redraw();
     }
 
     /// Returns the label of the visible row `index`.
@@ -574,11 +744,15 @@ impl TreeView {
     /// which is exactly the defect `table_widget` records. One function, three readers.
     pub fn node_row_rect(&self, index: usize) -> Option<Rect> {
         let content = ControlMetrics::band_inset(self.base.geometry(), TREE_INSET);
+        if index < self.scroll_row {
+            return None;
+        }
+        let line = index - self.scroll_row;
         // `index as i32` narrowed a `usize` above `i32::MAX` to a negative row offset, and the
         // multiplication then wrapped — a row that scrolls nowhere near the control could map onto a
         // visible position. Reject an index that cannot be represented before multiplying; such an
         // index is far past any renderable row, so `None` is the honest answer.
-        let row_offset = i32::try_from(index).ok()?;
+        let row_offset = i32::try_from(line).ok()?;
         let y = content.y + TREE_ROW_HEIGHT.saturating_mul(row_offset);
         // A row that would extend past the content box is not shown, matching the draw loop's own
         // bound so the row the pointer can hit is exactly the row that was painted.
@@ -594,7 +768,7 @@ impl TreeView {
         if pos.y < content.y || pos.y >= content.y + content.height as i32 {
             return None;
         }
-        let index = ((pos.y - content.y) / TREE_ROW_HEIGHT).max(0) as usize;
+        let index = ((pos.y - content.y) / TREE_ROW_HEIGHT).max(0) as usize + self.scroll_row;
         // A single-row lookup, not the whole projection: this runs on every pointer move, and
         // counting or materialising the document made hover cost follow the model size.
         self.visible_index_at(index).map(|_| index)
@@ -781,6 +955,15 @@ impl Widget for TreeView {
             crate::widget::metrics::dimensions::TREE_VIEW_DEFAULT_WIDTH,
             crate::widget::metrics::dimensions::TREE_VIEW_DEFAULT_HEIGHT,
         )
+    }
+
+    /// Advances the expansion fade by `delta_ms`; `true` while it is still moving.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.expansion_progress.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.expansion_progress.is_moving()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -991,6 +1174,20 @@ impl Draw for TreeView {
         );
         // Draw border
         context.draw_rect(rect, border);
+        // A source list is a sidebar: an accent-tinted face separates it from the content area
+        // behind it, and the tint is inside the frame so the border keeps its own ink. Off by
+        // default, which is what keeps the historical pixels.
+        if self.source_list {
+            context.fill_rect(
+                Rect::new(
+                    rect.x + 1,
+                    rect.y + 1,
+                    rect.width.saturating_sub(2),
+                    rect.height.saturating_sub(2),
+                ),
+                surface.blend(&accent, 0.06),
+            );
+        }
         // Draw nodes from model. Each node is a band of the content box, never of the
         // control, and the label's line box is derived from the row rather than from
         // `y + item_height / 2` — which put the glyph box's top edge on the row's middle
@@ -1003,14 +1200,23 @@ impl Draw for TreeView {
             // fit), so the projection stops as soon as painting will.
             let content = ControlMetrics::band_inset(rect, TREE_INSET);
             let row_capacity = (content.height / TREE_ROW_HEIGHT as u32) as usize + 1;
-            let rows = self.visible_indices_limited(row_capacity);
+            let rows = self.visible_indices_limited(self.scroll_row.saturating_add(row_capacity));
             let font = effective_font(style);
-            for (visible, &model_index) in rows.iter().enumerate() {
+            let reveal = self.expansion_progress();
+            for (visible, &model_index) in rows.iter().enumerate().skip(self.scroll_row) {
                 // The row's own rectangle comes from the same derivation the hit test uses, so a
                 // click cannot land on a row other than the one that was painted.
                 let Some(row) = self.node_row_rect(visible) else {
                     break;
                 };
+                // Rows the most recent expansion revealed fade in; every other row keeps the
+                // resting ink, so a settled tree paints exactly the historical pixels.
+                let fading = self.animated
+                    && self.animation_start.is_some_and(|start| {
+                        visible >= start && visible < start + self.animation_len
+                    });
+                let row_ink =
+                    if fading { ink.with_alpha((ink.a as f32 * reveal) as u8) } else { ink };
                 // Highlighting compares **model** indices: the selection is stable across an
                 // expansion change, so the wash follows the node and not the row number.
                 if Some(model_index) == self.focused_node {
@@ -1050,9 +1256,9 @@ impl Draw for TreeView {
                                 Point::new(left + size, center_y),
                             )
                         };
-                        context.draw_line(a, b, ink);
-                        context.draw_line(b, c, ink);
-                        context.draw_line(c, a, ink);
+                        context.draw_line(a, b, row_ink);
+                        context.draw_line(b, c, row_ink);
+                        context.draw_line(c, a, row_ink);
                     }
                 }
                 if !node.label.is_empty() {
@@ -1066,11 +1272,32 @@ impl Draw for TreeView {
                         context.text_line(cell, font),
                         &node.label,
                         font,
-                        ink,
+                        row_ink,
                         HorizontalAlignment::Left,
                     );
                 }
             }
+        }
+
+        // The thumb is opt-in: wheel and keyboard already reach every row, so the bar is the
+        // visible statement of how much of the tree is off-screen.
+        if self.show_scrollbar {
+            let total = self.visible_row_count().max(1);
+            let visible = (rect.height / TREE_ROW_HEIGHT.max(1) as u32).max(1) as usize;
+            let track = rect.height.max(1);
+            let thumb =
+                ((track as u64 * visible as u64) / total as u64).max(24).min(track as u64) as u32;
+            let travel = track.saturating_sub(thumb);
+            let max_scroll = total.saturating_sub(visible);
+            let offset = if max_scroll == 0 {
+                0
+            } else {
+                (travel as u64 * self.scroll_row.min(max_scroll) as u64 / max_scroll as u64) as u32
+            };
+            context.fill_rect(
+                Rect::new(rect.x + rect.width as i32 - 6, rect.y + offset as i32, 4, thumb),
+                accent.with_alpha(120),
+            );
         }
     }
 }
@@ -1121,11 +1348,64 @@ impl crate::event::EventHandler for TreeView {
                 let changed = match *key {
                     crate::event::key_codes::RIGHT => self.expand_focused(),
                     crate::event::key_codes::LEFT => self.collapse_focused(),
+                    crate::event::key_codes::UP
+                    | crate::event::key_codes::DOWN
+                    | crate::event::key_codes::HOME
+                    | crate::event::key_codes::END
+                    | crate::event::key_codes::PAGE_UP
+                    | crate::event::key_codes::PAGE_DOWN => {
+                        let visible = self.visible_row_count();
+                        if visible == 0 {
+                            false
+                        } else {
+                            let current = self
+                                .focused_node
+                                .and_then(|model_index| {
+                                    self.visible_indices()
+                                        .iter()
+                                        .position(|index| *index == model_index)
+                                })
+                                .unwrap_or(0);
+                            let page = (self.base.geometry().height / TREE_ROW_HEIGHT.max(1) as u32)
+                                .max(1) as usize;
+                            let next = match *key {
+                                crate::event::key_codes::UP => current.saturating_sub(1),
+                                crate::event::key_codes::DOWN => {
+                                    current.saturating_add(1).min(visible - 1)
+                                }
+                                crate::event::key_codes::HOME => 0,
+                                crate::event::key_codes::END => visible - 1,
+                                crate::event::key_codes::PAGE_UP => current.saturating_sub(page),
+                                _ => current.saturating_add(page).min(visible - 1),
+                            };
+                            self.select_node(next);
+                            self.set_focused_node(next);
+                            if next < self.scroll_row {
+                                self.set_scroll_row(next);
+                            } else if next >= self.scroll_row + page {
+                                self.set_scroll_row(next + 1 - page);
+                            }
+                            true
+                        }
+                    }
                     _ => false,
                 };
                 if changed {
                     self.base.request_redraw();
                 }
+            }
+            crate::event::Event::MouseDoubleClick { pos, button: 1 } => {
+                if let Some(index) = self.node_at(*pos) {
+                    let model_index = self.model_index(index).unwrap_or(index);
+                    self.node_double_clicked.emit(model_index);
+                    self.activated.emit(model_index);
+                    let _ = self.toggle_expanded(index);
+                }
+            }
+            crate::event::Event::Wheel { delta, modifiers } => {
+                let scroll = crate::event::WheelScroll::from_event(*delta, *modifiers, 1);
+                let next = self.scroll_row as isize - scroll.lines_y as isize;
+                self.set_scroll_row(next.max(0) as usize);
             }
             #[cfg(feature = "touch")]
             crate::event::Event::Tap { pos } => {
@@ -1141,6 +1421,7 @@ impl crate::event::EventHandler for TreeView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::Event;
     use std::sync::Arc;
 
     struct StaticTreeModel;
@@ -1628,5 +1909,67 @@ mod tests {
         assert_eq!(view.node_row_rect(i32::MAX as usize + 1), None);
         // A small, in-view index still resolves.
         assert!(view.node_row_rect(0).is_some());
+    }
+
+    /// Expansion signals, scrolling, keyboard navigation and lazy fetch are wired.
+    #[test]
+    fn expansion_signals_scrolling_and_keyboard_are_wired() {
+        use crate::event::EventHandler;
+        let mut view = TreeView::new(Rect::new(0, 0, 220, 100));
+        let mut nodes: Vec<String> = (0..30).map(|index| std::format!("row {index}")).collect();
+        nodes.insert(0, "root".to_string());
+        view.set_model(Arc::new(VecTreeModel::new(nodes)));
+        view.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, -1), modifiers: 0 });
+        assert_eq!(view.scroll_row(), 1);
+
+        view.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        view.handle_event(&Event::KeyPress { key: crate::event::key_codes::END, modifiers: 0 });
+        assert!(view.focused_node().is_some());
+        assert!(view.scroll_row() > 0, "the focused row is scrolled into view");
+
+        let mut branch = NodeView::leaf("branch");
+        branch.has_children = true;
+        branch.expanded = false;
+        let mut child = NodeView::leaf("child");
+        child.depth = 1;
+        let mut branched = TreeView::new(Rect::new(0, 0, 220, 200));
+        branched.set_model(Arc::new(VecTreeModel::from_views(vec![branch, child])));
+        let expanded_index = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&expanded_index);
+        branched.expanded.connect(move |index| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*index);
+            }
+        });
+        assert!(branched.expand(0));
+        assert!(branched.is_expanded(0));
+        assert_eq!(expanded_index.lock().map(|slot| *slot).unwrap_or(None), Some(0));
+    }
+
+    /// The opt-in expansion fade advances with `tick` and settles at full opacity.
+    #[test]
+    fn the_expansion_fade_advances_and_settles() {
+        let mut branch = NodeView::leaf("branch");
+        branch.has_children = true;
+        branch.expanded = false;
+        let mut child = NodeView::leaf("child");
+        child.depth = 1;
+        let mut view = TreeView::new(Rect::new(0, 0, 220, 200));
+        view.set_model(Arc::new(VecTreeModel::from_views(vec![branch, child])));
+        assert_eq!(view.expansion_progress(), 1.0, "a settled tree is fully opaque");
+
+        view.set_animated(true);
+        assert!(view.animated());
+        view.set_show_scrollbar(true);
+        assert!(view.show_scrollbar());
+        view.set_source_list(true);
+        assert!(view.source_list());
+        assert!(view.expand(0));
+        assert!(view.is_animating(), "the fade started");
+        assert!(view.expansion_progress() < 1.0);
+        assert!(view.tick(16));
+        let _ = crate::widget::svg::render_to_svg(&mut view);
+        assert!(!view.tick(10_000), "a long step settles the fade");
+        assert_eq!(view.expansion_progress(), 1.0);
     }
 }

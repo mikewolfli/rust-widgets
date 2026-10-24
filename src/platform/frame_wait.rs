@@ -457,7 +457,7 @@ fn block_for(timeout: Duration) -> bool {
     };
     // Anything other than a timeout means input arrived before the deadline, which is exactly
     // the early wake the pacing grid must preserve.
-    wait_result != winapi::um::winbase::WAIT_TIMEOUT
+    wait_result != winapi::shared::winerror::WAIT_TIMEOUT
 }
 
 /// Blocks for at most `timeout`, reporting whether a wake cut the wait short.

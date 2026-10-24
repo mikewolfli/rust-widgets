@@ -34,6 +34,17 @@ pub struct HeroAnimation {
     duration_ms: u64,
     /// Elapsed time in milliseconds.
     elapsed_ms: u64,
+    /// An optional easing curve applied to the elapsed fraction.
+    ///
+    /// `None` keeps the historical linear advance, so the existing frame-by-frame expectations
+    /// are unchanged. A curve only changes the intermediate frames; both endpoints are exact.
+    easing: Option<crate::style::EasingFunction>,
+    /// An explicit source rectangle for the transition, overriding the source widget's own
+    /// geometry. This is how a navigation host drives a hero from the rect a control had on
+    /// the previous page without owning that control.
+    source_rect: Option<Rect>,
+    /// An explicit target rectangle, the counterpart of [`Self::source_rect`].
+    target_rect: Option<Rect>,
     /// Emitted when the animation completes.
     pub animation_completed: GenericSignal,
 }
@@ -49,6 +60,9 @@ impl HeroAnimation {
             is_animating: false,
             duration_ms: 300,
             elapsed_ms: 0,
+            easing: None,
+            source_rect: None,
+            target_rect: None,
             animation_completed: GenericSignal::new(),
         }
     }
@@ -121,6 +135,41 @@ impl HeroAnimation {
         self.duration_ms = ms.max(1);
     }
 
+    /// Sets the easing curve applied to the elapsed fraction, or `None` for linear motion.
+    pub fn set_easing(&mut self, easing: Option<crate::style::EasingFunction>) {
+        self.easing = easing;
+    }
+
+    /// Returns the easing curve, when one is set.
+    pub fn easing(&self) -> Option<crate::style::EasingFunction> {
+        self.easing
+    }
+
+    /// Sets explicit endpoint rectangles for the transition.
+    ///
+    /// A host that knows where the shared element was and where it will land (a navigation
+    /// push, a list-to-detail transition) can state both facts here without moving the source
+    /// and target widgets themselves. Passing `None` returns to reading each widget's own
+    /// geometry.
+    pub fn set_transition_rects(&mut self, source: Option<Rect>, target: Option<Rect>) {
+        if self.source_rect == source && self.target_rect == target {
+            return;
+        }
+        self.source_rect = source;
+        self.target_rect = target;
+        self.base.request_redraw();
+    }
+
+    /// The explicit source rectangle, when one is set.
+    pub fn source_rect(&self) -> Option<Rect> {
+        self.source_rect
+    }
+
+    /// The explicit target rectangle, when one is set.
+    pub fn target_rect(&self) -> Option<Rect> {
+        self.target_rect
+    }
+
     /// Returns the animation duration in milliseconds.
     pub fn duration(&self) -> u64 {
         self.duration_ms
@@ -133,7 +182,11 @@ impl HeroAnimation {
             return false;
         }
         self.elapsed_ms += delta_ms;
-        let progress = (self.elapsed_ms as f32 / self.duration_ms as f32).min(1.0);
+        let fraction = (self.elapsed_ms as f32 / self.duration_ms as f32).min(1.0);
+        let progress = match self.easing {
+            Some(curve) => curve.apply(fraction),
+            None => fraction,
+        };
         self.set_progress(progress);
         self.is_animating
     }
@@ -242,7 +295,7 @@ impl Draw for HeroAnimation {
         // pixel baseline cannot move. Resolved once per draw, because the shell, the label,
         // the badge and the outline all read from it and re-resolving would take the theme
         // lock several times inside one draw.
-        let style = self.style();
+        let style = self.style().clone();
         let themed = crate::style::resolved_theme_style_shared("hero_animation");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
@@ -285,11 +338,13 @@ impl Draw for HeroAnimation {
 
         let src = self.source_widget.as_ref();
         let tgt = self.target_widget.as_ref();
+        let has_src = src.is_some();
+        let has_tgt = tgt.is_some();
 
-        if src.is_none() && tgt.is_none() {
+        if !has_src && !has_tgt {
             // No widgets configured: draw placeholder. The message is this widget's own
             // chrome — a hint about missing configuration — so it follows the theme.
-            let font = effective_font(style);
+            let font = effective_font(&style);
             // Two lines, each fitted to the control's width, and each centred on the vertical
             // midline as a pair. The previous single call passed a two-line string with one
             // origin: the renderer draws **one** row per call, so the origin was computed
@@ -318,8 +373,8 @@ impl Draw for HeroAnimation {
 
         // Draw the interpolated transition effect.
         let t = self.animation_progress;
-        let src_rect = src.map(|w| w.geometry()).unwrap_or(rect);
-        let tgt_rect = tgt.map(|w| w.geometry()).unwrap_or(rect);
+        let src_rect = self.source_rect.or_else(|| src.map(|w| w.geometry())).unwrap_or(rect);
+        let tgt_rect = self.target_rect.or_else(|| tgt.map(|w| w.geometry())).unwrap_or(rect);
 
         // Interpolated rectangle.
         let ix = src_rect.x as f32 + (tgt_rect.x as f32 - src_rect.x as f32) * t;
@@ -356,10 +411,26 @@ impl Draw for HeroAnimation {
         // theme border; the fill above keeps its interpolated data colour.
         context.draw_rounded_rect_stroke(interp_rect, 8, shell_border, 1);
 
+        // The endpoint that owns this half of the transition is painted into the interpolated
+        // box. This is what makes the control a shared-element transition rather than a
+        // coloured rectangle: the source's or target's own appearance travels with the rect.
+        let endpoint: Option<&mut Box<dyn Widget>> =
+            if t < 0.5 { self.source_widget.as_mut() } else { self.target_widget.as_mut() };
+        if let Some(endpoint) = endpoint {
+            let origin = endpoint.geometry();
+            endpoint.set_geometry(interp_rect);
+            context.push_clip(interp_rect.x, interp_rect.y, interp_rect.width, interp_rect.height);
+            if let Some(drawable) = crate::widget::draw_bridge::draw_of(endpoint.as_mut()) {
+                drawable.draw(context);
+            }
+            context.pop_clip();
+            endpoint.set_geometry(origin);
+        }
+
         // Draw the progress indicator label. The label is chrome, so it uses the resolved
         // foreground instead of the fixed mid-grey that made it unreadable on a dark shell.
         let progress_text = format!("Progress: {:.0}%", t * 100.0);
-        let font = effective_font(style);
+        let font = effective_font(&style);
         let metrics = context.measure_text(&progress_text, font);
         let text_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
         let text_y = rect.y + rect.height as i32 - 10;
@@ -376,7 +447,7 @@ impl Draw for HeroAnimation {
         // label must match the colour it names rather than the theme's. The label strip is
         // bounded by the control, so a narrow hero truncates it rather than overhanging.
         let label_band = Rect::new(rect.x + 4, rect.y + 4, rect.width.saturating_sub(8), 14);
-        let label = match (src.is_some(), tgt.is_some()) {
+        let label = match (has_src, has_tgt) {
             (true, false) => Some(("Source", Color::rgba(33, 118, 210, 200))),
             (false, true) => Some(("Target", Color::rgba(76, 175, 80, 200))),
             (true, true) if t < 0.5 => {
@@ -612,5 +683,42 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut ha);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    #[test]
+    fn an_optional_curve_eases_the_movement_without_moving_the_endpoints() {
+        let mut ha = HeroAnimation::new(Rect::new(0, 0, 300, 200));
+        ha.set_source(Box::new(crate::widget::base_widgets::button::Button::new(
+            "Src".to_string(),
+            Rect::new(0, 0, 50, 50),
+        )));
+        ha.set_target(Box::new(crate::widget::base_widgets::button::Button::new(
+            "Tgt".to_string(),
+            Rect::new(200, 100, 100, 80),
+        )));
+        ha.set_easing(Some(crate::style::EasingFunction::EaseIn));
+        ha.set_duration(100);
+        ha.start_animation();
+        ha.tick(50);
+        assert!(ha.progress() < 0.5, "ease-in lags the linear fraction");
+        ha.tick(50);
+        assert!((ha.progress() - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn explicit_endpoint_rects_drive_the_transition() {
+        let mut ha = HeroAnimation::new(Rect::new(0, 0, 300, 200));
+        ha.set_transition_rects(Some(Rect::new(10, 10, 20, 20)), Some(Rect::new(100, 100, 80, 80)));
+        assert_eq!(ha.source_rect(), Some(Rect::new(10, 10, 20, 20)));
+        ha.set_source(Box::new(crate::widget::base_widgets::button::Button::new(
+            "Src".to_string(),
+            Rect::new(0, 0, 50, 50),
+        )));
+        ha.set_target(Box::new(crate::widget::base_widgets::button::Button::new(
+            "Tgt".to_string(),
+            Rect::new(200, 100, 100, 80),
+        )));
+        let svg = crate::widget::svg::render_to_svg(&mut ha);
+        assert!(svg.starts_with("<svg"));
     }
 }

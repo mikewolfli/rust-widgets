@@ -234,12 +234,15 @@ impl CodeEditor {
         let row = map.row_at_y(point.y);
         let line = self.visual_row_to_line(row);
         // Measured x positions are what the painter actually used, so a click lands
-        // on the glyph that was drawn there. The grid is the fallback for a line
-        // that has not been painted yet (it is rebuilt on every frame).
+        // on the glyph that was drawn there. Wrapped rows use the grid path below:
+        // their cache entry is a whole-line layout, while the click is inside one
+        // segment, so the raw x would be measured from the line's start.
         let left = self.geometry().x + self.text_origin_x();
         let scroll_px = (self.scroll_column as f32 * self.cell_width()).round() as i32;
-        if let Some(column) = self.cached_char_at(line, (point.x - left + scroll_px) as f32) {
-            return Some(self.clamp_position(TextPosition::new(line, column)));
+        if !self.config.word_wrap {
+            if let Some(column) = self.cached_char_at(line, (point.x - left + scroll_px) as f32) {
+                return Some(self.clamp_position(TextPosition::new(line, column)));
+            }
         }
         let text = self.line_text(line).unwrap_or_default();
         let grid = LineGrid::new(&text, self.config.tab_width);
@@ -258,6 +261,15 @@ impl CodeEditor {
                 (grid.leading_indent_columns() as f32 * cell)
                     .min(columns.saturating_sub(4) as f32 * cell)
             };
+            // Prefer the measured layout: the painter stored the glyph positions,
+            // so converting the click through them lands on the glyph under the
+            // pointer rather than on `column * cell`.
+            if let Some(base) = self.cached_x(line, segment_start) {
+                let local = (point.x - left) as f32 - indent;
+                if let Some(column) = self.cached_char_at(line, local + base) {
+                    return Some(self.clamp_position(TextPosition::new(line, column)));
+                }
+            }
             let local = ((point.x - left) as f32 - indent).max(0.0);
             let offset = (local / cell).round() as usize;
             let target = grid.column_of_char(segment_start) + offset;
@@ -318,7 +330,7 @@ impl CodeEditor {
     pub fn completion_rect(&self) -> Rect {
         let rect = self.geometry();
         let width = (rect.width as i32 / 2).clamp(180, 340) as u32;
-        let height = self.completion.items.len().max(1) as u32 * MIN_TOUCH_TARGET as u32;
+        let height = self.completion_visible_rows().max(1) as u32 * MIN_TOUCH_TARGET as u32;
         let map = self.coordinate_map();
         let caret_row = self.line_to_visual_row(self.cursor.head.line);
         // One row below the caret line, so the popup never covers what is being

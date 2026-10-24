@@ -11,6 +11,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -55,6 +56,21 @@ pub struct SwipeToDismiss {
     exit: crate::style::PropertyDriver,
     /// Text displayed in the action background (e.g., "Delete").
     action_text: String,
+    /// Label shown when the row is swiped toward its trailing edge (the default direction).
+    leading_action_text: Option<String>,
+    /// Label shown when the row is swiped toward its leading edge.
+    trailing_action_text: Option<String>,
+    /// The spring-back of a failed swipe, in pixels.
+    ///
+    /// `swipe_offset` is the gesture's live measurement; this driver carries the residual the
+    /// row was released at, so a swipe below the threshold returns over frames instead of
+    /// snapping to zero in one. At rest it is exactly zero, which is what keeps the settled
+    /// picture unchanged.
+    settle: PropertyDriver,
+    /// Estimated pointer velocity of the current swipe, in pixels per millisecond.
+    velocity: f32,
+    /// The previous pointer x during a drag, used to estimate velocity.
+    last_x: Option<f32>,
     /// Emitted when the item is dismissed.
     pub dismissed: Signal1<()>,
 }
@@ -72,6 +88,11 @@ impl SwipeToDismiss {
             is_dismissed: false,
             exit: crate::style::PropertyDriver::default(),
             action_text: "Delete".to_string(),
+            leading_action_text: None,
+            trailing_action_text: None,
+            settle: PropertyDriver::at(0.0, MotionSlot::Normal),
+            velocity: 0.0,
+            last_x: None,
             dismissed: Signal1::new(),
         }
     }
@@ -126,10 +147,42 @@ impl SwipeToDismiss {
         &self.action_text
     }
 
+    /// Sets the label revealed by a swipe toward the leading edge.
+    pub fn set_leading_action_text(&mut self, text: Option<impl Into<String>>) {
+        let text = text.map(Into::into);
+        if self.leading_action_text == text {
+            return;
+        }
+        self.leading_action_text = text;
+        self.base.request_redraw();
+    }
+
+    /// Sets the label revealed by a swipe toward the trailing edge.
+    pub fn set_trailing_action_text(&mut self, text: Option<impl Into<String>>) {
+        let text = text.map(Into::into);
+        if self.trailing_action_text == text {
+            return;
+        }
+        self.trailing_action_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The label for the background revealed by `offset`, falling back to the shared text.
+    fn action_label(&self, offset: f32) -> &str {
+        let dedicated = if offset < 0.0 {
+            self.leading_action_text.as_deref()
+        } else {
+            self.trailing_action_text.as_deref()
+        };
+        dedicated.unwrap_or(&self.action_text)
+    }
+
     /// Resets the swipe offset (e.g., when dismissing fails or is undone).
     pub fn reset_swipe(&mut self) {
         self.swipe_offset = 0.0;
         self.is_dismissed = false;
+        self.settle.jump_to(0.0);
+        self.velocity = 0.0;
         // The same reasoning as `dismiss`: undoing the decision must also un-aim the departure, or
         // `is_animating()` would keep reporting a journey the control is no longer making.
         self.exit.set_target(self.exit_target());
@@ -165,8 +218,10 @@ impl SwipeToDismiss {
     /// theme's `Motion::normal` rather than a constant in this file, so a theme can state its own
     /// tempo and a test can drive it to the end deterministically.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
+        let settling = self.settle.tick(delta_ms);
         self.exit.set_target(self.exit_target());
-        self.exit.tick(delta_ms)
+        let exiting = self.exit.tick(delta_ms);
+        settling || exiting
     }
 
     /// The progress a departure should be travelling toward: `1.0` once dismissed, else `0.0`.
@@ -187,8 +242,40 @@ impl SwipeToDismiss {
     /// `reset_swipe` undo a gesture without having to reason about a half-finished exit, and it is
     /// why the drawn position is a derived value rather than a second mutable field that the two
     /// writers would have to keep in step.
+    /// Commits a released swipe whose measured offset is `offset`.
+    ///
+    /// A drag past the distance threshold **or** a fast flick commits the dismissal; anything
+    /// else aims the residual offset at zero and lets [`Self::tick`] spring it back. A release
+    /// that never moved more than two pixels is a tap, so the child receives it — which is what
+    /// makes a button inside the row clickable again.
+    fn commit_swipe_offset(&mut self, offset: f32, tap: Option<&Event>) {
+        let flick_floor = (self.dismiss_threshold * 0.25).clamp(1.0, 40.0);
+        let flicked = self.velocity.abs() > 0.5 && offset.abs() >= flick_floor;
+        let committed = offset.abs() >= self.dismiss_threshold || flicked;
+        // The drawn offset starts where the gesture left it and then moves on: either the
+        // departure (when committed) or the spring-back (when not).
+        self.settle.jump_to(offset);
+        self.swipe_offset = 0.0;
+        if committed {
+            self.is_dismissed = true;
+            self.exit.set_target(1.0);
+            self.dismissed.emit(());
+        } else {
+            self.settle.set_target(0.0);
+        }
+        if offset.abs() < 2.0 {
+            if let Some(event) = tap {
+                if let Some(child) = &mut self.child {
+                    child.handle_event(event);
+                }
+            }
+        }
+        self.velocity = 0.0;
+        self.base.request_redraw();
+    }
+
     fn drawn_offset(&self) -> f32 {
-        let gesture = self.swipe_offset;
+        let gesture = self.swipe_offset + self.settle.value();
         let exit = self.exit.value();
         if exit <= 0.0 {
             return gesture;
@@ -220,7 +307,7 @@ impl Widget for SwipeToDismiss {
         // The driver holds the target the tick aims at, so "is `is_dismissed` reflected yet" is
         // one question asked in one place -- the field that used to be compared against a
         // separately derived target is gone (BLUE24 §2.3).
-        self.exit.is_moving()
+        self.exit.is_moving() || self.settle.is_moving()
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -347,12 +434,13 @@ impl Draw for SwipeToDismiss {
             // only approximated a baseline-relative centre and sat the label half a line low.
             if !self.action_text.is_empty() {
                 let font = role_font(self.base.style(), 16.0);
-                let metrics = context.measure_text(&self.action_text, &font);
+                let label = self.action_label(offset);
+                let metrics = context.measure_text(label, &font);
                 let text_x = bg_rect.x + (bg_rect.width as i32 - metrics.width as i32) / 2;
                 let text_y = bg_rect.y + (bg_rect.height as i32 - metrics.height as i32) / 2;
                 context.draw_text(
                     Point::new(text_x, text_y),
-                    &self.action_text,
+                    label,
                     &font,
                     // Picked for legibility on whichever red the theme resolves, rather
                     // than assuming the light-theme red and hardcoding white.
@@ -412,7 +500,16 @@ impl EventHandler for SwipeToDismiss {
                     // Remember where the drag started; the offset is the delta
                     // from here, so the child only moves as far as the pointer.
                     self.drag_origin_x = Some(pos.x as f32);
+                    self.last_x = Some(pos.x as f32);
                     self.swipe_offset = 0.0;
+                    self.velocity = 0.0;
+                    self.settle.jump_to(0.0);
+                    // The child sees the press straight away. A swipe that never moves is a
+                    // tap, and the release below completes it; without this the wrapper
+                    // swallowed every press and a button inside the row was dead.
+                    if let Some(child) = &mut self.child {
+                        child.handle_event(event);
+                    }
                 }
             }
             #[cfg(feature = "touch")]
@@ -420,11 +517,34 @@ impl EventHandler for SwipeToDismiss {
                 // Touch and mouse share the drag path: tablets/mobile report
                 // touches, desktops report mouse, and the gesture is identical.
                 self.drag_origin_x = Some(pos.x as f32);
+                self.last_x = Some(pos.x as f32);
                 self.swipe_offset = 0.0;
+                self.velocity = 0.0;
+                self.settle.jump_to(0.0);
             }
             Event::MouseMove { pos } => {
                 if let Some(origin) = self.drag_origin_x {
-                    self.swipe_offset = pos.x as f32 - origin;
+                    let x = pos.x as f32;
+                    // Velocity is estimated against a nominal 16 ms frame: the platform event
+                    // carries no timestamp, and the exact wall-clock rate does not matter for
+                    // the "was this a flick" decision.
+                    if let Some(last) = self.last_x {
+                        self.velocity = (x - last) / 16.0;
+                    }
+                    self.last_x = Some(x);
+                    let raw = x - origin;
+                    // Rubber-band damping past the threshold: a swipe may not drag the row
+                    // arbitrarily far, and the extra distance past the commit point costs
+                    // more than the distance before it.
+                    let magnitude = raw.abs();
+                    let damped = if magnitude <= self.dismiss_threshold {
+                        raw
+                    } else {
+                        let sign = raw.signum();
+                        sign * (self.dismiss_threshold
+                            + (magnitude - self.dismiss_threshold) * 0.35)
+                    };
+                    self.swipe_offset = damped;
                     self.base.request_redraw();
                 }
             }
@@ -437,24 +557,18 @@ impl EventHandler for SwipeToDismiss {
             }
             Event::MouseRelease { pos: _, button } => {
                 if *button == 1 {
+                    let offset = self.swipe_offset;
                     self.drag_origin_x = None;
-                    if self.swipe_offset.abs() >= self.dismiss_threshold {
-                        self.is_dismissed = true;
-                        self.dismissed.emit(());
-                    }
-                    self.swipe_offset = 0.0;
-                    self.base.request_redraw();
+                    self.last_x = None;
+                    self.commit_swipe_offset(offset, Some(event));
                 }
             }
             #[cfg(feature = "touch")]
             Event::TouchEnd { .. } => {
+                let offset = self.swipe_offset;
                 self.drag_origin_x = None;
-                if self.swipe_offset.abs() >= self.dismiss_threshold {
-                    self.is_dismissed = true;
-                    self.dismissed.emit(());
-                }
-                self.swipe_offset = 0.0;
-                self.base.request_redraw();
+                self.last_x = None;
+                self.commit_swipe_offset(offset, None);
             }
             // Delegate remaining events to child
             evt => {
@@ -689,5 +803,42 @@ mod tests {
         // Nothing painted: the row has left. A sentinel rather than zero, so a comparison still
         // distinguishes "gone" from "at the origin" instead of reading both as `0`.
         leftmost.unwrap_or(i32::MIN)
+    }
+
+    #[test]
+    fn a_swipe_below_the_threshold_springs_back_over_frames() {
+        let rect = Rect::new(0, 0, 200, 50);
+        let mut sw = SwipeToDismiss::new(rect);
+        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1, modifiers: 0 });
+        sw.handle_event(&Event::MouseMove { pos: Point::new(160, 25) });
+        assert!(sw.swipe_offset() < 0.0);
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(160, 25), button: 1 });
+        assert!(!sw.is_dismissed());
+        assert!(sw.is_animating(), "the failed swipe returns over frames");
+        while sw.tick(16) {}
+        assert!(!sw.is_animating());
+    }
+
+    #[test]
+    fn a_fast_short_flick_still_dismisses() {
+        let rect = Rect::new(0, 0, 200, 50);
+        let mut sw = SwipeToDismiss::new(rect);
+        sw.set_dismiss_threshold(300.0);
+        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1, modifiers: 0 });
+        // A large move in one frame is a flick even though the distance is under the threshold.
+        sw.handle_event(&Event::MouseMove { pos: Point::new(120, 25) });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(120, 25), button: 1 });
+        assert!(sw.is_dismissed(), "velocity commits a flick the distance alone would not");
+    }
+
+    #[test]
+    fn a_direction_can_carry_its_own_action_label() {
+        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
+        sw.set_leading_action_text(Some("Archive"));
+        sw.set_trailing_action_text(Some("Delete"));
+        sw.set_action_text("Fallback");
+        assert_eq!(sw.action_label(-10.0), "Archive");
+        assert_eq!(sw.action_label(10.0), "Delete");
+        assert_eq!(sw.action_text(), "Fallback");
     }
 }

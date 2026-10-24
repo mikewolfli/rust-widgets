@@ -9,6 +9,28 @@ use crate::render::core::command::LayerEffect;
 use crate::render::pixel_bytes_len;
 use crate::render::{BlendMode, PaintBackend, RenderCommand, ShapedText, TextMetrics};
 
+/// One active path clip, pushed by [`RenderCommand::ClipPath`].
+///
+/// A path clip is kept beside the rectangle clip stack because the two restrict drawing in
+/// different ways: the rectangle stack decides *where a primitive may write*, while this mask
+/// decides *how much of a written pixel survives*. The paint backend applies the mask when the
+/// matching [`RenderCommand::PopClip`] arrives, so every primitive — geometry, glyphs, images and
+/// blurs — is clipped by the path without any of them having to know it exists.
+///
+/// `rect` is the part of the path's bounding box that lies inside the surface and the enclosing
+/// rectangle clip. `coverage` is one byte per pixel of that region (`width * height`), and
+/// `backdrop` is the same region's RGBA bytes captured when the clip was pushed (`width * height
+/// * 4`).
+#[derive(Debug, Clone)]
+pub(crate) struct PathClip {
+    /// Device-space `(x, y, width, height)` the mask covers.
+    pub(crate) rect: (i32, i32, u32, u32),
+    /// Per-pixel path coverage, row-major, one byte per pixel.
+    pub(crate) coverage: Vec<u8>,
+    /// The pixels the region held before the clipped drawing, row-major RGBA.
+    pub(crate) backdrop: Vec<u8>,
+}
+
 /// One captured backdrop layer, pushed by [`RenderCommand::PushLayer`].
 ///
 /// The capture lives beside the pixel buffers because it is frame state of the surface, in
@@ -23,6 +45,33 @@ pub(crate) struct LayerCapture {
     pub(crate) effect: Option<LayerEffect>,
     /// Backdrop pixels captured at push, row-major RGBA, `width * height * 4` bytes.
     pub(crate) backdrop: Vec<u8>,
+    /// Whether the layer was isolated (backdrop captured, region cleared) at push.
+    ///
+    /// A plain [`RenderCommand::PushLayer`] with no effect draws straight into the surface, so its
+    /// pop has nothing to composite. Opacity and a cache key both require the foreground to be
+    /// separable from the backdrop, which is what `isolated` records.
+    pub(crate) isolated: bool,
+    /// Subtree opacity applied to the layer's foreground at pop, in `0.0..=1.0`.
+    pub(crate) opacity: f32,
+    /// Cache identity supplied by the caller, if any.
+    pub(crate) cache_key: Option<u64>,
+    /// Foreground pixels reused from a previous frame's cache entry.
+    ///
+    /// When this is `Some` the commands between push and pop were suppressed, because the caller
+    /// asserted the subtree is unchanged, and the pop composites these pixels instead of whatever
+    /// the (cleared) region contains.
+    pub(crate) cached_foreground: Option<Vec<u8>>,
+}
+
+/// One cached layer foreground, keyed by the caller's cache identity.
+#[derive(Debug, Clone)]
+pub(crate) struct CachedLayer {
+    /// Region the foreground covers.
+    pub(crate) rect: (i32, i32, u32, u32),
+    /// Opacity the foreground was captured with. A change invalidates the entry.
+    pub(crate) opacity: f32,
+    /// The layer's foreground pixels, row-major RGBA, `width * height * 4` bytes.
+    pub(crate) foreground: Vec<u8>,
 }
 
 /// Double-buffered 8-bit RGBA pixel storage used by software rendering.
@@ -52,6 +101,28 @@ pub struct BackBuffer {
     /// invalidated by a resize (the region it indexes may no longer exist) and by a present
     /// (unbalanced pushes must not leak into the next frame), so both clear the stack.
     pub(crate) layers: Vec<LayerCapture>,
+    /// Regions the caller reported as changed since the last present.
+    ///
+    /// This is the damage list, not a list of pixels that were actually written: the surface
+    /// cannot know which primitives a frame will paint without charging every write, so the
+    /// caller (a scene compositor that knows which controls were invalidated) reports the
+    /// rectangles instead. [`BackBuffer::present_damage`] publishes only those rectangles and
+    /// leaves the rest of the front buffer as the previous frame.
+    damage: Vec<(i32, i32, u32, u32)>,
+    /// Cached layer foregrounds, keyed by the caller's cache identity.
+    ///
+    /// This is the per-subtree replay cache: a control that knows its own drawing has not changed
+    /// can pass the same key again and the surface skips the commands between its layer push and
+    /// pop, reusing the foreground captured on the previous frame. Entries survive a present
+    /// (that is the point of a cache) and are dropped on resize, when their regions no longer
+    /// describe the buffer.
+    pub(crate) layer_cache: Vec<(u64, CachedLayer)>,
+    /// How many commands are currently being suppressed because their layer was a cache hit.
+    ///
+    /// A non-zero depth makes [`crate::render::backend::paint::route_command_to_surface`] discard
+    /// drawing commands while still counting nested push/pop pairs, so the matching pop of the
+    /// cached layer is found without letting the skipped content disturb the clip or layer stacks.
+    pub(crate) suppress_depth: usize,
 }
 impl BackBuffer {
     /// Creates a new back buffer of `size` physical pixels at `dpi_scale`.
@@ -66,6 +137,9 @@ impl BackBuffer {
             front: vec![0; bytes],
             back: vec![0; bytes],
             layers: Vec::new(),
+            damage: Vec::new(),
+            layer_cache: Vec::new(),
+            suppress_depth: 0,
         }
     }
     /// Resizes front and back buffers to `size` pixels.
@@ -80,6 +154,10 @@ impl BackBuffer {
         self.front.resize(bytes, 0);
         self.back.resize(bytes, 0);
         self.layers.clear();
+        self.damage.clear();
+        // A cached region indexes the old buffer's geometry, so it cannot survive a resize.
+        self.layer_cache.clear();
+        self.suppress_depth = 0;
     }
     /// Returns the buffer size in physical pixels, not in logical units.
     pub fn size(&self) -> Size {
@@ -136,7 +214,90 @@ impl BackBuffer {
         // push into a lost effect rather than a stale capture that would be applied to the
         // *next* frame's pixels.
         self.layers.clear();
+        self.damage.clear();
+        self.suppress_depth = 0;
     }
+
+    /// Reports `rect` as changed since the last present.
+    ///
+    /// The rectangle is clipped to the buffer here, so a caller may pass an untrusted or
+    /// off-screen rectangle and still get a damage list that every consumer can index safely.
+    /// Zero-area and fully off-screen rectangles are dropped.
+    pub fn mark_damage(&mut self, rect: crate::core::Rect) {
+        let Some(region) = clipped_damage(rect, self.size) else { return };
+        // Containment is the common case: a control repaints inside a region an ancestor already
+        // reported. Dropping it keeps the list small without changing which pixels are published.
+        if self.damage.iter().any(|existing| contains_region(*existing, region)) {
+            return;
+        }
+        self.damage.push(region);
+    }
+
+    /// The damaged rectangles reported since the last present, clipped to the buffer.
+    pub fn damage_regions(&self) -> &[(i32, i32, u32, u32)] {
+        &self.damage
+    }
+
+    /// Forgets the reported damage without publishing it.
+    pub fn clear_damage(&mut self) {
+        self.damage.clear();
+    }
+
+    /// Publishes only the damaged regions from the back buffer to the front buffer.
+    ///
+    /// Returns `false` when nothing was reported, leaving both buffers untouched. Otherwise each
+    /// reported rectangle is copied row by row into the front buffer and the list is cleared. The
+    /// front buffer keeps the previous frame's pixels everywhere else, which is exactly the
+    /// contract: a caller that draws into the back buffer seeded from the previous frame and then
+    /// reports what it touched gets a correct frame without a full-frame swap or copy.
+    ///
+    /// A damage list that covers the whole surface falls back to a swap: copying the same bytes
+    /// region by region would do the same work with more overhead.
+    pub fn present_damage(&mut self) -> bool {
+        if self.damage.is_empty() {
+            return false;
+        }
+        if self.damage.contains(&(0, 0, self.size.width, self.size.height)) {
+            self.present();
+            return true;
+        }
+        let width = self.size.width as usize;
+        for (x, y, region_width, region_height) in self.damage.iter().copied() {
+            let row_bytes = region_width as usize * 4;
+            for row in 0..region_height as usize {
+                let start = (y as usize + row) * width * 4 + x as usize * 4;
+                let end = start + row_bytes;
+                if end > self.back.len() || end > self.front.len() {
+                    continue;
+                }
+                self.front[start..end].copy_from_slice(&self.back[start..end]);
+            }
+        }
+        self.damage.clear();
+        true
+    }
+}
+
+/// Clips `rect` to `size`, returning `None` when no pixel remains.
+fn clipped_damage(rect: Rect, size: Size) -> Option<(i32, i32, u32, u32)> {
+    let left = (rect.x as i64).max(0);
+    let top = (rect.y as i64).max(0);
+    let right = (rect.x as i64 + rect.width as i64).min(size.width as i64);
+    let bottom = (rect.y as i64 + rect.height as i64).min(size.height as i64);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some((left as i32, top as i32, (right - left) as u32, (bottom - top) as u32))
+}
+
+/// Whether `outer` fully contains `inner`.
+fn contains_region(outer: (i32, i32, u32, u32), inner: (i32, i32, u32, u32)) -> bool {
+    let (ox, oy, ow, oh) = outer;
+    let (ix, iy, iw, ih) = inner;
+    ix >= ox
+        && iy >= oy
+        && (ix as i64 + iw as i64) <= (ox as i64 + ow as i64)
+        && (iy as i64 + ih as i64) <= (oy as i64 + oh as i64)
 }
 /// Software raster surface with quality controls and RGBA frame output.
 ///
@@ -164,6 +325,12 @@ pub struct SoftwareSurface {
     /// discarded immediately after. Keeping it on the surface makes the allocation per line at
     /// worst, and usually per surface.
     pub(crate) text_coverage_scratch: Vec<u8>,
+    /// Active path clips, parallel to [`Self::clip_stack`].
+    ///
+    /// Every rectangle push records one entry here (`None` for a plain rectangle clip), so the two
+    /// stacks stay the same height and a `PopClip` always releases exactly one of each. A `Some`
+    /// entry carries the path's coverage mask and the backdrop it must restore on pop.
+    pub(crate) path_clips: Vec<Option<PathClip>>,
     /// The blend mode the next pixel write composites through.
     ///
     /// Set by [`SoftwareSurface::set_blend_mode`] (driven by
@@ -172,6 +339,14 @@ pub struct SoftwareSurface {
     /// changes* — a sequential fact, exactly like the clip stack — and because every opaque and
     /// antialiased primitive funnels its writes through [`SoftwareSurface::write_pixel`].
     pub(crate) blend_mode: BlendMode,
+    /// Whether text is drawn glyph by glyph through a shaped run.
+    ///
+    /// Off by default, which keeps the cluster raster path (and every existing snapshot)
+    /// unchanged. When on and a face matches `Font::family`, [`SoftwareSurface::draw_text`]
+    /// shapes with the face's standard ligatures enabled and paints the resulting glyph ids, so a
+    /// ligature or a contextual form is drawn as the shaper chose it rather than as its individual
+    /// characters.
+    pub(crate) glyph_run_text: bool,
 }
 /// Public software render configuration for quality-related knobs.
 ///
@@ -1195,6 +1370,37 @@ impl<'a> RenderContext<'a> {
         self.backend.execute_command(&RenderCommand::PopLayer);
     }
 
+    /// Begins a composed layer with subtree opacity and an optional replay cache.
+    ///
+    /// This is the [`RenderCommand::PushLayerGroup`] form: `opacity` fades the whole layer (a
+    /// child and its own background together), and a `cache_key` lets the backend reuse the
+    /// layer's foreground when the caller guarantees the enclosed commands are unchanged. Pass
+    /// `None` for `cache_key` to redraw every frame.
+    pub fn push_layer_group(
+        &mut self,
+        bounds: Rect,
+        effect: Option<LayerEffect>,
+        opacity: f32,
+        cache_key: Option<u64>,
+    ) {
+        let bounds = self.offset_rect(bounds);
+        self.backend.execute_command(&RenderCommand::PushLayerGroup {
+            bounds,
+            effect,
+            opacity,
+            cache_key,
+        });
+    }
+
+    /// Drops every cached layer foreground.
+    ///
+    /// A cache entry is keyed by a caller-supplied identity, so a caller that reuses identities
+    /// for different content must clear the cache when it reuses them. The surface also clears it
+    /// on resize, when the cached regions no longer describe the buffer.
+    pub fn clear_layer_cache(&mut self) {
+        self.backend.clear_layer_cache();
+    }
+
     /// Draws `data` as an image at `(x, y)` scaled to `width` x `height` pixels.
     ///
     /// `data` is interpreted as 8-bit RGBA, four bytes per pixel, tightly
@@ -1287,6 +1493,95 @@ mod tests {
         assert_eq!(bb.size(), Size::new(0, 0));
         assert!(bb.front().is_empty());
         assert!(bb.back.is_empty());
+    }
+
+    /// Writes one opaque pixel straight into a back buffer row.
+    fn put(pixels: &mut [u8], width: u32, x: u32, y: u32, color: [u8; 4]) {
+        let offset = ((y * width + x) * 4) as usize;
+        pixels[offset..offset + 4].copy_from_slice(&color);
+    }
+
+    /// Reads one pixel from a presented frame.
+    fn got(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+        let offset = ((y * width + x) * 4) as usize;
+        [pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]]
+    }
+
+    /// A damage present copies exactly the reported rectangle and nothing else.
+    ///
+    /// The front buffer starts as a full white frame. Only the top-left 2×2 is reported damaged
+    /// after the back buffer is painted red there, so a correct region present publishes the red
+    /// square and leaves the rest of the previous frame in place.
+    #[test]
+    fn present_damage_copies_only_the_reported_region() {
+        let mut buffer = BackBuffer::new(Size::new(4, 4), 1.0);
+        crate::render::fill_pixels(buffer.back_mut(), Color::WHITE);
+        buffer.present();
+        for y in 0..2 {
+            for x in 0..2 {
+                put(buffer.back_mut(), 4, x, y, [255, 0, 0, 255]);
+            }
+        }
+        buffer.mark_damage(Rect::new(0, 0, 2, 2));
+        assert!(buffer.present_damage(), "a reported region is published");
+        assert_eq!(got(buffer.front(), 4, 0, 0), [255, 0, 0, 255], "the damaged pixel updates");
+        assert_eq!(got(buffer.front(), 4, 3, 3), [255, 255, 255, 255], "the rest is the old frame");
+        assert!(buffer.damage_regions().is_empty(), "the list resets after publishing");
+    }
+
+    /// Nothing reported means nothing published, not a full-frame swap.
+    #[test]
+    fn present_damage_with_no_regions_is_a_no_op() {
+        let mut buffer = BackBuffer::new(Size::new(2, 2), 1.0);
+        crate::render::fill_pixels(buffer.back_mut(), Color::WHITE);
+        buffer.present();
+        crate::render::fill_pixels(buffer.back_mut(), Color::RED);
+        assert!(!buffer.present_damage(), "an empty damage list publishes nothing");
+        assert_eq!(got(buffer.front(), 2, 0, 0), [255, 255, 255, 255], "the front is untouched");
+    }
+
+    /// Damage is clipped to the buffer and duplicate sub-regions are folded away.
+    #[test]
+    fn mark_damage_clips_and_deduplicates() {
+        let mut buffer = BackBuffer::new(Size::new(4, 4), 1.0);
+        buffer.mark_damage(Rect::new(-2, -2, 4, 4));
+        buffer.mark_damage(Rect::new(0, 0, 2, 2));
+        buffer.mark_damage(Rect::new(8, 8, 2, 2));
+        assert_eq!(
+            buffer.damage_regions(),
+            &[(0, 0, 2, 2)],
+            "the clipped region survives, its contained duplicate and the off-screen region do not"
+        );
+    }
+
+    /// A full-surface damage region takes the cheaper swap path and still publishes.
+    #[test]
+    fn whole_surface_damage_presents_by_swapping() {
+        let mut buffer = BackBuffer::new(Size::new(2, 2), 1.0);
+        crate::render::fill_pixels(buffer.back_mut(), Color::RED);
+        buffer.mark_damage(Rect::new(0, 0, 2, 2));
+        assert!(buffer.present_damage());
+        assert_eq!(got(buffer.front(), 2, 1, 1), [255, 0, 0, 255]);
+    }
+
+    /// The surface forwards the damage API and a frame can be presented region by region.
+    #[test]
+    fn a_surface_presents_a_damaged_region() {
+        let mut surface = SoftwareSurface::new(Size::new(4, 4), 1.0);
+        surface.begin_frame(Color::WHITE);
+        surface.end_frame();
+        let previous = surface.frame_rgba().to_vec();
+        // The surface's own test helper is in `paint`; seeding the back buffer directly is what an
+        // incremental caller does when it adopts the previous frame.
+        let mut backend = SoftwarePaintBackend::new(Size::new(4, 4), 1.0);
+        assert!(backend.seed_from(&previous));
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 2, 2),
+            color: Color::RED,
+        });
+        backend.mark_damage(Rect::new(0, 0, 2, 2));
+        assert!(backend.present_damage());
+        assert_eq!(backend.damage_regions(), &[] as &[(i32, i32, u32, u32)]);
     }
 
     #[test]
@@ -1546,6 +1841,41 @@ mod tests {
             plain.frame_rgba(),
             quad.frame_rgba(),
             "an identity transform must not change the pixels"
+        );
+    }
+
+    /// A fill covers every byte of the surface, including the short tail.
+    ///
+    /// The fast path writes sixteen bytes at a time. A length that is not a multiple of four
+    /// pixels, or of sixteen bytes, is the case a wide-store loop silently drops — which shows up
+    /// as a stale stripe at the end of the last row rather than as an error.
+    #[test]
+    fn fill_pixels_covers_every_length() {
+        use crate::render::fill_pixels;
+        let color = Color::rgb(10, 20, 30);
+        for length in [0usize, 1, 2, 3, 4, 5, 7, 8, 15, 16, 17, 31, 33, 64, 65] {
+            let mut pixels = vec![0u8; length];
+            fill_pixels(&mut pixels, color);
+            for (index, byte) in pixels.iter().enumerate() {
+                let expected = [color.r, color.g, color.b, color.a][index % 4];
+                assert_eq!(
+                    *byte, expected,
+                    "byte {index} of a {length}-byte fill must carry the colour pattern"
+                );
+            }
+        }
+    }
+
+    /// The clear of a whole surface is the pattern repeated with no gaps.
+    #[test]
+    fn fill_pixels_fills_a_whole_surface() {
+        use crate::render::fill_pixels;
+        let color = Color::rgba(1, 2, 3, 4);
+        let mut pixels = vec![255u8; 1280 * 960 * 4];
+        fill_pixels(&mut pixels, color);
+        assert!(
+            pixels.as_chunks::<4>().0.iter().all(|pixel| *pixel == [1, 2, 3, 4]),
+            "every pixel of the clear must be the requested colour"
         );
     }
 
@@ -2685,5 +3015,145 @@ mod tests {
             "the software backend must draw the full source through the no-copy path"
         );
         backend.end_frame();
+    }
+
+    /// Glyph-level text paints a shaped run and turns a ligature on for the whole surface.
+    ///
+    /// The first half asserts the shaping engine really merged a cluster when the face has the
+    /// ligature; if the active face does not, the test reports the skip rather than pretending a
+    /// face applies a feature it does not have. The second half paints the run, which is the new
+    /// path, and checks that ink reached the surface.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex"))]
+    #[test]
+    fn glyph_run_text_paints_the_shapers_ligature() {
+        use crate::render::text::font_assets::active_faces;
+
+        let Some(face) = active_faces().first().copied() else {
+            eprintln!("skipping glyph-run test: no vector face in this build");
+            return;
+        };
+        let Some(shaper) = crate::render::RustybuzzShaper::new(face) else {
+            eprintln!("skipping glyph-run test: the face did not parse");
+            return;
+        };
+        let plain = shaper.shape_face("fi", 16.0, 1.0).expect("the face shapes its text");
+        let ligated =
+            shaper.shape_face_with_ligatures("fi", 16.0, 1.0).expect("the face shapes its text");
+        if ligated.glyph_ids.len() >= plain.glyph_ids.len() {
+            eprintln!("skipping glyph-run test: {} has no `fi` ligature", face.name);
+            return;
+        }
+
+        let font = Font::simple(face.name, 16.0);
+        let mut surface = SoftwareSurface::new(Size::new(80, 32), 1.0);
+        surface.begin_frame(Color::WHITE);
+        assert!(!surface.glyph_run_text(), "the glyph path is opt-in");
+        surface.set_glyph_run_text(true);
+        assert!(surface.glyph_run_text());
+        surface.draw_text(Point::new(2, 2), "fi", &font, Color::BLACK, HorizontalAlignment::Left);
+        surface.end_frame();
+        let frame = surface.frame_rgba();
+        assert!(
+            frame.as_chunks::<4>().0.iter().any(|pixel| pixel[0] < 200),
+            "the shaped glyph run must leave ink on the surface"
+        );
+    }
+
+    /// A family the build does not ship keeps the cluster renderer, with identical pixels.
+    ///
+    /// This is what makes the glyph path safe to expose: turning it on for a theme whose family is
+    /// not one of the compiled faces changes nothing at all.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex"))]
+    #[test]
+    fn glyph_run_text_falls_back_for_an_unknown_family() {
+        let font = Font::simple("no-such-family", 16.0);
+        let mut plain = SoftwareSurface::new(Size::new(64, 24), 1.0);
+        plain.begin_frame(Color::WHITE);
+        plain.draw_text(Point::new(2, 2), "ffi", &font, Color::BLACK, HorizontalAlignment::Left);
+        plain.end_frame();
+
+        let mut glyphs = SoftwareSurface::new(Size::new(64, 24), 1.0);
+        glyphs.begin_frame(Color::WHITE);
+        glyphs.set_glyph_run_text(true);
+        glyphs.draw_text(Point::new(2, 2), "ffi", &font, Color::BLACK, HorizontalAlignment::Left);
+        glyphs.end_frame();
+
+        assert_eq!(
+            plain.frame_rgba(),
+            glyphs.frame_rgba(),
+            "an unavailable face must fall back to the cluster path byte for byte"
+        );
+    }
+
+    /// A projectively divided quad gets edge coverage from its projected edge.
+    ///
+    /// The right edge runs from `(10, 0)` to `(9, 10)`, so the pixel at `(9, 5)` is only about
+    /// half covered. A bounding-box fill (or a hard-edged polygon) would paint it either fully or
+    /// not at all; a value between the fill colour and the white backdrop is what proves the
+    /// coverage comes from the edge.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_projectively_divided_quad_antialiases_its_projected_edge() {
+        let mut surface = SoftwareSurface::new(Size::new(12, 12), 1.0);
+        surface.begin_frame(Color::WHITE);
+        surface.fill_quad_aa(
+            [Point::new(0, 0), Point::new(10, 0), Point::new(9, 10), Point::new(0, 10)],
+            Color::RED,
+        );
+        surface.end_frame();
+
+        let frame = surface.frame_rgba();
+        let at = |x: u32, y: u32| {
+            let index = ((y * 12 + x) * 4) as usize;
+            [frame[index], frame[index + 1], frame[index + 2], frame[index + 3]]
+        };
+        assert_eq!(at(2, 5), [255, 0, 0, 255], "the interior is fully covered");
+        let edge = at(9, 5);
+        assert_eq!(edge[0], 255, "the red channel is the fill's");
+        assert!(
+            edge[1] > 0 && edge[1] < 255,
+            "a half-covered edge pixel must blend with the backdrop, got {edge:?}"
+        );
+        assert_eq!(at(11, 5), [255, 255, 255, 255], "outside the quad stays untouched");
+    }
+
+    /// A general (non-parallelogram) quad maps its texture with a homography.
+    ///
+    /// The destination is a trapezoid: the top edge spans x 6..14 and the bottom edge spans 2..18.
+    /// A row near the top is therefore blank at `x = 4` while the same column is painted near the
+    /// bottom. An affine/parallelogram inverse would paint the full width on both rows.
+    #[test]
+    fn a_projective_quad_image_follows_its_narrow_edge() {
+        let mut surface = SoftwareSurface::new(Size::new(20, 20), 1.0);
+        surface.begin_frame(Color::WHITE);
+        // 2x2 source: left column red, right column blue.
+        let pixels = [
+            255u8, 0, 0, 255, 0, 0, 255, 255, //
+            255, 0, 0, 255, 0, 0, 255, 255,
+        ];
+        surface.draw_image_quad(
+            [Point::new(6, 2), Point::new(14, 2), Point::new(18, 18), Point::new(2, 18)],
+            2,
+            2,
+            &pixels,
+        );
+        surface.end_frame();
+
+        let frame = surface.frame_rgba();
+        let at = |x: u32, y: u32| {
+            let index = ((y * 20 + x) * 4) as usize;
+            [frame[index], frame[index + 1], frame[index + 2], frame[index + 3]]
+        };
+        assert_eq!(at(4, 3), [255, 255, 255, 255], "outside the narrow top edge");
+        let wide = at(3, 17);
+        assert!(
+            wide[0] > 0 || wide[2] > 0,
+            "the wide bottom edge must reach this column, got {wide:?}"
+        );
+        let middle = at(10, 10);
+        assert!(
+            middle[0] > 0 && middle[2] > 0,
+            "the middle samples both source columns, got {middle:?}"
+        );
     }
 }

@@ -8,6 +8,7 @@
 //! fields; these methods are inherent, so moving them does not change the API.
 
 use super::*;
+use crate::undo::UndoCommand;
 
 impl CodeEditor {
     // ── Multi-caret infrastructure ──────────────────────────────────────────
@@ -301,8 +302,10 @@ impl CodeEditor {
         if selected.is_empty() || selected.contains('\n') || selected.chars().count() > 128 {
             return false;
         }
-        let hits =
-            self.find_all_with(&selected, SearchOptions { case_sensitive: true, whole_word: true });
+        let hits = self.find_all_with(
+            &selected,
+            SearchOptions { case_sensitive: true, whole_word: true, ..SearchOptions::default() },
+        );
         if hits.is_empty() {
             return false;
         }
@@ -352,8 +355,10 @@ impl CodeEditor {
         if selected.is_empty() || selected.contains('\n') {
             return 0;
         }
-        let hits =
-            self.find_all_with(&selected, SearchOptions { case_sensitive: true, whole_word: true });
+        let hits = self.find_all_with(
+            &selected,
+            SearchOptions { case_sensitive: true, whole_word: true, ..SearchOptions::default() },
+        );
         if hits.is_empty() {
             return 0;
         }
@@ -385,6 +390,113 @@ impl CodeEditor {
     }
 
     // ── Line commands ───────────────────────────────────────────────────────
+
+    /// Inserts an empty line below the caret line and moves the caret onto it.
+    pub fn insert_line_below(&mut self) {
+        if !self.is_editable() {
+            return;
+        }
+        let line = self.cursor.head.line;
+        let end = self.line_len(line);
+        let indent = self.line_indent(line);
+        let width = indent.chars().count();
+        let payload = format!("\n{indent}");
+        let head = TextPosition::new(line + 1, width);
+        self.splice_range(
+            TextPosition::new(line, end),
+            TextPosition::new(line, end),
+            &payload,
+            head,
+        );
+    }
+
+    /// Inserts an empty line above the caret line and keeps the caret on the
+    /// original text.
+    pub fn insert_line_above(&mut self) {
+        if !self.is_editable() {
+            return;
+        }
+        let line = self.cursor.head.line;
+        let indent = self.line_indent(line);
+        let width = indent.chars().count();
+        let payload = format!("\n{indent}");
+        let head = TextPosition::new(line + 1, width);
+        self.splice_range(TextPosition::new(line, 0), TextPosition::new(line, 0), &payload, head);
+    }
+
+    /// Swaps the two characters around the caret.
+    ///
+    /// At the end of a line the last two characters are swapped, which is the
+    /// behaviour a reader expects from `Ctrl+T`; there is no useful transposition
+    /// of a one-character line, so that case is a no-op.
+    pub fn transpose_characters(&mut self) {
+        if !self.is_editable() {
+            return;
+        }
+        let line = self.cursor.head.line;
+        let text = self.line_text(line).unwrap_or_default();
+        let mut chars: Vec<char> = text.chars().collect();
+        if chars.len() < 2 {
+            return;
+        }
+        let left = self.cursor.head.column.min(chars.len()).saturating_sub(1);
+        if left + 1 >= chars.len() {
+            return;
+        }
+        chars.swap(left, left + 1);
+        let rebuilt: String = chars.into_iter().collect();
+        let head = TextPosition::new(line, (left + 2).min(self.line_len(line)));
+        self.splice_range(
+            TextPosition::new(line, 0),
+            TextPosition::new(line, self.line_len(line)),
+            &rebuilt,
+            head,
+        );
+    }
+
+    /// Moves the selected text to `target`, in one undoable edit.
+    ///
+    /// This is the in-editor half of text drag and drop: the pointer layer only
+    /// reports where the drag ended. A target inside the selection is a no-op, so
+    /// picking a selection up and dropping it back cannot delete it.
+    pub fn move_selection_to(&mut self, target: TextPosition) -> bool {
+        if !self.is_editable() || self.cursor.is_collapsed() {
+            return false;
+        }
+        let (start, end) = self.cursor.bounds();
+        let target = self.clamp_position(target);
+        if target >= start && target <= end {
+            return false;
+        }
+        let before = self.text();
+        let lines = split_lines(&before);
+        let first = multicursor::char_offset(&lines, start);
+        let last = multicursor::char_offset(&lines, end);
+        let at = multicursor::char_offset(&lines, target);
+        let chars: Vec<char> = before.chars().collect();
+        let selected: Vec<char> = chars[first..last].to_vec();
+        let mut out: Vec<char> = Vec::with_capacity(chars.len());
+        let caret_offset = if at <= first {
+            out.extend_from_slice(&chars[..at]);
+            out.extend_from_slice(&selected);
+            out.extend_from_slice(&chars[at..first]);
+            out.extend_from_slice(&chars[last..]);
+            at + selected.len()
+        } else {
+            out.extend_from_slice(&chars[..first]);
+            out.extend_from_slice(&chars[last..at]);
+            out.extend_from_slice(&selected);
+            out.extend_from_slice(&chars[at..]);
+            at
+        };
+        let after: String = out.into_iter().collect();
+        let new_lines = split_lines(&after);
+        let head = multicursor::position_at_offset(&new_lines, caret_offset);
+        self.commit_edit(before, after, head);
+        self.cursor = Cursor { head, anchor: head };
+        self.emit_cursor_and_selection();
+        true
+    }
 
     /// Duplicates the lines the selection touches, below the original block.
     pub fn duplicate_line(&mut self) {
@@ -465,6 +577,20 @@ impl CodeEditor {
     /// already one line, and a silent partial sort otherwise, which is worse than either
     /// sorting everything or refusing.
     pub fn sort_lines(&mut self) {
+        self.sort_selected_lines(false, false);
+    }
+
+    /// Sorts the selected lines in descending order.
+    pub fn sort_lines_descending(&mut self) {
+        self.sort_selected_lines(true, false);
+    }
+
+    /// Sorts the selected lines and removes duplicate lines.
+    pub fn sort_lines_unique(&mut self) {
+        self.sort_selected_lines(false, true);
+    }
+
+    fn sort_selected_lines(&mut self, descending: bool, unique: bool) {
         if !self.is_editable() {
             return;
         }
@@ -487,6 +613,20 @@ impl CodeEditor {
                 (0, sortable - 1)
             };
             lines[first..=last].sort();
+            if descending {
+                lines[first..=last].reverse();
+            }
+            if unique {
+                let mut seen = Vec::new();
+                let mut deduped = Vec::new();
+                for line in lines[first..=last].iter() {
+                    if !seen.contains(line) {
+                        seen.push(line.clone());
+                        deduped.push(line.clone());
+                    }
+                }
+                lines.splice(first..=last, deduped);
+            }
         }
         let after = join_lines(&lines);
         if after == before {
@@ -496,6 +636,114 @@ impl CodeEditor {
         self.commit_edit(before, after, head);
         self.cursor.anchor = TextPosition::new(0, 0);
         self.emit_cursor_and_selection();
+    }
+
+    /// Wraps or unwraps the selection in a block comment.
+    ///
+    /// Languages without block-comment syntax (Markdown, plain text) are a no-op,
+    /// exactly like [`Self::toggle_line_comment`]. A collapsed caret comments the
+    /// whole line, which is what the gesture means when there is no selection.
+    pub fn toggle_block_comment(&mut self) {
+        if !self.is_editable() {
+            return;
+        }
+        if !self.active_language().supports_block_comments() {
+            return;
+        }
+        let before = self.text();
+        let mut lines: Vec<String> = before.split('\n').map(|line| line.to_string()).collect();
+        let (start, end) = self.cursor.bounds();
+        let last = end.line.min(lines.len().saturating_sub(1));
+        if !self.has_selection() {
+            let Some(line) = lines.get_mut(start.line) else { return };
+            let indent = line.chars().take_while(|ch| ch.is_whitespace()).count();
+            let body: String = line.chars().skip(indent).collect();
+            let trimmed = body.trim();
+            let rebuilt = if trimmed.starts_with("/*") && trimmed.ends_with("*/") {
+                let inner = trimmed
+                    .strip_prefix("/*")
+                    .unwrap_or(trimmed)
+                    .strip_suffix("*/")
+                    .unwrap_or(trimmed)
+                    .trim();
+                format!("{}{}", line.chars().take(indent).collect::<String>(), inner)
+            } else if body.is_empty() {
+                return;
+            } else {
+                format!("{}/* {} */", line.chars().take(indent).collect::<String>(), body)
+            };
+            *line = rebuilt;
+        } else {
+            // Wrap the selected span in place: an opener at the start of the first
+            // selected line and a closer at the end of the last one.
+            let first = start.line.min(lines.len().saturating_sub(1));
+            let head_line = last;
+            if let Some(line) = lines.get_mut(first) {
+                let column = start.column.min(line.chars().count());
+                let byte =
+                    line.char_indices().nth(column).map(|(byte, _)| byte).unwrap_or(line.len());
+                line.insert_str(byte, "/* ");
+            }
+            if let Some(line) = lines.get_mut(head_line) {
+                let column = end.column.min(line.chars().count());
+                let byte =
+                    line.char_indices().nth(column).map(|(byte, _)| byte).unwrap_or(line.len());
+                line.insert_str(byte, " */");
+            }
+        }
+        let after = join_lines(&lines);
+        if after == before {
+            return;
+        }
+        let head = self.cursor.head;
+        self.commit_edit(before, after, head);
+    }
+
+    /// Inserts `snippet`, resolving `$0`…`$9` placeholders.
+    ///
+    /// The markers are removed and the caret lands on `$0` (or on the first marker
+    /// when there is no `$0`). It is the minimal snippet contract: enough for an
+    /// editor to expand a template without a second document model.
+    pub fn insert_snippet(&mut self, snippet: &str) {
+        if !self.is_editable() || snippet.is_empty() {
+            return;
+        }
+        let start = self.cursor.bounds().0;
+        let mut resolved = String::with_capacity(snippet.len());
+        let mut caret_offset: Option<usize> = None;
+        let mut first_offset: Option<usize> = None;
+        let mut chars = snippet.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '$' {
+                if let Some(digit) = chars.peek().copied().filter(|ch| ch.is_ascii_digit()) {
+                    chars.next();
+                    let offset = resolved.chars().count();
+                    if first_offset.is_none() {
+                        first_offset = Some(offset);
+                    }
+                    if digit == '0' {
+                        caret_offset = Some(offset);
+                    }
+                    continue;
+                }
+            }
+            resolved.push(ch);
+        }
+        let marker = caret_offset.or(first_offset).unwrap_or(resolved.chars().count());
+        self.insert(&resolved);
+        let newlines = resolved
+            [..resolved.char_indices().nth(marker).map(|(byte, _)| byte).unwrap_or(resolved.len())]
+            .matches('\n')
+            .count();
+        let column_in_line =
+            resolved.char_indices().nth(marker).map(|(byte, _)| byte).unwrap_or(resolved.len());
+        let line_start = resolved[..column_in_line].rfind('\n').map(|index| index + 1).unwrap_or(0);
+        let column = resolved[line_start..column_in_line].chars().count();
+        let head = TextPosition::new(
+            start.line + newlines,
+            if newlines == 0 { start.column + column } else { column },
+        );
+        self.move_caret_to(head, false);
     }
 
     /// Removes trailing whitespace from every line.
@@ -847,29 +1095,45 @@ impl CodeEditor {
         self.emit_cursor_and_selection();
     }
 
-    /// Moves the caret line up (`direction < 0`) or down, preserving text.
+    /// Moves the lines the selection touches up (`direction < 0`) or down.
+    ///
+    /// A multi-line selection moves as a block, not as the caret's single line:
+    /// moving a block is what `Alt+Up/Down` means once a range is selected.
     pub fn move_line(&mut self, direction: isize) {
         if !self.is_editable() || direction == 0 {
             return;
         }
-        let line = self.cursor.head.line;
+        let (start, end) = self.cursor.bounds();
         let last = self.line_count().saturating_sub(1);
-        let target = line as isize + direction;
-        if target < 0 || target > last as isize {
-            return;
-        }
-        let target = target as usize;
+        let block_start = start.line;
+        let block_end = end.line.min(last);
         let before = self.text();
         let mut lines = before.split('\n').map(|text| text.to_string()).collect::<Vec<_>>();
-        if line >= lines.len() || target >= lines.len() {
+        if block_start >= lines.len() || block_end >= lines.len() {
             return;
         }
-        lines.swap(line, target);
+        let (new_start, new_end) = if direction < 0 {
+            if block_start == 0 {
+                return;
+            }
+            let above = lines.remove(block_start - 1);
+            lines.insert(block_end, above);
+            (block_start - 1, block_end - 1)
+        } else {
+            if block_end + 1 >= lines.len() {
+                return;
+            }
+            let below = lines.remove(block_end + 1);
+            lines.insert(block_start, below);
+            (block_start + 1, block_end + 1)
+        };
         let after = join_lines(&lines);
-        let head = TextPosition::new(target, self.cursor.head.column);
+        let head_column = self.line_len(block_end).min(self.cursor.head.column);
+        let anchor_column = self.line_len(block_start).min(self.cursor.anchor.column);
+        let head = TextPosition::new(new_end, head_column);
         self.commit_edit(before, after, head);
-        self.cursor.anchor = TextPosition::new(target, 0);
-        self.cursor.head = TextPosition::new(target, self.line_len(target).min(head.column));
+        self.cursor.anchor = TextPosition::new(new_start, anchor_column);
+        self.cursor.head = TextPosition::new(new_end, self.line_len(new_end).min(head_column));
         self.emit_cursor_and_selection();
     }
 
@@ -922,7 +1186,7 @@ impl CodeEditor {
         Some(last)
     }
 
-    pub(super) fn char_at(&self, position: TextPosition) -> Option<char> {
+    pub(crate) fn char_at(&self, position: TextPosition) -> Option<char> {
         self.model.borrow().line(position.line).chars().nth(position.column)
     }
 
@@ -930,7 +1194,7 @@ impl CodeEditor {
 
     /// Undoes the most recent edit. Returns `false` when there is nothing to do.
     pub fn undo(&mut self) -> bool {
-        if !self.is_editable() {
+        if !self.is_editable() || !self.config.undo_redo_enabled {
             return false;
         }
         let before_tab = self.active_buffer();
@@ -949,7 +1213,7 @@ impl CodeEditor {
 
     /// Redoes the most recently undone edit.
     pub fn redo(&mut self) -> bool {
-        if !self.is_editable() {
+        if !self.is_editable() || !self.config.undo_redo_enabled {
             return false;
         }
         let before_tab = self.active_buffer();
@@ -983,6 +1247,7 @@ impl CodeEditor {
         // splices, a snapshot assigns), so `set_text` here would see an unchanged
         // document and return early — leaving the derived state stale. Rebuild the
         // line index from the buffer instead of routing through `set_text`.
+        self.active_typing = None;
         let restored = self.model.borrow().text.borrow().clone();
         self.restoring_history = true;
         self.model.borrow_mut().set_text(restored.clone());

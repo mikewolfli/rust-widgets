@@ -164,6 +164,10 @@ pub struct CandlestickChart {
     price_lines: Vec<PriceLine>,
     /// The bar under the pointer, when there is one.
     hovered_index: Option<usize>,
+    /// The price under the pointer, for the horizontal crosshair line.
+    hovered_price: Option<f64>,
+    /// The bars shown, or `None` for every bar.
+    view: Option<(usize, usize)>,
     /// Emitted with the bar index when a bar is clicked.
     pub bar_clicked: Signal1<usize>,
     /// Emitted with the bar index as the pointer moves across bars.
@@ -181,6 +185,8 @@ impl CandlestickChart {
             overlays: Vec::new(),
             price_lines: Vec::new(),
             hovered_index: None,
+            hovered_price: None,
+            view: None,
             bar_clicked: Signal1::new(),
             bar_hovered: Signal1::new(),
             bar_unhovered: Signal1::new(),
@@ -244,6 +250,46 @@ impl CandlestickChart {
     /// The bar index under the pointer, if the pointer is over a bar.
     pub fn hovered_index(&self) -> Option<usize> {
         self.hovered_index
+    }
+
+    /// The price under the pointer, for the horizontal crosshair.
+    pub fn hovered_price(&self) -> Option<f64> {
+        self.hovered_price
+    }
+
+    /// The visible bar range, or `None` when every bar is shown.
+    pub fn view_range(&self) -> Option<(usize, usize)> {
+        self.view
+    }
+
+    /// Restricts the chart to the bars in `range`.
+    ///
+    /// The range is clamped to the series and kept non-empty. This is the chart's zoom: a
+    /// long history draws every bar at one pixel otherwise, and the marks are unreadable.
+    pub fn set_view_range(&mut self, range: Option<(usize, usize)>) {
+        let range = range.map(|(start, end)| {
+            let start = start.min(self.series.len().saturating_sub(1));
+            let end = end.clamp(start + 1, self.series.len().max(start + 1));
+            (start, end)
+        });
+        if self.view == range {
+            return;
+        }
+        self.view = range;
+        self.base.request_redraw();
+    }
+
+    /// Restores the full series view.
+    pub fn reset_view(&mut self) {
+        self.set_view_range(None);
+    }
+
+    /// The visible `(start, end)` bar indices.
+    fn view_bounds(&self) -> (usize, usize) {
+        match self.view {
+            Some((start, end)) => (start.min(self.series.len()), end.min(self.series.len())),
+            None => (0, self.series.len()),
+        }
     }
 
     /// The bar under the pointer.
@@ -333,11 +379,15 @@ impl CandlestickChart {
         }
         let (low, high) = self.effective_price_extent();
         let price_axis = area.price_axis(low, high);
-        let index_axis = area.index_axis(bars.len());
+        let (start, end) = self.view_bounds();
+        let visible = &bars[start..end];
+        let index_axis = area.index_axis(visible.len());
         let body_width = index_axis.body_width();
         let wick_x_offset = body_width / 2;
 
-        for (index, bar) in bars.iter().enumerate() {
+        for (position, bar) in visible.iter().enumerate() {
+            let index = start + position;
+            let _ = index;
             if !bar.open.is_finite()
                 || !bar.high.is_finite()
                 || !bar.low.is_finite()
@@ -345,7 +395,7 @@ impl CandlestickChart {
             {
                 continue;
             }
-            let slot_x = index_axis.x_for(index);
+            let slot_x = index_axis.x_for(position);
             let color = if bar.is_rising() { Self::rising_color() } else { Self::falling_color() };
 
             // Wick first, so the body covers its middle and the extremes stay visible.
@@ -671,6 +721,29 @@ impl CandlestickChart {
             chrome.crosshair,
             1,
         );
+        // The horizontal half of the crosshair: a dashed-free hairline at the pointer's price,
+        // with that price in the left margin. The vertical line alone told a reader *when* but
+        // not *at what price*, which is the question a price chart exists to answer.
+        if let Some(price) = self.hovered_price {
+            let (low, high) = self.effective_price_extent();
+            let price_axis = area.price_axis(low, high);
+            let y = price_axis.y_for(price);
+            if y > area.rect.y && y < area.bottom() {
+                context.draw_line_stroke(
+                    crate::core::Point { x: area.rect.x, y },
+                    crate::core::Point { x: area.right(), y },
+                    chrome.crosshair,
+                    1,
+                );
+                context.draw_text(
+                    crate::core::Point { x: area.rect.x + 2, y: y + 2 },
+                    &format_fixed(price, 2),
+                    &role_font(self.style(), 10.0),
+                    chrome.ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
 
         // And a readout of that bar, positioned to stay inside the pane on both sides.
         //
@@ -802,12 +875,36 @@ impl EventHandler for CandlestickChart {
                     self.hovered_index = next;
                     self.base.request_redraw();
                 }
+                // The horizontal crosshair's price is the inverse mapping of the pointer's y
+                // through the same price axis the candles are drawn with.
+                let (low, high) = self.effective_price_extent();
+                let plot_height = (area.bottom() - area.rect.y).max(1);
+                let ratio = ((pos.y - area.rect.y) as f64 / plot_height as f64).clamp(0.0, 1.0);
+                let price = high - (high - low) * ratio;
+                if self.hovered_price != Some(price) {
+                    self.hovered_price = Some(price);
+                    self.base.request_redraw();
+                }
             }
             Event::MouseLeave { .. } => {
                 if let Some(previous) = self.hovered_index {
                     self.bar_unhovered.emit(previous);
                     self.hovered_index = None;
+                    self.hovered_price = None;
                     self.base.request_redraw();
+                }
+            }
+            Event::Wheel { delta, .. } => {
+                let total = self.series.len();
+                if total > 4 && delta.y != 0 {
+                    let (start, end) = self.view_bounds();
+                    let anchor = self.hovered_index.unwrap_or((start + end) / 2);
+                    let span = (end - start).max(4);
+                    let factor = if delta.y > 0 { 1.25 } else { 0.8 };
+                    let new_span = ((span as f64 * factor).round() as usize).clamp(4, total);
+                    let half = new_span / 2;
+                    let new_start = anchor.saturating_sub(half).min(total - new_span);
+                    self.set_view_range(Some((new_start, new_start + new_span)));
                 }
             }
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {

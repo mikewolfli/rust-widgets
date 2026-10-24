@@ -339,6 +339,16 @@ macro_rules! impl_properties_view {
         #[cfg(not(alloc_frugal))]
         pub(crate) const COLOR_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("current_color", PropertyValueKind::String, true, false),
+            // The dialog edits a colour through the same picker surface as `color_picker`, so it
+            // publishes the same fields: the hex value and the preset selection are writable,
+            // the three display switches are option bits, and the custom-colour count is derived
+            // from the palette and therefore read-only.
+            PropertySchema::new("hex_rgba", PropertyValueKind::String, true, true),
+            PropertySchema::new("preset_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("show_hex_input", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_presets", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_hue_rail", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("custom_color_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("modal", PropertyValueKind::Bool, true, true),
             PropertySchema::new("options_alpha", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),

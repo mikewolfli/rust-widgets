@@ -565,6 +565,145 @@ impl ControlMetrics {
     pub fn focus_ring_radius(radius: u32) -> u32 {
         radius.saturating_sub(FOCUS_RING_WIDTH)
     }
+
+    /// The rectangle of one named part of a composite control.
+    ///
+    /// # Why a composite control needs this at all
+    ///
+    /// A line edit, a spin field, a combo box and a tab each draw **several** parts inside
+    /// one widget rectangle: an editable body, a leading indicator, a trailing arrow, a
+    /// pair of stacked step buttons, a close affordance. Each draw site derived those
+    /// rectangles itself, which is how a size hint and a paint path end up disagreeing
+    /// about where the arrow starts — the hit target moves, or the arrow is painted over
+    /// the text. Deriving every part from one declaration makes the geometry a single
+    /// fact, the same way [`Self::content_box`] does for padding.
+    ///
+    /// # Layout rules
+    ///
+    /// * `Leading` is a full-height column at the left edge.
+    /// * `Trailing` is a full-height column at the right edge.
+    /// * `Increment` and `Decrement` split the **trailing** column horizontally; the
+    ///   increment is the upper half. A step control's up button sits on top, and that
+    ///   convention has to live in one place rather than in each draw path.
+    /// * `Close` is a centred square at the right edge, sized by
+    ///   [`SubControlMetrics::close_size`].
+    /// * `Contents` is what remains, already inset by the columns and their gaps.
+    ///
+    /// Every result is inside `rect`: the column widths are clamped to the available
+    /// width, so a control squeezed below its hint yields an empty `Contents` rather
+    /// than a negative one.
+    pub fn sub_control_rect(rect: Rect, part: SubControl, metrics: SubControlMetrics) -> Rect {
+        let leading = metrics.leading_width.min(rect.width);
+        let trailing = metrics.trailing_width.min(rect.width.saturating_sub(leading));
+        let leading_gap = if leading > 0 { metrics.gap } else { 0 };
+        let trailing_gap = if trailing > 0 { metrics.gap } else { 0 };
+        let inner_left = leading.saturating_add(leading_gap);
+        let inner_width = rect
+            .width
+            .saturating_sub(inner_left.saturating_add(trailing).saturating_add(trailing_gap));
+        let trailing_left = rect.width.saturating_sub(trailing) as i32;
+        let upper = rect.height.div_ceil(2);
+
+        match part {
+            SubControl::Contents => {
+                Rect::new(rect.x + inner_left as i32, rect.y, inner_width, rect.height)
+            }
+            SubControl::Leading => Rect::new(rect.x, rect.y, leading, rect.height),
+            SubControl::Trailing => {
+                Rect::new(rect.x + trailing_left, rect.y, trailing, rect.height)
+            }
+            SubControl::Increment => Rect::new(rect.x + trailing_left, rect.y, trailing, upper),
+            SubControl::Decrement => Rect::new(
+                rect.x + trailing_left,
+                rect.y + upper as i32,
+                trailing,
+                rect.height.saturating_sub(upper),
+            ),
+            SubControl::Close => {
+                let side = metrics.close_size.min(rect.width).min(rect.height);
+                Rect::new(
+                    rect.x + rect.width.saturating_sub(side) as i32,
+                    rect.y + (rect.height.saturating_sub(side) / 2) as i32,
+                    side,
+                    side,
+                )
+            }
+        }
+    }
+}
+
+/// One named part of a composite control.
+///
+/// The variants are the parts a caller can ask [`ControlMetrics::sub_control_rect`] to
+/// place. They are deliberately a closed set: every draw path that needs a part names
+/// it here, so "where is the increment button?" has one answer instead of one per
+/// control. A part that a control does not declare is empty rather than absent — a
+/// [`SubControlMetrics`] with a zero width yields a zero-width column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubControl {
+    /// The editable or content region, excluding every affordance column.
+    Contents,
+    /// A full-height column at the leading edge (an indicator or icon slot).
+    Leading,
+    /// A full-height column at the trailing edge (an arrow or stepper pair).
+    Trailing,
+    /// The upper half of the [`Self::Trailing`] column.
+    Increment,
+    /// The lower half of the [`Self::Trailing`] column.
+    Decrement,
+    /// A centred square at the trailing edge (a chip or tab close affordance).
+    Close,
+}
+
+/// The part sizes a composite control declares once for both its hint and its paint.
+///
+/// # Why this is a value and not four constants per control
+///
+/// A control's arrow, indicator and close affordance are drawn in one place and
+/// accounted for in the size hint in another. Declaring them as one struct is what lets
+/// [`ControlMetrics::sub_control_rect`] derive both answers, so a hint that reserves room
+/// for an arrow cannot disagree with the arrow that is painted. A zero field means the
+/// part is not present, so [`SubControlMetrics::default`] is a control with no
+/// affordances at all — the common case, and the one that must change nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SubControlMetrics {
+    /// Width of the leading column, in logical pixels.
+    pub leading_width: u32,
+    /// Width of the trailing column, in logical pixels.
+    pub trailing_width: u32,
+    /// Side of the square close affordance, in logical pixels.
+    pub close_size: u32,
+    /// Gap between the content region and each affordance column, in logical pixels.
+    pub gap: u32,
+}
+
+impl SubControlMetrics {
+    /// No affordances: the content region is the whole rectangle.
+    pub const NONE: Self = Self { leading_width: 0, trailing_width: 0, close_size: 0, gap: 0 };
+
+    /// Declares a leading column of `width` pixels.
+    pub const fn with_leading(mut self, width: u32) -> Self {
+        self.leading_width = width;
+        self
+    }
+
+    /// Declares a trailing column of `width` pixels.
+    pub const fn with_trailing(mut self, width: u32) -> Self {
+        self.trailing_width = width;
+        self
+    }
+
+    /// Declares a square close affordance of `side` pixels.
+    pub const fn with_close(mut self, side: u32) -> Self {
+        self.close_size = side;
+        self
+    }
+
+    /// Declares the gap between the content region and each column.
+    pub const fn with_gap(mut self, gap: u32) -> Self {
+        self.gap = gap;
+        self
+    }
 }
 
 /// Thickness of a keyboard focus ring: 2 logical px.
@@ -2224,6 +2363,71 @@ mod tests {
         assert_eq!(ControlMetrics::focus_ring_radius(6), 4);
         // A radius smaller than the ring cannot produce one, so it floors at 0.
         assert_eq!(ControlMetrics::focus_ring_radius(1), 0);
+    }
+
+    /// Every part of a composite control tiles its rectangle without overlapping the
+    /// content region, and a squeezed control yields no negative geometry.
+    ///
+    /// # Why the tiling is the assertion
+    ///
+    /// The defect this API exists to prevent is a draw path and a size hint disagreeing
+    /// about where an arrow starts. That disagreement is only observable as overlap or a
+    /// gap, so the test asserts both: the content region ends where the trailing column
+    /// begins (minus the declared gap), and the two stacked halves meet exactly.
+    #[test]
+    fn sub_control_rects_tile_the_control_without_overlap() {
+        let rect = Rect::new(10, 20, 200, 40);
+        let metrics = SubControlMetrics::default().with_leading(16).with_trailing(24).with_gap(4);
+
+        let leading = ControlMetrics::sub_control_rect(rect, SubControl::Leading, metrics);
+        assert_eq!(leading, Rect::new(10, 20, 16, 40));
+
+        let contents = ControlMetrics::sub_control_rect(rect, SubControl::Contents, metrics);
+        assert_eq!(
+            contents,
+            Rect::new(30, 20, 200 - 16 - 4 - 24 - 4, 40),
+            "content is inset by both columns and their gaps"
+        );
+
+        let trailing = ControlMetrics::sub_control_rect(rect, SubControl::Trailing, metrics);
+        assert_eq!(trailing, Rect::new(210 - 24, 20, 24, 40));
+        assert_eq!(contents.x + contents.width as i32 + 4, trailing.x, "one gap between them");
+
+        let increment = ControlMetrics::sub_control_rect(rect, SubControl::Increment, metrics);
+        let decrement = ControlMetrics::sub_control_rect(rect, SubControl::Decrement, metrics);
+        assert_eq!(increment.y, rect.y, "the increment is the upper half");
+        assert_eq!(increment.height + decrement.height, rect.height, "the halves meet exactly");
+        assert_eq!(decrement.y, increment.y + increment.height as i32);
+        assert_eq!(increment.x, trailing.x);
+        assert_eq!(decrement.width, trailing.width);
+
+        // A control narrower than its declared columns still yields valid geometry.
+        let tiny = Rect::new(0, 0, 10, 8);
+        let contents = ControlMetrics::sub_control_rect(tiny, SubControl::Contents, metrics);
+        assert_eq!(contents.width, 0, "no negative width when the columns consume the box");
+        let trailing = ControlMetrics::sub_control_rect(tiny, SubControl::Trailing, metrics);
+        assert!(trailing.width <= tiny.width && trailing.x >= tiny.x);
+
+        // A control with no declared affordances is unchanged.
+        let plain =
+            ControlMetrics::sub_control_rect(rect, SubControl::Contents, SubControlMetrics::NONE);
+        assert_eq!(plain, rect);
+    }
+
+    /// The close affordance stays square and centred on the trailing edge.
+    #[test]
+    fn a_close_affordance_is_a_centred_square() {
+        let rect = Rect::new(0, 0, 100, 40);
+        let metrics = SubControlMetrics::default().with_close(16);
+        let close = ControlMetrics::sub_control_rect(rect, SubControl::Close, metrics);
+        assert_eq!(close, Rect::new(84, 12, 16, 16));
+        // A square larger than the control is clamped to the shorter side.
+        let clipped = ControlMetrics::sub_control_rect(
+            Rect::new(0, 0, 10, 6),
+            SubControl::Close,
+            SubControlMetrics::default().with_close(16),
+        );
+        assert_eq!(clipped, Rect::new(4, 0, 6, 6));
     }
 
     #[test]

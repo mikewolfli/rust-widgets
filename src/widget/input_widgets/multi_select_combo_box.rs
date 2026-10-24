@@ -18,7 +18,7 @@
 use core::fmt::Write as _;
 
 use crate::core::{Color, HorizontalAlignment, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::EdgeOffsets;
@@ -119,6 +119,12 @@ pub struct MultiSelectComboBox {
     alignment: crate::core::Alignment,
     /// Emitted when the selection changes, with the list of selected item IDs.
     pub selection_changed: Signal1<Vec<u64>>,
+    /// The row keyboard input acts on while the list is open.
+    active_index: usize,
+    /// Maximum number of rows the open list shows at once. `None` shows them all.
+    max_visible: Option<usize>,
+    /// Index of the first row painted in the open list.
+    scroll_offset: usize,
 }
 
 impl MultiSelectComboBox {
@@ -148,6 +154,9 @@ impl MultiSelectComboBox {
             expanded: false,
             alignment: crate::core::Alignment::Left,
             selection_changed: Signal1::new(),
+            active_index: 0,
+            max_visible: None,
+            scroll_offset: 0,
         }
     }
 
@@ -346,7 +355,113 @@ impl MultiSelectComboBox {
     /// Toggles the expanded/collapsed state.
     fn toggle_expand(&mut self) {
         self.expanded = !self.expanded;
+        if self.expanded {
+            self.active_index = self.active_index.min(self.items.len().saturating_sub(1));
+            self.ensure_active_visible();
+        }
         self.base.request_redraw();
+    }
+
+    /// The maximum number of rows the open list shows at once.
+    pub fn max_visible(&self) -> Option<usize> {
+        self.max_visible
+    }
+
+    /// Caps the number of rows the open list paints.
+    ///
+    /// A zero cap is treated as one row: an open list with no rows reads as a broken control.
+    pub fn set_max_visible(&mut self, max_visible: Option<usize>) {
+        let max_visible = max_visible.map(|value| value.max(1));
+        if self.max_visible == max_visible {
+            return;
+        }
+        self.max_visible = max_visible;
+        self.ensure_active_visible();
+        self.base.request_redraw();
+    }
+
+    /// Index of the first row painted in the open list.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Sets the first painted row, clamped so the window stays full when the list allows.
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        let next = self.clamp_scroll(offset);
+        if self.scroll_offset == next {
+            return;
+        }
+        self.scroll_offset = next;
+        self.base.request_redraw();
+    }
+
+    /// The row keyboard input acts on.
+    pub fn active_index(&self) -> usize {
+        self.active_index
+    }
+
+    /// Sets the keyboard row, clamped into the list.
+    pub fn set_active_index(&mut self, index: usize) {
+        let next = index.min(self.items.len().saturating_sub(1));
+        if self.active_index == next {
+            return;
+        }
+        self.active_index = next;
+        self.ensure_active_visible();
+        self.base.request_redraw();
+    }
+
+    /// Number of rows the open list shows at once.
+    pub fn page_size(&self) -> usize {
+        self.max_visible.unwrap_or(self.items.len()).max(1)
+    }
+
+    fn clamp_scroll(&self, offset: usize) -> usize {
+        let page = self.page_size();
+        let max_offset = self.items.len().saturating_sub(page.min(self.items.len()));
+        offset.min(max_offset)
+    }
+
+    /// Scrolls the list so the keyboard row is inside the visible window.
+    pub fn ensure_active_visible(&mut self) {
+        if self.items.is_empty() {
+            self.scroll_offset = 0;
+            return;
+        }
+        let page = self.page_size();
+        if self.active_index < self.scroll_offset {
+            self.scroll_offset = self.active_index;
+        } else if self.active_index >= self.scroll_offset + page {
+            self.scroll_offset = self.active_index + 1 - page;
+        }
+        self.scroll_offset = self.clamp_scroll(self.scroll_offset);
+    }
+
+    /// Rows currently painted in the open list.
+    fn visible_range(&self) -> (usize, usize) {
+        let start = self.clamp_scroll(self.scroll_offset);
+        let end = (start + self.page_size()).min(self.items.len());
+        (start, end)
+    }
+
+    /// Selects every enabled item.
+    ///
+    /// Returns whether the selection changed. Disabled rows stay unselected, so "select
+    /// all" never selects something the control refuses to select individually.
+    pub fn select_all(&mut self) -> bool {
+        let before = self.selected.len();
+        for (index, item) in self.items.iter().enumerate() {
+            if item.enabled {
+                self.selected.insert(index);
+            }
+        }
+        if self.selected.len() != before {
+            self.emit_selection_changed();
+            self.base.request_redraw();
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -598,7 +713,8 @@ impl Draw for MultiSelectComboBox {
 
         let drop_down_y = rect.y + rect.height as i32;
         let item_height = 28u32;
-        let drop_down_height = item_height * self.items.len() as u32;
+        let (first, last) = self.visible_range();
+        let drop_down_height = item_height * (last - first) as u32;
         let drop_rect = Rect::new(rect.x, drop_down_y, rect.width, drop_down_height);
 
         // Dropdown background. The list floats over whatever is beneath it, so it is the
@@ -606,18 +722,25 @@ impl Draw for MultiSelectComboBox {
         context.fill_rounded_rect(drop_rect, 2, field);
         context.draw_rounded_rect_stroke(drop_rect, 2, border, 1);
 
-        for (i, item) in self.items.iter().enumerate() {
+        for (row, i) in (first..last).enumerate() {
+            let item = &self.items[i];
             let item_rect = Rect::new(
                 rect.x + 1,
-                drop_down_y + (i as i32) * (item_height as i32),
+                drop_down_y + (row as i32) * (item_height as i32),
                 rect.width.saturating_sub(2),
                 item_height,
             );
 
             // Row highlight. A row cannot be a different colour from the list it sits in,
             // so this is the list fill nudged toward the ink: on a light list that is
-            // slightly darker, on a dark one slightly lighter.
-            context.fill_rounded_rect(item_rect, 2, field.blend(&ink, 0.04));
+            // slightly darker, on a dark one slightly lighter. The keyboard row is a
+            // separate, stronger band so the arrow keys have a visible target.
+            let row_fill = if i == self.active_index {
+                field.blend(&accent, 0.18)
+            } else {
+                field.blend(&ink, 0.04)
+            };
+            context.fill_rounded_rect(item_rect, 2, row_fill);
 
             // Checkbox
             let checkbox_size = 14u32;
@@ -658,6 +781,22 @@ impl Draw for MultiSelectComboBox {
                 HorizontalAlignment::Left,
             );
         }
+
+        // A capped list shows a thin thumb, so a window of a longer list cannot look like
+        // the whole list.
+        if self.max_visible.is_some() && self.items.len() > self.page_size() && last > first {
+            let page = self.page_size();
+            let track_height = drop_down_height as i32;
+            let thumb_height =
+                ((track_height as usize * page) / self.items.len().max(1)).max(8) as i32;
+            let max_offset = self.items.len().saturating_sub(page).max(1);
+            let thumb_top = drop_down_y
+                + ((track_height - thumb_height) * self.scroll_offset as i32 / max_offset as i32);
+            context.fill_rect(
+                Rect::new(rect.x + rect.width as i32 - 4, thumb_top, 3, thumb_height as u32),
+                border,
+            );
+        }
     }
 }
 
@@ -680,17 +819,86 @@ impl EventHandler for MultiSelectComboBox {
                 if self.expanded {
                     let item_height = 28i32;
                     let drop_down_y = rect.y + rect.height as i32;
-                    let drop_down_height = item_height * self.items.len() as i32;
+                    let (first, last) = self.visible_range();
+                    let drop_down_height = item_height * (last - first) as i32;
                     let drop_rect =
                         Rect::new(rect.x, drop_down_y, rect.width, drop_down_height as u32);
 
                     if drop_rect.contains_point(*pos) {
                         let rel_y = pos.y - drop_down_y;
-                        let idx = (rel_y / item_height) as usize;
-                        if idx < self.items.len() && self.items[idx].enabled {
+                        let row = (rel_y / item_height) as usize;
+                        let idx = first + row;
+                        if idx < last && self.items[idx].enabled {
+                            self.active_index = idx;
                             self.toggle(idx);
                         }
                     }
+                }
+            }
+            Event::KeyPress { key, modifiers } => {
+                // Keyboard support: Escape closes, arrows move the active row, Space toggles
+                // it, Page keys move a screenful, and Primary+A selects every enabled row.
+                if !self.expanded {
+                    if matches!(*key, 13 | 32 | 38 | 40) && !self.items.is_empty() {
+                        self.expanded = true;
+                        self.ensure_active_visible();
+                        self.base.request_redraw();
+                    }
+                    return;
+                }
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                if (mods.contains(crate::shortcut::Modifiers::CTRL)
+                    || mods.contains(crate::shortcut::Modifiers::PRIMARY))
+                    && (*key == 65 || *key == 97)
+                {
+                    // The two table-wide actions: Primary+A selects every enabled row and
+                    // Primary+Shift+A clears the selection again, so an open list can be
+                    // emptied without toggling each row by hand.
+                    if mods.contains(crate::shortcut::Modifiers::SHIFT) {
+                        self.clear_selection();
+                    } else {
+                        self.select_all();
+                    }
+                    return;
+                }
+                let page = self.page_size();
+                match *key {
+                    27 => {
+                        self.expanded = false;
+                        self.base.request_redraw();
+                    }
+                    38 => self.set_active_index(self.active_index.saturating_sub(1)),
+                    40 => {
+                        if self.active_index + 1 < self.items.len() {
+                            self.set_active_index(self.active_index + 1);
+                        }
+                    }
+                    33 => self.set_active_index(self.active_index.saturating_sub(page)),
+                    34 => self.set_active_index(
+                        (self.active_index + page).min(self.items.len().saturating_sub(1)),
+                    ),
+                    36 => self.set_active_index(0),
+                    35 => {
+                        self.set_active_index(self.items.len().saturating_sub(1));
+                    }
+                    32 => self.toggle(self.active_index),
+                    13 => {
+                        self.toggle(self.active_index);
+                        self.expanded = false;
+                        self.base.request_redraw();
+                    }
+                    _ => {}
+                }
+            }
+            Event::Wheel { delta, modifiers } => {
+                if !self.expanded {
+                    self.base.handle_event(event);
+                    return;
+                }
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y != 0 {
+                    let offset = (self.scroll_offset as i32 + scroll.lines_y).max(0) as usize;
+                    self.set_scroll_offset(offset);
                 }
             }
             _ => {
@@ -703,6 +911,8 @@ impl EventHandler for MultiSelectComboBox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Point;
+    use crate::widget::input_widgets::shortcut_editor::primary_modifier_event_bits;
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
 
@@ -874,5 +1084,62 @@ mod tests {
         assert_eq!(band.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
         assert_eq!(cb.size_hint().height, band.height);
         assert_eq!(band.y, (120 - dimensions::TEXT_FIELD_MIN_HEIGHT as i32) / 2);
+    }
+
+    /// The open list has a keyboard model and a bounded, scrollable window.
+    #[test]
+    fn keyboard_navigation_and_a_capped_list() {
+        let mut combo = MultiSelectComboBox::new(Rect::new(0, 0, 200, 40));
+        for index in 0..8 {
+            combo.add_item(MultiSelectItem::new(index as u64 + 1, format!("Item {index}")));
+        }
+        combo.set_max_visible(Some(3));
+        combo.set_expanded(true);
+        assert_eq!(combo.page_size(), 3);
+
+        combo.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(combo.active_index(), 1);
+        combo.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
+        assert!(combo.is_selected(1));
+        assert_eq!(combo.selected_count(), 1);
+
+        combo.handle_event(&Event::KeyPress { key: 35, modifiers: 0 }); // End
+        assert_eq!(combo.active_index(), 7);
+        assert_eq!(combo.scroll_offset(), 5, "the active row is kept visible");
+
+        combo.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(combo.scroll_offset(), 4);
+        combo.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert!(!combo.is_expanded());
+    }
+
+    /// Primary+A selects every enabled row in one action.
+    #[test]
+    fn select_all_respects_disabled_rows() {
+        let mut combo = MultiSelectComboBox::new(Rect::new(0, 0, 200, 40));
+        combo.add_item(MultiSelectItem::new(1, "A".to_string()));
+        combo.add_item(MultiSelectItem::with_enabled(2, "B".to_string(), false));
+        combo.add_item(MultiSelectItem::new(3, "C".to_string()));
+        assert!(combo.select_all());
+        assert_eq!(combo.selected_indices(), vec![0, 2]);
+        assert_eq!(combo.selected_count(), 2);
+    }
+
+    /// Primary+Shift+A clears the open list's selection in one action.
+    #[test]
+    fn primary_shift_a_clears_the_open_list() {
+        let mut combo = MultiSelectComboBox::new(Rect::new(0, 0, 200, 40));
+        combo.add_item(MultiSelectItem::new(1, "A".to_string()));
+        combo.add_item(MultiSelectItem::new(2, "B".to_string()));
+        combo.set_expanded(true);
+        combo.select_all();
+        assert_eq!(combo.selected_count(), 2);
+
+        // Shift is event bit 1; the accelerator bit comes from the host's own convention.
+        combo.handle_event(&Event::KeyPress {
+            key: 65,
+            modifiers: primary_modifier_event_bits() | 0b0001,
+        });
+        assert_eq!(combo.selected_count(), 0, "the chord must empty the selection");
     }
 }

@@ -53,6 +53,25 @@ impl CodeEditor {
         let mut painted: Vec<usize> = Vec::new();
 
         let mut row = 0usize;
+        // An empty document shows its placeholder instead of an empty box. The
+        // placeholder is chrome, so it uses the chrome font and the dim ink.
+        if self.line_count() == 1
+            && self.line_text(0).as_deref() == Some("")
+            && self.config.placeholder_text.is_some()
+        {
+            if let Some(placeholder) = &self.config.placeholder_text {
+                let font = self.chrome_font();
+                let band = Rect::new(left, top, width, row_height.ceil() as u32);
+                let baseline = context.text_line(band, font).y;
+                context.draw_text(
+                    Point::new(left, baseline),
+                    placeholder,
+                    font,
+                    chrome.dim_ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
         for line in self.viewport_document_lines() {
             let segments = self.wrap_segments(line);
             if row + segments <= self.scroll_visual_row {
@@ -78,18 +97,20 @@ impl CodeEditor {
             // revision and every metric the measurement used (see `row_layout_key`), so a hit
             // means the numbers still describe the glyphs on screen. A miss measures the row
             // and stores it, which is also what the caret, selection and hit-test read.
-            let layout = if wrapped {
-                None
+            // The measured layout of the row. Unwrapped rows measure the whole line
+            // once and reuse it. Wrapped rows also measure each segment separately:
+            // the earlier code passed `layout=None` for them, so every wrapped row
+            // was positioned by `column * cell` and a proportional face or a CJK run
+            // drifted from the glyphs. The full-line layout is still measured and
+            // cached because the caret reads it (see `caret_x`).
+            let line_layout = if let Some(cached) = self.cached_row_layout(line) {
+                cached
             } else {
-                match self.cached_row_layout(line) {
-                    Some(cached) => Some(cached),
-                    None => {
-                        let measured = self.measure_row_layout(context, line, text);
-                        self.remember_row_layout(line, measured.clone());
-                        Some(measured)
-                    }
-                }
+                let measured = self.measure_row_layout(context, line, text);
+                self.remember_row_layout(line, measured.clone());
+                measured
             };
+            let layout = if wrapped { None } else { Some(line_layout.clone()) };
             let runs = if layout.is_some() { self.row_runs(line, text) } else { Vec::new() };
             // How far a continuation row is indented: the line's own leading
             // whitespace, clamped so it can never push the wrapped text off the row.
@@ -114,8 +135,16 @@ impl CodeEditor {
                 };
                 // One geometry for every element of this row: backdrops, guides,
                 // glyphs, whitespace marks and the caret all read it.
+                let segment_layout = if wrapped {
+                    let from = grid.byte_of_char(segment_start);
+                    let to = grid.byte_of_char(segment_end);
+                    Some(self.measure_piece_layout(context, &text[from..to]))
+                } else {
+                    layout.clone()
+                };
                 let geom = RowGeometry {
-                    layout: layout.as_ref(),
+                    layout: segment_layout.as_ref(),
+                    layout_base: if wrapped { segment_start } else { 0 },
                     grid: &grid,
                     cell,
                     first_column: grid.column_of_char(segment_start),
@@ -188,6 +217,31 @@ impl CodeEditor {
                         chrome,
                     );
                 }
+                if self.config.show_fold_summary && segment == 0 {
+                    let hidden = self.hidden_lines_at(line);
+                    if hidden > 0 {
+                        let label = format!("{{ … {hidden} lines }}");
+                        let font = self.chrome_font();
+                        let label_width = context.measure_text(&label, font).width as i32;
+                        let x = self.screen_x(left, geom.x_of(segment_end)) + 12;
+                        if x + label_width <= right {
+                            let reveal =
+                                if self.config.animate_folds { self.fold_reveal } else { 1.0 };
+                            context.draw_text(
+                                Point::new(
+                                    x,
+                                    y + (row_height as i32
+                                        - context.measure_text("M", font).height as i32)
+                                        / 2,
+                                ),
+                                &label,
+                                font,
+                                chrome.dim_ink.blend(&chrome.surface, (1.0 - reveal) * 0.9),
+                                HorizontalAlignment::Left,
+                            );
+                        }
+                    }
+                }
                 painted.push(line);
             }
             // Store the measured row for the caret, the selection and the click
@@ -195,6 +249,24 @@ impl CodeEditor {
             row += segments;
         }
 
+        // A host-supplied inline suggestion is painted as dim ghost text after the
+        // caret. It is drawn before the caret so the caret stays the strongest mark.
+        if let Some(suggestion) = &self.inline_suggestion {
+            if !suggestion.is_empty() && self.cursor.is_collapsed() {
+                let row = self.caret_visual_row();
+                let y = map.row_y(row);
+                let x = self.caret_x(self.cursor.head);
+                let band = Rect::new(x, y, width, row_height.ceil() as u32);
+                let baseline = context.text_line(band, &font).y;
+                context.draw_text(
+                    Point::new(x, baseline),
+                    suggestion,
+                    &font,
+                    chrome.dim_ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
         self.draw_caret(context, row_height, chrome);
         context.pop_clip();
         // Layouts for rows that scrolled away are dropped: the cache is bounded by
@@ -303,6 +375,38 @@ impl CodeEditor {
         RowLayout::from_boundaries(xs)
     }
 
+    /// Measures one soft-wrapped segment.
+    ///
+    /// The segment is measured as its own string, because that is how it is
+    /// drawn: a continuation row starts at the segment's first character, and
+    /// shaping the whole line (or falling back to `column * cell`) put the glyphs
+    /// somewhere other than where the row painted them.
+    pub(super) fn measure_piece_layout(&self, context: &RenderContext, piece: &str) -> RowLayout {
+        let font = self.editor_font();
+        let tab_stop = self.config.tab_width.max(1) as f32 * self.cell_width();
+        let mut xs: Vec<f32> = Vec::with_capacity(piece.chars().count() + 1);
+        let mut x = 0.0f32;
+        for cluster in context.shape_text(piece, &font).clusters() {
+            let chars = cluster.text.chars().count().max(1);
+            let advance = if cluster.text.chars().all(|ch| ch == '\t') {
+                let offset = x % tab_stop;
+                if offset <= f32::EPSILON {
+                    tab_stop
+                } else {
+                    tab_stop - offset
+                }
+            } else {
+                cluster.advance
+            };
+            for index in 0..chars {
+                xs.push(x + advance * (index as f32 / chars as f32));
+            }
+            x += advance;
+        }
+        xs.push(x);
+        RowLayout::from_boundaries(xs)
+    }
+
     /// Returns the cached layout of `line`, when one was measured for the current key.
     ///
     /// The entry is a clone of a shared handle (`RowLayout::xs` is an `Rc`), so a hit costs a
@@ -333,15 +437,17 @@ impl CodeEditor {
     /// Measured x of a character boundary, when the line has been painted.
     pub(crate) fn cached_x(&self, line: usize, char_index: usize) -> Option<f32> {
         let cache = self.row_layouts.borrow();
-        let (_, layout) = cache.iter().find(|(key, _)| *key == line)?;
-        layout.x_of_char(char_index)
+        // Entries are kept sorted by line; a lookup happens once per caret and
+        // once per hit-test, so a linear search was O(painted rows) each time.
+        let index = cache.binary_search_by_key(&line, |(key, _)| *key).ok()?;
+        cache[index].1.x_of_char(char_index)
     }
 
     /// Measured character index at a pixel offset inside the line.
     pub(super) fn cached_char_at(&self, line: usize, x: f32) -> Option<usize> {
         let cache = self.row_layouts.borrow();
-        let (_, layout) = cache.iter().find(|(key, _)| *key == line)?;
-        layout.char_at_x(x)
+        let index = cache.binary_search_by_key(&line, |(key, _)| *key).ok()?;
+        cache[index].1.char_at_x(x)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -374,6 +480,28 @@ impl CodeEditor {
             let width = (to_x - from_x).round().max(1.0) as u32;
             Some((x, width))
         };
+        // Host-owned highlights sit under everything else: they mark a range the
+        // widget cannot derive (a breakpoint line, a staged hunk, a collaborator).
+        for selection in &self.extra_selections {
+            let from = if selection.start.line < line {
+                segment_start
+            } else if selection.start.line == line {
+                selection.start.column.max(segment_start)
+            } else {
+                continue;
+            };
+            let to = if selection.end.line > line {
+                segment_end
+            } else if selection.end.line == line {
+                selection.end.column.min(segment_end)
+            } else {
+                continue;
+            };
+            if let Some((x, width)) = highlight(from, to) {
+                context
+                    .fill_rect(Rect::new(x, y, width, row_height.ceil() as u32), selection.color);
+            }
+        }
         // Search hits. `find.matches` is sorted by line, so the hits for this row
         // are a contiguous slice found by binary search rather than a full scan
         // of every match in the document, once per painted row.
@@ -593,7 +721,12 @@ impl CodeEditor {
         // outline: an outline that encloses a `{` reads as a selection rectangle,
         // while a tinted box is the "these two go together" mark Zed draws. The box
         // is painted before the runs so the bracket stays the darkest thing in it.
-        let bracket_box = chrome.accent.blend(&chrome.surface, 0.82);
+        let bracket_box = {
+            // The fade is what makes a pair legible when the caret lands on it: the
+            // box starts stronger and eases back to its resting tint.
+            let flash = if self.config.animate_brackets { self.bracket_flash } else { 0.0 };
+            chrome.accent.blend(&chrome.surface, 0.82 - 0.30 * flash.clamp(0.0, 1.0))
+        };
         if let Some((open, close)) = brackets {
             for position in [open, close] {
                 if position.line != line {

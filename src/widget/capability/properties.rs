@@ -2953,3 +2953,77 @@ pub(crate) fn time_picker_capability() -> WidgetCapability {
         ],
     }
 }
+
+// ── macOS (desktop) component set ───────────────────────────────
+//
+// Five controls that carry the desktop platform's own shapes beside the touch-styled
+// `cupertino` set. Each one declares the kind of the control it refines — a mac segmented
+// picker is a segmented picker, a source list is a list view — because the kind is what the
+// theme layer and the accessibility role classify by. The capability name is what the factory,
+// the design manifest and the property contract address; the kind is shared on purpose and
+// resolved by the concrete-type tie-break in `WidgetFactory::widget_matches_capability`.
+
+#[cfg(not(alloc_frugal))]
+/// `mac_segmented_control` — the desktop segmented picker.
+pub(crate) fn mac_segmented_control_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SegmentedControl,
+        canonical_name: "mac_segmented_control",
+        aliases: &[],
+        properties: MAC_SEGMENTED_CONTROL_PROPERTIES,
+        events: events_of!("mac_segmented_control"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `mac_stepper` — the desktop increment/decrement stepper.
+pub(crate) fn mac_stepper_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Stepper,
+        canonical_name: "mac_stepper",
+        aliases: &[],
+        properties: MAC_STEPPER_PROPERTIES,
+        events: events_of!("mac_stepper"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `mac_toolbar` — the desktop toolbar strip.
+pub(crate) fn mac_toolbar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ToolBar,
+        canonical_name: "mac_toolbar",
+        aliases: &[],
+        properties: MAC_TOOLBAR_PROPERTIES,
+        events: events_of!("mac_toolbar"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `mac_source_list` — the desktop sectioned sidebar.
+pub(crate) fn mac_source_list_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ListView,
+        canonical_name: "mac_source_list",
+        aliases: &[],
+        properties: MAC_SOURCE_LIST_PROPERTIES,
+        events: events_of!("mac_source_list"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `mac_window_chrome` — the desktop title bar with traffic-light controls.
+pub(crate) fn mac_window_chrome_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Window,
+        canonical_name: "mac_window_chrome",
+        aliases: &[],
+        properties: MAC_WINDOW_CHROME_PROPERTIES,
+        events: events_of!("mac_window_chrome"),
+        commands: &[],
+    }
+}

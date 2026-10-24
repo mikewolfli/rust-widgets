@@ -75,11 +75,27 @@ const DEFAULT_PULSE_PERIOD_MS: u32 = 1200;
 /// How many `slow` tokens one shimmer pulse is worth.
 const PULSE_SLOW_MULTIPLE: u32 = 4;
 
+/// The number of vertical strips the shimmer band is built from.
+///
+/// The strips carry a triangle-shaped alpha profile, so the band fades in and
+/// out across its width instead of being a hard-edged rectangle. Six is enough
+/// for the fade to read at the sizes a skeleton is used at.
+const SHIMMER_STRIPS: u32 = 6;
+
+/// The peak alpha of the shimmer band, out of 255.
+const SHIMMER_PEAK_ALPHA: f32 = 140.0;
+
 /// SkeletonLoader widget — renders a shimmering placeholder shape while data loads.
 pub struct SkeletonLoader {
     base: BaseWidget,
     shape: SkeletonShape,
     animated: bool,
+    /// Whether a highlight band sweeps across the placeholder shapes.
+    ///
+    /// Off by default because the band is an extra visual treatment layered on
+    /// top of the pulse, and the historic picture must stay byte-identical for
+    /// callers that never asked for it.
+    shimmer: bool,
     /// The shimmer's phase, in turns: `0.0` and `1.0` are the same point in the pulse.
     ///
     /// # Why this is a phase and not a frame counter
@@ -103,6 +119,7 @@ impl SkeletonLoader {
             base: BaseWidget::new(WidgetKind::SkeletonLoader, geometry, "SkeletonLoader"),
             shape: SkeletonShape::Rect(200, 20),
             animated: true,
+            shimmer: false,
             phase: 0.0,
         }
     }
@@ -135,6 +152,24 @@ impl SkeletonLoader {
     /// Returns whether the shimmer animation is enabled.
     pub fn is_animated(&self) -> bool {
         self.animated
+    }
+
+    /// Returns whether the sweeping highlight band is enabled.
+    pub fn shimmer(&self) -> bool {
+        self.shimmer
+    }
+
+    /// Enables or disables the sweeping highlight band.
+    ///
+    /// The band is driven by the existing pulse phase, so enabling it does not
+    /// add a second clock: the highlight travels once per pulse period. The
+    /// default is `false`, which leaves the rendering untouched.
+    pub fn set_shimmer(&mut self, enabled: bool) {
+        if self.shimmer == enabled {
+            return;
+        }
+        self.shimmer = enabled;
+        self.base.request_redraw();
     }
 
     /// Computes the current shimmer opacity from the pulse phase.
@@ -261,8 +296,6 @@ impl WidgetProperties for SkeletonLoader {
 impl Draw for SkeletonLoader {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let cx = rect.x + rect.width as i32 / 2;
-        let cy = rect.y + rect.height as i32 / 2;
 
         // Chrome colours resolve the explicit style first, then the theme's resolved style
         // for this control, and only then the original literal. The literal stays as the
@@ -289,6 +322,25 @@ impl Draw for SkeletonLoader {
         let base_color =
             Color::rgba(skeleton.r, skeleton.g, skeleton.b, (opacity * 255.0).round() as u8);
 
+        self.paint_shape(context, base_color);
+        if self.shimmer {
+            self.paint_shimmer(context, rect);
+        }
+    }
+}
+
+impl SkeletonLoader {
+    /// Paints the configured shape once in `color`.
+    ///
+    /// Factored out of [`Draw::draw`] so the shimmer band can repaint the same
+    /// geometry inside a clip: an overlay that re-paints the shape rather than
+    /// a rectangle stays inside a disc or a rounded row, which a rectangular
+    /// gradient fill would not.
+    fn paint_shape(&self, context: &mut RenderContext, color: Color) {
+        let rect = self.geometry();
+        let cx = rect.x + rect.width as i32 / 2;
+        let cy = rect.y + rect.height as i32 / 2;
+
         match self.shape {
             SkeletonShape::Rect(w, h) => {
                 // The caller's own dimensions are the **datum** here: a skeleton stands in
@@ -300,14 +352,14 @@ impl Draw for SkeletonLoader {
                 let w = w.min(rect.width).max(1);
                 let h = h.min(rect.height).max(1);
                 let shape_rect = ControlMetrics::center_in(rect, crate::core::Size::new(w, h));
-                context.fill_rounded_rect(shape_rect, 4, base_color);
+                context.fill_rounded_rect(shape_rect, 4, color);
             }
             SkeletonShape::Circle(r) => {
                 // The radius is the caller's datum, clamped to the shortest side so the
                 // disc stays square and inside the control.
                 let r = r.min(rect.width.min(rect.height) / 2).max(1);
                 let center = Point::new(cx, cy);
-                context.fill_circle_aa(center, r, base_color);
+                context.fill_circle_aa(center, r, color);
             }
             SkeletonShape::TextLine(w) => {
                 // Draw three stacked text-like lines to simulate paragraph text.
@@ -330,9 +382,48 @@ impl Draw for SkeletonLoader {
                 for i in 0..3 {
                     let y = start_y + i * (line_h + gap) as i32;
                     let line_rect = Rect::new(cx - row_w as i32 / 2, y, row_w, line_h);
-                    context.fill_rounded_rect(line_rect, 3, base_color);
+                    context.fill_rounded_rect(line_rect, 3, color);
                 }
             }
+        }
+    }
+
+    /// Paints the moving highlight band over the placeholder shapes.
+    ///
+    /// The band's position is read from the same [`SkeletonLoader::phase`] the
+    /// pulse uses, so enabling it adds no clock. One period moves the band from
+    /// just before the control's left edge to just past its right edge, and the
+    /// strips it is made of fade in and out so the leading and trailing edges
+    /// are soft. Only what was painted by [`Self::paint_shape`] lights up,
+    /// because the band repaints that same geometry inside its own clip.
+    fn paint_shimmer(&self, context: &mut RenderContext, rect: Rect) {
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let band_width = (rect.width / 3).max(1);
+        let travel = rect.width as f32 + band_width as f32;
+        let band_left = rect.x as f32 - band_width as f32 + self.phase * travel;
+        let strip = band_width as f32 / SHIMMER_STRIPS as f32;
+
+        for index in 0..SHIMMER_STRIPS {
+            let x0 = (band_left + (strip * index as f32).round()) as i32;
+            let x1 = (band_left + (strip * (index + 1) as f32).round()) as i32;
+            let width = (x1 - x0).max(1) as u32;
+            // A strip nobody can see is not worth a clip and a shape repaint.
+            if x1 <= rect.x || x0 >= rect.x + rect.width as i32 {
+                continue;
+            }
+            // Triangle profile across the band: dim at both ends, brightest in
+            // the middle, which is what makes the band read as a gradient.
+            let position = (index as f32 + 0.5) / SHIMMER_STRIPS as f32;
+            let intensity = 1.0 - (2.0 * position - 1.0).abs();
+            let alpha = (intensity * SHIMMER_PEAK_ALPHA).round() as u8;
+            if alpha == 0 {
+                continue;
+            }
+            context.push_clip(x0, rect.y, width, rect.height);
+            self.paint_shape(context, Color::rgba(255, 255, 255, alpha));
+            context.pop_clip();
         }
     }
 }
@@ -548,5 +639,68 @@ mod tests {
         };
         s.set_shape(other);
         assert!(fired.load(std::sync::atomic::Ordering::SeqCst), "a new shape must be drawn");
+    }
+
+    /// The shimmer band is opt-in: the default picture is unchanged, and the
+    /// band moves with the existing pulse phase rather than a second clock.
+    #[test]
+    fn a_shimmer_band_is_opt_in_and_follows_the_pulse_phase() {
+        let mut plain = SkeletonLoader::new(Rect::new(0, 0, 200, 100));
+        plain.set_animated(false);
+        assert!(!plain.shimmer(), "the band is off by default");
+        let plain_svg = render_to_svg(&mut plain);
+
+        // The band starts just outside the left edge, so it is advanced to the
+        // quarter point before it is expected on screen.
+        let mut sl = SkeletonLoader::new(Rect::new(0, 0, 200, 100));
+        let period = sl.pulse_period_ms();
+        assert!(sl.tick(period / 4), "the pulse owes the frame that moves the band");
+        let without = render_to_svg(&mut sl);
+        sl.set_shimmer(true);
+        let with = render_to_svg(&mut sl);
+        assert_ne!(without, with, "enabling the band changes the picture");
+        assert_eq!(
+            with.matches("clip-path").count(),
+            SHIMMER_STRIPS as usize,
+            "every fading strip is clipped to the shape"
+        );
+
+        // A further quarter turn moves the band, and the only clock involved
+        // is the pulse's own phase.
+        assert!(sl.tick(period / 4));
+        assert_ne!(with, render_to_svg(&mut sl), "the band advances with the pulse");
+
+        // Turning it back off leaves no band commands behind.
+        sl.set_shimmer(false);
+        let restored = render_to_svg(&mut sl);
+        assert!(!restored.contains("clip-path"), "a disabled band paints nothing: {restored}");
+
+        // A fresh, static placeholder is byte-identical to the old picture.
+        let mut fresh = SkeletonLoader::new(Rect::new(0, 0, 200, 100));
+        fresh.set_animated(false);
+        assert_eq!(render_to_svg(&mut fresh), plain_svg, "the default is unchanged");
+    }
+
+    /// Toggling the band asks for a frame, and toggling it to the same value
+    /// does not.
+    #[test]
+    fn setting_shimmer_requests_a_redraw() {
+        let mut sl = SkeletonLoader::new(Rect::new(0, 0, 200, 100));
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        sl.base.redraw_requested.connect({
+            let seen = std::sync::Arc::clone(&seen);
+            move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        sl.set_shimmer(true);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+        sl.set_shimmer(true);
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the same value is not a change"
+        );
     }
 }

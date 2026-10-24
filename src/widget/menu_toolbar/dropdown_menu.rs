@@ -12,7 +12,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{
     expect_bool, expect_horizontal_alignment, expect_usize, horizontal_alignment_to_str,
 };
@@ -115,6 +115,10 @@ pub struct DropdownItem {
     pub icon: Option<String>,
     /// Whether this item is selectable.
     pub enabled: bool,
+    /// Whether this item shows a check mark and toggles when chosen.
+    pub checkable: bool,
+    /// The current check state, meaningful only when [`Self::checkable`] is set.
+    pub checked: bool,
     /// Optional child items for submenu support.
     pub children: Vec<DropdownItem>,
 }
@@ -127,6 +131,8 @@ impl DropdownItem {
             label: label.to_string(),
             icon: None,
             enabled: true,
+            checkable: false,
+            checked: false,
             children: Vec::new(),
         }
     }
@@ -147,6 +153,20 @@ impl DropdownItem {
     pub fn with_children(mut self, children: Vec<DropdownItem>) -> Self {
         self.children = children;
         self
+    }
+
+    /// Makes the item checkable and sets its initial check state.
+    pub fn with_checked(mut self, checked: bool) -> Self {
+        self.checkable = true;
+        self.checked = checked;
+        self
+    }
+
+    /// Toggles the check state, ignoring the call for a non-checkable item.
+    pub fn toggle_checked(&mut self) {
+        if self.checkable {
+            self.checked = !self.checked;
+        }
     }
 }
 
@@ -204,6 +224,22 @@ fn draw_item_list(
 
         let item_text_color = if !item.enabled { palette.disabled_text } else { palette.text };
         let mut item_x = row.x + PADDING;
+
+        // A checkable row reserves its tick column whether or not it is checked, so the labels
+        // of a checkable list stay in one column — the same rule a menu row follows.
+        if item.checkable {
+            let line = context.text_line(row, item_font);
+            let side = line.height.clamp(1, 16);
+            if item.checked {
+                crate::widget::draw_icon_at(
+                    context,
+                    Rect::new(item_x, line.y, side, side),
+                    item_text_color,
+                    IconName::Check,
+                );
+            }
+            item_x += 18;
+        }
 
         // Item icon
         let icon_source =
@@ -318,8 +354,14 @@ pub struct DropdownMenu {
     alignment: crate::core::Alignment,
     /// Emitted when an item is selected, providing the item's value.
     pub item_selected: Signal1<String>,
+    /// Emitted when a checkable item's check state changes, carrying its value.
+    pub item_toggled: Signal1<String>,
     /// Emitted when a branch row opens its child panel, carrying the branch's label.
     pub submenu_requested: Signal1<String>,
+    /// Emitted just before the list expands.
+    pub about_to_show: GenericSignal,
+    /// Emitted just after the list collapses.
+    pub about_to_hide: GenericSignal,
 }
 
 impl DropdownMenu {
@@ -338,7 +380,10 @@ impl DropdownMenu {
             active_index: None,
             alignment: crate::core::Alignment::Left,
             item_selected: Signal1::new(),
+            item_toggled: Signal1::new(),
             submenu_requested: Signal1::new(),
+            about_to_show: GenericSignal::new(),
+            about_to_hide: GenericSignal::new(),
         }
     }
 
@@ -354,6 +399,187 @@ impl DropdownMenu {
     /// Returns the currently selected value, if any.
     pub fn selected_value(&self) -> Option<String> {
         self.selected_value.clone()
+    }
+
+    /// The check state of the item identified by `value`, at any nesting depth.
+    pub fn item_checked(&self, value: &str) -> Option<bool> {
+        fn find(items: &[DropdownItem], value: &str) -> Option<bool> {
+            for item in items {
+                if item.value == value {
+                    return Some(item.checked);
+                }
+                if let Some(found) = find(&item.children, value) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.items, value)
+    }
+
+    /// Sets the check state of the item identified by `value`, at any nesting depth.
+    ///
+    /// Returns `false` when no item carries that value, or when the item is not
+    /// checkable. Requests a repaint when the state actually changed.
+    pub fn set_item_checked(&mut self, value: &str, checked: bool) -> bool {
+        fn apply(items: &mut [DropdownItem], value: &str, checked: bool) -> Option<bool> {
+            for item in items {
+                if item.value == value {
+                    if !item.checkable {
+                        return Some(false);
+                    }
+                    if item.checked == checked {
+                        return Some(false);
+                    }
+                    item.checked = checked;
+                    return Some(true);
+                }
+                if let Some(changed) = apply(&mut item.children, value, checked) {
+                    return Some(changed);
+                }
+            }
+            None
+        }
+        let changed = apply(&mut self.items, value, checked).unwrap_or(false);
+        if changed {
+            // The open child panel holds a copy of the branch's rows, so mirror the new
+            // state into it or the panel would show a stale tick until it is reopened.
+            if let Some(children) = self.submenu_open.as_mut() {
+                apply(children, value, checked);
+            }
+            self.item_toggled.emit(value.to_string());
+            self.base.request_redraw();
+        }
+        changed
+    }
+
+    /// Every checked item value in the tree, in document order.
+    pub fn checked_values(&self) -> Vec<String> {
+        fn collect(items: &[DropdownItem], out: &mut Vec<String>) {
+            for item in items {
+                if item.checkable && item.checked {
+                    out.push(item.value.clone());
+                }
+                collect(&item.children, out);
+            }
+        }
+        let mut out = Vec::new();
+        collect(&self.items, &mut out);
+        out
+    }
+
+    /// Moves the keyboard-active row by `delta`, skipping disabled rows and rows outside
+    /// the visible window.
+    fn move_active(&mut self, delta: i32) {
+        if !self.expanded || self.items.is_empty() {
+            return;
+        }
+        let visible = (self.scroll_offset + self.max_visible_items()).min(self.items.len());
+        let count = visible.saturating_sub(self.scroll_offset);
+        if count == 0 || delta == 0 {
+            return;
+        }
+        let start = match self.active_index {
+            Some(index) if index >= self.scroll_offset && index < visible => index as i32,
+            _ if delta > 0 => self.scroll_offset as i32 - 1,
+            _ => visible as i32,
+        };
+        let mut index = start;
+        for _ in 0..count {
+            index += delta;
+            if index < self.scroll_offset as i32 {
+                index = visible as i32 - 1;
+            } else if index >= visible as i32 {
+                index = self.scroll_offset as i32;
+            }
+            if self.items[index as usize].enabled {
+                self.active_index = Some(index as usize);
+                self.base.request_redraw();
+                return;
+            }
+        }
+    }
+
+    /// Jumps the keyboard-active row to one end of the visible window.
+    fn jump_active(&mut self, to_end: bool) {
+        if !self.expanded {
+            return;
+        }
+        let visible = (self.scroll_offset + self.max_visible_items()).min(self.items.len());
+        let range: Vec<usize> = (self.scroll_offset..visible).collect();
+        let found = if to_end {
+            range.into_iter().rev().find(|index| self.items[*index].enabled)
+        } else {
+            range.into_iter().find(|index| self.items[*index].enabled)
+        };
+        if let Some(index) = found {
+            self.active_index = Some(index);
+            self.base.request_redraw();
+        }
+    }
+
+    /// Selects the next enabled row whose label starts with `letter`.
+    ///
+    /// Repeated presses of the same letter cycle forward from the current row, which is
+    /// the behaviour a list with no timing state can still promise.
+    fn type_ahead(&mut self, letter: char) {
+        if !self.expanded || self.items.is_empty() {
+            return;
+        }
+        let wanted = letter.to_ascii_lowercase();
+        let start = self.active_index.map(|index| index + 1).unwrap_or(self.scroll_offset);
+        let len = self.items.len();
+        for offset in 0..len {
+            let index = (start + offset) % len;
+            let item = &self.items[index];
+            if item.enabled
+                && item
+                    .label
+                    .chars()
+                    .next()
+                    .is_some_and(|first| first.to_ascii_lowercase() == wanted)
+            {
+                self.active_index = Some(index);
+                self.scroll_offset = self
+                    .scroll_offset
+                    .min(index)
+                    .max(index.saturating_add(1).saturating_sub(self.max_visible_items()));
+                self.base.request_redraw();
+                return;
+            }
+        }
+    }
+
+    /// Moves the keyboard-active row by one page inside the visible window.
+    ///
+    /// Paging does not wrap: the point of PageDown is to move a screenful in one
+    /// direction, and a page that wrapped to the top would undo itself on the last
+    /// press. The landing row is the nearest enabled one, searching toward the target.
+    fn page_active(&mut self, down: bool) {
+        if !self.expanded || self.items.is_empty() {
+            return;
+        }
+        let visible_start = self.scroll_offset;
+        let visible_end = (self.scroll_offset + self.max_visible_items()).min(self.items.len());
+        if visible_end <= visible_start {
+            return;
+        }
+        let page = self.max_visible_items().max(1);
+        let current = self.active_index.unwrap_or(visible_start);
+        let target = if down {
+            current.saturating_add(page).min(visible_end - 1)
+        } else {
+            current.saturating_sub(page).max(visible_start)
+        };
+        let candidates: Vec<usize> = if down {
+            (target..visible_end).collect()
+        } else {
+            (visible_start..=target).rev().collect()
+        };
+        if let Some(index) = candidates.into_iter().find(|index| self.items[*index].enabled) {
+            self.active_index = Some(index);
+            self.base.request_redraw();
+        }
     }
 
     /// Returns the display label for the currently selected value.
@@ -524,6 +750,10 @@ impl DropdownMenu {
 
     /// Expands the dropdown to show the item list.
     pub fn expand(&mut self) {
+        if self.expanded {
+            return;
+        }
+        self.about_to_show.emit();
         self.expanded = true;
         self.reveal.set_open(true);
         self.scroll_offset = 0;
@@ -538,6 +768,9 @@ impl DropdownMenu {
 
     /// Collapses the dropdown, including any open child panel.
     pub fn collapse(&mut self) {
+        if !self.expanded {
+            return;
+        }
         self.expanded = false;
         self.reveal.set_open(false);
         self.submenu_open = None;
@@ -546,6 +779,7 @@ impl DropdownMenu {
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::clear_popup_grab_for(self.id());
         self.base.request_redraw();
+        self.about_to_hide.emit();
     }
 
     /// Whether a branch's child panel is currently showing.
@@ -644,9 +878,14 @@ impl DropdownMenu {
         }
         let value = item.value.clone();
         let is_branch = !item.children.is_empty();
+        let checkable = item.checkable;
         if is_branch {
             self.open_submenu(index);
         } else {
+            if checkable {
+                let next = !self.item_checked(&value).unwrap_or(false);
+                self.set_item_checked(&value, next);
+            }
             self.selected_value = Some(value.clone());
             self.item_selected.emit(value);
             self.collapse();
@@ -667,7 +906,12 @@ impl DropdownMenu {
         let value = item.value.clone();
         let label = item.label.clone();
         let children = item.children.clone();
+        let checkable = item.checkable;
         if children.is_empty() {
+            if checkable {
+                let next = !self.item_checked(&value).unwrap_or(false);
+                self.set_item_checked(&value, next);
+            }
             self.selected_value = Some(value.clone());
             self.item_selected.emit(value);
             self.collapse();
@@ -1058,8 +1302,7 @@ impl Draw for DropdownMenu {
                 context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
             }
             // Dropdown background with shadow
-            let panel_fill =
-                if effects.transparency { background.with_alpha(230) } else { background };
+            let panel_fill = super::effects::popup_face(background, &effects);
             context.fill_rounded_rect(drop, 4, panel_fill);
             context.draw_rounded_rect_stroke(drop, 4, border, 2);
 
@@ -1117,8 +1360,7 @@ impl Draw for DropdownMenu {
         // It hangs to the right of the list, outside the list's reveal clip, so it is painted after
         // the clip is popped. One level only: opening another branch replaces what is shown.
         if let (Some(children), Some(panel)) = (self.submenu_open.as_ref(), self.submenu_panel) {
-            let panel_fill =
-                if effects.transparency { background.with_alpha(230) } else { background };
+            let panel_fill = super::effects::popup_face(background, &effects);
             context.fill_rounded_rect(panel, 4, panel_fill);
             context.draw_rounded_rect_stroke(panel, 4, border, 2);
             draw_item_list(
@@ -1175,7 +1417,7 @@ impl EventHandler for DropdownMenu {
                     }
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
+            Event::KeyPress { key, modifiers } => match *key {
                 key_codes::ESCAPE if self.submenu_open.is_some() => self.collapse_submenu(),
                 key_codes::ESCAPE if self.expanded => self.collapse(),
                 key_codes::RIGHT if self.expanded && self.submenu_open.is_none() => {
@@ -1184,6 +1426,24 @@ impl EventHandler for DropdownMenu {
                     }
                 }
                 key_codes::LEFT if self.submenu_open.is_some() => self.collapse_submenu(),
+                key_codes::DOWN if self.expanded => self.move_active(1),
+                key_codes::UP if self.expanded => self.move_active(-1),
+                key_codes::HOME if self.expanded => self.jump_active(false),
+                key_codes::END if self.expanded => self.jump_active(true),
+                key_codes::PAGE_DOWN if self.expanded => self.page_active(true),
+                key_codes::PAGE_UP if self.expanded => self.page_active(false),
+                key_codes::ENTER | key_codes::LINE_FEED if self.expanded => {
+                    if let Some(index) = self.active_index {
+                        self.activate_top_level(index);
+                    }
+                }
+                // Type-ahead: a bare letter or digit jumps to the next row starting with it.
+                // Chorded presses belong to the application's shortcuts, not to the list.
+                key if *modifiers == 0 && self.expanded => {
+                    if let Some(letter) = char::from_u32(key).filter(char::is_ascii_alphanumeric) {
+                        self.type_ahead(letter);
+                    }
+                }
                 _ => { /* Other keys are not relevant */ }
             },
             Event::Wheel { delta, modifiers: _ } => {
@@ -1517,5 +1777,102 @@ mod tests {
         let svg = render_to_svg(&mut dm);
         assert!(svg.starts_with("<svg"), "SVG should start with <svg, got: {svg:.60}");
         assert!(svg.ends_with("</svg>"), "SVG should end with </svg>");
+    }
+
+    /// The list is reachable from the keyboard: arrows skip disabled rows, digits/letters
+    /// jump by first letter, and Enter commits the active row.
+    #[test]
+    fn dropdown_menu_keyboard_walks_and_commits() {
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        dm.add_item(DropdownItem::new("a", "Alpha"));
+        dm.add_item(DropdownItem::new("b", "Beta").with_enabled(false));
+        dm.add_item(DropdownItem::new("c", "Charlie"));
+        dm.expand();
+
+        dm.handle_event(&Event::key_press(40, 0));
+        assert_eq!(dm.active_index, Some(0));
+        dm.handle_event(&Event::key_press(40, 0));
+        assert_eq!(dm.active_index, Some(2), "Down must step over the disabled row");
+        dm.handle_event(&Event::key_press(38, 0));
+        assert_eq!(dm.active_index, Some(0));
+
+        // Type-ahead selects the next label beginning with the letter.
+        dm.handle_event(&Event::key_press(67, 0));
+        assert_eq!(dm.active_index, Some(2), "C jumps to Charlie");
+
+        let selected = Arc::new(Mutex::new(None));
+        let captured = selected.clone();
+        dm.item_selected.connect(move |value| {
+            *captured.lock().unwrap() = Some(value.to_string());
+        });
+        dm.handle_event(&Event::key_press(13, 0));
+        assert_eq!(selected.lock().unwrap().as_deref(), Some("c"));
+        assert!(!dm.is_expanded());
+    }
+
+    /// Home/End and PageUp/PageDown address the visible window, not the whole list.
+    #[test]
+    fn dropdown_menu_keyboard_home_end_and_paging() {
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        for index in 0..10 {
+            dm.add_item(DropdownItem::new(&format!("v{index}"), &format!("Item {index}")));
+        }
+        dm.expand();
+        dm.handle_event(&Event::key_press(35, 0));
+        assert_eq!(dm.active_index, Some(7), "End stops at the last visible row");
+        dm.handle_event(&Event::key_press(36, 0));
+        assert_eq!(dm.active_index, Some(0));
+        dm.handle_event(&Event::key_press(34, 0));
+        assert_eq!(dm.active_index, Some(7), "PageDown moves within the visible window");
+    }
+
+    /// about_to_show / about_to_hide bracket the expansion exactly once per transition.
+    #[test]
+    fn dropdown_menu_announces_show_and_hide() {
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        dm.add_item(DropdownItem::new("a", "Alpha"));
+        let shown = Arc::new(AtomicUsize::new(0));
+        let hidden = Arc::new(AtomicUsize::new(0));
+        let s = shown.clone();
+        let h = hidden.clone();
+        dm.about_to_show.connect(move || {
+            s.fetch_add(1, Ordering::SeqCst);
+        });
+        dm.about_to_hide.connect(move || {
+            h.fetch_add(1, Ordering::SeqCst);
+        });
+
+        dm.expand();
+        dm.expand();
+        assert_eq!(shown.load(Ordering::SeqCst), 1, "an already-open list must not re-announce");
+        dm.collapse();
+        dm.collapse();
+        assert_eq!(hidden.load(Ordering::SeqCst), 1);
+    }
+
+    /// A checkable row toggles on selection and reports its value through `item_toggled`.
+    #[test]
+    fn dropdown_menu_checkable_rows_toggle() {
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        dm.add_item(DropdownItem::new("w", "Wrap").with_checked(false));
+        dm.add_item(DropdownItem::new("plain", "Plain"));
+        assert!(dm.items()[0].checkable);
+        assert_eq!(dm.item_checked("w"), Some(false));
+
+        let toggled = Arc::new(Mutex::new(Vec::new()));
+        let sink = toggled.clone();
+        dm.item_toggled.connect(move |value| {
+            sink.lock().unwrap().push(value.to_string());
+        });
+        dm.expand();
+        let row = dm.item_rect(0);
+        dm.handle_event(&Event::mouse_press(row.x + 5, row.y + 5, 1));
+        assert_eq!(dm.item_checked("w"), Some(true));
+        assert_eq!(dm.checked_values(), vec!["w".to_string()]);
+        assert_eq!(&*toggled.lock().unwrap(), &["w".to_string()]);
+
+        assert!(!dm.set_item_checked("plain", true), "a non-checkable row refuses a check");
+        assert_eq!(dm.item_checked("plain"), Some(false));
+        assert_eq!(dm.item_checked("missing"), None);
     }
 }

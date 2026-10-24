@@ -15,7 +15,8 @@ use crate::shortcut::Key;
 use crate::signal::Signal1;
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
-    expect_horizontal_alignment, expect_string, expect_usize, horizontal_alignment_to_str,
+    expect_bool, expect_horizontal_alignment, expect_string, expect_usize,
+    horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -32,6 +33,78 @@ use std::rc::Rc;
 /// As the user types, the widget filters its suggestions list and shows
 /// matching entries in a dropdown below the text field. The user can select
 /// a highlighted suggestion via Enter key or by clicking.
+/// How the typed text is matched against a suggestion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompletionMatchMode {
+    /// The suggestion contains the typed text anywhere. The historical behaviour.
+    #[default]
+    Contains,
+    /// The suggestion starts with the typed text.
+    StartsWith,
+    /// The suggestion ends with the typed text.
+    EndsWith,
+    /// The suggestion contains the typed text only as a whole word.
+    FixedString,
+    /// The typed text is a pattern, using the same grammar as
+    /// [`PatternValidator`](super::input_validator::PatternValidator).
+    RegExp,
+}
+
+/// What selecting a suggestion does to the drop-down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompletionClosePolicy {
+    /// The list closes as soon as a suggestion is accepted.
+    #[default]
+    Always,
+    /// The list stays open; the host decides when to dismiss it.
+    Never,
+    /// The list stays open after an inline completion and closes on an explicit commit.
+    OnCommit,
+}
+
+/// The published token naming a [`CompletionMatchMode`].
+fn match_mode_token(mode: CompletionMatchMode) -> &'static str {
+    match mode {
+        CompletionMatchMode::Contains => "contains",
+        CompletionMatchMode::StartsWith => "starts_with",
+        CompletionMatchMode::EndsWith => "ends_with",
+        CompletionMatchMode::FixedString => "fixed_string",
+        CompletionMatchMode::RegExp => "regexp",
+    }
+}
+
+/// The match mode a published token names, or `None` for an unknown token.
+fn match_mode_from_token(token: &str) -> Option<CompletionMatchMode> {
+    match token {
+        "contains" => Some(CompletionMatchMode::Contains),
+        "starts_with" => Some(CompletionMatchMode::StartsWith),
+        "ends_with" => Some(CompletionMatchMode::EndsWith),
+        "fixed_string" => Some(CompletionMatchMode::FixedString),
+        "regexp" => Some(CompletionMatchMode::RegExp),
+        _ => None,
+    }
+}
+
+/// The published token naming a [`CompletionClosePolicy`].
+fn close_policy_token(policy: CompletionClosePolicy) -> &'static str {
+    match policy {
+        CompletionClosePolicy::Always => "always",
+        CompletionClosePolicy::Never => "never",
+        CompletionClosePolicy::OnCommit => "on_commit",
+    }
+}
+
+/// The close policy a published token names, or `None` for an unknown token.
+fn close_policy_from_token(token: &str) -> Option<CompletionClosePolicy> {
+    match token {
+        "always" => Some(CompletionClosePolicy::Always),
+        "never" => Some(CompletionClosePolicy::Never),
+        "on_commit" => Some(CompletionClosePolicy::OnCommit),
+        _ => None,
+    }
+}
+
+/// A text field that filters a suggestion list as the user types.
 pub struct AutoCompleteEdit {
     base: BaseWidget,
     text: String,
@@ -40,6 +113,20 @@ pub struct AutoCompleteEdit {
     show_dropdown: bool,
     selected_suggestion: Option<usize>,
     max_visible: usize,
+    /// The insertion point, in bytes from the start of the value.
+    cursor: usize,
+    /// The other end of a selection, in bytes. `None` means no selection.
+    selection_anchor: Option<usize>,
+    /// How the typed text is matched against the suggestion list.
+    match_mode: CompletionMatchMode,
+    /// Whether matching distinguishes case.
+    case_sensitive: bool,
+    /// When true, the completion is shown inline after the caret instead of only in the list.
+    inline_completion: bool,
+    /// What accepting a suggestion does to the list.
+    close_policy: CompletionClosePolicy,
+    /// The suffix an inline completion would add, derived from the selection and the text.
+    inline_suffix: String,
     /// How the field's text is aligned within its own box.
     ///
     /// Horizontal only: the text is centred vertically in the field, so a `top`/`bottom` value
@@ -67,6 +154,13 @@ impl AutoCompleteEdit {
             show_dropdown: false,
             selected_suggestion: None,
             max_visible: 5,
+            cursor: 0,
+            selection_anchor: None,
+            match_mode: CompletionMatchMode::Contains,
+            case_sensitive: false,
+            inline_completion: false,
+            close_policy: CompletionClosePolicy::Always,
+            inline_suffix: String::new(),
             alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
             suggestion_selected: Signal1::new(),
@@ -117,9 +211,93 @@ impl AutoCompleteEdit {
                 "auto_complete_text",
             )));
         }
+        self.cursor = self.text.len();
+        self.selection_anchor = None;
         self.filter_suggestions();
         self.text_changed.emit(cloned);
         self.base.request_redraw();
+    }
+
+    /// The caret's byte offset in the value.
+    pub fn cursor_position(&self) -> usize {
+        self.cursor
+    }
+
+    /// Moves the caret, clearing the selection.
+    pub fn set_cursor_position(&mut self, position: usize) {
+        let position = crate::widget::text_utils::floor_char_boundary(
+            &self.text,
+            position.min(self.text.len()),
+        );
+        if self.cursor == position && self.selection_anchor.is_none() {
+            return;
+        }
+        self.cursor = position;
+        self.selection_anchor = None;
+        self.base.request_redraw();
+    }
+
+    /// How the typed text is matched against suggestions.
+    pub fn match_mode(&self) -> CompletionMatchMode {
+        self.match_mode
+    }
+
+    /// Sets the match mode and re-filters the list.
+    pub fn set_match_mode(&mut self, mode: CompletionMatchMode) {
+        if self.match_mode == mode {
+            return;
+        }
+        self.match_mode = mode;
+        self.filter_suggestions();
+        self.base.request_redraw();
+    }
+
+    /// Whether matching distinguishes case.
+    pub fn is_case_sensitive(&self) -> bool {
+        self.case_sensitive
+    }
+
+    /// Sets case sensitivity and re-filters the list.
+    pub fn set_case_sensitive(&mut self, case_sensitive: bool) {
+        if self.case_sensitive == case_sensitive {
+            return;
+        }
+        self.case_sensitive = case_sensitive;
+        self.filter_suggestions();
+        self.base.request_redraw();
+    }
+
+    /// Whether completions are offered inline at the caret.
+    pub fn is_inline_completion(&self) -> bool {
+        self.inline_completion
+    }
+
+    /// Sets whether completions are offered inline at the caret.
+    pub fn set_inline_completion(&mut self, inline: bool) {
+        if self.inline_completion == inline {
+            return;
+        }
+        self.inline_completion = inline;
+        self.filter_suggestions();
+        self.base.request_redraw();
+    }
+
+    /// What accepting a suggestion does to the list.
+    pub fn close_policy(&self) -> CompletionClosePolicy {
+        self.close_policy
+    }
+
+    /// Sets what accepting a suggestion does to the list.
+    pub fn set_close_policy(&mut self, policy: CompletionClosePolicy) {
+        if self.close_policy == policy {
+            return;
+        }
+        self.close_policy = policy;
+    }
+
+    /// The suffix an inline completion would add, empty when none is offered.
+    pub fn inline_suffix(&self) -> &str {
+        &self.inline_suffix
     }
 
     /// Appends committed text to the field and re-runs completion (D09-INPUT-01).
@@ -129,11 +307,23 @@ impl AutoCompleteEdit {
     /// `set_text` so the filtered suggestions, the undo push and the `text_changed` signal all
     /// behave exactly as they do for a typed character.
     fn append_committed_text(&mut self, text: &str) {
-        let mut next = self.text.clone();
-        next.extend(text.chars().filter(|c| !c.is_control()));
-        if next != self.text {
-            self.set_text(next);
+        let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
+        if filtered.is_empty() {
+            return;
         }
+        let (start, end) = self.selection_anchor.map_or((self.cursor, self.cursor), |anchor| {
+            if anchor <= self.cursor {
+                (anchor, self.cursor)
+            } else {
+                (self.cursor, anchor)
+            }
+        });
+        let mut next = self.text.clone();
+        next.replace_range(start..end, &filtered);
+        self.set_text(next);
+        self.cursor = start + filtered.len();
+        self.selection_anchor = None;
+        self.base.request_redraw();
     }
 
     /// Adds a single suggestion to the suggestion list.
@@ -259,21 +449,52 @@ impl AutoCompleteEdit {
 
     /// Filters the suggestion list based on the current text.
     fn filter_suggestions(&mut self) {
+        self.inline_suffix.clear();
         if self.text.is_empty() {
             self.filtered_suggestions.clear();
             self.show_dropdown = false;
             self.selected_suggestion = None;
             return;
         }
-        let lower = self.text.to_lowercase();
+        // Completion works on the word at the caret: a sentence's earlier words are context,
+        // not part of what is being completed.
+        let prefix = completion_prefix(&self.text);
+        let needle = if self.case_sensitive { prefix.to_string() } else { prefix.to_lowercase() };
         self.filtered_suggestions = self
             .suggestions
             .iter()
-            // Shared ASCII fast path: the previous `s.to_lowercase().contains(&lower)`
-            // allocated one `String` per suggestion per keystroke.
-            .filter(|s| crate::widget::text_utils::contains_ignore_ascii_case(s, &lower))
+            .filter(|suggestion| {
+                let candidate = if self.case_sensitive {
+                    suggestion.as_str().to_string()
+                } else {
+                    suggestion.to_lowercase()
+                };
+                match self.match_mode {
+                    CompletionMatchMode::Contains => candidate.contains(&needle),
+                    CompletionMatchMode::StartsWith => candidate.starts_with(&needle),
+                    CompletionMatchMode::EndsWith => candidate.ends_with(&needle),
+                    CompletionMatchMode::FixedString => {
+                        candidate.split(|ch: char| !ch.is_alphanumeric()).any(|word| word == needle)
+                    }
+                    // The suggestion is the subject and the typed prefix is the pattern.
+                    // Case sensitivity has already been applied to both sides above, so the
+                    // pattern engine sees the same text the other modes compare.
+                    CompletionMatchMode::RegExp => {
+                        crate::widget::input_widgets::input_validator::pattern_matches(
+                            &needle, &candidate,
+                        )
+                    }
+                }
+            })
             .cloned()
             .collect();
+        if let (true, Some(first)) = (self.inline_completion, self.filtered_suggestions.first()) {
+            // The inline hint is only the part the user has not typed, and only when the
+            // suggestion actually extends the prefix at the caret.
+            if let Some(rest) = first.strip_prefix(prefix) {
+                self.inline_suffix.push_str(rest);
+            }
+        }
         if self.filtered_suggestions.is_empty() {
             self.show_dropdown = false;
             self.selected_suggestion = None;
@@ -283,6 +504,66 @@ impl AutoCompleteEdit {
         }
     }
 
+    /// Accepts the highlighted suggestion.
+    pub fn accept_highlighted(&mut self) -> bool {
+        if self.selected_suggestion.is_none() {
+            return false;
+        }
+        self.select_highlighted();
+        true
+    }
+
+    /// The selected byte range, or `None` when nothing is selected.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        let (start, end) =
+            if anchor <= self.cursor { (anchor, self.cursor) } else { (self.cursor, anchor) };
+        (start != end).then_some((start, end))
+    }
+
+    /// The byte offset a horizontal pixel points at.
+    fn byte_index_at_x(&self, x: i32) -> usize {
+        if self.text.is_empty() {
+            return 0;
+        }
+        let rect = self.geometry();
+        let font = effective_font(self.style());
+        let mut measurement =
+            crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
+        let context = RenderContext::new(&mut measurement);
+        let advance = context.measure_text(&self.text, font).width as i32;
+        let origin = rect.x + 6;
+        let dx = (x - origin).clamp(0, advance.max(1));
+        let chars = self.text.chars().count().max(1) as f32;
+        let boundary =
+            ((dx as f32 * chars / advance.max(1) as f32).round() as usize).min(chars as usize);
+        self.text.char_indices().nth(boundary).map(|(index, _)| index).unwrap_or(self.text.len())
+    }
+
+    /// Moves the caret by `delta` characters, extending the selection when asked.
+    fn move_caret(&mut self, delta: i32, extend: bool) {
+        let mut target = self.cursor;
+        if delta < 0 {
+            for _ in 0..delta.unsigned_abs() {
+                target = crate::widget::text_utils::previous_char_boundary(&self.text, target);
+            }
+        } else {
+            for _ in 0..delta.unsigned_abs() {
+                target = crate::widget::text_utils::next_char_boundary(&self.text, target);
+            }
+        }
+        target = crate::widget::text_utils::floor_char_boundary(&self.text, target);
+        if extend {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor);
+            }
+        } else {
+            self.selection_anchor = None;
+        }
+        self.cursor = target;
+        self.base.request_redraw();
+    }
+
     /// Selects the highlighted suggestion and commits it as the current text.
     fn select_highlighted(&mut self) {
         if let Some(idx) = self.selected_suggestion {
@@ -290,7 +571,9 @@ impl AutoCompleteEdit {
                 let selected = suggestion.clone();
                 self.set_text(selected.clone());
                 self.suggestion_selected.emit(selected);
-                self.hide_dropdown();
+                if self.close_policy != CompletionClosePolicy::Never {
+                    self.hide_dropdown();
+                }
                 self.base.request_redraw();
             }
         }
@@ -460,6 +743,20 @@ impl WidgetProperties for AutoCompleteEdit {
             // commands exist regardless, so a driver that cannot ask ends up issuing a no-op.
             "can_undo" => Ok(CapabilityValue::Bool(self.can_undo())),
             "can_redo" => Ok(CapabilityValue::Bool(self.can_redo())),
+            "match_mode" => {
+                Ok(CapabilityValue::String(match_mode_token(self.match_mode()).to_string()))
+            }
+            "case_sensitive" => Ok(CapabilityValue::Bool(self.is_case_sensitive())),
+            "inline_completion" => Ok(CapabilityValue::Bool(self.is_inline_completion())),
+            "close_policy" => {
+                Ok(CapabilityValue::String(close_policy_token(self.close_policy()).to_string()))
+            }
+            // The word being completed: the text after the last whitespace. Derived from the
+            // value, so it is published read-only right beside the mode that decides how it is
+            // matched.
+            "completion_prefix" => {
+                Ok(CapabilityValue::String(completion_prefix(&self.text).to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -490,13 +787,36 @@ impl WidgetProperties for AutoCompleteEdit {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
             }
+            "match_mode" => {
+                let token = expect_string(value)?;
+                let mode =
+                    match_mode_from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_match_mode(mode);
+                Ok(())
+            }
+            "case_sensitive" => {
+                self.set_case_sensitive(expect_bool(value)?);
+                Ok(())
+            }
+            "inline_completion" => {
+                self.set_inline_completion(expect_bool(value)?);
+                Ok(())
+            }
+            "close_policy" => {
+                let token = expect_string(value)?;
+                let policy =
+                    close_policy_from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_close_policy(policy);
+                Ok(())
+            }
             // Derived or read-only: the two counts describe the list, and the two booleans describe
             // what the control has already done.
             "suggestion_count"
             | "selected_suggestion"
             | "dropdown_visible"
             | "can_undo"
-            | "can_redo" => Err(CapabilityAccessError::ReadOnlyProperty),
+            | "can_redo"
+            | "completion_prefix" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -512,6 +832,11 @@ impl WidgetProperties for AutoCompleteEdit {
             "alignment",
             "can_undo",
             "can_redo",
+            "match_mode",
+            "case_sensitive",
+            "inline_completion",
+            "close_policy",
+            "completion_prefix",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -606,6 +931,32 @@ impl Draw for AutoCompleteEdit {
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
 
+        // Inline completion: the completed remainder follows the caret, dimmed, so the
+        // suggestion is readable at the insertion point rather than only in the list.
+        if !self.text.is_empty() {
+            let font_width = context.measure_text(&self.text, font).width as i32;
+            if !self.inline_suffix.is_empty() {
+                context.draw_text(
+                    Point::new(text_x + font_width, text_y),
+                    &self.inline_suffix,
+                    font,
+                    input_text_color.blend(&bg_color, 0.45),
+                    HorizontalAlignment::Left,
+                );
+            }
+            // The caret at its own byte offset, for the same reason the other fields draw one:
+            // a focused text entry with no visible insertion point does not say where typing lands.
+            if self.base.draws_focus_ring() {
+                let caret = crate::widget::text_utils::floor_char_boundary(&self.text, self.cursor);
+                let caret_x = text_x + context.measure_text(&self.text[..caret], font).width as i32;
+                context.draw_line(
+                    Point::new(caret_x, text_y),
+                    Point::new(caret_x, text_y + input_line.height as i32),
+                    text_color,
+                );
+            }
+        }
+
         // Draw dropdown if visible
         if !self.show_dropdown || self.filtered_suggestions.is_empty() {
             return;
@@ -670,6 +1021,9 @@ impl EventHandler for AutoCompleteEdit {
                 let rect = self.geometry();
                 // Check if click is inside the text field area
                 if rect.contains_point(*pos) {
+                    // Place the caret where the press landed, then offer the list.
+                    self.cursor = self.byte_index_at_x(pos.x);
+                    self.selection_anchor = None;
                     self.show_dropdown();
                 }
                 // Check if click is on a dropdown item
@@ -699,6 +1053,10 @@ impl EventHandler for AutoCompleteEdit {
                     if self.show_dropdown {
                         self.select_highlighted();
                     }
+                } else if *key == 9 {
+                    // Tab accepts an inline completion; with no inline hint it accepts the
+                    // highlighted row, which is the keyboard path a completer needs.
+                    self.accept_highlighted();
                 } else if *key == key_codes::ESCAPE {
                     // Escape
                     if self.show_dropdown {
@@ -710,6 +1068,31 @@ impl EventHandler for AutoCompleteEdit {
                 } else if *key == key_codes::DOWN && *modifiers == 0 && self.show_dropdown {
                     // Down arrow
                     self.select_next();
+                } else if *key == 37 {
+                    let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                        .contains(crate::shortcut::Modifiers::SHIFT);
+                    self.move_caret(-1, shift);
+                } else if *key == 39 {
+                    let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                        .contains(crate::shortcut::Modifiers::SHIFT);
+                    self.move_caret(1, shift);
+                } else if *key == 36 {
+                    self.set_cursor_position(0);
+                } else if *key == 35 {
+                    self.set_cursor_position(self.text.len());
+                } else if *key == 127 {
+                    let (start, end) = self.selection_range().unwrap_or_else(|| {
+                        (
+                            self.cursor,
+                            crate::widget::text_utils::next_char_boundary(&self.text, self.cursor),
+                        )
+                    });
+                    if start != end {
+                        let mut next = self.text.clone();
+                        next.replace_range(start..end, "");
+                        self.set_text(next);
+                        self.cursor = start;
+                    }
                 } else if primary_shortcut_pressed(*key, *modifiers, Key::Z) {
                     let _ = self.undo();
                 } else if primary_shortcut_pressed(*key, *modifiers, Key::Y) {
@@ -721,11 +1104,21 @@ impl EventHandler for AutoCompleteEdit {
                         self.append_committed_text(&c.to_string());
                     }
                 } else if *key == key_codes::BACKSPACE {
-                    // Backspace
-                    if !self.text.is_empty() {
-                        let mut new_text = self.text.clone();
-                        new_text.pop();
-                        self.set_text(new_text);
+                    // Backspace removes the selection, or the character before the caret.
+                    let (start, end) = self.selection_range().unwrap_or_else(|| {
+                        (
+                            crate::widget::text_utils::previous_char_boundary(
+                                &self.text,
+                                self.cursor,
+                            ),
+                            self.cursor,
+                        )
+                    });
+                    if start != end {
+                        let mut next = self.text.clone();
+                        next.replace_range(start..end, "");
+                        self.set_text(next);
+                        self.cursor = start;
                     }
                 }
             }
@@ -742,6 +1135,11 @@ impl EventHandler for AutoCompleteEdit {
             }
         }
     }
+}
+
+/// The word completion matches against: the text after the last whitespace.
+fn completion_prefix(text: &str) -> &str {
+    text.rsplit(|ch: char| ch.is_whitespace()).next().unwrap_or(text)
 }
 
 #[cfg(test)]
@@ -976,5 +1374,106 @@ mod tests {
         edit.set_enabled(false);
         edit.handle_event(&Event::TextInput { text: "X".to_string() });
         assert_eq!(edit.text(), "");
+    }
+
+    /// Match modes and case sensitivity decide which suggestions are offered.
+    #[test]
+    fn match_modes_choose_the_filter() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 28));
+        edit.set_suggestions(vec!["alpha".to_string(), "beta".to_string(), "alphabet".to_string()]);
+        edit.set_match_mode(CompletionMatchMode::StartsWith);
+        edit.set_text("alph");
+        assert_eq!(edit.filtered_suggestions.len(), 2);
+
+        edit.set_match_mode(CompletionMatchMode::EndsWith);
+        assert_eq!(edit.filtered_suggestions.len(), 0);
+        edit.set_case_sensitive(true);
+        edit.set_text("ALPH");
+        assert!(edit.filtered_suggestions.is_empty(), "case sensitivity is enforced");
+    }
+
+    /// The pattern mode treats the typed text as a pattern over each suggestion.
+    #[test]
+    fn the_pattern_mode_matches_patterns() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 28));
+        edit.set_suggestions(vec!["alpha".to_string(), "alpine".to_string(), "beta".to_string()]);
+        edit.set_match_mode(CompletionMatchMode::RegExp);
+        assert_eq!(edit.get("match_mode").unwrap(), CapabilityValue::String("regexp".to_string()));
+
+        edit.set_text("e$");
+        assert_eq!(edit.filtered_suggestions, vec!["alpine".to_string()]);
+        edit.set_text("^b[a-z]ta$");
+        assert_eq!(edit.filtered_suggestions, vec!["beta".to_string()]);
+        edit.set_text("[invalid");
+        assert!(
+            edit.filtered_suggestions.is_empty(),
+            "a malformed pattern matches nothing rather than everything"
+        );
+    }
+
+    /// The caret edits mid-value, and an inline completion exposes its suffix.
+    #[test]
+    fn the_caret_and_inline_completion_work() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 28));
+        edit.set_suggestions(vec!["alpha".to_string()]);
+        edit.set_text("alp");
+        assert_eq!(edit.inline_suffix(), "");
+        edit.set_inline_completion(true);
+        assert_eq!(edit.inline_suffix(), "ha");
+
+        edit.set_text("helo");
+        edit.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
+        edit.handle_event(&Event::KeyPress { key: 108, modifiers: 0 });
+        assert_eq!(edit.text(), "hello");
+        assert_eq!(edit.cursor_position(), 4);
+    }
+
+    /// Accepting a suggestion honours the close policy.
+    #[test]
+    fn the_close_policy_controls_the_popup() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 28));
+        edit.set_suggestions(vec!["alpha".to_string()]);
+        edit.set_text("al");
+        edit.set_close_policy(CompletionClosePolicy::Never);
+        assert!(edit.accept_highlighted());
+        assert!(edit.is_showing_dropdown(), "Never keeps the list open");
+        assert_eq!(edit.text(), "alpha");
+    }
+
+    /// The matching and popup knobs are published by token and round-trip.
+    #[test]
+    fn the_completion_contract_is_published() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 28));
+        edit.set_text("alpha al");
+        assert_eq!(
+            edit.get("match_mode").unwrap(),
+            CapabilityValue::String("contains".to_string())
+        );
+        assert_eq!(
+            edit.get("completion_prefix").unwrap(),
+            CapabilityValue::String("al".to_string()),
+            "the completed word is the text after the last whitespace"
+        );
+
+        edit.set("match_mode", CapabilityValue::String("starts_with".to_string())).unwrap();
+        assert_eq!(edit.match_mode(), CompletionMatchMode::StartsWith);
+        assert_eq!(
+            edit.set("match_mode", CapabilityValue::String("fuzzy".to_string())),
+            Err(CapabilityAccessError::OutOfRange),
+            "an unsupported mode is refused, not approximated"
+        );
+
+        edit.set("case_sensitive", CapabilityValue::Bool(true)).unwrap();
+        assert!(edit.is_case_sensitive());
+        edit.set("inline_completion", CapabilityValue::Bool(true)).unwrap();
+        assert!(edit.is_inline_completion());
+        edit.set("close_policy", CapabilityValue::String("on_commit".to_string())).unwrap();
+        assert_eq!(edit.close_policy(), CompletionClosePolicy::OnCommit);
+
+        assert_eq!(
+            edit.set("completion_prefix", CapabilityValue::String("x".to_string())),
+            Err(CapabilityAccessError::ReadOnlyProperty),
+            "the prefix follows the value"
+        );
     }
 }

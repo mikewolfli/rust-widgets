@@ -136,12 +136,22 @@ impl CodeEditor {
         // wrapped row was scrolled to as though it were on the first, so it could be
         // off screen while the viewport claimed to show it.
         let visual = self.caret_visual_row();
-        if visual < self.scroll_visual_row {
-            self.scroll_visual_row = visual;
-            self.scroll_line = self.visual_row_to_line(self.scroll_visual_row);
+        let target = if visual < self.scroll_visual_row {
+            visual
         } else if visual >= self.scroll_visual_row + rows {
-            self.scroll_visual_row = visual.saturating_sub(rows.saturating_sub(1));
-            self.scroll_line = self.visual_row_to_line(self.scroll_visual_row);
+            visual + 1 - rows.max(1)
+        } else {
+            self.scroll_visual_row
+        };
+        if target != self.scroll_visual_row {
+            if self.config.smooth_scroll {
+                // Easing is opt-in: `tick` walks the viewport toward the target.
+                self.smooth_scroll_target = Some(target);
+                self.base.request_redraw();
+            } else {
+                self.scroll_visual_row = target;
+                self.scroll_line = self.visual_row_to_line(target);
+            }
         }
         // With wrapping on, every character is already visible on some row, so there
         // is nothing to scroll horizontally — and scrolling would shift every row by
@@ -149,10 +159,15 @@ impl CodeEditor {
         if self.config.word_wrap {
             self.scroll_column = 0;
         } else {
-            let columns = self.text_columns();
+            let columns = self.text_columns().max(1);
             if self.cursor.head.column < self.scroll_column {
                 self.scroll_column = self.cursor.head.column;
             } else if self.cursor.head.column >= self.scroll_column + columns {
+                // `head + 1 - columns` is the first offset that keeps the caret's
+                // own cell inside the viewport. The previous `head - columns + 1`
+                // spelling of the same expression was correct only for the first
+                // column; from the second on it left one column of dead space to
+                // the right of the caret.
                 self.scroll_column = self.cursor.head.column + 1 - columns;
             }
         }
@@ -191,6 +206,16 @@ impl CodeEditor {
         self.refresh_derived_state_after(None);
     }
 
+    /// Marks every derived layout cache stale.
+    ///
+    /// Called wherever the document shape or a host-owned overlay changes: fold
+    /// set, wrapping, text, markers, bookmarks. The counter is what lets the
+    /// diagnostics row table be reused across frames without trusting `revision`
+    /// alone (a fold or a marker change does not move the revision).
+    pub(crate) fn bump_layout_generation(&mut self) {
+        self.layout_generation = self.layout_generation.wrapping_add(1);
+    }
+
     /// [`Self::refresh_derived_state`] with a hint about what the edit changed.
     ///
     /// `dirty` describes the edited line range so the match cache can rescan only
@@ -198,6 +223,7 @@ impl CodeEditor {
     /// of the document in a way they cannot describe pass `None`, which is always
     /// correct and merely slower.
     pub(super) fn refresh_derived_state_after(&mut self, dirty: Option<(usize, usize, usize)>) {
+        self.bump_layout_generation();
         {
             let model = self.model.borrow();
             self.folded_lines.clear();

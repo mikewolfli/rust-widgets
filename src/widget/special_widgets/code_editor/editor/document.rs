@@ -29,6 +29,19 @@ impl CodeEditor {
         self.revision
     }
 
+    /// Returns the line terminator the document was loaded with.
+    pub fn line_ending(&self) -> LineEnding {
+        self.model.borrow().line_ending()
+    }
+
+    /// Records the terminator the document should be saved with.
+    ///
+    /// The buffer itself always uses `\n`; this is metadata a host reads when it
+    /// writes the file back.
+    pub fn set_line_ending(&mut self, ending: LineEnding) {
+        self.model.borrow_mut().set_line_ending(ending);
+    }
+
     /// Replaces the half-open character range `[start, end)` with `text`, but only if `expected` is
     /// still the current [`revision`](Self::revision) (BLUE26 B26.08).
     ///
@@ -91,11 +104,16 @@ impl CodeEditor {
     }
 
     /// Replaces the whole document, pushing one undo checkpoint.
+    ///
+    /// A `\r\n` document is stored with `\n` line endings; the original
+    /// terminator is reported by [`CodeEditor::line_ending`].
     pub fn set_text(&mut self, text: impl Into<String>) {
-        let next = text.into();
-        if self.text() == next {
+        let raw = text.into();
+        let next = normalize_line_endings(raw.clone());
+        if self.text() == next && !raw.contains('\r') {
             return;
         }
+        self.active_typing = None;
         let before = self.text();
         if !self.restoring_history {
             let target = self.model.borrow().text.clone();
@@ -107,13 +125,16 @@ impl CodeEditor {
                 "code_editor_text",
             )));
         }
-        self.model.borrow_mut().set_text(next.clone());
+        self.model.borrow_mut().set_text(raw);
         // Wholesale replacement invalidates every cached state; there is no
         // meaningful "from line N" because no line survived unchanged. Locked
         // spans are positions in the *old* document, so they are dropped rather
         // than silently re-anchored to unrelated text; a host that replaces the
         // document also rebuilds its spans.
         self.read_only_spans.clear();
+        // Bookmarks are document coordinates too; a wholesale replacement makes
+        // them point at unrelated text.
+        self.bookmarks.clear();
         self.invalidate_line_states();
         self.minimap_line_count = 0;
         self.scale = DocumentScale::for_lines(self.line_count());
@@ -199,8 +220,29 @@ impl CodeEditor {
     }
 
     /// Inserts text while honouring the configured indent unit for tabs.
+    ///
+    /// Every leading tab on every inserted line is expanded to one indent unit,
+    /// and any remaining tab is expanded to the tab width, which is what the
+    /// method promises: a caller handing over indented source gets the configured
+    /// indentation rather than literal `\t` bytes when `insert_spaces` is on.
     pub fn insert_with_indent(&mut self, text: &str) {
-        self.insert(text);
+        if !self.is_editable() || text.is_empty() {
+            return;
+        }
+        let unit = self.indent_unit();
+        let mut payload = String::with_capacity(text.len() + unit.len());
+        for (index, line) in text.split('\n').enumerate() {
+            if index > 0 {
+                payload.push('\n');
+            }
+            let mut rest = line;
+            while let Some(stripped) = rest.strip_prefix('\t') {
+                payload.push_str(&unit);
+                rest = stripped;
+            }
+            payload.push_str(rest);
+        }
+        self.insert(&payload);
     }
 
     pub(super) fn expand_tabs(&self, text: &str) -> String {
@@ -450,6 +492,28 @@ impl CodeEditor {
         before_snapshot: Option<String>,
     ) {
         let target = self.model.borrow().text.clone();
+        // A pure, single-line insertion can extend the run already on the stack.
+        // `removed` is `Some("")` for an insertion, and `start` must be exactly
+        // where the run ended; anything else (a deletion, a newline, a moved
+        // caret) closes the run and starts a new checkpoint.
+        if let (Some((start, 0, inserted)), Some(removed_text)) = (&range, &removed) {
+            if removed_text.is_empty() && !inserted.contains('\n') {
+                if let Some(run) = &self.active_typing {
+                    let mut accum = run.borrow_mut();
+                    if accum.start + accum.inserted.len() == *start {
+                        accum.inserted.push_str(inserted);
+                        self.last_checkpoint_bytes = 0;
+                        return;
+                    }
+                }
+                let command = TypingCommand::new(target, *start, inserted.clone());
+                self.active_typing = Some(command.accum());
+                self.undo_stack.push(Box::new(command));
+                self.last_checkpoint_bytes = inserted.len();
+                return;
+            }
+        }
+        self.active_typing = None;
         self.last_checkpoint_bytes = match (range, removed) {
             (Some((start, _removed_len, inserted)), Some(removed)) => {
                 let bytes = removed.len() + inserted.len();
@@ -498,7 +562,7 @@ impl CodeEditor {
 
     /// Applies an edit that replaces `[start, end)` without moving the caret
     /// through the payload (used by backward deletions and range operations).
-    pub(super) fn splice_range(
+    pub(crate) fn splice_range(
         &mut self,
         start: TextPosition,
         end: TextPosition,

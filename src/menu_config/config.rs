@@ -323,6 +323,16 @@ impl MenuConfig {
         self.enabled
     }
 
+    /// Records that the host moved onto or off battery power.
+    ///
+    /// This is the automatic trigger point for
+    /// [`crate::menu_config::MenuConfigManager::adapt_for_battery_power`]: the host calls
+    /// it when the platform reports a power-source change, and the manager then applies
+    /// the battery reduction if auto-adjust is on. Nothing else has to poll.
+    pub fn set_on_battery(&mut self, on_battery: bool) {
+        self.hardware_caps.on_battery = on_battery;
+    }
+
     /// Turns the adaptive configuration on or off, recording it as a user override.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;

@@ -18,6 +18,12 @@ use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Version tag of the blob produced by [`CollapsiblePane::save_state`].
+///
+/// A future change to the layout can bump this, and an older blob is then refused rather than
+/// misread as the new shape.
+const STATE_VERSION: u8 = 1;
+
 /// A container widget that can be collapsed/expanded by clicking its header bar.
 ///
 /// The header displays a title and an arrow indicator (▶ when collapsed, ▼ when expanded).
@@ -177,6 +183,39 @@ impl CollapsiblePane {
         }
         self.header_height = height;
         self.base.request_redraw();
+    }
+
+    /// Serialises the persistent state: header height and collapsed flag.
+    ///
+    /// A host that tears down and rebuilds its UI can hand this blob back to
+    /// [`Self::restore_state`] so the pane comes back the way the user left it. Only the state a
+    /// user can change is stored; the title and content child belong to the caller's own model.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut state = Vec::with_capacity(6);
+        state.push(STATE_VERSION);
+        state.extend_from_slice(&self.header_height.to_le_bytes());
+        state.push(u8::from(self.collapsed));
+        state
+    }
+
+    /// Restores a state produced by [`Self::save_state`].
+    ///
+    /// Returns `false` for a malformed or unsupported blob, leaving the pane untouched. A restored
+    /// pane is placed at its destination immediately rather than animating there: the blob describes
+    /// the state the caller expects on the first frame, not a transition to perform.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if state.len() != 6 || state[0] != STATE_VERSION {
+            return false;
+        }
+        let header_height = u32::from_le_bytes([state[1], state[2], state[3], state[4]]);
+        let collapsed = state[5] != 0;
+        self.header_height = header_height;
+        self.collapsed = collapsed;
+        self.open = PropertyDriver::at(self.open_target(), MotionSlot::Normal);
+        self.content_visible = !collapsed;
+        self.sync_content_state();
+        self.base.request_redraw();
+        true
     }
 
     /// Sets the shared widget registry for child forwarding.
@@ -1031,5 +1070,28 @@ mod tests {
         );
         while cp.tick(60) {}
         assert_eq!(cp.content_rect().height, open_height, "and return to the full band");
+    }
+
+    /// A saved state round-trips and lands at its destination without animating.
+    #[test]
+    fn the_collapsed_state_round_trips_through_a_saved_blob() {
+        let mut pane = make_pane();
+        pane.set_header_height(30);
+        pane.set_collapsed(true);
+
+        let state = pane.save_state();
+        let mut restored = make_pane();
+        assert!(restored.restore_state(&state));
+        assert!(restored.is_collapsed());
+        assert_eq!(restored.header_height(), 30);
+        assert_eq!(restored.open_progress(), 0.0, "restored at the endpoint, not mid-animation");
+        assert!(!restored.is_animating(), "a restored pane owes no transition frames");
+
+        assert!(!restored.restore_state(&[]), "an empty blob is refused");
+        assert!(!restored.restore_state(&state[..5]), "a truncated blob is refused");
+        let mut future = state.clone();
+        future[0] = 99;
+        assert!(!restored.restore_state(&future), "an unknown version is refused");
+        assert!(restored.is_collapsed(), "a refused blob leaves the pane untouched");
     }
 }

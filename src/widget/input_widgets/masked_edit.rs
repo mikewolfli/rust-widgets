@@ -75,13 +75,24 @@ fn mask_start_shift(
     }
 }
 
+/// How case converters (`>`, `<`, `!`) transform subsequent letters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaseMode {
+    /// Leave the typed letter as it is.
+    None,
+    /// `>` — fold the letter to upper case.
+    Upper,
+    /// `<` — fold the letter to lower case.
+    Lower,
+}
+
 /// A parsed segment in the mask — either a literal character or an input placeholder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MaskSegment {
     /// A literal character that appears as-is (e.g., `(`, `)`, `-`, space).
     Literal { ch: char },
-    /// A user-input position with a mask character from `[09AaXx]`.
-    Input { kind: MaskCharKind },
+    /// A user-input position with a mask character and its case converter.
+    Input { kind: MaskCharKind, case: CaseMode },
 }
 
 /// The kind of input allowed at a mask position.
@@ -99,6 +110,20 @@ enum MaskCharKind {
     RequiredAlphaNum,
     /// `x` — optional alphanumeric.
     OptionalAlphaNum,
+    /// `D` — required digit (locale digits allowed).
+    RequiredNumeric,
+    /// `d` — optional digit (locale digits allowed).
+    OptionalNumeric,
+    /// `#` — required digit or sign.
+    RequiredSignDigit,
+    /// `H` — required hexadecimal digit.
+    RequiredHex,
+    /// `h` — optional hexadecimal digit.
+    OptionalHex,
+    /// `B` — required binary digit.
+    RequiredBinary,
+    /// `b` — optional binary digit.
+    OptionalBinary,
 }
 
 /// MaskedEdit widget — formatted text input with a mask.
@@ -113,6 +138,8 @@ pub struct MaskedEdit {
     mask: String,
     /// Parsed mask segments derived from the mask string.
     segments: Vec<MaskSegment>,
+    /// The glyph painted in an empty input cell; `_` unless the mask names another with `;c`.
+    placeholder: char,
     /// Raw user input text (without literal characters).
     raw_text: String,
     /// Display text (with literals inserted per the mask).
@@ -163,6 +190,7 @@ impl MaskedEdit {
             base: BaseWidget::new(WidgetKind::MaskedEdit, geometry, "MaskedEdit"),
             mask: String::new(),
             segments: Vec::new(),
+            placeholder: '_',
             raw_text: String::new(),
             display_text: String::new(),
             cursor_pos: 0,
@@ -182,7 +210,9 @@ impl MaskedEdit {
     /// If the mask is empty, no formatting is applied and all input is accepted.
     pub fn set_mask(&mut self, mask: &str) {
         self.mask = mask.to_string();
-        self.segments = parse_mask(mask);
+        let (segments, placeholder) = parse_mask(mask);
+        self.segments = segments;
+        self.placeholder = placeholder;
         self.cursor_pos = 0;
         self.update_display_text();
         self.base.request_redraw();
@@ -240,8 +270,9 @@ impl MaskedEdit {
         } else {
             let mut chars = text.chars();
             for seg in &self.segments {
-                if let MaskSegment::Input { kind } = seg {
+                if let MaskSegment::Input { kind, case } = seg {
                     for ch in chars.by_ref() {
+                        let ch = apply_case(*case, ch);
                         if mask_char_matches(*kind, ch) {
                             self.raw_text.push(ch);
                             break;
@@ -328,9 +359,13 @@ impl MaskedEdit {
             .filter(|s| {
                 matches!(
                     s,
-                    MaskSegment::Input { kind: MaskCharKind::RequiredDigit }
-                        | MaskSegment::Input { kind: MaskCharKind::RequiredLetter }
-                        | MaskSegment::Input { kind: MaskCharKind::RequiredAlphaNum }
+                    MaskSegment::Input { kind: MaskCharKind::RequiredDigit, .. }
+                        | MaskSegment::Input { kind: MaskCharKind::RequiredLetter, .. }
+                        | MaskSegment::Input { kind: MaskCharKind::RequiredAlphaNum, .. }
+                        | MaskSegment::Input { kind: MaskCharKind::RequiredNumeric, .. }
+                        | MaskSegment::Input { kind: MaskCharKind::RequiredSignDigit, .. }
+                        | MaskSegment::Input { kind: MaskCharKind::RequiredHex, .. }
+                        | MaskSegment::Input { kind: MaskCharKind::RequiredBinary, .. }
                 )
             })
             .count();
@@ -505,7 +540,8 @@ impl MaskedEdit {
         }
 
         // Find the input segment at this raw index
-        if let Some((seg_idx, kind)) = self.find_input_at_raw_index(raw_idx) {
+        if let Some((seg_idx, kind, case)) = self.find_input_at_raw_index(raw_idx) {
+            let ch = apply_case(case, ch);
             if mask_char_matches(kind, ch) {
                 // `raw_idx` counts input positions (characters); `String::insert` takes a byte
                 // offset. Converting here — rather than inserting at the character index — keeps
@@ -532,6 +568,39 @@ impl MaskedEdit {
         for ch in text.chars().filter(|c| !c.is_control()) {
             self.insert_char(ch);
         }
+    }
+
+    /// Pastes `text` through the mask, returning how many characters were accepted.
+    ///
+    /// Each character is validated against the next input position exactly as typing would, so a
+    /// pasted code fills successive cells and characters the mask forbids are dropped rather than
+    /// stored.
+    pub fn paste(&mut self, text: &str) -> usize {
+        // The caret can sit past the last input after a programmatic `set_text` (it is placed on
+        // the mask's final segment). Pasting there means "append to the value", so the insertion
+        // point is moved to the first free cell before the characters are fed through the mask.
+        if self.display_to_raw_index(self.cursor_pos) >= self.input_count() {
+            self.cursor_pos = self.segment_before_raw_index(self.raw_text.chars().count());
+        }
+        let before = self.raw_text.chars().count();
+        self.insert_committed_text(text);
+        self.raw_text.chars().count().saturating_sub(before)
+    }
+
+    /// The display range of the input run around `position`, for a double-click selection.
+    ///
+    /// The run stops at the mask's own literals, so a double click in a phone mask selects one
+    /// group of digits rather than the whole formatted value.
+    fn word_display_range(&self, position: usize) -> (usize, usize) {
+        let mut start = position.min(self.segments.len());
+        let mut end = start;
+        while start > 0 && matches!(self.segments.get(start - 1), Some(MaskSegment::Input { .. })) {
+            start -= 1;
+        }
+        while matches!(self.segments.get(end), Some(MaskSegment::Input { .. })) {
+            end += 1;
+        }
+        (start, end)
     }
 
     /// Deletes the character before the cursor (backspace).
@@ -577,7 +646,7 @@ impl MaskedEdit {
 
     /// Rebuilds the display text from raw_text and the mask segments.
     fn update_display_text(&mut self) {
-        self.display_text = build_display_text(&self.segments, &self.raw_text);
+        self.display_text = build_display_text(&self.segments, &self.raw_text, self.placeholder);
     }
 
     /// Removes the selected raw characters, returns whether anything was removed, and leaves the
@@ -623,12 +692,12 @@ impl MaskedEdit {
     }
 
     /// Finds the segment index and mask char kind for the nth input position.
-    fn find_input_at_raw_index(&self, raw_idx: usize) -> Option<(usize, MaskCharKind)> {
+    fn find_input_at_raw_index(&self, raw_idx: usize) -> Option<(usize, MaskCharKind, CaseMode)> {
         let mut input_count = 0;
         for (seg_idx, seg) in self.segments.iter().enumerate() {
-            if let MaskSegment::Input { kind } = seg {
+            if let MaskSegment::Input { kind, case } = seg {
                 if input_count == raw_idx {
-                    return Some((seg_idx, *kind));
+                    return Some((seg_idx, *kind, *case));
                 }
                 input_count += 1;
             }
@@ -1057,16 +1126,12 @@ impl Draw for MaskedEdit {
                         );
                         display_x += char_width as i32;
                     }
-                    MaskSegment::Input { kind } => {
+                    MaskSegment::Input { .. } => {
                         // `raw_idx` counts input positions (**characters**), so it must index by
                         // character: `as_bytes()[raw_idx]` read the nth *byte* of the raw value
                         // and `as char` then produced the byte's Latin-1 glyph, so any multi-byte
                         // raw character painted as mojibake.
-                        let ch = self
-                            .raw_text
-                            .chars()
-                            .nth(raw_idx)
-                            .unwrap_or_else(|| placeholder_char(*kind));
+                        let ch = self.raw_text.chars().nth(raw_idx).unwrap_or(self.placeholder);
                         let has_input = raw_idx < self.raw_text.chars().count();
 
                         let char_color = if !is_enabled {
@@ -1174,6 +1239,19 @@ impl EventHandler for MaskedEdit {
             // Platform-committed text (D09-INPUT-01), routed through the mask entry point the
             // `KeyPress` printable arm uses. Without this branch a committed string never reached
             // the raw value. An unfocused field ignores it, matching the key path below.
+            // A double click selects the input run under the pointer; the mask's literals are the
+            // run boundaries, so a formatted value selects one group at a time.
+            Event::MouseDoubleClick { pos, button }
+                if *button == 1 && self.field_rect().contains_point(*pos) =>
+            {
+                self.focused = true;
+                let position = self.display_position_at_x(pos.x);
+                let (start, end) = self.word_display_range(position);
+                self.selection_anchor = Some(start);
+                self.cursor_pos = end;
+                self.dragging_selection = false;
+                self.base.request_redraw();
+            }
             Event::TextInput { text } | Event::ImeCommit { text } => {
                 if self.focused {
                     self.insert_committed_text(text);
@@ -1192,6 +1270,17 @@ impl EventHandler for MaskedEdit {
                 if primary && *key == 65 {
                     // Primary+A: select all. Handled on the control that owns the text.
                     self.select_all();
+                    return;
+                }
+                if primary && *key == 86 {
+                    // Primary+V: paste through the mask.
+                    #[cfg(not(alloc_frugal))]
+                    {
+                        let pasted = crate::get_clipboard_text();
+                        if !pasted.is_empty() {
+                            self.paste(&pasted);
+                        }
+                    }
                     return;
                 }
                 match *key {
@@ -1268,15 +1357,6 @@ impl EventHandler for MaskedEdit {
 
 // ── Private helpers ──
 
-/// Returns the placeholder character for a mask kind when no input is present.
-fn placeholder_char(kind: MaskCharKind) -> char {
-    match kind {
-        MaskCharKind::RequiredDigit | MaskCharKind::OptionalDigit => '_',
-        MaskCharKind::RequiredLetter | MaskCharKind::OptionalLetter => '_',
-        MaskCharKind::RequiredAlphaNum | MaskCharKind::OptionalAlphaNum => '_',
-    }
-}
-
 /// Checks whether a character matches a mask character kind.
 fn mask_char_matches(kind: MaskCharKind, ch: char) -> bool {
     match kind {
@@ -1285,29 +1365,74 @@ fn mask_char_matches(kind: MaskCharKind, ch: char) -> bool {
         MaskCharKind::RequiredAlphaNum | MaskCharKind::OptionalAlphaNum => {
             ch.is_ascii_alphanumeric()
         }
+        MaskCharKind::RequiredNumeric | MaskCharKind::OptionalNumeric => ch.is_numeric(),
+        MaskCharKind::RequiredSignDigit => ch.is_ascii_digit() || ch == '+' || ch == '-',
+        MaskCharKind::RequiredHex | MaskCharKind::OptionalHex => ch.is_ascii_hexdigit(),
+        MaskCharKind::RequiredBinary | MaskCharKind::OptionalBinary => ch == '0' || ch == '1',
     }
 }
 
-/// Parses a mask string into a vector of segments.
-fn parse_mask(mask: &str) -> Vec<MaskSegment> {
-    let mut segments = Vec::new();
-    for ch in mask.chars() {
-        let seg = match ch {
-            '0' => MaskSegment::Input { kind: MaskCharKind::RequiredDigit },
-            '9' => MaskSegment::Input { kind: MaskCharKind::OptionalDigit },
-            'A' => MaskSegment::Input { kind: MaskCharKind::RequiredLetter },
-            'a' => MaskSegment::Input { kind: MaskCharKind::OptionalLetter },
-            'X' => MaskSegment::Input { kind: MaskCharKind::RequiredAlphaNum },
-            'x' => MaskSegment::Input { kind: MaskCharKind::OptionalAlphaNum },
-            _ => MaskSegment::Literal { ch },
-        };
-        segments.push(seg);
+/// Applies a mask case converter to a character.
+///
+/// Only letters are folded; a digit or a literal is returned unchanged, so `>` in a numeric mask
+/// does not have surprising effects on the digits around it.
+fn apply_case(case: CaseMode, ch: char) -> char {
+    match case {
+        CaseMode::None => ch,
+        CaseMode::Upper => ch.to_uppercase().next().unwrap_or(ch),
+        CaseMode::Lower => ch.to_lowercase().next().unwrap_or(ch),
     }
-    segments
+}
+
+/// Parses a mask string into its segments and placeholder.
+///
+/// Supported input characters: `0`/`9` (digits), `A`/`a` (letters), `X`/`x` (alphanumerics),
+/// `D`/`d` (numeric), `#` (digit or sign), `H`/`h` (hex), `B`/`b` (binary). `\\` escapes the next
+/// character as a literal, `>`/`<` fold subsequent letters to upper/lower case, `!` turns the
+/// conversion off, and everything after an unescaped `;` is the placeholder character for empty
+/// cells (the first character after it; the default is `_`).
+fn parse_mask(mask: &str) -> (Vec<MaskSegment>, char) {
+    let mut segments = Vec::new();
+    let mut case = CaseMode::None;
+    let mut chars = mask.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            ';' => {
+                // The tail is metadata: the first character is the placeholder for empty cells.
+                let placeholder = chars.next().unwrap_or('_');
+                return (segments, placeholder);
+            }
+            '\\' => {
+                if let Some(literal) = chars.next() {
+                    segments.push(MaskSegment::Literal { ch: literal });
+                }
+            }
+            '>' => case = CaseMode::Upper,
+            '<' => case = CaseMode::Lower,
+            '!' => case = CaseMode::None,
+            '0' => segments.push(MaskSegment::Input { kind: MaskCharKind::RequiredDigit, case }),
+            '9' => segments.push(MaskSegment::Input { kind: MaskCharKind::OptionalDigit, case }),
+            'A' => segments.push(MaskSegment::Input { kind: MaskCharKind::RequiredLetter, case }),
+            'a' => segments.push(MaskSegment::Input { kind: MaskCharKind::OptionalLetter, case }),
+            'X' => segments.push(MaskSegment::Input { kind: MaskCharKind::RequiredAlphaNum, case }),
+            'x' => segments.push(MaskSegment::Input { kind: MaskCharKind::OptionalAlphaNum, case }),
+            'D' => segments.push(MaskSegment::Input { kind: MaskCharKind::RequiredNumeric, case }),
+            'd' => segments.push(MaskSegment::Input { kind: MaskCharKind::OptionalNumeric, case }),
+            '#' => {
+                segments.push(MaskSegment::Input { kind: MaskCharKind::RequiredSignDigit, case })
+            }
+            'H' => segments.push(MaskSegment::Input { kind: MaskCharKind::RequiredHex, case }),
+            'h' => segments.push(MaskSegment::Input { kind: MaskCharKind::OptionalHex, case }),
+            'B' => segments.push(MaskSegment::Input { kind: MaskCharKind::RequiredBinary, case }),
+            'b' => segments.push(MaskSegment::Input { kind: MaskCharKind::OptionalBinary, case }),
+            _ => segments.push(MaskSegment::Literal { ch }),
+        }
+    }
+    (segments, '_')
 }
 
 /// Builds the display string from segments and raw text.
-fn build_display_text(segments: &[MaskSegment], raw_text: &str) -> String {
+fn build_display_text(segments: &[MaskSegment], raw_text: &str, placeholder: char) -> String {
     let mut result = String::new();
     let mut raw_idx = 0;
     let raw_chars: Vec<char> = raw_text.chars().collect();
@@ -1322,7 +1447,7 @@ fn build_display_text(segments: &[MaskSegment], raw_text: &str) -> String {
                     result.push(raw_chars[raw_idx]);
                     raw_idx += 1;
                 } else {
-                    result.push('_');
+                    result.push(placeholder);
                 }
             }
         }
@@ -2084,5 +2209,58 @@ mod tests {
                 "right alignment: cell {cell} must answer its index"
             );
         }
+    }
+
+    /// The extended alphabet, case converters and custom placeholder parse as documented.
+    #[test]
+    fn the_mask_grammar_supports_case_and_a_custom_placeholder() {
+        let mut edit = MaskedEdit::new(Rect::new(0, 0, 240, 30));
+        edit.set_mask(">aa-99;*");
+        edit.set_text("ab12");
+        assert_eq!(edit.raw_text(), "AB12", "`>` folds the letters to upper case");
+        assert_eq!(edit.text(), "AB-12");
+
+        let mut partial = MaskedEdit::new(Rect::new(0, 0, 240, 30));
+        partial.set_mask(">aa-99;*");
+        partial.set_text("ab");
+        assert_eq!(partial.text(), "AB-**", "`;*` names the empty-cell placeholder");
+    }
+
+    /// A backslash makes the next mask character a literal.
+    #[test]
+    fn a_backslash_escapes_a_mask_character() {
+        let mut edit = MaskedEdit::new(Rect::new(0, 0, 240, 30));
+        edit.set_mask("\\0-000");
+        edit.set_text("123");
+        assert_eq!(edit.text(), "0-123");
+    }
+
+    /// Pasting routes each character through the mask and reports how many were accepted.
+    #[test]
+    fn paste_fills_the_mask() {
+        let mut edit = phone("");
+        let accepted = edit.paste("5551234567");
+        assert_eq!(accepted, 10);
+        assert_eq!(edit.raw_text(), "5551234567");
+        assert_eq!(edit.text(), "(555) 123-4567");
+        assert_eq!(edit.paste("999"), 0, "a full mask accepts nothing more");
+    }
+
+    /// A double click selects one input run, stopping at the mask's literals.
+    #[test]
+    fn a_double_click_selects_an_input_run() {
+        let mut edit = phone("5551234567");
+        // The first three cells are the area-code run.
+        let cell = 2;
+        let x = edit.field_rect().x
+            + dimensions::TEXT_FIELD_PADDING_H as i32
+            + cell * MASK_CELL_WIDTH
+            + MASK_CELL_WIDTH / 2;
+        edit.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(x, edit.field_rect().y + 4),
+            button: 1,
+        });
+        let (start, end) = edit.selection_range().expect("a double click must select");
+        assert_eq!((start, end), (1, 4), "the literals bound the run");
     }
 }

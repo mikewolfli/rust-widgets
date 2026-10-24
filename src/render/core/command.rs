@@ -183,6 +183,22 @@ pub enum RenderCommand {
         /// Fill color.
         color: Color,
     },
+    /// Fill a projectively divided quadrilateral as two antialiased triangles.
+    ///
+    /// [`RenderCommand::FillQuad`] is the affine case, where opposite edges stay parallel; this
+    /// variant is for a quad produced by a perspective divide, where they need not. The software
+    /// backend rasterises the two triangles with per-pixel coverage taken from the projected
+    /// edges, so a turned card has a clean boundary instead of the stair-step its bounding box
+    /// would produce. A back end that cannot antialias may treat it exactly like
+    /// [`RenderCommand::FillQuad`] (a hard-edged polygon), which is a correct picture with a
+    /// slightly rougher edge.
+    #[cfg(feature = "3d")]
+    FillQuadAA {
+        /// Quadrilateral vertices in logical pixels, in perimeter order.
+        corners: [Point; 4],
+        /// Fill color.
+        color: Color,
+    },
     /// Outline the quadrilateral spanned by `corners`.
     ///
     /// The stroked counterpart of [`RenderCommand::FillQuad`]: a rectangle whose corners an
@@ -204,9 +220,10 @@ pub enum RenderCommand {
     /// `width` and `height` describe the **source** pixel grid, which is also the grid the
     /// image occupied before the transform: the batch path builds an image from the rectangle's
     /// own width and height, so the two agree. `corners` are the destination positions of that
-    /// grid's top-left, top-right, bottom-right and bottom-left corners. An affine transform
-    /// maps a rectangle to a parallelogram, which is exactly what the inverse mapping in the
-    /// software backend solves; a projective quad is not expressible here.
+    /// grid's top-left, top-right, bottom-right and bottom-left corners. A parallelogram is
+    /// solved with an affine inverse; a quad whose opposite edges are not parallel (the result
+    /// of a projective divide) is solved with a homography, so a perspective-turned card keeps
+    /// its texture aligned with its projected corners.
     #[cfg(feature = "3d")]
     DrawImageQuad {
         /// Destination corners in logical pixels, in perimeter order.
@@ -437,6 +454,35 @@ pub enum RenderCommand {
     },
     /// End the innermost [`RenderCommand::PushLayer`] and composite it.
     PopLayer,
+    /// Begin a composed layer with a subtree opacity and an optional replay cache.
+    ///
+    /// This is [`RenderCommand::PushLayer`] plus the two composition controls a declarative UI
+    /// needs for a subtree: `opacity` scales the layer's own foreground as one unit (a child and
+    /// its background fade together instead of each primitive blending separately), and
+    /// `cache_key` lets the renderer reuse the layer's foreground from the previous frame.
+    ///
+    /// # Cache contract
+    ///
+    /// A non-`None` `cache_key` is a caller assertion that the commands between this push and its
+    /// matching [`RenderCommand::PopLayer`] produce the same foreground as the previous frame with
+    /// the same key, the same `bounds` and the same `opacity`. When that holds the backend may
+    /// discard the enclosed commands and composite the cached foreground; when it does not the
+    /// caller must pass a different key (a version counter, a content hash, a frame number for
+    /// animated content). The key is opaque to the renderer.
+    ///
+    /// The pop is still `PopLayer`: the two push forms share one stack, so a layer cannot be left
+    /// open by choosing the wrong close command.
+    PushLayerGroup {
+        /// Region of the surface the layer covers, in logical pixels.
+        bounds: Rect,
+        /// How to process the captured backdrop, or `None` to composite over the untouched
+        /// backdrop.
+        effect: Option<LayerEffect>,
+        /// Subtree opacity in `0.0..=1.0`; values outside that range are clamped.
+        opacity: f32,
+        /// Caller-supplied cache identity, or `None` to redraw the layer every frame.
+        cache_key: Option<u64>,
+    },
     /// Draw a filled gradient rectangle.
     DrawGradient {
         /// Region to fill in logical pixels.

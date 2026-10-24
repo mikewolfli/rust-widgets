@@ -16,7 +16,7 @@ use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::access::tool_bar_orientation_to_str;
 use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_toolbar_orientation};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -41,6 +41,37 @@ pub enum ToolBarOrientation {
     /// Items laid out top to bottom.
     Vertical,
 }
+
+/// Where a toolbar may be docked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolBarArea {
+    /// Along the top edge of the window.
+    Top,
+    /// Along the bottom edge.
+    Bottom,
+    /// Along the left edge.
+    Left,
+    /// Along the right edge.
+    Right,
+}
+
+/// Every docking area, in the order a toolbar usually offers them.
+pub const ALL_TOOL_BAR_AREAS: [ToolBarArea; 4] =
+    [ToolBarArea::Top, ToolBarArea::Bottom, ToolBarArea::Left, ToolBarArea::Right];
+
+/// How an item's label and icon are arranged inside its button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolBarButtonStyle {
+    /// The label only. This is the historical rendering and stays the default.
+    #[default]
+    TextOnly,
+    /// The icon only; the label is not painted.
+    IconOnly,
+    /// The icon followed by the label on one line.
+    TextBesideIcon,
+    /// The icon above the label.
+    TextUnderIcon,
+}
 /// A button entry in the toolbar.
 #[derive(Debug, Clone)]
 pub struct ToolBarItem {
@@ -51,6 +82,10 @@ pub struct ToolBarItem {
     checked: bool,
     enabled: bool,
     separator: bool,
+    /// Optional icon stand-in text, painted according to the bar's button style.
+    icon: Option<String>,
+    /// Per-item square size override, in logical pixels.
+    icon_size: Option<u32>,
 }
 impl ToolBarItem {
     /// Creates an enabled, unchecked, non-separator item.
@@ -66,6 +101,8 @@ impl ToolBarItem {
             checked: false,
             enabled: true,
             separator: false,
+            icon: None,
+            icon_size: None,
         }
     }
     /// Creates a separator: an item with an empty id and text and
@@ -162,6 +199,33 @@ impl ToolBarItem {
     pub fn set_separator(&mut self, separator: bool) {
         self.separator = separator;
     }
+
+    /// The item's icon stand-in text, if any.
+    pub fn icon(&self) -> Option<&str> {
+        self.icon.as_deref()
+    }
+
+    /// Sets the icon stand-in text. Like a dropdown item's icon this is a short
+    /// character run the painter draws, not image data.
+    pub fn set_icon(&mut self, icon: Option<String>) {
+        self.icon = icon;
+    }
+
+    /// Sets the icon and returns `self`, for chaining onto [`ToolBarItem::new`].
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// This item's own square size, overriding the bar's `icon_size` when set.
+    pub fn icon_size(&self) -> Option<u32> {
+        self.icon_size
+    }
+
+    /// Sets this item's square size, or clears the override with `None`.
+    pub fn set_icon_size(&mut self, size: Option<u32>) {
+        self.icon_size = size;
+    }
 }
 /// Toolbar widget.
 pub struct ToolBar {
@@ -180,6 +244,19 @@ pub struct ToolBar {
     /// A release outside this rectangle is what "dragged out of the dock band" means; the
     /// current band travels with the control and so cannot answer that question on its own.
     drag_dock_band: Option<Rect>,
+    /// The areas this toolbar may be docked to.
+    ///
+    /// Defaults to every area, which is the pre-wiring behaviour: a host that never
+    /// constrains the bar sees the same dock decisions.
+    allowed_areas: Vec<ToolBarArea>,
+    /// How each item's icon and label are arranged.
+    button_style: ToolBarButtonStyle,
+    /// The first item the strip paints when the items overflow its width.
+    overflow_offset: usize,
+    /// Whether the customize affordance is painted at the trailing edge.
+    editable: bool,
+    /// Emitted when the customize affordance is pressed.
+    pub customize_requested: GenericSignal,
     /// Whether the toolbar currently lives in its own top-level window. See
     /// [`ToolBar::is_top_level`] for why this is not a `BaseWidget` flag.
     top_level: bool,
@@ -222,6 +299,11 @@ impl ToolBar {
             floatable: true,
             drag_state: None,
             drag_dock_band: None,
+            allowed_areas: ALL_TOOL_BAR_AREAS.to_vec(),
+            button_style: ToolBarButtonStyle::TextOnly,
+            overflow_offset: 0,
+            editable: false,
+            customize_requested: GenericSignal::new(),
             top_level: false,
             items: Vec::new(),
             hovered_index: None,
@@ -236,9 +318,10 @@ impl ToolBar {
     pub fn orientation(&self) -> ToolBarOrientation {
         self.orientation
     }
-    /// The icon size in **pixels**. It sets the button size, but the toolbar has
-    /// no icons of its own — item labels are drawn at the default font size
-    /// regardless — so in practice this controls the spacing between items.
+    /// The icon size in **pixels**.
+    ///
+    /// It sets each item's square size; an item may override it through
+    /// [`ToolBarItem::set_icon_size`]. Labels are painted with the resolved theme font.
     pub fn icon_size(&self) -> f32 {
         self.icon_size
     }
@@ -279,6 +362,7 @@ impl ToolBar {
             return;
         }
         self.icon_size = size;
+        self.clamp_overflow();
         self.base.request_redraw();
     }
     /// Allows or forbids dragging the toolbar; repaints either way.
@@ -386,6 +470,7 @@ impl ToolBar {
     pub fn add_action(&mut self, id: impl Into<String>, text: impl Into<String>) -> usize {
         let idx = self.items.len();
         self.items.push(ToolBarItem::new(id, text));
+        self.clamp_overflow();
         self.base.request_redraw();
         idx
     }
@@ -397,6 +482,7 @@ impl ToolBar {
     /// Repaints, for the same reason as [`ToolBar::add_action`].
     pub fn add_separator(&mut self) {
         self.items.push(ToolBarItem::separator());
+        self.clamp_overflow();
         self.base.request_redraw();
     }
     /// Removes every item, including separators. Invalidates all previously
@@ -408,6 +494,7 @@ impl ToolBar {
             return;
         }
         self.items.clear();
+        self.overflow_offset = 0;
         self.base.request_redraw();
     }
     /// Enables or disables the item at `index`, and repaints.
@@ -447,6 +534,166 @@ impl ToolBar {
     /// — check `items()[index].is_checkable()` for that.
     pub fn item_checked(&self, index: usize) -> Option<bool> {
         self.items.get(index).map(|item| item.is_checked())
+    }
+
+    /// The docking areas this toolbar accepts.
+    pub fn allowed_areas(&self) -> &[ToolBarArea] {
+        &self.allowed_areas
+    }
+
+    /// Restricts the docking areas.
+    ///
+    /// An empty list means "no docking allowed", which is a legitimate configuration for
+    /// a floating-only palette. The list keeps the order the caller gave it, so a dock
+    /// menu can present the host's preference order rather than a fixed one.
+    pub fn set_allowed_areas(&mut self, areas: impl IntoIterator<Item = ToolBarArea>) {
+        let next: Vec<ToolBarArea> = areas.into_iter().collect();
+        if self.allowed_areas == next {
+            return;
+        }
+        self.allowed_areas = next;
+        self.base.request_redraw();
+    }
+
+    /// Whether `area` is among the accepted docking areas.
+    pub fn allows_area(&self, area: ToolBarArea) -> bool {
+        self.allowed_areas.contains(&area)
+    }
+
+    /// How each item arranges its icon and label.
+    pub fn button_style(&self) -> ToolBarButtonStyle {
+        self.button_style
+    }
+
+    /// Changes the item presentation. [`ToolBarButtonStyle::TextOnly`] is the default and
+    /// paints exactly what the toolbar painted before this option existed.
+    pub fn set_button_style(&mut self, style: ToolBarButtonStyle) {
+        if self.button_style == style {
+            return;
+        }
+        self.button_style = style;
+        self.base.request_redraw();
+    }
+
+    /// The first item painted when the items overflow the strip.
+    pub fn overflow_offset(&self) -> usize {
+        self.overflow_offset
+    }
+
+    /// Whether some items are outside the strip's width.
+    pub fn is_overflowing(&self) -> bool {
+        self.visible_capacity_with(0) < self.items.len()
+    }
+
+    /// Whether the customize affordance is painted.
+    pub fn is_editable(&self) -> bool {
+        self.editable
+    }
+
+    /// Shows or hides the customize affordance. It is off by default, so the default
+    /// strip has no extra target.
+    pub fn set_editable(&mut self, editable: bool) {
+        if self.editable == editable {
+            return;
+        }
+        self.editable = editable;
+        self.base.request_redraw();
+    }
+
+    /// How many leading items fit when `extra` more pixels are reserved at the end.
+    fn visible_capacity_with(&self, extra: u32) -> usize {
+        if self.items.is_empty() {
+            return 0;
+        }
+        let band = self.band_rect();
+        let horizontal = self.orientation == ToolBarOrientation::Horizontal;
+        let main_len = if horizontal { band.width } else { band.height };
+        let inset = dimensions::TOOLBAR_ITEM_INSET * 2;
+        let mut available = main_len.saturating_sub(inset) as i32;
+        let fixed = if self.movable { TOOLBAR_DRAG_GRIP_WIDTH } else { 0 }
+            + if self.editable { 20 } else { 0 }
+            + extra;
+        available -= fixed as i32;
+        let mut used = 0i32;
+        let mut count = 0usize;
+        for item in &self.items {
+            let step = if item.is_separator() {
+                dimensions::TOOLBAR_SPACING
+            } else {
+                item.icon_size().unwrap_or(self.icon_size as u32) + dimensions::TOOLBAR_SPACING
+            } as i32;
+            if used + step > available && count > 0 {
+                break;
+            }
+            used += step;
+            count += 1;
+        }
+        count.max(1)
+    }
+
+    /// The capacity the strip paints at, accounting for its own overflow button.
+    fn effective_capacity(&self) -> usize {
+        let plain = self.visible_capacity_with(0);
+        if plain < self.items.len() {
+            self.visible_capacity_with(20)
+        } else {
+            plain
+        }
+    }
+
+    /// The visible item indices in draw order.
+    #[allow(dead_code)]
+    fn visible_range(&self) -> core::ops::Range<usize> {
+        let capacity = self.effective_capacity();
+        let start = self.overflow_offset.min(self.items.len());
+        start..start.saturating_add(capacity).min(self.items.len())
+    }
+
+    /// Keeps the overflow offset inside the list after a mutation.
+    fn clamp_overflow(&mut self) {
+        let capacity = self.effective_capacity();
+        let max_offset = self.items.len().saturating_sub(capacity);
+        self.overflow_offset = self.overflow_offset.min(max_offset);
+    }
+
+    /// The overflow button's box, or `None` when everything fits.
+    pub fn overflow_button_rect(&self) -> Option<Rect> {
+        if !self.is_overflowing() {
+            return None;
+        }
+        let band = self.band_rect();
+        match self.orientation {
+            ToolBarOrientation::Horizontal => {
+                let grip = if self.movable { TOOLBAR_DRAG_GRIP_WIDTH } else { 0 };
+                let right = band.x + band.width as i32 - grip as i32 - 20;
+                Some(Rect::new(right, band.y, 20, band.height))
+            }
+            ToolBarOrientation::Vertical => {
+                let grip = if self.movable { TOOLBAR_DRAG_GRIP_WIDTH } else { 0 };
+                let bottom = band.y + band.height as i32 - grip as i32 - 20;
+                Some(Rect::new(band.x, bottom, band.width, 20))
+            }
+        }
+    }
+
+    /// The customize button's box, or `None` when the strip is not editable.
+    pub fn customize_button_rect(&self) -> Option<Rect> {
+        if !self.editable {
+            return None;
+        }
+        let band = self.band_rect();
+        let overflow = self.is_overflowing() as u32 * 20;
+        let grip = if self.movable { TOOLBAR_DRAG_GRIP_WIDTH } else { 0 };
+        match self.orientation {
+            ToolBarOrientation::Horizontal => {
+                let right = band.x + band.width as i32 - grip as i32 - overflow as i32 - 20;
+                Some(Rect::new(right, band.y, 20, band.height))
+            }
+            ToolBarOrientation::Vertical => {
+                let bottom = band.y + band.height as i32 - grip as i32 - overflow as i32 - 20;
+                Some(Rect::new(band.x, bottom, band.width, 20))
+            }
+        }
     }
 
     /// The strip the control actually paints: a full-width band
@@ -529,15 +776,18 @@ impl ToolBar {
         } else {
             band.width.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2)
         };
-        let mut placed = Vec::with_capacity(self.items.len());
+        // Items scrolled off the leading edge keep a zero-size band, so the list's
+        // indices still address the same item while no hit test can reach a hidden one.
+        let start = self.overflow_offset.min(self.items.len());
+        let mut placed = vec![Rect::new(0, 0, 0, 0); start];
         // The offset runs along the strip's main axis; the cross-axis position is the band's origin
         // plus the same inset the layout used as padding.
         let mut offset = if horizontal { band.x } else { band.y } + inset;
-        for item in &self.items {
+        for item in &self.items[start..] {
             let step = if item.is_separator() {
                 dimensions::TOOLBAR_SPACING
             } else {
-                self.icon_size as u32 + dimensions::TOOLBAR_SPACING
+                item.icon_size().unwrap_or(self.icon_size as u32) + dimensions::TOOLBAR_SPACING
             };
             let rect = if horizontal {
                 let rect = Rect::new(offset, band.y + inset, step, cross);
@@ -744,6 +994,17 @@ impl EventHandler for ToolBar {
                     self.drag_dock_band = Some(self.band_rect());
                     return;
                 }
+                if self.customize_button_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.customize_requested.emit();
+                    return;
+                }
+                if self.overflow_button_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    let max = self.items.len().saturating_sub(self.effective_capacity());
+                    self.overflow_offset =
+                        if self.overflow_offset >= max { 0 } else { self.overflow_offset + 1 };
+                    self.base.request_redraw();
+                    return;
+                }
                 if let Some(idx) = self.hit_item(*pos) {
                     if let Some(item) = self.items.get_mut(idx) {
                         if item.is_enabled() && !item.is_separator() {
@@ -758,6 +1019,17 @@ impl EventHandler for ToolBar {
             }
             Event::MouseRelease { pos, button: 1 } => {
                 self.finish_drag(*pos);
+            }
+            Event::Wheel { delta, .. } if self.is_overflowing() => {
+                // The wheel walks the overflow window rather than doing nothing: once a
+                // strip overflows, the hidden items have no other pointer path.
+                let max = self.items.len().saturating_sub(self.effective_capacity());
+                if delta.y > 0 {
+                    self.overflow_offset = self.overflow_offset.saturating_sub(1);
+                } else if delta.y < 0 {
+                    self.overflow_offset = (self.overflow_offset + 1).min(max);
+                }
+                self.base.request_redraw();
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -813,6 +1085,10 @@ impl Draw for ToolBar {
         let bands = self.item_bands();
         for (i, &item_r) in bands.iter().enumerate() {
             let item = &self.items[i];
+            if item_r.width == 0 || item_r.height == 0 {
+                // An item scrolled out of the overflow window keeps its index but has no box.
+                continue;
+            }
             if item.is_separator() {
                 // Both separators read the same resolved border colour. The horizontal one
                 // already did; the vertical one was a literal `rgb(200,200,200)`, so the same
@@ -858,7 +1134,121 @@ impl Draw for ToolBar {
             // honour the theme body font and the user's text scale (D09-STYLE-01).
             let font = effective_font(style);
             let line = context.text_line(item_band, font);
-            context.draw_text_fitted_cow(line, item.text(), font, fg, HorizontalAlignment::Center);
+            let icon = item.icon();
+            match self.button_style {
+                // The historical path: one centred label, no icon, no second layout.
+                ToolBarButtonStyle::TextOnly => {
+                    context.draw_text_fitted_cow(
+                        line,
+                        item.text(),
+                        font,
+                        fg,
+                        HorizontalAlignment::Center,
+                    );
+                }
+                ToolBarButtonStyle::IconOnly => {
+                    if let Some(icon) = icon {
+                        context.draw_text(
+                            Point::new(item_band.x, line.y),
+                            icon,
+                            font,
+                            fg,
+                            HorizontalAlignment::Center,
+                        );
+                    }
+                }
+                ToolBarButtonStyle::TextBesideIcon => {
+                    let icon_width =
+                        item.icon_size().unwrap_or(self.icon_size as u32).min(item_band.width);
+                    if let Some(icon) = icon {
+                        context.draw_text_fitted_cow(
+                            Rect::new(item_band.x, line.y, icon_width, line.height.max(1)),
+                            icon,
+                            font,
+                            fg,
+                            HorizontalAlignment::Center,
+                        );
+                    }
+                    let label_x = item_band.x + icon_width as i32;
+                    let label_width =
+                        (item_band.x + item_band.width as i32 - label_x).max(0) as u32;
+                    context.draw_text_fitted_cow(
+                        Rect::new(label_x, line.y, label_width, line.height.max(1)),
+                        item.text(),
+                        font,
+                        fg,
+                        HorizontalAlignment::Left,
+                    );
+                }
+                ToolBarButtonStyle::TextUnderIcon => {
+                    let icon_side = item
+                        .icon_size()
+                        .unwrap_or(self.icon_size as u32)
+                        .min(item_band.height / 2)
+                        .min(item_band.width);
+                    if let Some(icon) = icon {
+                        context.draw_text_fitted_cow(
+                            Rect::new(item_band.x, item_band.y, item_band.width, icon_side.max(1)),
+                            icon,
+                            font,
+                            fg,
+                            HorizontalAlignment::Center,
+                        );
+                    }
+                    let label_y = item_band.y + icon_side as i32;
+                    context.draw_text_fitted_cow(
+                        Rect::new(
+                            item_band.x,
+                            label_y,
+                            item_band.width,
+                            (item_band.y + item_band.height as i32 - label_y).max(0) as u32,
+                        ),
+                        item.text(),
+                        font,
+                        fg,
+                        HorizontalAlignment::Center,
+                    );
+                }
+            }
+        }
+
+        // ── Trailing affordances ──
+        let affordance_ink = surface.contrast_color().with_alpha(150);
+        if let Some(rect) = self.customize_button_rect() {
+            // Three rules read as a "customize" handle without needing a font glyph.
+            let step = (rect.height / 5).max(1) as i32;
+            for row in 0..3 {
+                let y = rect.y + step * (row + 1);
+                context.draw_line(
+                    Point::new(rect.x + 5, y),
+                    Point::new(rect.x + rect.width as i32 - 5, y),
+                    affordance_ink,
+                );
+            }
+        }
+        if let Some(rect) = self.overflow_button_rect() {
+            // A chevron pointing along the strip: overflowing items are further along it.
+            let mid = rect.y + rect.height as i32 / 2;
+            let cx = rect.x + rect.width as i32 / 2;
+            let points = match self.orientation {
+                ToolBarOrientation::Horizontal => vec![
+                    Point::new(cx - 2, mid - 4),
+                    Point::new(cx + 3, mid),
+                    Point::new(cx - 2, mid + 4),
+                ],
+                ToolBarOrientation::Vertical => vec![
+                    Point::new(cx - 4, mid - 2),
+                    Point::new(cx, mid + 3),
+                    Point::new(cx + 4, mid - 2),
+                ],
+            };
+            context.execute_command(crate::render::RenderCommand::DrawPath {
+                points,
+                closed: false,
+                color: affordance_ink,
+                filled: false,
+                width: 1,
+            });
         }
 
         // ── The drag affordance ──
@@ -1072,5 +1462,97 @@ mod tests {
         assert!(tool_bar.is_top_level(), "a release away from the dock must float the strip");
         assert_eq!(count.load(Ordering::SeqCst), 1, "the host is told exactly once");
         assert!(floated.load(Ordering::SeqCst), "and told the new floating state");
+    }
+
+    /// The dock areas default to every edge and can be restricted.
+    #[test]
+    fn allowed_areas_default_to_every_edge_and_can_be_restricted() {
+        let mut bar = ToolBar::new(Rect::new(0, 0, 240, 36));
+        assert_eq!(bar.allowed_areas(), &ALL_TOOL_BAR_AREAS);
+        assert!(bar.allows_area(ToolBarArea::Left));
+
+        bar.set_allowed_areas([ToolBarArea::Top, ToolBarArea::Bottom]);
+        assert!(bar.allows_area(ToolBarArea::Top));
+        assert!(!bar.allows_area(ToolBarArea::Left));
+
+        let before = bar.allowed_areas().len();
+        bar.set_allowed_areas([ToolBarArea::Top, ToolBarArea::Bottom]);
+        assert_eq!(bar.allowed_areas().len(), before, "an unchanged list is a no-op");
+
+        bar.set_allowed_areas([]);
+        assert!(bar.allowed_areas().is_empty(), "empty means floating-only");
+    }
+
+    /// A per-item icon size widens that item and everything after it.
+    #[test]
+    fn a_per_item_icon_size_widens_only_that_item() {
+        let mut bar = ToolBar::new(Rect::new(0, 0, 400, 36));
+        bar.add_action("a", "A");
+        bar.add_action("b", "B");
+        let before = bar.item_bands();
+        let step = before[0].width;
+        assert_eq!(before[1].width, step);
+
+        bar.items[1].set_icon_size(Some(48));
+        let after = bar.item_bands();
+        assert_eq!(after[0].width, step, "the first item keeps the bar's size");
+        assert!(after[1].width > step, "the override widens only its own item");
+        assert_eq!(after[1].x, after[0].x + after[0].width as i32);
+    }
+
+    /// Overflowing items get a chevron; each press advances the window.
+    #[test]
+    fn the_overflow_chevron_walks_the_hidden_items() {
+        let mut bar = ToolBar::new(Rect::new(0, 0, 70, 36));
+        for index in 0..8 {
+            bar.add_action(format!("id{index}"), format!("T{index}"));
+        }
+        assert!(bar.is_overflowing());
+        let chevron = bar.overflow_button_rect().expect("overflow has an affordance");
+        assert_eq!(bar.visible_range().start, 0);
+
+        bar.handle_event(&Event::mouse_press(chevron.x + 2, chevron.y + 2, 1));
+        assert_eq!(bar.visible_range().start, 1, "a press advances the visible window");
+        bar.handle_event(&Event::mouse_press(chevron.x + 2, chevron.y + 2, 1));
+        assert_eq!(bar.visible_range().start, 2);
+    }
+
+    /// The customize affordance is opt-in and reports its press.
+    #[test]
+    fn the_customize_affordance_is_opt_in_and_reports_a_press() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut bar = ToolBar::new(Rect::new(0, 0, 240, 36));
+        bar.add_action("a", "A");
+        assert!(bar.customize_button_rect().is_none(), "off by default");
+        bar.set_editable(true);
+        let rect = bar.customize_button_rect().expect("editable strips show the handle");
+
+        let presses = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&presses);
+        bar.customize_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        bar.handle_event(&Event::mouse_press(rect.x + 2, rect.y + 2, 1));
+        assert_eq!(presses.load(Ordering::SeqCst), 1);
+    }
+
+    /// Icon-only presentation paints the icon instead of the label.
+    #[test]
+    fn icon_only_presentation_hides_the_label() {
+        let mut bar = ToolBar::new(Rect::new(0, 0, 240, 36));
+        let index = bar.add_action("a", "Open");
+        bar.items[index].set_icon(Some("O".to_string()));
+        assert_eq!(bar.button_style(), ToolBarButtonStyle::TextOnly, "text is the default");
+        let text_only = crate::widget::svg::render_to_svg(&mut bar);
+
+        bar.set_button_style(ToolBarButtonStyle::IconOnly);
+        let icon_only = crate::widget::svg::render_to_svg(&mut bar);
+        assert_ne!(text_only, icon_only, "the style must reach the painter");
+
+        bar.set_button_style(ToolBarButtonStyle::TextBesideIcon);
+        let beside = crate::widget::svg::render_to_svg(&mut bar);
+        assert_ne!(beside, icon_only);
     }
 }

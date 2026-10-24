@@ -295,7 +295,7 @@ Additional facts to keep the matrix consistent with `src/widget/kind.rs`:
   Windows/Linux/Wayland because the **default** runtime of those platform impls
   creates a state/surrogate handle (Windows: `Panel` surrogate; Linux/Wayland:
   state-only) rather than a dedicated native dialog; only macOS (objc2 +
-  cocoa-legacy) creates real `NSAlert`/`NSOpenPanel`/`NSColorPanel`/`NSFontPanel` (✅).
+  cocoa-legacy) creates real `the reference alert`/`the reference open panel`/`the reference colour panel`/`the reference font panel` (✅).
   The widgets themselves are fully usable — the custom backend provides a dedicated
   dialog implementation — they are simply not OS-hosted. Under the `gtk-native`
   feature the Linux backend additionally constructs real
@@ -326,9 +326,9 @@ native runtime (Windows/Linux/macOS desktop backends are the default build path;
 the Android JNI cells were verified on an emulator and a physical arm64 device).
 - `SpinBox`/`ListView`/`ScrollArea` are 🟦 (self-drawn) on **every** platform in the
   default build. Notes that attributed native `gtk::SpinButton` (Linux `gtk-native`),
-  AppKit `NSStepper` (macOS `objc2`) or Win32 objects to these cells described the
+  the platform UI framework `the reference stepper` (macOS `objc2`) or Win32 objects to these cells described the
   pre-BLUE15 native-control layer and were removed with it; `gtk::SpinButton` and
-  `NSStepper` survive only as `A11yRole` mappings in `src/platform/accessibility/`,
+  `the reference stepper` survive only as `A11yRole` mappings in `src/platform/accessibility/`,
   which name a role rather than construct a widget.
 - `DatePicker`/`TimePicker`/`DateTimePicker` are likewise self-drawn; the earlier
   note here claimed GTK composites and a Win32 `SysDateTimePick32`, neither of which

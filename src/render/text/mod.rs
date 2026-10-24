@@ -78,7 +78,9 @@ pub use raster::{OutlinePoint, VectorSource};
 // (e.g. `mini,runtime-fonts`) compiles `raster` for its types and not these, so re-exporting them
 // under `text-shaping` alone failed to resolve.
 #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
-pub use raster::{outline, outline_by_coverage, OUTLINE_MAX_CONTOURS, OUTLINE_MAX_POINTS};
+pub use raster::{
+    outline, outline_by_coverage, outline_glyph, OUTLINE_MAX_CONTOURS, OUTLINE_MAX_POINTS,
+};
 
 // Colour bitmap faces (G-6): `CBDT`/`CBLC` plus the PNG decoder that reads what they point at.
 //

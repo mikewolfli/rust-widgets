@@ -10,8 +10,8 @@
 //! the unrated remainder is a muted tint of the same solid star, which is how Material 3 draws a
 //! rating rather than with a separate hollow glyph.
 
-use crate::core::{Color, Rect};
-use crate::event::{Event, EventHandler};
+use crate::core::{Color, Point, Rect};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{expect_f64, expect_u32};
@@ -40,6 +40,17 @@ pub struct Rating {
     rating: f32,
     max_rating: u32,
     star_size: u32,
+    /// The number of stars under the pointer, or `None` when it is outside the row.
+    ///
+    /// A preview is **paint state, not data**: moving the pointer never writes `rating`, so a
+    /// host reading the control still sees the committed value. The preview is what the row
+    /// illustrates the pointer would commit, and `MouseLeave` clears it.
+    hover_preview: Option<u32>,
+    /// Whether mouse and keyboard input are ignored entirely.
+    ///
+    /// A read-only rating is a display of someone else's score rather than an input: it keeps
+    /// its value and takes part in layout, but a click or an arrow key cannot change it.
+    read_only: bool,
     /// Emitted when the whole-star value changes.
     ///
     /// Kept as `u32` so an existing subscriber's handler signature is unchanged; the exact
@@ -56,6 +67,8 @@ impl Rating {
             rating: 0.0,
             max_rating: 5,
             star_size: dimensions::RATING_STAR_SIZE,
+            hover_preview: None,
+            read_only: false,
             rating_changed: Signal1::new(),
         }
     }
@@ -136,6 +149,35 @@ impl Rating {
         }
         self.star_size = size;
         self.base.request_redraw();
+    }
+
+    /// Returns whether the control ignores mouse and keyboard input.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Enables or disables read-only behaviour.
+    ///
+    /// A read-only rating keeps its current value and paints normally, but a pointer press,
+    /// hover preview, or arrow/space key cannot change it. Turning read-only on also clears
+    /// any hover preview, so no stale highlight survives the switch.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        if self.read_only == read_only {
+            return;
+        }
+        self.read_only = read_only;
+        if read_only {
+            self.hover_preview = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// The number of stars under the pointer, or `None` when the pointer is elsewhere.
+    ///
+    /// Exposed for tests and for a host that wants to describe the preview to an assistive
+    /// technology without re-deriving the hit test from the geometry.
+    pub fn hover_preview(&self) -> Option<u32> {
+        self.hover_preview
     }
 
     /// The fraction of the row that is filled, in `0.0..=1.0`.
@@ -230,6 +272,30 @@ impl Rating {
             return None;
         }
         Some(Rect::new(x, row.y, self.star_size, row.height))
+    }
+
+    /// The star cell under `pos`, or `None` when the pointer is outside the drawn row.
+    ///
+    /// The press handler and the hover preview share this hit test, so the star the pointer
+    /// highlights and the star a click commits can never disagree.
+    fn star_index_at(&self, pos: Point) -> Option<u32> {
+        let row = self.star_row();
+        if pos.y < row.y || pos.y >= row.y + row.height as i32 {
+            return None;
+        }
+        let rel_x = pos.x - row.x;
+        if rel_x < 0 {
+            return None;
+        }
+        let step = (self.star_size + dimensions::RATING_STAR_GAP) as i32;
+        let index = (rel_x / step) as u32;
+        // A star the row dropped is not hovered or clickable either: the hit test and the ink
+        // are the same set of cells.
+        if index < self.max_rating && self.star_cell(index).is_some() {
+            Some(index)
+        } else {
+            None
+        }
     }
 }
 
@@ -412,6 +478,10 @@ impl Draw for Rating {
         // keeps it; the accent is what an unstyled control uses.
         let explicit = self.base.style();
         let filled_color = explicit.border_color.or(explicit.background_color).unwrap_or(accent);
+        // The hover preview is the same accent at lower emphasis: it reads as "this is what a
+        // press would set" rather than as a committed value. It is only painted while the
+        // pointer is over a star, so an untouched control's output is unchanged.
+        let preview_color = filled_color.blend(&background, 0.45);
         // Material 3 has no hollow star: the unselected mark is the *same* solid star at lower
         // emphasis, which is why there is one `Star` icon rather than a `Star`/`StarBorder` pair.
         let empty_color = if is_enabled {
@@ -427,7 +497,14 @@ impl Draw for Rating {
             let Some(cell) = self.star_cell(i) else {
                 continue;
             };
-            let fill = self.star_fill(i);
+            // A hover preview replaces the row's fills for as long as it is present: stars up to
+            // the pointer are lit, the rest are empty. That is the same picture a click would
+            // commit, and it never writes the committed value.
+            let (fill, mark_color) = match self.hover_preview {
+                Some(count) if i < count => (1.0, preview_color),
+                Some(_) => (0.0, filled_color),
+                None => (self.star_fill(i), filled_color),
+            };
             // The star's square box, centred vertically in the control's band.
             let icon_rect = Rect {
                 x: cell.x,
@@ -445,7 +522,7 @@ impl Draw for Rating {
             }
             if fill >= 1.0 {
                 // A whole star needs no clip: the filled star exactly covers the outline.
-                crate::widget::draw_icon_at(context, icon_rect, filled_color, IconName::Star);
+                crate::widget::draw_icon_at(context, icon_rect, mark_color, IconName::Star);
                 continue;
             }
             // A partial star is the filled star clipped to the rated share of the cell. The
@@ -457,7 +534,7 @@ impl Draw for Rating {
                 continue;
             }
             context.push_clip(icon_rect.x, icon_rect.y, filled_width, icon_rect.height);
-            crate::widget::draw_icon_at(context, icon_rect, filled_color, IconName::Star);
+            crate::widget::draw_icon_at(context, icon_rect, mark_color, IconName::Star);
             context.pop_clip();
         }
     }
@@ -477,49 +554,65 @@ fn trim_trailing_zero(value: f32) -> String {
 
 impl EventHandler for Rating {
     fn handle_event(&mut self, event: &Event) {
-        if !self.base.is_enabled() {
+        // A disabled or read-only control consumes nothing, so the base state stays
+        // authoritative and neither the pointer nor the keyboard can change the value.
+        if !self.base.is_enabled() || self.read_only {
             return;
         }
-        // Disabled controls consume nothing, so the base state stays authoritative.
         self.base.handle_event(event);
         match event {
+            Event::MouseMove { pos } => {
+                // Previewing is paint-only. `rating` is deliberately not written here, so a
+                // host reading the control while the pointer moves still sees the committed
+                // score.
+                let preview = self.star_index_at(*pos).map(|index| index + 1);
+                if self.hover_preview != preview {
+                    self.hover_preview = preview;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hover_preview.take().is_some() {
+                    self.base.request_redraw();
+                }
+            }
             Event::MouseRelease { pos, button } => {
                 if *button != 1 {
                     return;
                 }
                 // The hit test is the **drawn geometry**: the star row's own band, so the
-                // clickable area and the ink are the same object. Reading `rect` here (as
-                // the old form did) made the whole control clickable while only the stars
-                // were painted, so a press in the empty space beside the row could set a
-                // rating the user did not aim at.
-                let row = self.star_row();
-
-                if pos.y < row.y || pos.y >= row.y + row.height as i32 {
+                // clickable area and the ink are the same object. The same helper drives the
+                // hover preview, so the star highlighted and the star committed cannot differ.
+                let Some(index) = self.star_index_at(*pos) else {
                     return;
-                }
-
-                let rel_x = pos.x - row.x;
-                if rel_x < 0 {
-                    return;
-                }
-
-                let step = (self.star_size + dimensions::RATING_STAR_GAP) as i32;
-                let index = (rel_x / step) as u32;
-                // A star that the row dropped is not clickable either: the hit test and the
-                // ink are the same set of cells, so a press where no star was painted must
-                // not rate.
-                if index < self.max_rating && self.star_cell(index).is_some() {
-                    // Clicking the same star as the current rating toggles between that star
-                    // and clearing; any other star sets that many. Compared against the
-                    // whole-star projection so a 4.5 rating still toggles its fourth star off
-                    // rather than being treated as a fifth.
-                    let new_rating = if self.rating() == index + 1 { index } else { index + 1 };
-                    self.set_rating(new_rating);
-                }
+                };
+                // Clicking the same star as the current rating toggles between that star and
+                // clearing; any other star sets that many. Compared against the whole-star
+                // projection so a 4.5 rating still toggles its fourth star off rather than
+                // being treated as a fifth.
+                let new_rating = if self.rating() == index + 1 { index } else { index + 1 };
+                self.set_rating(new_rating);
             }
-            _ => {
-                self.base.handle_event(event);
-            }
+            Event::KeyPress { key, .. } => match *key {
+                key_codes::LEFT => {
+                    let next = (self.rating_exact() - 1.0).max(0.0);
+                    self.set_rating_exact(next);
+                }
+                key_codes::RIGHT => {
+                    let next = (self.rating_exact() + 1.0).min(self.max_rating as f32);
+                    self.set_rating_exact(next);
+                }
+                key_codes::SPACE => {
+                    // Space commits the preview, if there is one. With no preview it is a
+                    // no-op rather than an implicit "rate zero".
+                    if let Some(count) = self.hover_preview.take() {
+                        self.set_rating(count);
+                        self.base.request_redraw();
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
         }
     }
 }
@@ -950,5 +1043,92 @@ mod tests {
                 || svg.find("height=\"120\"").unwrap_or(usize::MAX) > 0,
             "no emitted fill may be the whole cell: {svg}"
         );
+    }
+
+    /// Hovering lights the stars up to the pointer without changing the committed value.
+    #[test]
+    fn hover_previews_stars_without_committing_them() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        let baseline = crate::widget::svg::render_to_svg(&mut r);
+
+        let row = r.star_row();
+        let mid_y = row.y + row.height as i32 / 2;
+        let third = r.star_cell(2).expect("the third star fits");
+        r.handle_event(&Event::MouseMove { pos: Point::new(third.x + 2, mid_y) });
+
+        assert_eq!(r.rating(), 0, "a hover is a preview, not a commit");
+        assert_eq!(r.hover_preview(), Some(3), "three stars are previewed");
+        let preview = crate::widget::svg::render_to_svg(&mut r);
+        assert_ne!(baseline, preview, "the preview must actually be painted");
+
+        r.handle_event(&Event::MouseLeave { pos: Point::new(third.x + 2, mid_y) });
+        assert_eq!(r.hover_preview(), None);
+        assert_eq!(
+            crate::widget::svg::render_to_svg(&mut r),
+            baseline,
+            "leaving the control restores the committed picture"
+        );
+    }
+
+    /// Arrow keys step the value by one star and clamp at both ends.
+    #[test]
+    fn arrow_keys_step_the_rating_and_clamp() {
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        r.set_rating(3);
+
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(r.rating(), 4);
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(r.rating(), 5);
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(r.rating(), 5, "the step clamps at the maximum");
+
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::LEFT, modifiers: 0 });
+        assert_eq!(r.rating(), 4);
+        r.set_rating(0);
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::LEFT, modifiers: 0 });
+        assert_eq!(r.rating(), 0, "and at zero");
+    }
+
+    /// Space commits the value the hover was previewing.
+    #[test]
+    fn space_commits_the_hover_preview() {
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        let row = r.star_row();
+        let mid_y = row.y + row.height as i32 / 2;
+        let fourth = r.star_cell(3).expect("the fourth star fits");
+        r.handle_event(&Event::MouseMove { pos: Point::new(fourth.x + 2, mid_y) });
+        assert_eq!(r.hover_preview(), Some(4));
+        assert_eq!(r.rating(), 0, "the preview has not committed yet");
+
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::SPACE, modifiers: 0 });
+        assert_eq!(r.rating(), 4, "Space commits the previewed value");
+        assert_eq!(r.hover_preview(), None, "and the preview is consumed");
+    }
+
+    /// Read-only ignores the pointer and the keyboard until it is switched off again.
+    #[test]
+    fn a_read_only_rating_ignores_mouse_and_keyboard() {
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        r.set_rating(2);
+        r.set_read_only(true);
+        assert!(r.is_read_only());
+
+        let row = r.star_row();
+        let mid_y = row.y + row.height as i32 / 2;
+        let first = r.star_cell(0).expect("the first star fits");
+        r.handle_event(&Event::MouseMove { pos: Point::new(first.x + 2, mid_y) });
+        assert_eq!(r.hover_preview(), None, "a read-only control previews nothing");
+        r.handle_event(&Event::MouseRelease { pos: Point::new(first.x + 2, mid_y), button: 1 });
+        assert_eq!(r.rating(), 2, "and nothing is committed");
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(r.rating(), 2, "the keyboard is ignored too");
+
+        r.set_read_only(false);
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(r.rating(), 3, "turning it off restores input");
     }
 }

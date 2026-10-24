@@ -10,6 +10,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::menu_toolbar::menu::Menu;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -112,6 +113,27 @@ pub struct MenuBar {
     /// the event is the same rule as everywhere else — the emitter states the fact while it still
     /// has it, rather than making the receiver guess it afterwards.
     pub triggered_entry: Signal1<(String, Rect)>,
+    /// A widget pinned to the bar's trailing edge, right of the last entry.
+    ///
+    /// The bar owns the box and paints the widget inside it; the widget owns its own
+    /// behaviour. A corner slot is what hosts use for an application search field or a
+    /// notification indicator that belongs to the chrome rather than to a menu.
+    corner: Option<Box<dyn Widget>>,
+    /// Drop-down menus attached to entries, keyed by entry index.
+    ///
+    /// An attached menu is what turns the bar's `triggered_entry` notification into a
+    /// working menu bar: the bar places the popup itself, forwards events to it, and
+    /// closes it when the entry is chosen again. A bar with no attachments behaves
+    /// exactly as before.
+    menus: Vec<(usize, Menu)>,
+    /// The entry whose attached menu is currently open.
+    open_menu_index: Option<usize>,
+    /// Whether a host has taken this bar over with the platform's native menu bar.
+    ///
+    /// Metadata for hosts and designers: the widget still paints and still answers
+    /// events, but a host that bridged the entries to the system menu can leave the
+    /// control hidden instead of drawing a duplicate.
+    native_menu_bar: bool,
 }
 impl MenuBar {
     /// Creates an empty bar with no active or hovered entry.
@@ -127,6 +149,10 @@ impl MenuBar {
             triggered: Signal1::new(),
             hovered_entry: Signal1::new(),
             triggered_entry: Signal1::new(),
+            corner: None,
+            menus: Vec::new(),
+            open_menu_index: None,
+            native_menu_bar: false,
         }
     }
     /// Returns the entries in visual order.
@@ -199,6 +225,197 @@ impl MenuBar {
         self.entries.clear();
         self.active_index = None;
         self.hovered_index = None;
+    }
+
+    /// Installs a widget in the trailing corner slot.
+    ///
+    /// The bar places it against its right edge and paints it after the entries. Passing
+    /// `None` removes it. The slot is opt-in, so a bar without one is unchanged.
+    pub fn set_corner_widget(&mut self, widget: Option<Box<dyn Widget>>) {
+        self.corner = widget;
+        self.base.request_redraw();
+    }
+
+    /// The corner widget, if one is installed.
+    pub fn corner_widget(&self) -> Option<&dyn Widget> {
+        self.corner.as_deref()
+    }
+
+    /// The box the corner widget is painted in, when one is installed.
+    ///
+    /// It is `size_hint().width` wide, capped to the band, and pinned to the bar's
+    /// trailing edge. `None` when no widget is installed or the band is too narrow
+    /// to give it a positive width.
+    pub fn corner_rect(&self) -> Option<Rect> {
+        let widget = self.corner.as_deref()?;
+        let band = self.band_rect();
+        let width = widget.size_hint().width.min(band.width);
+        if width == 0 {
+            return None;
+        }
+        Some(Rect::new(band.x + band.width as i32 - width as i32, band.y, width, band.height))
+    }
+
+    /// Attaches a drop-down menu to the entry at `index`.
+    ///
+    /// Returns `false` for an out-of-range index. Attaching replaces any menu already
+    /// attached to the same entry. An attached bar places the popup under the entry and
+    /// forwards events to it, and it stops emitting `triggered`/`triggered_entry` for
+    /// that entry so the host is not asked to open a second copy.
+    pub fn attach_menu(&mut self, index: usize, menu: Menu) -> bool {
+        if index >= self.entries.len() {
+            return false;
+        }
+        if let Some(slot) = self.menus.iter_mut().find(|(attached, _)| *attached == index) {
+            slot.1 = menu;
+        } else {
+            self.menus.push((index, menu));
+        }
+        true
+    }
+
+    /// Removes and returns the menu attached to `index`, if any.
+    pub fn detach_menu(&mut self, index: usize) -> Option<Menu> {
+        let slot = self.menus.iter().position(|(attached, _)| *attached == index)?;
+        if self.open_menu_index == Some(index) {
+            self.open_menu_index = None;
+        }
+        Some(self.menus.remove(slot).1)
+    }
+
+    /// The menu attached to `index`, if any.
+    pub fn attached_menu(&self, index: usize) -> Option<&Menu> {
+        self.menus.iter().find(|(attached, _)| *attached == index).map(|(_, menu)| menu)
+    }
+
+    /// The menu attached to `index`, mutably.
+    pub fn attached_menu_mut(&mut self, index: usize) -> Option<&mut Menu> {
+        self.menus.iter_mut().find(|(attached, _)| *attached == index).map(|(_, menu)| menu)
+    }
+
+    /// The entry whose attached menu is currently open.
+    pub fn open_menu_index(&self) -> Option<usize> {
+        self.open_menu_index
+    }
+
+    /// Opens the menu attached to `index` under its entry.
+    ///
+    /// Returns `false` when the entry has no attached menu or the entry is disabled.
+    pub fn open_attached_menu(&mut self, index: usize) -> bool {
+        let Some(rect) = self.entry_rect(index) else {
+            return false;
+        };
+        if !self.entries[index].is_enabled() {
+            return false;
+        }
+        let bar = self.geometry();
+        let Some(menu) = self.attached_menu_mut(index) else {
+            return false;
+        };
+        let anchor = Point::new(rect.x, rect.y + rect.height as i32);
+        // The bar's own geometry is the popup's viewport unless the host declares a
+        // larger one: a menu bar sits at the top of the surface its menus drop into, so
+        // its width is the honest horizontal bound.
+        let viewport = bar.union(&Rect::new(0, 0, bar.x.max(0) as u32 + bar.width, 4000));
+        menu.open_at(anchor, viewport);
+        self.open_menu_index = Some(index);
+        self.active_index = Some(index);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Closes the open attached menu, if one is open.
+    pub fn close_attached_menu(&mut self) {
+        if let Some(index) = self.open_menu_index.take() {
+            if let Some(menu) = self.attached_menu_mut(index) {
+                menu.hide();
+            }
+            self.active_index = None;
+            self.base.request_redraw();
+        }
+    }
+
+    /// The currently open attached menu, if any.
+    pub fn active_menu(&self) -> Option<&Menu> {
+        self.open_menu_index.and_then(|index| self.attached_menu(index))
+    }
+
+    /// The currently open attached menu, mutably.
+    pub fn active_menu_mut(&mut self) -> Option<&mut Menu> {
+        let index = self.open_menu_index?;
+        self.attached_menu_mut(index)
+    }
+
+    /// Declares that the host bridged this bar to the platform's native menu bar.
+    ///
+    /// Metadata only: the widget still paints and answers events, so a host is free to
+    /// hide it or leave it as a fallback. Defaults to `false`.
+    pub fn set_native(&mut self, native: bool) {
+        self.native_menu_bar = native;
+    }
+
+    /// Whether the host declared a native menu-bar bridge.
+    pub fn is_native(&self) -> bool {
+        self.native_menu_bar
+    }
+
+    /// Activates one entry: opens its attached menu, or reports the click.
+    fn activate_entry(&mut self, index: usize) {
+        if !self.entries.get(index).is_some_and(MenuBarEntry::is_enabled) {
+            return;
+        }
+        if self.menus.iter().any(|(attached, _)| *attached == index) {
+            self.open_attached_menu(index);
+            return;
+        }
+        self.active_index = Some(index);
+        let title = self.entries[index].title().to_string();
+        let entry = self.entry_rect(index);
+        self.triggered.emit(title.clone());
+        if let Some(entry) = entry {
+            self.triggered_entry.emit((title, entry));
+        }
+    }
+
+    /// Moves the active cursor by `delta` over enabled entries, wrapping at the ends.
+    fn move_active_entry(&mut self, delta: i32) {
+        let count = self.entries.len();
+        if count == 0 || delta == 0 {
+            return;
+        }
+        let mut index = self.active_index.unwrap_or(if delta > 0 { count - 1 } else { 0 });
+        for _ in 0..count {
+            index = (index as i32 + delta).rem_euclid(count as i32) as usize;
+            if self.entries[index].is_enabled() {
+                if self.open_menu_index.is_some() {
+                    // In the open state the cursor and the open menu move together: a
+                    // menu bar that left the old menu up while the highlight moved
+                    // would show two active entries.
+                    if self.attached_menu(index).is_none() {
+                        self.close_attached_menu();
+                    } else {
+                        self.open_attached_menu(index);
+                    }
+                } else {
+                    self.active_index = Some(index);
+                }
+                self.base.request_redraw();
+                return;
+            }
+        }
+    }
+
+    /// The entry whose title starts with `letter`, ignoring case and `&` markers.
+    fn mnemonic_entry(&self, letter: char) -> Option<usize> {
+        let wanted = letter.to_ascii_lowercase();
+        self.entries.iter().enumerate().position(|(_, entry)| {
+            entry
+                .title()
+                .trim_start_matches('&')
+                .chars()
+                .next()
+                .is_some_and(|first| first.to_ascii_lowercase() == wanted && entry.is_enabled())
+        })
     }
     /// The strip the bar actually paints: a full-width band
     /// [`dimensions::MENU_BAR_HEIGHT`] tall, pinned to the **top** of the area the control was
@@ -280,6 +497,10 @@ impl Widget for MenuBar {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, dimensions::MENU_BAR_HEIGHT)
+    }
+
+    fn has_open_popup(&self) -> bool {
+        self.open_menu_index.is_some()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -387,6 +608,29 @@ impl EventHandler for MenuBar {
         if !self.base.is_enabled() {
             return;
         }
+        // An open drop-down owns every event that is not aimed at the bar itself. The bar
+        // still takes presses and moves on its own band, because that is how an entry
+        // switches or closes the open menu.
+        if let Some(index) = self.open_menu_index {
+            let on_bar = match event {
+                Event::MousePress { pos, .. } | Event::MouseMove { pos } => {
+                    self.hit_entry(*pos).is_some()
+                }
+                _ => false,
+            };
+            if !on_bar {
+                let mut open = true;
+                if let Some(menu) = self.attached_menu_mut(index) {
+                    menu.handle_event(event);
+                    open = menu.is_visible();
+                }
+                if !open {
+                    self.open_menu_index = None;
+                    self.active_index = None;
+                }
+                return;
+            }
+        }
         match event {
             Event::MouseMove { pos } => {
                 // Derived rather than assigned: the entry under the pointer is only meaningful while
@@ -404,6 +648,16 @@ impl EventHandler for MenuBar {
                         }
                     }
                 }
+                // While a menu is open the highlight follows the pointer: hovering another
+                // entry switches the open drop-down instead of leaving the old one up. A bar
+                // whose entries have no attached menu keeps its original behaviour.
+                if let Some(open) = self.open_menu_index {
+                    if let Some(hovered) = self.hovered_index {
+                        if hovered != open && self.attached_menu(hovered).is_some() {
+                            self.open_attached_menu(hovered);
+                        }
+                    }
+                }
             }
             // The bar's own pointer fact is the source, so leaving it must clear the entry too —
             // otherwise the last entry stays highlighted on a bar the pointer has left.
@@ -412,19 +666,70 @@ impl EventHandler for MenuBar {
             }
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(idx) = self.hit_entry(*pos) {
-                    if self.entries[idx].is_enabled() {
-                        self.active_index = Some(idx);
-                        let title = self.entries[idx].title().to_string();
-                        let entry = self.entry_rect(idx);
-                        self.triggered.emit(title.clone());
-                        if let Some(entry) = entry {
-                            self.triggered_entry.emit((title, entry));
-                        }
+                    if !self.entries[idx].is_enabled() {
+                        return;
+                    }
+                    // Pressing the entry whose menu is open closes it; pressing any other
+                    // entry activates that one. This is a menu bar's toggle, not a second
+                    // independent way to open a popup.
+                    if self.open_menu_index == Some(idx) {
+                        self.close_attached_menu();
+                    } else {
+                        self.activate_entry(idx);
                     }
                 }
             }
-            Event::KeyPress { key, .. } if *key == key_codes::ESCAPE => {
-                self.active_index = None;
+            Event::KeyPress { key, modifiers } => {
+                // Alt+letter is the mnemonic path: it activates the entry whose title
+                // starts with that letter without moving through the bar first.
+                if modifiers & 0b0100 != 0 {
+                    if let Some(letter) = char::from_u32(*key).filter(char::is_ascii_alphabetic) {
+                        if let Some(index) = self.mnemonic_entry(letter) {
+                            self.activate_entry(index);
+                        }
+                    }
+                    return;
+                }
+                match *key {
+                    key_codes::ESCAPE => {
+                        // Escape closes the open menu first; with no menu it leaves the
+                        // active state, exactly as before.
+                        if self.open_menu_index.is_some() {
+                            self.close_attached_menu();
+                        } else {
+                            self.active_index = None;
+                        }
+                    }
+                    // F10 is the platform convention for entering the menu bar; 18 is the
+                    // Alt key itself, which many hosts report as a bare press.
+                    key_codes::F10 | 18 => {
+                        if self.open_menu_index.is_some() || self.active_index.is_some() {
+                            self.close_attached_menu();
+                            self.active_index = None;
+                        } else {
+                            let first = self.entries.iter().position(MenuBarEntry::is_enabled);
+                            if let Some(index) = first {
+                                if self.attached_menu(index).is_some() {
+                                    self.open_attached_menu(index);
+                                } else {
+                                    self.active_index = Some(index);
+                                }
+                            }
+                        }
+                    }
+                    key_codes::LEFT => self.move_active_entry(-1),
+                    key_codes::RIGHT => self.move_active_entry(1),
+                    key_codes::DOWN => {
+                        if let Some(index) = self.active_index {
+                            self.activate_entry(index);
+                        } else if let Some(first) =
+                            self.entries.iter().position(MenuBarEntry::is_enabled)
+                        {
+                            self.activate_entry(first);
+                        }
+                    }
+                    _ => {}
+                }
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -527,6 +832,25 @@ impl Draw for MenuBar {
             );
             x += w;
         }
+
+        // The corner widget is painted last, inside the box `corner_rect` reports, so the
+        // entry run and the corner slot cannot overlap.
+        let corner_rect = self.corner_rect();
+        if let (Some(rect), Some(corner)) = (corner_rect, self.corner.as_mut()) {
+            corner.set_geometry(rect);
+            if let Some(drawable) = crate::widget::draw_bridge::draw_of(corner.as_mut()) {
+                drawable.draw(context);
+            }
+        }
+
+        // The open drop-down is drawn after the bar, so its popup sits above the chrome.
+        if let Some(index) = self.open_menu_index {
+            if let Some(menu) = self.attached_menu_mut(index) {
+                if let Some(drawable) = crate::widget::draw_bridge::draw_of(menu) {
+                    drawable.draw(context);
+                }
+            }
+        }
     }
 }
 
@@ -573,5 +897,101 @@ mod tests {
         menu_bar.add_menu("File");
         assert!(menu_bar.entry_rect(0).is_some());
         assert!(menu_bar.entry_rect(1).is_none());
+    }
+
+    /// An attached menu opens under its own entry, draws, and toggles closed.
+    #[test]
+    fn an_attached_menu_opens_under_its_entry_and_toggles() {
+        let mut bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        bar.add_menu("File");
+        let mut menu = Menu::new("File", Rect::new(0, 0, 160, 100));
+        menu.add_action("Open");
+        assert!(bar.attach_menu(0, menu));
+
+        let triggered = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sink = triggered.clone();
+        bar.triggered.connect(move |_| {
+            sink.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        let entry = bar.entry_rect(0).expect("the entry has a box");
+        bar.handle_event(&Event::mouse_press(entry.x + 4, entry.y + 4, 1));
+        assert_eq!(bar.open_menu_index(), Some(0));
+        assert!(bar.active_menu().expect("an attached menu").is_visible());
+        assert_eq!(
+            triggered.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "an attached menu replaces the host notification, it does not duplicate it"
+        );
+        let menu_geometry = bar.active_menu().expect("an attached menu").geometry();
+        assert_eq!(menu_geometry.x, entry.x);
+        assert_eq!(menu_geometry.y, entry.y + entry.height as i32);
+
+        // `has_open_popup` is what the runtime uses to route outside presses here.
+        assert!(bar.has_open_popup());
+
+        // Pressing the same entry again closes it.
+        bar.handle_event(&Event::mouse_press(entry.x + 4, entry.y + 4, 1));
+        assert_eq!(bar.open_menu_index(), None);
+        assert!(!bar.has_open_popup());
+    }
+
+    /// F10 enters the bar, the arrows walk it, and Alt+letter jumps by title.
+    #[test]
+    fn keyboard_enters_walks_and_uses_mnemonics() {
+        let mut bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        bar.add_menu("File");
+        bar.add_menu("Edit");
+        bar.add_menu("View");
+
+        let triggered = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = triggered.clone();
+        bar.triggered.connect(move |title| {
+            sink.lock().unwrap().push(title.to_string());
+        });
+
+        bar.handle_event(&Event::key_press(key_codes::F10, 0));
+        assert_eq!(bar.active_index(), Some(0), "F10 enters at the first entry");
+        bar.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        assert_eq!(bar.active_index(), Some(1));
+        bar.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        assert_eq!(bar.active_index(), Some(2));
+        bar.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        assert_eq!(bar.active_index(), Some(0), "the cursor wraps");
+
+        // Alt is bit 2 of the event modifier mask.
+        bar.handle_event(&Event::key_press(86, 0b0100));
+        assert_eq!(bar.active_index(), Some(2));
+        assert_eq!(&*triggered.lock().unwrap(), &["View".to_string()]);
+
+        bar.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+        assert_eq!(bar.active_index(), None);
+    }
+
+    /// The corner widget gets a box pinned to the bar's trailing edge.
+    #[test]
+    fn the_corner_widget_owns_the_trailing_box() {
+        let mut bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        bar.add_menu("File");
+        assert!(bar.corner_rect().is_none(), "no widget, no slot");
+
+        bar.set_corner_widget(Some(Box::new(crate::widget::Label::new(
+            "status".to_string(),
+            Rect::new(0, 0, 80, 24),
+        ))));
+        let rect = bar.corner_rect().expect("the slot exists once a widget is installed");
+        let wanted = bar.corner_widget().expect("installed").size_hint().width;
+        assert_eq!(rect.width, wanted, "the slot is the widget's own size hint");
+        assert_eq!(rect.x + rect.width as i32, 300, "pinned to the trailing edge");
+        assert!(bar.corner_widget().is_some());
+    }
+
+    /// `native` is a host declaration, not a repaint switch.
+    #[test]
+    fn the_native_flag_is_metadata() {
+        let mut bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        assert!(!bar.is_native(), "a drawn bar is the default");
+        bar.set_native(true);
+        assert!(bar.is_native());
     }
 }

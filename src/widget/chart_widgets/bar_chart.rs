@@ -21,6 +21,8 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_f32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -29,7 +31,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::chart_widgets::adapter::ChartContextAdapter;
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::charts::{
-    compute_cartesian_layout, draw_y_ticks, CartesianLayout,
+    compute_cartesian_layout_measured, draw_legend_entries, draw_y_ticks, CartesianLayout,
 };
 use crate::widget::metrics::role_font;
 // The chrome derivation is shared with the engine-backed path deliberately: the
@@ -82,6 +84,53 @@ impl BarEntry {
     }
 }
 
+/// Which way the bars grow from the axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BarOrientation {
+    /// Bars grow upward from the horizontal axis; the default.
+    #[default]
+    Vertical,
+    /// Bars grow rightward from the vertical axis, one category per row.
+    Horizontal,
+}
+
+/// How several [`BarSeries`] share one category slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BarGrouping {
+    /// One bar per series, side by side inside the category slot; the default.
+    #[default]
+    Grouped,
+    /// One bar per category, split by the series' contributions.
+    Stacked,
+}
+
+/// One named series of category values in a [`BarChart`].
+///
+/// `values` is indexed by category: entry `n` is the bar for the chart's category label
+/// `n`. A `color` overrides the palette entry for the whole series.
+#[derive(Clone, Debug)]
+pub struct BarSeries {
+    /// The label shown in the legend. Empty hides the entry.
+    pub name: String,
+    /// One value per category.
+    pub values: Vec<f64>,
+    /// The caller's fill colour, or `None` to follow the chart's palette.
+    pub color: Option<Color>,
+}
+
+impl BarSeries {
+    /// Creates a named series from its per-category values.
+    pub fn new(name: impl Into<String>, values: Vec<f64>) -> Self {
+        Self { name: name.into(), values, color: None }
+    }
+
+    /// Sets the series colour, replacing the palette entry.
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+}
+
 /// A vertical bar chart widget for categorical data.
 pub struct BarChart {
     base: BaseWidget,
@@ -92,6 +141,26 @@ pub struct BarChart {
     show_grid: bool,
     min_value: Option<f64>,
     max_value: Option<f64>,
+    /// Multi-series data. When empty, `bars` is the single series.
+    series: Vec<BarSeries>,
+    /// Category labels for multi-series mode.
+    category_labels: Vec<String>,
+    orientation: BarOrientation,
+    grouping: BarGrouping,
+    show_legend: bool,
+    show_tooltip: bool,
+    hovered: Option<usize>,
+    /// The bar growth fraction, used only while `animate_bars` is set.
+    reveal: PropertyDriver,
+    animate_bars: bool,
+    /// The plot area from the last paint, reused for hit testing.
+    last_plot_area: Option<Rect>,
+    /// Emitted with the category index under the pointer when hover enters a bar.
+    pub bar_hovered: Signal1<usize>,
+    /// Emitted with the category index when the pointer leaves a bar.
+    pub bar_unhovered: Signal1<usize>,
+    /// Emitted with the category index of a clicked bar.
+    pub bar_clicked: Signal1<usize>,
 }
 
 /// Font size of the value label drawn above each bar, in points.
@@ -120,6 +189,188 @@ impl BarChart {
             show_grid: true,
             min_value: None,
             max_value: None,
+            series: Vec::new(),
+            category_labels: Vec::new(),
+            orientation: BarOrientation::Vertical,
+            grouping: BarGrouping::Grouped,
+            show_legend: false,
+            show_tooltip: false,
+            hovered: None,
+            reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
+            animate_bars: false,
+            last_plot_area: None,
+            bar_hovered: Signal1::new(),
+            bar_unhovered: Signal1::new(),
+            bar_clicked: Signal1::new(),
+        }
+    }
+
+    /// Replaces the multi-series data and its category labels at once.
+    ///
+    /// Non-finite values are dropped. When `series` is non-empty the chart draws in
+    /// multi-series mode and ignores [`Self::bars`]; setting an empty list returns it to the
+    /// single-series model.
+    pub fn set_series(&mut self, series: Vec<BarSeries>, category_labels: Vec<String>) {
+        self.series = series
+            .into_iter()
+            .map(|mut item| {
+                item.values.retain(|value| value.is_finite());
+                item
+            })
+            .collect();
+        self.category_labels = category_labels;
+        self.restart_growth();
+        self.revalidate_hover();
+        self.base.request_redraw();
+    }
+
+    /// Returns the multi-series data.
+    pub fn series(&self) -> &[BarSeries] {
+        &self.series
+    }
+
+    /// Returns the category labels used in multi-series mode.
+    pub fn category_labels(&self) -> &[String] {
+        &self.category_labels
+    }
+
+    /// Sets the bar direction.
+    pub fn set_orientation(&mut self, orientation: BarOrientation) {
+        if self.orientation == orientation {
+            return;
+        }
+        self.orientation = orientation;
+        self.base.request_redraw();
+    }
+
+    /// Returns the bar direction.
+    pub fn orientation(&self) -> BarOrientation {
+        self.orientation
+    }
+
+    /// Sets how several series share a category slot.
+    pub fn set_grouping(&mut self, grouping: BarGrouping) {
+        if self.grouping == grouping {
+            return;
+        }
+        self.grouping = grouping;
+        self.base.request_redraw();
+    }
+
+    /// Returns the grouping mode.
+    pub fn grouping(&self) -> BarGrouping {
+        self.grouping
+    }
+
+    /// Shows or hides the multi-series legend.
+    pub fn set_show_legend(&mut self, show: bool) {
+        if self.show_legend == show {
+            return;
+        }
+        self.show_legend = show;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the legend is shown.
+    pub fn show_legend(&self) -> bool {
+        self.show_legend
+    }
+
+    /// Enables the hover tooltip.
+    pub fn set_show_tooltip(&mut self, show: bool) {
+        if self.show_tooltip == show {
+            return;
+        }
+        self.show_tooltip = show;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the hover tooltip is enabled.
+    pub fn show_tooltip(&self) -> bool {
+        self.show_tooltip
+    }
+
+    /// Enables the bar growth animation.
+    ///
+    /// The animation is opt-in: a chart that never asks for it paints at its values on the
+    /// first frame, exactly as before.
+    pub fn set_animate_bars(&mut self, animate: bool) {
+        if self.animate_bars == animate {
+            return;
+        }
+        self.animate_bars = animate;
+        if !animate {
+            self.reveal.jump_to(1.0);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the bar growth animation is enabled.
+    pub fn animate_bars(&self) -> bool {
+        self.animate_bars
+    }
+
+    /// How far the bars have grown, in `0.0..=1.0`.
+    pub fn growth_progress(&self) -> f32 {
+        if self.animate_bars {
+            self.reveal.value()
+        } else {
+            1.0
+        }
+    }
+
+    /// The hovered category index, if any.
+    pub fn hovered_bar(&self) -> Option<usize> {
+        self.hovered
+    }
+
+    /// Restarts the growth animation when it is enabled.
+    fn restart_growth(&mut self) {
+        if self.animate_bars {
+            self.reveal.jump_to(0.0);
+            self.reveal.set_target(1.0);
+        }
+    }
+
+    /// Drops a hover index the new data no longer has a bar for.
+    fn revalidate_hover(&mut self) {
+        let categories = self.category_count();
+        if self.hovered.is_some_and(|index| index >= categories) {
+            if let Some(index) = self.hovered.take() {
+                self.bar_unhovered.emit(index);
+            }
+        }
+    }
+
+    /// The number of categories the chart draws.
+    fn category_count(&self) -> usize {
+        if self.series.is_empty() {
+            self.bars.len()
+        } else {
+            self.series
+                .iter()
+                .map(|series| series.values.len())
+                .max()
+                .unwrap_or(0)
+                .max(self.category_labels.len())
+        }
+    }
+
+    /// The colour of series `index`.
+    fn series_color(&self, index: usize) -> Color {
+        match self.series.get(index).and_then(|series| series.color) {
+            Some(color) => color,
+            None if index == 0 => self.bar_color,
+            None => {
+                const PALETTE: [Color; 5] = [
+                    Color::rgb(219, 68, 55),
+                    Color::rgb(244, 180, 0),
+                    Color::rgb(15, 157, 88),
+                    Color::rgb(171, 71, 188),
+                    Color::rgb(0, 172, 193),
+                ];
+                PALETTE[(index - 1) % PALETTE.len()]
+            }
         }
     }
 
@@ -129,6 +380,8 @@ impl BarChart {
     /// drawn at a fabricated position (see [`is_finite_sample`](crate::widget::chart_widgets::is_finite_sample)).
     pub fn set_bars(&mut self, entries: Vec<BarEntry>) {
         self.bars = entries.into_iter().filter(|bar| bar.value.is_finite()).collect();
+        self.restart_growth();
+        self.revalidate_hover();
         self.base.request_redraw();
     }
 
@@ -255,20 +508,68 @@ impl BarChart {
 
     /// Resolves the Y range for the chart.
     fn resolve_y_range(&self) -> (f64, f64) {
-        match (self.min_value, self.max_value) {
+        let (mut min, mut max) = match (self.min_value, self.max_value) {
             (Some(min), Some(max)) => (min, max),
             _ => {
-                if self.bars.is_empty() {
+                if self.category_count() == 0 {
                     return (0.0, 10.0);
                 }
-                let min = self.bars.iter().map(|b| b.value).fold(f64::INFINITY, f64::min).min(0.0);
-                let max = self.bars.iter().map(|b| b.value).fold(f64::NEG_INFINITY, f64::max);
-                if (max - min).abs() < f64::EPSILON {
-                    return (0.0, max.max(1.0) + 1.0);
-                }
-                let padding = (max - min) * 0.1;
-                (min - padding, max + padding)
+                let (low, high) = self.value_extent();
+                (low.min(0.0), high)
             }
+        };
+        if !min.is_finite() || !max.is_finite() {
+            return (0.0, 10.0);
+        }
+        if (max - min).abs() < f64::EPSILON {
+            min = 0.0;
+            max = max.max(1.0) + 1.0;
+        }
+        if self.min_value.is_none() || self.max_value.is_none() {
+            let padding = (max - min) * 0.1;
+            min -= padding;
+            max += padding;
+        }
+        (min, max)
+    }
+
+    /// The lowest and highest drawn value, across the active data model.
+    fn value_extent(&self) -> (f64, f64) {
+        let mut min = f64::INFINITY;
+        let mut max = f64::NEG_INFINITY;
+        if self.series.is_empty() {
+            for bar in &self.bars {
+                min = min.min(bar.value);
+                max = max.max(bar.value);
+            }
+        } else if self.grouping == BarGrouping::Stacked {
+            let categories = self.category_count();
+            for category in 0..categories {
+                let (mut positive, mut negative) = (0.0f64, 0.0f64);
+                for series in &self.series {
+                    if let Some(value) = series.values.get(category) {
+                        if *value >= 0.0 {
+                            positive += value;
+                        } else {
+                            negative += value;
+                        }
+                    }
+                }
+                min = min.min(negative);
+                max = max.max(positive);
+            }
+        } else {
+            for series in &self.series {
+                for value in &series.values {
+                    min = min.min(*value);
+                    max = max.max(*value);
+                }
+            }
+        }
+        if !min.is_finite() || !max.is_finite() {
+            (0.0, 10.0)
+        } else {
+            (min, max)
         }
     }
 
@@ -308,6 +609,20 @@ impl Widget for BarChart {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(400, 300)
     }
+
+    /// Advances the bar growth animation by `delta_ms`.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.animate_bars {
+            return false;
+        }
+        self.reveal.tick(delta_ms)
+    }
+
+    /// Whether the bar growth animation still owes frames.
+    fn is_animating(&self) -> bool {
+        self.animate_bars && self.reveal.is_moving()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -358,7 +673,18 @@ impl Draw for BarChart {
         // a compact local preamble runs instead — see `draw_backdrop_without_engine`.
         #[cfg(feature = "chart")]
         let plot_area = {
-            let layout = compute_cartesian_layout(rect, true, true, 0);
+            let widest_y_label = {
+                let font = role_font(self.base.style(), 10.0);
+                let mut widest = 0u32;
+                for step in 0..=4 {
+                    let value = y_min + (y_max - y_min) * f64::from(step) / 4.0;
+                    widest = widest.max(context.measure_text(&format!("{value:.1}"), &font).width);
+                }
+                widest as f32
+            };
+            let legend_items = if self.show_legend { self.series.len() } else { 0 };
+            let layout =
+                compute_cartesian_layout_measured(rect, true, true, legend_items, widest_y_label);
             let plot_area = plot_rect(&layout);
             let mut adapter = ChartContextAdapter::new(context);
 
@@ -380,13 +706,29 @@ impl Draw for BarChart {
             // `draw_y_ticks` emits the grid lines *and* their value labels, so the
             // tick density is no longer hard-coded in this widget.
             draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, self.show_grid);
+            if self.show_legend {
+                let entries: Vec<(&str, Color)> = self
+                    .series
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, series)| !series.name.is_empty())
+                    .map(|(index, series)| (series.name.as_str(), self.series_color(index)))
+                    .collect();
+                draw_legend_entries(&mut adapter, &layout, &entries);
+            }
             plot_area
         };
 
         #[cfg(not(feature = "chart"))]
         let plot_area = self.draw_backdrop_without_engine(context, is_enabled, disabled_color);
+        self.last_plot_area = Some(plot_area);
 
         // ── Bars ──
+        if !self.series.is_empty() {
+            self.draw_series_bars(context, plot_area, y_min, y_max, is_enabled);
+            self.draw_hover_overlay(context, plot_area);
+            return;
+        }
         if self.bars.is_empty() {
             return;
         }
@@ -401,6 +743,7 @@ impl Draw for BarChart {
         let baseline_y = plot_area.y + plot_area.height as i32;
         let height_range = plot_area.height as f64;
         let value_span = (y_max - y_min).max(f64::EPSILON);
+        let growth = f64::from(self.growth_progress());
 
         // # Why the label's face and its line height are resolved once
         //
@@ -424,7 +767,7 @@ impl Draw for BarChart {
 
             let bar_x = plot_area.x
                 + (spacing_pixels * (i as f32 + 1.0) + bar_slot_width * i as f32) as i32;
-            let bar_height = ((bar.value - y_min) / value_span * height_range) as i32;
+            let bar_height = ((bar.value - y_min) * growth / value_span * height_range) as i32;
             let bar_y = baseline_y - bar_height;
 
             if bar_height > 0 {
@@ -470,6 +813,220 @@ impl Draw for BarChart {
                 draw_label(context, &bar.label, label_band, &category_font);
             }
         }
+        self.draw_hover_overlay(context, plot_area);
+    }
+}
+
+impl BarChart {
+    /// Draws the multi-series bars in the configured orientation and grouping.
+    fn draw_series_bars(
+        &self,
+        context: &mut RenderContext,
+        plot_area: Rect,
+        y_min: f64,
+        y_max: f64,
+        is_enabled: bool,
+    ) {
+        let categories = self.category_count();
+        if categories == 0 || self.series.is_empty() {
+            return;
+        }
+        let disabled = Color::DISABLED_FOREGROUND;
+        let growth = f64::from(self.growth_progress());
+        let span = (y_max - y_min).max(f64::EPSILON);
+        let font = role_font(self.base.style(), CATEGORY_FONT_SIZE);
+        let line_height = context.measure_text("M", &font).height.max(1) as i32;
+        let series_count = self.series.len().max(1);
+
+        match self.orientation {
+            BarOrientation::Vertical => {
+                let slot = (plot_area.width as f32 / categories as f32).max(1.0);
+                let baseline = plot_area.y + plot_area.height as i32;
+                for category in 0..categories {
+                    let slot_x = plot_area.x + (slot * category as f32) as i32;
+                    let (mut positive, mut negative) = (0.0f64, 0.0f64);
+                    for (series_index, series) in self.series.iter().enumerate() {
+                        let Some(value) = series.values.get(category).copied() else {
+                            continue;
+                        };
+                        let color =
+                            if is_enabled { self.series_color(series_index) } else { disabled };
+                        let (x, bar_width) = match self.grouping {
+                            BarGrouping::Grouped => {
+                                let width = (slot / series_count as f32).max(1.0);
+                                (slot_x as f32 + width * series_index as f32, width - 1.0)
+                            }
+                            BarGrouping::Stacked => (slot_x as f32, (slot - 2.0).max(1.0)),
+                        };
+                        let start = match self.grouping {
+                            BarGrouping::Grouped => y_min,
+                            BarGrouping::Stacked if value >= 0.0 => positive,
+                            BarGrouping::Stacked => negative,
+                        };
+                        let end = start + value * growth;
+                        let top = Self::value_pixel(end.max(start), y_min, span, plot_area);
+                        let bottom = Self::value_pixel(end.min(start), y_min, span, plot_area);
+                        let height = (bottom - top).max(1) as u32;
+                        if is_enabled {
+                            context.fill_rect(
+                                Rect::new(x as i32, top, bar_width.max(1.0) as u32, height),
+                                color,
+                            );
+                        }
+                        if value >= 0.0 {
+                            positive = end;
+                        } else {
+                            negative = end;
+                        }
+                    }
+                    if let Some(label) = self.category_labels.get(category) {
+                        let band = Rect::new(
+                            slot_x,
+                            baseline + LABEL_ROW_TOP,
+                            slot.max(1.0) as u32,
+                            line_height as u32,
+                        );
+                        draw_label(context, label, band, &font);
+                    }
+                }
+            }
+            BarOrientation::Horizontal => {
+                let slot = (plot_area.height as f32 / categories as f32).max(1.0);
+                let axis_x = plot_area.x;
+                for category in 0..categories {
+                    let slot_y = plot_area.y + (slot * category as f32) as i32;
+                    let (mut positive, mut negative) = (0.0f64, 0.0f64);
+                    for (series_index, series) in self.series.iter().enumerate() {
+                        let Some(value) = series.values.get(category).copied() else {
+                            continue;
+                        };
+                        let color =
+                            if is_enabled { self.series_color(series_index) } else { disabled };
+                        let (y, bar_height) = match self.grouping {
+                            BarGrouping::Grouped => {
+                                let height = (slot / series_count as f32).max(1.0);
+                                (slot_y as f32 + height * series_index as f32, height - 1.0)
+                            }
+                            BarGrouping::Stacked => (slot_y as f32, (slot - 2.0).max(1.0)),
+                        };
+                        let start = match self.grouping {
+                            BarGrouping::Grouped => 0.0,
+                            BarGrouping::Stacked if value >= 0.0 => positive,
+                            BarGrouping::Stacked => negative,
+                        };
+                        let end = start + value * growth;
+                        let x0 = axis_x + ((start - 0.0) / span * plot_area.width as f64) as i32;
+                        let x1 = axis_x + ((end - 0.0) / span * plot_area.width as f64) as i32;
+                        let left = x0.min(x1);
+                        let width = (x0 - x1).unsigned_abs().max(1);
+                        if is_enabled {
+                            context.fill_rect(
+                                Rect::new(left, y as i32, width, bar_height.max(1.0) as u32),
+                                color,
+                            );
+                        }
+                        if value >= 0.0 {
+                            positive = end;
+                        } else {
+                            negative = end;
+                        }
+                    }
+                    if let Some(label) = self.category_labels.get(category) {
+                        let band = Rect::new(
+                            plot_area.x.saturating_sub(60),
+                            slot_y,
+                            58,
+                            line_height as u32,
+                        );
+                        draw_label(context, label, band, &font);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The y pixel for a value in a vertical plot.
+    fn value_pixel(value: f64, y_min: f64, span: f64, plot_area: Rect) -> i32 {
+        let baseline = plot_area.y + plot_area.height as i32;
+        let height = plot_area.height as f64;
+        baseline - (((value - y_min) / span) * height) as i32
+    }
+
+    /// Paints the hover highlight and, when enabled, its tooltip.
+    fn draw_hover_overlay(&self, context: &mut RenderContext, plot_area: Rect) {
+        let Some(index) = self.hovered else {
+            return;
+        };
+        let categories = self.category_count();
+        if categories == 0 {
+            return;
+        }
+        let slot = match self.orientation {
+            BarOrientation::Vertical => plot_area.width as f32 / categories as f32,
+            BarOrientation::Horizontal => plot_area.height as f32 / categories as f32,
+        };
+        let highlight = axis_chrome_color(0.10);
+        let band = match self.orientation {
+            BarOrientation::Vertical => Rect::new(
+                plot_area.x + (slot * index as f32) as i32,
+                plot_area.y,
+                slot.max(1.0) as u32,
+                plot_area.height,
+            ),
+            BarOrientation::Horizontal => Rect::new(
+                plot_area.x,
+                plot_area.y + (slot * index as f32) as i32,
+                plot_area.width,
+                slot.max(1.0) as u32,
+            ),
+        };
+        context.fill_rect(band, highlight);
+        if !self.show_tooltip {
+            return;
+        }
+        let label = self
+            .category_labels
+            .get(index)
+            .cloned()
+            .or_else(|| self.bars.get(index).map(|bar| bar.label.clone()))
+            .unwrap_or_else(|| index.to_string());
+        let font = role_font(self.base.style(), 10.0);
+        let metrics = context.measure_text(&label, &font);
+        let width = metrics.width as i32 + 8;
+        let height = metrics.height.max(1) as i32 + 8;
+        let mut x = band.x + 6;
+        let mut y = band.y + 6;
+        if x + width > plot_area.x + plot_area.width as i32 {
+            x = (plot_area.x + plot_area.width as i32 - width).max(plot_area.x);
+        }
+        if y + height > plot_area.y + plot_area.height as i32 {
+            y = (plot_area.y + plot_area.height as i32 - height).max(plot_area.y);
+        }
+        let surface = self.base.style().background_color.unwrap_or_else(|| axis_chrome_color(0.96));
+        let ink = surface.contrast_color();
+        let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
+        context.fill_rect(box_rect, surface);
+        context.draw_rect(box_rect, ink.with_alpha_f32(0.35));
+        context.draw_text_line(box_rect, &label, &font, ink, HorizontalAlignment::Center);
+    }
+
+    /// Maps a pointer position to the category slot under it.
+    fn category_at(&self, pos: Point, plot_area: Rect) -> Option<usize> {
+        let categories = self.category_count();
+        if categories == 0 || !plot_area.contains_point(pos) {
+            return None;
+        }
+        let index = match self.orientation {
+            BarOrientation::Vertical => {
+                let slot = (plot_area.width as f32 / categories as f32).max(1.0);
+                ((pos.x - plot_area.x) as f32 / slot) as usize
+            }
+            BarOrientation::Horizontal => {
+                let slot = (plot_area.height as f32 / categories as f32).max(1.0);
+                ((pos.y - plot_area.y) as f32 / slot) as usize
+            }
+        };
+        (index < categories).then_some(index)
     }
 }
 
@@ -544,6 +1101,44 @@ impl BarChart {
 impl EventHandler for BarChart {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        let plot_area = match self.last_plot_area {
+            Some(area) => area,
+            None => return,
+        };
+        match event {
+            Event::MouseMove { pos } => {
+                let next = self.category_at(*pos, plot_area);
+                if next != self.hovered {
+                    if let Some(index) = self.hovered {
+                        self.bar_unhovered.emit(index);
+                    }
+                    self.hovered = next;
+                    if let Some(index) = next {
+                        self.bar_hovered.emit(index);
+                    }
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if let Some(index) = self.hovered.take() {
+                    self.bar_unhovered.emit(index);
+                    self.base.request_redraw();
+                }
+            }
+            Event::MousePress { pos, button, .. } if *button == 1 => {
+                self.base.set_mouse_pressed(true);
+                if let Some(index) = self.category_at(*pos, plot_area) {
+                    self.bar_clicked.emit(index);
+                }
+            }
+            Event::MouseRelease { button, .. } if *button == 1 => {
+                self.base.set_mouse_pressed(false);
+            }
+            _ => { /* Other events are not relevant */ }
+        }
     }
 }
 
@@ -849,5 +1444,57 @@ mod tests {
         );
         assert!(!base.is_empty(), "the chart must paint something for this test to mean anything");
         assert_ne!(base, big, "a caller-authored larger font must change what the chart paints");
+    }
+
+    /// Multi-series grouped and stacked modes both paint, and the model round-trips.
+    #[test]
+    fn multi_series_grouped_and_stacked_render() {
+        let mut bc = BarChart::new(Rect::new(0, 0, 400, 260));
+        bc.set_series(
+            vec![
+                BarSeries::new("revenue", vec![3.0, 5.0, 2.0]),
+                BarSeries::new("cost", vec![1.0, 2.0, 4.0]),
+            ],
+            vec!["Q1".to_string(), "Q2".to_string(), "Q3".to_string()],
+        );
+        assert_eq!(bc.series().len(), 2);
+        assert_eq!(bc.category_count(), 3);
+        let grouped = render_to_svg(&mut bc);
+        bc.set_grouping(BarGrouping::Stacked);
+        let stacked = render_to_svg(&mut bc);
+        assert!(grouped.starts_with("<svg") && stacked.starts_with("<svg"));
+        assert_ne!(grouped, stacked, "stacking changes the painted bars");
+        bc.set_orientation(BarOrientation::Horizontal);
+        assert_eq!(bc.orientation(), BarOrientation::Horizontal);
+        assert!(render_to_svg(&mut bc).starts_with("<svg"));
+    }
+
+    /// The growth animation is opt-in and advances toward its target.
+    #[test]
+    fn bar_growth_animation_advances_when_enabled() {
+        let mut bc = BarChart::new(Rect::new(0, 0, 300, 200));
+        bc.set_bars(vec![BarEntry::new("A", 5.0)]);
+        assert_eq!(bc.growth_progress(), 1.0, "the default is already grown");
+        bc.set_animate_bars(true);
+        bc.set_bars(vec![BarEntry::new("A", 5.0)]);
+        assert_eq!(bc.growth_progress(), 0.0);
+        assert!(bc.is_animating());
+        let _ = bc.tick(16);
+        assert!(bc.growth_progress() > 0.0, "a frame advances the reveal");
+    }
+
+    /// Hover reports the category under the pointer and leaves cleanly.
+    #[test]
+    fn hovering_a_category_reports_it() {
+        let mut bc = BarChart::new(Rect::new(0, 0, 300, 200));
+        bc.set_bars(vec![BarEntry::new("A", 1.0), BarEntry::new("B", 2.0)]);
+        let _ = render_to_svg(&mut bc);
+        let plot = bc.last_plot_area.expect("the paint records the plot area");
+        bc.handle_event(&Event::MouseMove {
+            pos: Point::new(plot.x + plot.width as i32 / 4, plot.y + 4),
+        });
+        assert_eq!(bc.hovered_bar(), Some(0));
+        bc.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert_eq!(bc.hovered_bar(), None);
     }
 }

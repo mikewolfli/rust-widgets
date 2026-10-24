@@ -9,7 +9,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::Signal1;
-use crate::undo::{UndoStack, ValueCommand};
+use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -26,6 +26,99 @@ const TEXT_TOP: i32 = 36;
 const TEXT_ROW_HEIGHT: i32 = 16;
 /// The bottom inset a row has to clear to be painted.
 const TEXT_BOTTOM_INSET: i32 = 8;
+
+/// An undo step that records only the bytes that differ between two document states.
+///
+/// A whole-document snapshot would store both versions on every keystroke. The common
+/// prefix and suffix are found on character boundaries, so the command keeps only the
+/// changed run and an offset, and an undo touches O(edit) bytes instead of O(document).
+struct MarkdownTextDeltaCommand {
+    id: CommandId,
+    target: Rc<RefCell<String>>,
+    offset: usize,
+    removed: String,
+    inserted: String,
+}
+
+impl MarkdownTextDeltaCommand {
+    /// Builds a command for a mutation that has already been applied.
+    fn new(target: Rc<RefCell<String>>, before: &str, after: &str) -> Self {
+        let mut prefix = 0usize;
+        for (old, new) in before.chars().zip(after.chars()) {
+            if old != new {
+                break;
+            }
+            prefix += old.len_utf8();
+        }
+        let mut suffix = 0usize;
+        for ((_, old), (_, new)) in
+            before[prefix..].char_indices().rev().zip(after[prefix..].char_indices().rev())
+        {
+            if old != new {
+                break;
+            }
+            suffix += old.len_utf8();
+        }
+        Self {
+            id: CommandId(
+                NEXT_MARKDOWN_COMMAND_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+            ),
+            target,
+            offset: prefix,
+            removed: before[prefix..before.len() - suffix].to_string(),
+            inserted: after[prefix..after.len() - suffix].to_string(),
+        }
+    }
+
+    /// Replaces the recorded range with `insert`.
+    fn splice(&self, remove_len: usize, insert: &str) {
+        let mut text = self.target.borrow_mut();
+        let start = self.offset.min(text.len());
+        let end = (start + remove_len).min(text.len());
+        if start <= end {
+            text.replace_range(start..end, insert);
+        }
+    }
+}
+
+/// Counter for [`MarkdownTextDeltaCommand`] ids.
+static NEXT_MARKDOWN_COMMAND_ID: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(1);
+
+impl UndoCommand for MarkdownTextDeltaCommand {
+    fn id(&self) -> CommandId {
+        self.id
+    }
+
+    fn description(&self) -> CommandDescription {
+        CommandDescription {
+            text: "Edit text".to_string(),
+            timestamp_ms: 0,
+            command_type: "markdown_editor_text",
+        }
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        self.splice(self.removed.len(), &self.inserted.clone());
+        Ok(())
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        self.splice(self.inserted.len(), &self.removed.clone());
+        Ok(())
+    }
+}
+
+/// One heading in the document outline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkdownOutlineEntry {
+    /// Zero-based line index.
+    pub line: usize,
+    /// Heading level, `1..=6`.
+    pub level: u8,
+    /// Heading text without its `#` markers.
+    pub title: String,
+}
 
 /// Lightweight markdown editor with preview toggle and metrics.
 pub struct MarkdownEditor {
@@ -155,6 +248,40 @@ impl MarkdownEditor {
     /// Returns heading count.
     pub fn heading_count(&self) -> usize {
         self.text.lines().filter(|line| line.trim_start().starts_with('#')).count()
+    }
+
+    /// Returns headings in document order, as navigation targets.
+    pub fn outline(&self) -> Vec<MarkdownOutlineEntry> {
+        self.text
+            .lines()
+            .enumerate()
+            .filter_map(|(line, text)| {
+                let trimmed = text.trim_start();
+                let level = trimmed.chars().take_while(|ch| *ch == '#').count();
+                (level > 0).then_some(MarkdownOutlineEntry {
+                    line,
+                    level: level.min(6) as u8,
+                    title: trimmed[level..].trim().to_string(),
+                })
+            })
+            .collect()
+    }
+
+    /// Moves the caret to outline entry `index`.
+    pub fn goto_outline(&mut self, index: usize) -> bool {
+        let Some(entry) = self.outline().get(index).cloned() else {
+            return false;
+        };
+        self.cursor_line = entry.line;
+        self.cursor_col = 0;
+        // Scroll the target into view rather than leaving it off screen.
+        if entry.line < self.first_visible_line {
+            self.first_visible_line = entry.line;
+        } else if entry.line >= self.first_visible_line + self.visible_line_count() {
+            self.first_visible_line = entry.line + 1 - self.visible_line_count();
+        }
+        self.base.request_redraw();
+        true
     }
 
     /// Returns current line index.
@@ -308,20 +435,18 @@ impl MarkdownEditor {
         if self.text == next {
             return;
         }
-        let before = self.text.clone();
-        self.text = next.clone();
+        let before = core::mem::take(&mut self.text);
+        self.text = next;
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.text.clone();
-            self.undo_stack.push(Box::new(ValueCommand::new(
+            self.undo_stack.push(Box::new(MarkdownTextDeltaCommand::new(
                 self.history_target.clone(),
-                before,
-                self.text.clone(),
-                "Edit text",
-                "markdown_editor_text",
+                &before,
+                &self.text,
             )));
         }
         self.clamp_cursor();
-        self.text_changed.emit(next);
+        self.text_changed.emit(self.text.clone());
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -574,12 +699,40 @@ impl EventHandler for MarkdownEditor {
                 39 => self.move_cursor_right(),
                 38 => self.move_cursor(-1),
                 40 => self.move_cursor(1),
-                80 | 112 if *modifiers != 0 => self.toggle_preview_mode(),
+                80 | 112 if primary_shortcut_pressed(*key, *modifiers, Key::P) => {
+                    self.toggle_preview_mode()
+                }
                 _ => { /* Other keys are not relevant */ }
             },
             // Wheel: positive `delta.y` moves the content down, so the viewport moves toward the
             // start. Three lines per notch is the desktop default shared with the other text
             // controls.
+            Event::MousePress { pos, button: 1, .. } => {
+                // Clicking a text row moves the caret to the nearest character boundary on it.
+                let rect = self.geometry();
+                let row = (pos.y - rect.y - TEXT_TOP) / TEXT_ROW_HEIGHT;
+                if row >= 0 {
+                    let line = self.visible_start() + row as usize;
+                    if line < self.edit_line_count() {
+                        self.cursor_line = line;
+                        let font = effective_font(self.base.style());
+                        let x = pos.x - rect.x - 12;
+                        let text = self.text.split('\n').nth(line).unwrap_or("");
+                        let mut offset = 0i32;
+                        self.cursor_col = 0;
+                        for ch in text.chars() {
+                            let width = estimate_text_width(&ch.to_string(), font, 1.0) as i32;
+                            if x < offset + width / 2 {
+                                break;
+                            }
+                            offset += width;
+                            self.cursor_col += 1;
+                        }
+                        self.base.request_redraw();
+                    }
+                }
+            }
+            Event::MouseMove { .. } => {}
             Event::Wheel { delta, modifiers, .. } => {
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 3);
                 if self.scroll_lines(-scroll.lines_y) {
@@ -683,19 +836,21 @@ impl Draw for MarkdownEditor {
                 break;
             }
             let color = if idx == self.cursor_line { cursor_ink } else { ink };
-            let rendered =
-                if self.preview_mode { line.trim_start_matches('#').trim_start() } else { line };
-            // Fitted to the pane, so a long line ends in an ellipsis inside the control instead of
-            // painting over the widget beside it.
             let band =
                 Rect::new(rect.x + 12, y, rect.width.saturating_sub(24), TEXT_ROW_HEIGHT as u32);
-            context.draw_text_fitted_cow(
-                band,
-                rendered,
-                effective_font(style),
-                color,
-                HorizontalAlignment::Left,
-            );
+            if self.preview_mode {
+                draw_markdown_line(context, band, line, effective_font(style), color, cursor_ink);
+            } else {
+                // Fitted to the pane, so a long line ends in an ellipsis inside the control
+                // instead of painting over the widget beside it.
+                context.draw_text_fitted_cow(
+                    band,
+                    line,
+                    effective_font(style),
+                    color,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
 
         // Visible caret: a 1 px bar at the caret's line and column.
@@ -722,6 +877,144 @@ impl Draw for MarkdownEditor {
             }
         }
     }
+}
+
+/// Draws one preview row with the inline markdown the document actually uses.
+///
+/// Headings grow with their level, bullet items get a marker, `**bold**` is drawn with a
+/// one-pixel overprint (the same trick the rest of the crate uses where the face has one
+/// weight), `` `code` `` gets a tinted backing, and `[text](url)` is drawn in the accent with
+/// its target omitted. The previous preview only removed leading `#` characters, so bold,
+/// italics, code, lists and links all arrived as their source syntax.
+fn draw_markdown_line(
+    context: &mut RenderContext,
+    band: Rect,
+    line: &str,
+    font: &crate::core::Font,
+    color: Color,
+    accent: Color,
+) {
+    let trimmed = line.trim_start();
+    let level = trimmed.chars().take_while(|ch| *ch == '#').count().min(6);
+    let (font, text) = if level > 0 {
+        let size = font.size() + (7 - level) as f32;
+        (font.with_size(size), trimmed[level..].trim_start())
+    } else {
+        (font.clone(), line)
+    };
+    let mut x = band.x;
+    let right = band.x + band.width as i32;
+    let bullet = text.starts_with("- ") || text.starts_with("* ") || text.starts_with("+ ");
+    if bullet {
+        let marker = "•";
+        context.draw_text(
+            crate::core::Point::new(x, band.y),
+            marker,
+            &font,
+            accent,
+            HorizontalAlignment::Left,
+        );
+        x += context.measure_text(marker, &font).width as i32 + 4;
+    }
+    let body = if bullet { &text[2..] } else { text };
+    let mut chars = body.chars().peekable();
+    let mut run = String::new();
+    let draw_run = |context: &mut RenderContext, run: &mut String, x: &mut i32, bold: bool| {
+        if run.is_empty() {
+            return;
+        }
+        let text = core::mem::take(run);
+        context.draw_text(
+            crate::core::Point::new(*x, band.y),
+            &text,
+            &font,
+            color,
+            HorizontalAlignment::Left,
+        );
+        *x += context.measure_text(&text, &font).width as i32;
+        if bold {
+            context.draw_text(
+                crate::core::Point::new(*x - 1, band.y),
+                &text,
+                &font,
+                color,
+                HorizontalAlignment::Left,
+            );
+        }
+    };
+    while let Some(ch) = chars.next() {
+        if x >= right {
+            break;
+        }
+        match ch {
+            '*' if chars.peek() == Some(&'*') => {
+                chars.next();
+                draw_run(context, &mut run, &mut x, false);
+                let mut inner = String::new();
+                while let Some(next) = chars.next() {
+                    if next == '*' && chars.peek() == Some(&'*') {
+                        chars.next();
+                        break;
+                    }
+                    inner.push(next);
+                }
+                draw_run(context, &mut inner, &mut x, true);
+            }
+            '`' => {
+                draw_run(context, &mut run, &mut x, false);
+                let mut inner = String::new();
+                for next in chars.by_ref() {
+                    if next == '`' {
+                        break;
+                    }
+                    inner.push(next);
+                }
+                let width = context.measure_text(&inner, &font).width;
+                context.fill_rect(
+                    Rect::new(x - 2, band.y, width + 4, band.height.max(1)),
+                    color.with_alpha(24),
+                );
+                context.draw_text(
+                    crate::core::Point::new(x, band.y),
+                    &inner,
+                    &font,
+                    color,
+                    HorizontalAlignment::Left,
+                );
+                x += width as i32 + 2;
+            }
+            '[' => {
+                draw_run(context, &mut run, &mut x, false);
+                let mut label = String::new();
+                let mut is_link = false;
+                while let Some(next) = chars.next() {
+                    if next == ']' {
+                        if chars.peek() == Some(&'(') {
+                            chars.next();
+                            for target in chars.by_ref() {
+                                if target == ')' {
+                                    break;
+                                }
+                            }
+                            is_link = true;
+                        }
+                        break;
+                    }
+                    label.push(next);
+                }
+                context.draw_text(
+                    crate::core::Point::new(x, band.y),
+                    &label,
+                    &font,
+                    if is_link { accent } else { color },
+                    HorizontalAlignment::Left,
+                );
+                x += context.measure_text(&label, &font).width as i32;
+            }
+            _ => run.push(ch),
+        }
+    }
+    draw_run(context, &mut run, &mut x, false);
 }
 
 #[cfg(test)]
@@ -933,5 +1226,18 @@ mod tests {
             });
         }
         assert_eq!(editor.first_visible_line, max_first, "the viewport clamps at the last window");
+    }
+
+    /// A whole-text replacement still records only the changed middle for undo.
+    #[test]
+    fn set_text_undoes_a_paragraph_change_without_losing_the_rest() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("alpha\nbeta\ngamma");
+        editor.set_text("alpha\nBETA 你好\ngamma");
+
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "alpha\nbeta\ngamma");
+        assert!(editor.redo());
+        assert_eq!(editor.text(), "alpha\nBETA 你好\ngamma");
     }
 }

@@ -196,6 +196,69 @@ fn fs_main() -> @location(0) vec4f {
     return color;
 }"#;
 
+/// Full-screen triangle vertex shader for the separable blur pass.
+///
+/// The three vertices cover the whole target, so the blur needs no vertex buffer and no
+/// per-quad data: one draw call filters the entire texture. The fragment stage derives its texel
+/// from `@builtin(position)` instead of an interpolated UV, which keeps the shader independent of
+/// the target dimensions (it reads them from `textureDimensions`).
+pub(crate) const BLUR_VS: &str = r#"
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4f {
+    var corners = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+    return vec4f(corners[vertex_index], 0.0, 1.0);
+}"#;
+
+/// One direction of the separable Gaussian blur.
+///
+/// # Bindings
+///
+/// | group | binding | type | name | stage | meaning |
+/// |---|---|---|---|---|---|
+/// | 0 | 0 | `texture_2d<f32>` | `source` | fragment | the input frame, read with `textureLoad` |
+/// | 0 | 1 | uniform | `params` | fragment | `direction` (unit x or y), `radius`, padding |
+///
+/// The kernel is a Gaussian with `sigma = radius / 2`, the same 2-sigma convention
+/// [`crate::render::RenderCommand::Blur`] documents. `textureLoad` is used rather than a sampler
+/// because the pass needs exact texel addresses at the frame's own resolution and no filtering;
+/// the texture's `sample_type` is therefore `float, filterable = false`.
+///
+/// The two passes (horizontal then vertical) make the cost `O(radius)` per pixel rather than
+/// `O(radius²)`, which is the whole reason for separating the axes. Edge taps clamp to the
+/// nearest border texel, matching the software box blur's edge rule.
+pub(crate) const BLUR_FS: &str = r#"
+@group(0) @binding(0) var source: texture_2d<f32>;
+
+struct BlurParams {
+    direction: vec2f,
+    radius: f32,
+    pad: f32,
+};
+
+@group(0) @binding(1) var<uniform> params: BlurParams;
+
+@fragment
+fn fs_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
+    let dimensions = vec2<i32>(textureDimensions(source));
+    let center = vec2<i32>(position.xy);
+    let radius = i32(params.radius);
+    if (radius <= 0) {
+        return textureLoad(source, center, 0);
+    }
+    let sigma = max(params.radius * 0.5, 0.5);
+    let two_sigma_squared = 2.0 * sigma * sigma;
+    var sum = vec4f(0.0);
+    var weight_sum = 0.0;
+    for (var offset = -radius; offset <= radius; offset = offset + 1) {
+        let delta = vec2<i32>(vec2f(f32(offset)) * params.direction);
+        let sample_at = clamp(center + delta, vec2<i32>(0), dimensions - vec2<i32>(1));
+        let weight = exp(-f32(offset * offset) / two_sigma_squared);
+        sum = sum + textureLoad(source, sample_at, 0) * weight;
+        weight_sum = weight_sum + weight;
+    }
+    return sum / weight_sum;
+}"#;
+
 /// Image fragment shader.
 /// Samples a texture and blends with uniform color.
 /// Expects UV coordinates at @location(0) from the vertex shader.

@@ -168,37 +168,81 @@ pub(crate) fn position_at_offset(lines: &[String], offset: usize) -> TextPositio
 /// edits changed the document length. Overlapping edits are dropped (the
 /// earliest wins).
 ///
+/// The pass walks `char_indices` once and slices the input between edits; it no
+/// longer materialises the document as a `Vec<char>`, which cost one allocation
+/// and one scalar write per character of the file on every multi-caret keystroke.
+///
 /// Returns the new text and, per input edit, the absolute offset where its caret
 /// should land (`None` when the edit was dropped).
 pub(crate) fn project(text: &str, edits: &[OffsetEdit]) -> (String, Vec<Option<usize>>) {
-    let chars: Vec<char> = text.chars().collect();
+    let total_chars = text.chars().count();
     let mut order: Vec<usize> = (0..edits.len()).collect();
     order.sort_by_key(|&index| (edits[index].start, edits[index].end));
 
     let mut result = String::with_capacity(text.len());
     let mut carets: Vec<Option<usize>> = vec![None; edits.len()];
-    let mut cursor = 0usize;
+    let mut scanner = CharScanner::new(text, total_chars);
+    let mut consumed_char = 0usize;
+    let mut consumed_byte = 0usize;
     let mut delta: isize = 0;
 
     for &index in &order {
         let edit = &edits[index];
-        let start = edit.start.min(chars.len());
-        let end = edit.end.min(chars.len()).max(start);
-        if start < cursor {
+        let start = edit.start.min(total_chars);
+        let end = edit.end.min(total_chars).max(start);
+        if start < consumed_char {
             // Overlaps an edit already applied; skip it.
             continue;
         }
-        result.extend(chars[cursor..start].iter());
+        let start_byte = scanner.byte_at(start);
+        let end_byte = scanner.byte_at(end);
+        result.push_str(&text[consumed_byte..start_byte]);
         let new_start = (start as isize + delta).max(0) as usize;
         let insert_len = edit.insert.chars().count();
         result.push_str(&edit.insert);
         carets[index] = Some(new_start + insert_len);
         delta += insert_len as isize - (end - start) as isize;
-        cursor = end;
+        consumed_char = end;
+        consumed_byte = end_byte;
     }
 
-    result.extend(chars[cursor.min(chars.len())..].iter());
+    result.push_str(&text[consumed_byte..]);
     (result, carets)
+}
+
+/// Forward-only character-index to byte-offset scanner.
+///
+/// Edits arrive in ascending order, so one cursor over the text answers every
+/// boundary they need without re-walking from the start or collecting the text.
+struct CharScanner<'a> {
+    iter: core::str::CharIndices<'a>,
+    len: usize,
+    char_pos: usize,
+    byte_pos: usize,
+}
+
+impl<'a> CharScanner<'a> {
+    fn new(text: &'a str, len: usize) -> Self {
+        Self { iter: text.char_indices(), len, char_pos: 0, byte_pos: 0 }
+    }
+
+    /// Returns the byte offset of character `target`, clamped to the text end.
+    fn byte_at(&mut self, target: usize) -> usize {
+        let target = target.min(self.len);
+        while self.char_pos < target {
+            match self.iter.next() {
+                Some((byte, ch)) => {
+                    self.byte_pos = byte + ch.len_utf8();
+                    self.char_pos += 1;
+                }
+                None => {
+                    self.byte_pos = self.len;
+                    self.char_pos = target;
+                }
+            }
+        }
+        self.byte_pos
+    }
 }
 
 #[cfg(test)]

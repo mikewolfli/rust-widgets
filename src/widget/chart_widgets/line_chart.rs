@@ -23,6 +23,7 @@ use core::fmt::Write as _;
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::signal::Signal1;
 use crate::widget::capability::coercion::expect_f32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -31,7 +32,8 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::chart_widgets::adapter::ChartContextAdapter;
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::charts::{
-    compute_cartesian_layout, draw_cartesian_axes, draw_x_ticks, draw_y_ticks, CartesianLayout,
+    compute_cartesian_layout_measured, draw_cartesian_axes, draw_legend_entries, draw_x_ticks,
+    draw_y_ticks, CartesianLayout,
 };
 use crate::widget::chart_widgets::{finite_samples, is_finite_sample};
 #[cfg(not(feature = "chart"))]
@@ -55,10 +57,43 @@ fn plot_rect(layout: &CartesianLayout) -> Rect {
     )
 }
 
+/// One named line in a [`LineChart`].
+///
+/// Points are `(x, y)` pairs in data space. A series without a name is not shown
+/// in the legend; an explicit `color` overrides the chart's palette entry.
+#[derive(Clone, Debug)]
+pub struct LineSeries {
+    /// The label shown in the legend. Empty hides the entry.
+    pub name: String,
+    /// The ordered `(x, y)` samples.
+    pub points: Vec<(f64, f64)>,
+    /// The caller's stroke colour, or `None` to follow the chart's palette.
+    pub color: Option<Color>,
+}
+
+impl LineSeries {
+    /// Creates a named series from `points`.
+    pub fn new(name: impl Into<String>, points: Vec<(f64, f64)>) -> Self {
+        Self { name: name.into(), points, color: None }
+    }
+
+    /// Sets the series colour, replacing the palette entry.
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+}
+
 /// A 2D line chart widget for visualizing (x, y) data series.
+///
+/// The chart stores one or more [`LineSeries`]. The single-series API
+/// (`set_data`, `add_point`, `data`) operates on series zero, so existing code
+/// keeps working while `set_series` / `add_series` enable several lines and a
+/// legend.
 pub struct LineChart {
     base: BaseWidget,
-    data: Vec<(f64, f64)>,
+    /// Every series; index zero is the one the single-series API reads and writes.
+    series: Vec<LineSeries>,
     line_color: Color,
     fill_area: bool,
     fill_color: Color,
@@ -77,17 +112,41 @@ pub struct LineChart {
     /// [`LineChart::set_grid_color`] still wins when the caller states one.
     grid_color: Option<Color>,
     show_labels: bool,
+    /// Whether the legend column is reserved and drawn.
+    show_legend: bool,
+    /// The series and point index under the pointer.
+    hovered: Option<(usize, usize)>,
+    /// Whether a tooltip is painted beside the hovered point.
+    show_tooltip: bool,
+    /// Whether wheel zoom and drag panning are accepted.
+    zoom_enabled: bool,
+    /// The X window set by zooming or panning, or `None` for the resolved data range.
+    view_x: Option<(f64, f64)>,
+    /// The pointer position where a pan drag began, while one is in progress.
+    pan_origin: Option<(Point, (f64, f64))>,
+    /// The plot area from the last paint, used to hit-test pointer events without measuring
+    /// the axis text a second time.
+    last_plot_area: Option<Rect>,
+    /// The last pointer position seen, used to anchor wheel zoom (the wheel event carries
+    /// no position of its own).
+    last_pointer: Option<Point>,
+    /// Emitted with the data index under the pointer when hover enters a point.
+    pub point_hovered: Signal1<usize>,
+    /// Emitted with the data index when the pointer leaves the last hovered point.
+    pub point_unhovered: Signal1<usize>,
+    /// Emitted with the data index of a clicked point.
+    pub point_clicked: Signal1<usize>,
 }
 
 impl LineChart {
     /// Creates a new LineChart widget with the given geometry.
     ///
     /// Defaults: blue line, no fill, stroke width 2, grid enabled with light gray,
-    /// labels enabled.
+    /// labels enabled, legend hidden, tooltip hidden, zoom disabled.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::LineChart, geometry, "LineChart"),
-            data: Vec::new(),
+            series: Vec::new(),
             line_color: Color::PRIMARY,
             fill_area: false,
             fill_color: Color::rgba(66, 133, 244, 60),
@@ -99,17 +158,173 @@ impl LineChart {
             show_grid: true,
             grid_color: None,
             show_labels: true,
+            show_legend: false,
+            hovered: None,
+            show_tooltip: false,
+            zoom_enabled: false,
+            view_x: None,
+            pan_origin: None,
+            last_plot_area: None,
+            last_pointer: None,
+            point_hovered: Signal1::new(),
+            point_unhovered: Signal1::new(),
+            point_clicked: Signal1::new(),
         }
     }
 
-    /// Sets the data points to display. Clears any previous data.
+    /// Sets the primary series' data points, replacing any previous primary data.
     ///
     /// Non-finite samples (`NaN`, `±Inf`) have no honest pixel position and are dropped; see
     /// [`is_finite_sample`](crate::widget::chart_widgets::is_finite_sample). A lone bad sample would
     /// otherwise stretch the auto-range and squash every real point.
     pub fn set_data(&mut self, points: Vec<(f64, f64)>) {
-        self.data = finite_samples(points);
+        self.ensure_primary();
+        self.series[0].points = finite_samples(points);
+        self.revalidate_hover();
         self.base.request_redraw();
+    }
+
+    /// Replaces every series at once.
+    ///
+    /// Non-finite samples are dropped per series. An empty list clears the chart.
+    pub fn set_series(&mut self, series: Vec<LineSeries>) {
+        self.series = series
+            .into_iter()
+            .map(|mut item| {
+                item.points = finite_samples(item.points);
+                item
+            })
+            .collect();
+        self.revalidate_hover();
+        self.base.request_redraw();
+    }
+
+    /// Appends one series. The primary series is created first when the chart is empty.
+    pub fn add_series(&mut self, mut series: LineSeries) {
+        series.points = finite_samples(series.points);
+        self.ensure_primary();
+        self.series.push(series);
+        self.base.request_redraw();
+    }
+
+    /// Returns every series, primary first.
+    pub fn series(&self) -> &[LineSeries] {
+        &self.series
+    }
+
+    /// Ensures series zero exists so the single-series setters have a home.
+    fn ensure_primary(&mut self) {
+        if self.series.is_empty() {
+            self.series.push(LineSeries::new("", Vec::new()));
+        }
+    }
+
+    /// The colour a series is drawn in.
+    fn series_color(&self, index: usize) -> Color {
+        match self.series.get(index).and_then(|series| series.color) {
+            Some(color) => color,
+            None if index == 0 => self.line_color,
+            None => {
+                const PALETTE: [Color; 5] = [
+                    Color::rgb(219, 68, 55),
+                    Color::rgb(244, 180, 0),
+                    Color::rgb(15, 157, 88),
+                    Color::rgb(171, 71, 188),
+                    Color::rgb(0, 172, 193),
+                ];
+                PALETTE[(index - 1) % PALETTE.len()]
+            }
+        }
+    }
+
+    /// Drops a hover index the current data no longer has a point for.
+    fn revalidate_hover(&mut self) {
+        let still_valid = self.hovered.is_some_and(|(series, index)| {
+            self.series.get(series).is_some_and(|item| index < item.points.len())
+        });
+        if !still_valid {
+            if let Some((_, index)) = self.hovered.take() {
+                self.point_unhovered.emit(index);
+            }
+        }
+    }
+
+    /// Shows or hides the legend column.
+    pub fn set_show_legend(&mut self, show: bool) {
+        if self.show_legend == show {
+            return;
+        }
+        self.show_legend = show;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the legend is shown.
+    pub fn show_legend(&self) -> bool {
+        self.show_legend
+    }
+
+    /// Enables the hover tooltip.
+    pub fn set_show_tooltip(&mut self, show: bool) {
+        if self.show_tooltip == show {
+            return;
+        }
+        self.show_tooltip = show;
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the hover tooltip is enabled.
+    pub fn show_tooltip(&self) -> bool {
+        self.show_tooltip
+    }
+
+    /// Enables wheel zoom and drag panning.
+    pub fn set_zoom_enabled(&mut self, enabled: bool) {
+        if self.zoom_enabled == enabled {
+            return;
+        }
+        self.zoom_enabled = enabled;
+        if !enabled {
+            self.view_x = None;
+            self.pan_origin = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether zoom and pan are enabled.
+    pub fn is_zoom_enabled(&self) -> bool {
+        self.zoom_enabled
+    }
+
+    /// The X window set by zooming, or `None` while the resolved data range is used.
+    pub fn view_range(&self) -> Option<(f64, f64)> {
+        self.view_x
+    }
+
+    /// Sets an explicit X window. The range is normalised and must be finite and non-degenerate.
+    pub fn set_view_range(&mut self, range: Option<(f64, f64)>) {
+        self.view_x = range.map(|(low, high)| if low <= high { (low, high) } else { (high, low) });
+        self.base.request_redraw();
+    }
+
+    /// Restores the auto-computed axis range.
+    pub fn reset_view(&mut self) {
+        if self.view_x.is_none() {
+            return;
+        }
+        self.view_x = None;
+        self.pan_origin = None;
+        self.base.request_redraw();
+    }
+
+    /// The hovered `(series, point)` index, if the pointer is over a point.
+    pub fn hovered_point(&self) -> Option<(usize, usize)> {
+        self.hovered
+    }
+
+    /// The hovered point's data coordinates, when one is hovered.
+    pub fn hovered_value(&self) -> Option<(f64, f64)> {
+        let (series, index) = self.hovered?;
+        self.series.get(series)?.points.get(index).copied()
     }
 
     /// Sets the line color.
@@ -204,7 +419,7 @@ impl LineChart {
         self.y_max
     }
 
-    /// Adds a single data point to the chart.
+    /// Adds a single data point to the primary series.
     ///
     /// A non-finite point is refused (see [`Self::set_data`]) so the chart never holds a sample it
     /// cannot place on the plot.
@@ -213,19 +428,21 @@ impl LineChart {
             log::warn!("[line_chart] ignoring the non-finite point ({x}, {y})");
             return;
         }
-        self.data.push((x, y));
+        self.ensure_primary();
+        self.series[0].points.push((x, y));
         self.base.request_redraw();
     }
 
-    /// Removes all data points from the chart.
+    /// Removes all data points and series from the chart.
     pub fn clear_data(&mut self) {
-        self.data.clear();
+        self.series.clear();
+        self.revalidate_hover();
         self.base.request_redraw();
     }
 
-    /// Returns a reference to the current data points.
+    /// Returns the primary series' data points.
     pub fn data(&self) -> &[(f64, f64)] {
-        &self.data
+        self.series.first().map_or(&[], |series| series.points.as_slice())
     }
 
     /// Enables or disables the grid lines.
@@ -276,17 +493,23 @@ impl LineChart {
         self.show_labels
     }
 
-    /// Resolves X-axis range.
+    /// Resolves X-axis range, honouring a zoom window when one is set.
     fn resolve_x_range(&self) -> (f64, f64) {
+        if let Some((min, max)) = self.view_x {
+            return (min, max);
+        }
         match (self.x_min, self.x_max) {
             (Some(min), Some(max)) => (min, max),
             _ => {
-                let data = &self.data;
-                if data.is_empty() {
+                let mut min = f64::INFINITY;
+                let mut max = f64::NEG_INFINITY;
+                for point in self.series.iter().flat_map(|series| series.points.iter()) {
+                    min = min.min(point.0);
+                    max = max.max(point.0);
+                }
+                if !min.is_finite() || !max.is_finite() {
                     return (0.0, 10.0);
                 }
-                let min = data.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
-                let max = data.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
                 if (max - min).abs() < f64::EPSILON {
                     return (min - 1.0, min + 1.0);
                 }
@@ -296,17 +519,20 @@ impl LineChart {
         }
     }
 
-    /// Resolves Y-axis range.
+    /// Resolves Y-axis range across every series.
     fn resolve_y_range(&self) -> (f64, f64) {
         match (self.y_min, self.y_max) {
             (Some(min), Some(max)) => (min, max),
             _ => {
-                let data = &self.data;
-                if data.is_empty() {
+                let mut min = f64::INFINITY;
+                let mut max = f64::NEG_INFINITY;
+                for point in self.series.iter().flat_map(|series| series.points.iter()) {
+                    min = min.min(point.1);
+                    max = max.max(point.1);
+                }
+                if !min.is_finite() || !max.is_finite() {
                     return (0.0, 10.0);
                 }
-                let min = data.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
-                let max = data.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
                 if (max - min).abs() < f64::EPSILON {
                     return (min - 1.0, min + 1.0);
                 }
@@ -314,6 +540,28 @@ impl LineChart {
                 (min - padding, max + padding)
             }
         }
+    }
+
+    /// Maps a window-relative pointer position to the nearest plotted point.
+    fn nearest_point(&self, pos: Point, plot_area: Rect) -> Option<(usize, usize)> {
+        if !plot_area.contains_point(pos) {
+            return None;
+        }
+        let (x_min, x_max) = self.resolve_x_range();
+        let (y_min, y_max) = self.resolve_y_range();
+        let mut best: Option<(usize, usize, i64)> = None;
+        for (series_index, series) in self.series.iter().enumerate() {
+            for (index, point) in series.points.iter().enumerate() {
+                let pixel =
+                    Self::map_to_pixel(point.0, point.1, x_min, x_max, y_min, y_max, plot_area);
+                let distance =
+                    i64::from((pixel.x - pos.x).abs()) + i64::from((pixel.y - pos.y).abs());
+                if distance <= 24 && best.is_none_or(|(_, _, near)| distance < near) {
+                    best = Some((series_index, index, distance));
+                }
+            }
+        }
+        best.map(|(series, index, _)| (series, index))
     }
 
     /// Maps a data coordinate to a pixel position on screen.
@@ -414,9 +662,30 @@ impl Draw for LineChart {
         // ── Backdrop: axes, grid and tick labels ──
         #[cfg(feature = "chart")]
         let plot_area = {
-            // Legend width is reserved only when labels are shown, matching the
-            // widget's previous margin behaviour.
-            let layout = compute_cartesian_layout(rect, self.show_labels, self.show_labels, 0);
+            // The y labels are measured rather than assumed: the fixed 64 px column was
+            // chosen for a four-character label, so a wider value ran out of the plot's
+            // own margin. The column only grows past that reservation, which keeps a
+            // normal chart's geometry byte-identical.
+            let widest_y_label = if self.show_labels {
+                let font = crate::widget::metrics::role_font(self.base.style(), 10.0);
+                let mut widest = 0u32;
+                for step in 0..=4 {
+                    let value = y_min + (y_max - y_min) * f64::from(step) / 4.0;
+                    let label = format!("{value:.1}");
+                    widest = widest.max(context.measure_text(&label, &font).width);
+                }
+                widest as f32
+            } else {
+                0.0
+            };
+            let legend_items = if self.show_legend { self.series.len() } else { 0 };
+            let layout = compute_cartesian_layout_measured(
+                rect,
+                self.show_labels,
+                self.show_labels,
+                legend_items,
+                widest_y_label,
+            );
             let plot_area = plot_rect(&layout);
             let mut adapter = ChartContextAdapter::new(context);
 
@@ -433,6 +702,16 @@ impl Draw for LineChart {
                 // helpers with label-free positioning so the lines still appear.
                 draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, true);
             }
+            if self.show_legend {
+                let entries: Vec<(&str, Color)> = self
+                    .series
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, series)| !series.name.is_empty())
+                    .map(|(index, series)| (series.name.as_str(), self.series_color(index)))
+                    .collect();
+                draw_legend_entries(&mut adapter, &layout, &entries);
+            }
             plot_area
         };
 
@@ -446,48 +725,169 @@ impl Draw for LineChart {
             is_enabled,
             disabled_color,
         );
+        self.last_plot_area = Some(plot_area);
 
         // ── Data series ──
-        if self.data.len() < 2 {
+        if self.series.iter().all(|series| series.points.len() < 2) {
             return;
         }
 
-        let line_color = if is_enabled { self.line_color } else { disabled_color };
+        for series_index in 0..self.series.len() {
+            let points = &self.series[series_index].points;
+            if points.len() < 2 {
+                continue;
+            }
+            let series_color =
+                if is_enabled { self.series_color(series_index) } else { disabled_color };
 
-        // Two passes over `data.windows(2)` instead of collecting every mapped point into a
-        // `Vec`. The old allocation was one `Point` per sample per frame, and the pixel
-        // mapping is a pure function of the pair, so it can be recomputed without changing
-        // the output.
-        let map = |x: f64, y: f64| Self::map_to_pixel(x, y, x_min, x_max, y_min, y_max, plot_area);
+            // `map_to_pixel` is a pure function of the pair, so the line can be walked
+            // without materialising every point — the only allocation is the decimated
+            // copy a dense series needs.
+            let mapped = self.mapped_points(series_index, x_min, x_max, y_min, y_max, plot_area);
 
-        // ── Filled area under the line ──
-        if self.fill_area {
-            // The disabled fill is the same disabled ink the line uses, held at the fill's
-            // own alpha — a fixed grey here was a third grey in the picture and did not
-            // track the disabled ink on either appearance.
-            let fill_color =
-                if is_enabled { self.fill_color } else { disabled_color.with_alpha(60) };
-            let baseline_y = plot_area.y + plot_area.height as i32;
-            for pair in self.data.windows(2) {
-                let left = map(pair[0].0, pair[0].1);
-                let right = map(pair[1].0, pair[1].1);
-                let strip_width = (right.x - left.x).max(1) as u32;
-                let top_y = left.y.min(right.y);
-                let strip_height = (baseline_y - top_y).max(1) as u32;
-                context.fill_rect(Rect::new(left.x, top_y, strip_width, strip_height), fill_color);
+            // ── Filled area under the line ──
+            if self.fill_area && series_index == 0 {
+                // The disabled fill is the same disabled ink the line uses, held at the fill's
+                // own alpha — a fixed grey here was a third grey in the picture and did not
+                // track the disabled ink on either appearance.
+                let fill_color =
+                    if is_enabled { self.fill_color } else { disabled_color.with_alpha(60) };
+                let baseline_y = plot_area.y + plot_area.height as i32;
+                for pair in mapped.windows(2) {
+                    let strip_width = (pair[1].x - pair[0].x).max(1) as u32;
+                    let top_y = pair[0].y.min(pair[1].y);
+                    let strip_height = (baseline_y - top_y).max(1) as u32;
+                    context.fill_rect(
+                        Rect::new(pair[0].x, top_y, strip_width, strip_height),
+                        fill_color,
+                    );
+                }
+            }
+
+            // ── Line connecting the points ──
+            let stroke_w = self.stroke_width as u32;
+            let right = plot_area.x + plot_area.width as i32;
+            for pair in mapped.windows(2) {
+                // A segment wholly outside the plot is clipped away rather than handed to
+                // the rasteriser: a zoomed-in view keeps most of a long series off screen.
+                if (pair[0].x < plot_area.x && pair[1].x < plot_area.x)
+                    || (pair[0].x > right && pair[1].x > right)
+                {
+                    continue;
+                }
+                context.draw_line_stroke_aa(pair[0], pair[1], series_color, stroke_w.max(1));
             }
         }
 
-        // ── Line connecting the points ──
-        let stroke_w = self.stroke_width as u32;
-        for pair in self.data.windows(2) {
-            context.draw_line_stroke_aa(
-                map(pair[0].0, pair[0].1),
-                map(pair[1].0, pair[1].1),
-                line_color,
-                stroke_w.max(1),
-            );
+        // ── Hover marker and tooltip ──
+        if let Some((series_index, index)) = self.hovered {
+            if let Some(point) =
+                self.series.get(series_index).and_then(|series| series.points.get(index)).copied()
+            {
+                let pixel =
+                    Self::map_to_pixel(point.0, point.1, x_min, x_max, y_min, y_max, plot_area);
+                if is_enabled {
+                    context.fill_circle(pixel, 3, self.series_color(series_index));
+                }
+                if self.show_tooltip && is_enabled {
+                    self.draw_tooltip(context, pixel, point, plot_area);
+                }
+            }
         }
+    }
+}
+
+impl LineChart {
+    /// The series' points in pixel space, decimated to at most two samples per pixel column.
+    ///
+    /// A series shorter than twice the plot width is mapped one-to-one. A denser one keeps
+    /// the first, lowest, highest and last point of every column, which preserves the drawn
+    /// envelope while bounding the work per frame — the previous path emitted one stroke per
+    /// sample, so ten thousand points meant ten thousand primitives for a plot 400 px wide.
+    fn mapped_points(
+        &self,
+        series_index: usize,
+        x_min: f64,
+        x_max: f64,
+        y_min: f64,
+        y_max: f64,
+        plot_area: Rect,
+    ) -> Vec<Point> {
+        let points = match self.series.get(series_index) {
+            Some(series) => &series.points,
+            None => return Vec::new(),
+        };
+        let map = |x: f64, y: f64| Self::map_to_pixel(x, y, x_min, x_max, y_min, y_max, plot_area);
+        let budget = (plot_area.width as usize).saturating_mul(2).max(2);
+        if points.len() <= budget {
+            return points.iter().map(|point| map(point.0, point.1)).collect();
+        }
+
+        let mut mapped = Vec::with_capacity(budget);
+        let chunk = points.len().div_ceil(budget);
+        for group in points.chunks(chunk) {
+            let first = group[0];
+            let last = group[group.len() - 1];
+            let (mut lowest, mut highest) = (first, first);
+            for point in group {
+                if point.1 < lowest.1 {
+                    lowest = *point;
+                }
+                if point.1 > highest.1 {
+                    highest = *point;
+                }
+            }
+            let mut candidates = [first, lowest, highest, last];
+            candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+            mapped.extend(candidates.iter().map(|point| map(point.0, point.1)));
+        }
+        mapped
+    }
+
+    /// Paints a small readout beside the hovered point.
+    ///
+    /// The box is clamped into the plot so a point at the edge does not paint its label
+    /// outside the control, and it is filled from the control's resolved surface so the text
+    /// keeps its contrast on either appearance.
+    fn draw_tooltip(
+        &self,
+        context: &mut RenderContext,
+        pixel: Point,
+        value: (f64, f64),
+        plot: Rect,
+    ) {
+        use crate::core::HorizontalAlignment;
+        let font = crate::widget::metrics::role_font(self.base.style(), 10.0);
+        let text = format!("{:.2}, {:.2}", value.0, value.1);
+        let metrics = context.measure_text(&text, &font);
+        let padding = 4i32;
+        let width = metrics.width as i32 + padding * 2;
+        let height = metrics.height.max(1) as i32 + padding * 2;
+        let mut x = pixel.x + 8;
+        let mut y = pixel.y - height - 6;
+        if x + width > plot.x + plot.width as i32 {
+            x = pixel.x - width - 8;
+        }
+        if y < plot.y {
+            y = pixel.y + 6;
+        }
+        x = x.max(plot.x);
+        y = y.max(plot.y).min(plot.y + plot.height as i32 - height);
+        let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
+        let (surface, ink) = {
+            let style = self.base.style();
+            let surface = style
+                .background_color
+                .or_else(|| {
+                    crate::style::resolved_theme_style_shared("line_chart")
+                        .and_then(|resolved| resolved.background_color)
+                })
+                .unwrap_or(Color::WHITE);
+            (surface, surface.contrast_color())
+        };
+        context.fill_rect(box_rect, surface);
+        context.draw_rect(box_rect, ink.with_alpha_f32(0.35));
+        context.draw_text_line(box_rect, &text, &font, ink, HorizontalAlignment::Center);
     }
 }
 
@@ -594,6 +994,80 @@ impl LineChart {
 impl EventHandler for LineChart {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        let plot_area = match self.last_plot_area {
+            Some(area) => area,
+            None => return,
+        };
+        match event {
+            Event::MouseMove { pos } => {
+                self.last_pointer = Some(*pos);
+                if let Some((origin, range)) = self.pan_origin {
+                    let span = range.1 - range.0;
+                    let width = plot_area.width.max(1) as f64;
+                    let shift = (origin.x - pos.x) as f64 / width * span;
+                    self.view_x = Some((range.0 + shift, range.1 + shift));
+                    self.base.request_redraw();
+                    return;
+                }
+                let next = self.nearest_point(*pos, plot_area);
+                if next != self.hovered {
+                    if let Some((_, index)) = self.hovered {
+                        self.point_unhovered.emit(index);
+                    }
+                    self.hovered = next;
+                    if let Some((_, index)) = next {
+                        self.point_hovered.emit(index);
+                    }
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                self.pan_origin = None;
+                if let Some((_, index)) = self.hovered.take() {
+                    self.point_unhovered.emit(index);
+                    self.base.request_redraw();
+                }
+            }
+            Event::MousePress { pos, button, .. } if *button == 1 => {
+                let hit = self.nearest_point(*pos, plot_area);
+                if self.zoom_enabled {
+                    self.pan_origin = Some((*pos, self.resolve_x_range()));
+                } else if let Some((_, index)) = hit {
+                    self.point_clicked.emit(index);
+                }
+                self.base.set_mouse_pressed(true);
+            }
+            Event::MouseRelease { button, .. } if *button == 1 => {
+                self.pan_origin = None;
+                self.base.set_mouse_pressed(false);
+            }
+            Event::Wheel { delta, .. } if self.zoom_enabled && delta.y != 0 => {
+                let (low, high) = self.resolve_x_range();
+                let span = (high - low).max(f64::EPSILON);
+                // The anchor is the pointer's fraction across the plot, so a wheel turn
+                // zooms around what the pointer is pointing at rather than the centre.
+                let anchor_x = self
+                    .last_pointer
+                    .map_or(plot_area.x + (plot_area.width as i32 / 2), |point| point.x);
+                let fraction = if plot_area.width == 0 {
+                    0.5
+                } else {
+                    ((anchor_x - plot_area.x) as f64 / plot_area.width as f64).clamp(0.0, 1.0)
+                };
+                let factor = if delta.y > 0 { 1.25 } else { 0.8 };
+                let anchor = low + span * fraction;
+                let new_low = anchor - (anchor - low) * factor;
+                let new_high = anchor + (high - anchor) * factor;
+                if new_high - new_low > f64::EPSILON {
+                    self.view_x = Some((new_low, new_high));
+                    self.base.request_redraw();
+                }
+            }
+            _ => { /* Other events are not relevant */ }
+        }
     }
 }
 
@@ -879,5 +1353,62 @@ mod tests {
         // And a finite one is still accepted.
         lc.add_point(5.0, 5.0);
         assert_eq!(lc.data().len(), before + 1);
+    }
+
+    /// Several series are drawn and the legend reserves a column for their names.
+    #[test]
+    fn multi_series_draws_every_line_and_the_legend() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 400, 240));
+        lc.set_series(vec![
+            LineSeries::new("alpha", vec![(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]),
+            LineSeries::new("beta", vec![(0.0, 3.0), (1.0, 1.0), (2.0, 2.0)])
+                .with_color(Color::ERROR),
+        ]);
+        assert_eq!(lc.series().len(), 2);
+        assert_eq!(lc.data().len(), 3, "series zero remains the primary data");
+        lc.set_show_legend(true);
+        let svg = crate::widget::svg::render_to_svg(&mut lc);
+        let with_legend = crate::widget::svg::text_ink_boxes(&svg).len();
+        lc.set_show_legend(false);
+        let without_legend = crate::widget::svg::text_ink_boxes(&render_to_svg(&mut lc)).len();
+        assert!(
+            with_legend > without_legend,
+            "the legend labels add text runs ({with_legend} vs {without_legend})"
+        );
+    }
+
+    /// Zooming narrows the resolved x window and resetting restores the data range.
+    #[test]
+    fn zoom_narrows_the_window_and_reset_restores_it() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 300, 200));
+        lc.set_data(vec![(0.0, 0.0), (10.0, 1.0)]);
+        let (full_low, full_high) = lc.resolve_x_range();
+        lc.set_zoom_enabled(true);
+        assert!(lc.is_zoom_enabled());
+        lc.set_view_range(Some((2.0, 4.0)));
+        assert_eq!(lc.view_range(), Some((2.0, 4.0)));
+        let (zoomed_low, zoomed_high) = lc.resolve_x_range();
+        assert!(zoomed_high - zoomed_low < full_high - full_low);
+        lc.reset_view();
+        assert_eq!(lc.resolve_x_range(), (full_low, full_high));
+    }
+
+    /// Hovering over a plotted point is reported through the signals and the accessor.
+    #[test]
+    fn hovering_a_point_emits_the_hover_signals() {
+        use std::sync::{Arc, Mutex};
+        let mut lc = LineChart::new(Rect::new(0, 0, 300, 200));
+        lc.set_data(vec![(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)]);
+        // Paint once so the hit-test uses the measured plot area.
+        let _ = render_to_svg(&mut lc);
+        let seen = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&seen);
+        lc.point_hovered.connect(move |index| sink.lock().unwrap().push(*index));
+        let points = lc.mapped_points(0, -0.2, 2.2, -0.2, 2.2, lc.last_plot_area.unwrap());
+        lc.handle_event(&Event::MouseMove { pos: points[2] });
+        assert_eq!(lc.hovered_point(), Some((0, 2)));
+        assert_eq!(*seen.lock().unwrap(), vec![2]);
+        lc.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert!(lc.hovered_point().is_none());
     }
 }

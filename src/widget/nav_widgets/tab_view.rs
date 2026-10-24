@@ -7,10 +7,11 @@
 //! below showing the selected tab's content. Supports add/remove/clear
 //! operations on tabs and emits a `tab_changed` signal on selection.
 
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -41,6 +42,28 @@ pub struct TabView {
     selected_index: usize,
     /// Emitted when the selected tab index changes.
     pub tab_changed: Signal1<usize>,
+    /// Emitted with the index of a tab whose close affordance was activated.
+    pub tab_close_requested: Signal1<usize>,
+    /// Emitted with `(from, to)` after a tab was reordered by a drag.
+    pub tab_moved: Signal1<(usize, usize)>,
+    /// The selection indicator's slide, `0.0` just after leaving a tab and `1.0` arrived.
+    indicator: PropertyDriver,
+    /// The tab the current indicator slide started from.
+    indicator_from: usize,
+    /// Whether each tab offers a close affordance.
+    closable: bool,
+    /// Whether a tab can be dragged to a new position.
+    movable: bool,
+    /// An in-flight strip drag: `(origin_x, tab_index)`.
+    drag: Option<(f32, usize)>,
+    /// Whether the strip scrolls instead of squeezing its tabs.
+    scrollable_strip: bool,
+    /// The strip's horizontal scroll offset, in pixels, when scrolling is enabled.
+    strip_offset: i32,
+    /// An in-flight content swipe: `(origin_x, origin_y)`.
+    swipe: Option<(f32, f32)>,
+    /// The close affordance armed by the current press, committed on release.
+    pending_close: Option<usize>,
     /// The shared registry the selected tab's content widget is drawn and dispatched
     /// through. Without it a `TabPage::content` would be stored and never shown — the
     /// content area is otherwise a flat fill.
@@ -70,6 +93,17 @@ impl TabView {
             tabs: Vec::new(),
             selected_index: 0,
             tab_changed: Signal1::new(),
+            tab_close_requested: Signal1::new(),
+            tab_moved: Signal1::new(),
+            indicator: PropertyDriver::at(1.0, MotionSlot::Normal),
+            indicator_from: 0,
+            closable: false,
+            movable: false,
+            drag: None,
+            scrollable_strip: false,
+            strip_offset: 0,
+            swipe: None,
+            pending_close: None,
             registry: None,
             tab_width_cache: RefCell::new(TabWidthCache::default()),
         }
@@ -187,10 +221,119 @@ impl TabView {
         }
         let clamped = index.min(self.tabs.len() - 1);
         if self.selected_index != clamped {
+            // Re-aim from the indicator's fractional position so a second tap mid-slide resumes
+            // from where the pill is, rather than snapping back to the tab it left.
+            let position = self.indicator_position();
+            self.indicator_from = position.floor().max(0.0) as usize;
+            let from = self.indicator_from as f32;
+            let to = clamped as f32;
+            let fraction = if (to - from).abs() < f32::EPSILON {
+                1.0
+            } else {
+                ((position - from) / (to - from)).clamp(0.0, 1.0)
+            };
             self.selected_index = clamped;
+            self.indicator.jump_to(fraction);
+            self.indicator.set_target(1.0);
             self.tab_changed.emit(clamped);
             self.base.request_redraw();
         }
+    }
+
+    /// The tab index the selection indicator is currently drawn at, as a fractional value.
+    pub fn indicator_position(&self) -> f32 {
+        let from = self.indicator_from as f32;
+        let to = self.selected_index as f32;
+        from + (to - from) * self.indicator.value()
+    }
+
+    /// Advances the indicator's slide by `delta_ms`; `true` while it still owes frames.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.indicator.tick(delta_ms)
+    }
+
+    /// Whether the indicator is between two tabs -- answers only, never advances.
+    pub fn is_animating(&self) -> bool {
+        self.indicator.is_moving()
+    }
+
+    /// Whether each tab offers a close affordance.
+    pub fn closable(&self) -> bool {
+        self.closable
+    }
+
+    /// Enables or disables the per-tab close affordance.
+    ///
+    /// The affordance reports intent through [`Self::tab_close_requested`]; it does not remove
+    /// the tab itself, because only the host knows whether a dirty document may be discarded.
+    pub fn set_closable(&mut self, closable: bool) {
+        if self.closable == closable {
+            return;
+        }
+        self.closable = closable;
+        self.base.request_redraw();
+    }
+
+    /// Whether tabs can be reordered by dragging.
+    pub fn movable(&self) -> bool {
+        self.movable
+    }
+
+    /// Enables or disables drag reordering of tabs.
+    pub fn set_movable(&mut self, movable: bool) {
+        if self.movable == movable {
+            return;
+        }
+        self.movable = movable;
+        self.base.request_redraw();
+    }
+
+    /// Moves the tab at `from` to `to`, keeping the same tab selected.
+    ///
+    /// Returns whether the order changed.
+    pub fn move_tab(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.tabs.len() || to >= self.tabs.len() || from == to {
+            return false;
+        }
+        let page = self.tabs.remove(from);
+        self.tabs.insert(to, page);
+        if self.selected_index == from {
+            self.selected_index = to;
+        } else if from < self.selected_index && to >= self.selected_index {
+            self.selected_index -= 1;
+        } else if from > self.selected_index && to <= self.selected_index {
+            self.selected_index += 1;
+        }
+        self.indicator_from = self.selected_index;
+        self.indicator.jump_to(1.0);
+        self.tab_moved.emit((from, to));
+        self.base.request_redraw();
+        true
+    }
+
+    /// Whether the strip scrolls horizontally instead of squeezing its tabs.
+    pub fn is_strip_scrollable(&self) -> bool {
+        self.scrollable_strip
+    }
+
+    /// Enables or disables horizontal strip scrolling (a wheel over the strip moves it).
+    ///
+    /// Disabled by default, which keeps the historical behaviour of squeezing a crowded run
+    /// down to [`TAB_MIN_WIDTH`] per tab.
+    pub fn set_strip_scrollable(&mut self, scrollable: bool) {
+        if self.scrollable_strip == scrollable {
+            return;
+        }
+        self.scrollable_strip = scrollable;
+        if !scrollable {
+            self.strip_offset = 0;
+        }
+        self.base.request_redraw();
+    }
+
+    /// The strip's current horizontal scroll offset, in pixels.
+    pub fn strip_offset(&self) -> i32 {
+        self.strip_offset
     }
 
     /// Returns the selected tab index, or `None` when there are no tabs.
@@ -337,6 +480,34 @@ impl TabView {
         placed
     }
 
+    /// The tab boxes as painted, including the strip's horizontal scroll offset.
+    ///
+    /// With scrolling disabled the offset is exactly zero, so this is byte-identical to
+    /// [`Self::tab_run`]. The paint path and the hit test both read this one answer.
+    fn visible_tab_run(&self, strip: Rect) -> crate::compat::Vec<Rect> {
+        let mut run = self.tab_run(strip);
+        if self.scrollable_strip && self.strip_offset != 0 {
+            for tab in run.iter_mut() {
+                tab.x -= self.strip_offset;
+            }
+        }
+        run
+    }
+
+    /// The close affordance's box inside `tab_rect`, when the tab is closable.
+    fn close_box(&self, tab_rect: Rect) -> Option<Rect> {
+        if !self.closable {
+            return None;
+        }
+        let side = 12.min(tab_rect.height.max(1));
+        Some(Rect::new(
+            tab_rect.x + tab_rect.width as i32 - side as i32 - 4,
+            tab_rect.y + (tab_rect.height as i32 - side as i32) / 2,
+            side,
+            side,
+        ))
+    }
+
     /// The drawn width of each tab when the run has `strip_width` to spend.
     ///
     /// Measured widths up to the strip's own room; on a crowded strip the shortfall is shared
@@ -408,6 +579,15 @@ impl Widget for TabView {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
+    }
+
+    /// Advances the indicator's slide; `true` while it still owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        TabView::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        TabView::is_animating(self)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -540,23 +720,33 @@ impl Draw for TabView {
         // The **effective font** — the resolved theme/caller font — rather than the fixed 12 px
         // sans-serif this used to build (D09-STYLE-01).
         let font = effective_font(self.style());
-        for (i, tab_rect) in self.tab_run(strip).into_iter().enumerate() {
+        // A scrolling strip paints only the tabs that are visible inside its band.
+        if self.scrollable_strip {
+            context.push_clip(strip.x, strip.y, strip.width, strip.height);
+        }
+        let run = self.visible_tab_run(strip);
+
+        // The selection indicator slides between the tab it left and the tab it is heading for.
+        // Derived through the same fractional accessor an animation test samples.
+        if run.len() > 1 {
+            let position = self.indicator_position().clamp(0.0, (run.len() - 1) as f32);
+            let lower = position.floor() as usize;
+            let upper = position.ceil() as usize;
+            let fraction = position - lower as f32;
+            let left = run[lower].x as f32 + (run[upper].x as f32 - run[lower].x as f32) * fraction;
+            let width = run[lower].width as f32
+                + (run[upper].width as f32 - run[lower].width as f32) * fraction;
+            let indicator_rect =
+                Rect::new(left as i32, strip.y + strip.height as i32 - 3, width.max(1.0) as u32, 3);
+            context.fill_rect(indicator_rect, indicator);
+        }
+
+        for (i, tab_rect) in run.iter().copied().enumerate() {
             let is_selected = i == self.selected_index;
 
             // Background
             let bg_color = if is_selected { content_background } else { inactive_tab };
             context.fill_rect(tab_rect, bg_color);
-
-            // Selected tab indicator line
-            if is_selected {
-                let indicator_rect = Rect::new(
-                    tab_rect.x,
-                    tab_rect.y + tab_rect.height as i32 - 3,
-                    tab_rect.width,
-                    3,
-                );
-                context.fill_rect(indicator_rect, indicator);
-            }
 
             // Draw tab title (with icon prefix if available)
             let tab = &self.tabs[i];
@@ -608,6 +798,36 @@ impl Draw for TabView {
                 text_color,
                 HorizontalAlignment::Center,
             );
+
+            // Close affordance: a small cross at the tab's trailing edge. It reports intent
+            // rather than removing the tab, because only the host knows whether discarding the
+            // page is safe.
+            if self.closable {
+                let side = 12.min(tab_rect.height.max(1));
+                let box_rect = Rect::new(
+                    tab_rect.x + tab_rect.width as i32 - side as i32 - 4,
+                    tab_rect.y + (tab_rect.height as i32 - side as i32) / 2,
+                    side,
+                    side,
+                );
+                let inset = 3;
+                context.draw_line(
+                    Point::new(box_rect.x + inset, box_rect.y + inset),
+                    Point::new(
+                        box_rect.x + box_rect.width as i32 - inset,
+                        box_rect.y + box_rect.height as i32 - inset,
+                    ),
+                    inactive_text,
+                );
+                context.draw_line(
+                    Point::new(box_rect.x + box_rect.width as i32 - inset, box_rect.y + inset),
+                    Point::new(box_rect.x + inset, box_rect.y + box_rect.height as i32 - inset),
+                    inactive_text,
+                );
+            }
+        }
+        if self.scrollable_strip {
+            context.pop_clip();
         }
 
         // Draw separator line below tab bar
@@ -670,35 +890,114 @@ impl EventHandler for TabView {
         }
         match event {
             Event::MousePress { pos, button, .. } => {
-                if *button == 1 && !self.tabs.is_empty() {
-                    // The band comes from the control's own derivation, so the region that accepts
-                    // a press is by construction the region the renderer drew.
-                    let strip = self.tab_bar_rect();
-                    if pos.y >= strip.y && pos.y < strip.y + strip.height as i32 {
-                        // The tab boxes are the layout's answer, the *same* boxes the draw pass
-                        // painted. Deriving the index from `relative_x / tab_width` (the old
-                        // form) meant the hit test divided the strip equally while the paint
-                        // path used each tab's own width — so once tabs stopped being equal, a
-                        // press on a tab selected its neighbour. Reading the boxes removes the
-                        // second derivation rather than trying to keep the two in step.
-                        //
-                        // The position is used **as given**, because `tab_run` returns boxes in the
-                        // strip's own coordinates (see `draw`). Subtracting `strip.x` here was the
-                        // mirror of the translation `draw` used to add; both are gone.
-                        let clicked = self.tab_run(strip).into_iter().position(|box_rect| {
-                            let left = box_rect.x;
-                            let right = left + box_rect.width as i32;
-                            pos.x >= left && pos.x < right
+                if *button != 1 || self.tabs.is_empty() {
+                    self.forward_to_content(event);
+                    return;
+                }
+                // The band comes from the control's own derivation, so the region that accepts
+                // a press is by construction the region the renderer drew.
+                let strip = self.tab_bar_rect();
+                if pos.y >= strip.y && pos.y < strip.y + strip.height as i32 {
+                    // The boxes are the painted boxes, including the strip's scroll offset.
+                    let clicked = self.visible_tab_run(strip).into_iter().position(|box_rect| {
+                        let left = box_rect.x;
+                        let right = left + box_rect.width as i32;
+                        pos.x >= left && pos.x < right
+                    });
+                    if let Some(index) = clicked {
+                        // A press inside a tab's close affordance arms the close and does not
+                        // reorder or select that tab.
+                        let close_hit = self
+                            .visible_tab_run(strip)
+                            .get(index)
+                            .copied()
+                            .and_then(|tab| self.close_box(tab))
+                            .is_some_and(|close| close.contains_point(*pos));
+                        if close_hit {
+                            self.pending_close = Some(index);
+                            return;
+                        }
+                        if self.movable {
+                            self.drag = Some((pos.x as f32, index));
+                        }
+                        self.set_current_index(index);
+                        return;
+                    }
+                }
+                // The press was outside the strip, so it belongs to the content area.
+                self.swipe = Some((pos.x as f32, pos.y as f32));
+                self.forward_to_content(event);
+            }
+            Event::MouseMove { pos } => {
+                self.forward_to_content(event);
+                let _ = pos;
+            }
+            Event::MouseRelease { pos, button } => {
+                if *button == 1 {
+                    if let Some(index) = self.pending_close.take() {
+                        let strip = self.tab_bar_rect();
+                        let still_hit = self
+                            .visible_tab_run(strip)
+                            .get(index)
+                            .copied()
+                            .and_then(|tab| self.close_box(tab))
+                            .is_some_and(|close| close.contains_point(*pos));
+                        if still_hit {
+                            self.tab_close_requested.emit(index);
+                        }
+                        return;
+                    }
+                    if let Some((origin, index)) = self.drag.take() {
+                        let strip = self.tab_bar_rect();
+                        let target = self.visible_tab_run(strip).into_iter().position(|box_rect| {
+                            pos.x >= box_rect.x
+                                && pos.x < box_rect.x + box_rect.width as i32
+                                && pos.y >= box_rect.y
+                                && pos.y < box_rect.y + box_rect.height as i32
                         });
-                        if let Some(index) = clicked {
-                            self.set_current_index(index);
+                        let dragged = (pos.x as f32 - origin).abs() > 4.0;
+                        if dragged {
+                            if let Some(target) = target {
+                                if target != index {
+                                    self.move_tab(index, target);
+                                }
+                            }
                             return;
                         }
                     }
-                    // The press was outside the strip, so it belongs to the content area. Falls
-                    // through to the shared dispatch below.
-                    self.forward_to_content(event);
+                    if let Some((origin_x, origin_y)) = self.swipe.take() {
+                        let dx = pos.x as f32 - origin_x;
+                        let dy = pos.y as f32 - origin_y;
+                        let content = self.content_rect();
+                        let horizontal = dx.abs() > (content.width as f32 / 4.0) && dy.abs() < 40.0;
+                        if horizontal {
+                            if dx < 0.0 {
+                                if self.selected_index + 1 < self.tabs.len() {
+                                    self.set_current_index(self.selected_index + 1);
+                                }
+                            } else if self.selected_index > 0 {
+                                self.set_current_index(self.selected_index - 1);
+                            }
+                            return;
+                        }
+                    }
                 }
+                self.forward_to_content(event);
+            }
+            Event::Wheel { delta, .. } => {
+                if self.scrollable_strip && delta.x != 0 {
+                    let strip = self.tab_bar_rect();
+                    let content_width: i32 = self
+                        .visible_tab_run(strip)
+                        .iter()
+                        .map(|tab| tab.width as i32 + TAB_SPACING)
+                        .sum();
+                    let max_offset = (content_width - strip.width as i32).max(0);
+                    self.strip_offset = (self.strip_offset - delta.x * 24).clamp(0, max_offset);
+                    self.base.request_redraw();
+                    return;
+                }
+                self.base.handle_event(event);
             }
             _ => {
                 self.base.handle_event(event);
@@ -1180,5 +1479,64 @@ mod tests {
 
         tv.set_current_index(1);
         assert_eq!(tv.content_widget_id(), None, "the empty tab has no content to draw");
+    }
+
+    #[test]
+    fn the_selection_indicator_slides_between_tabs() {
+        let mut tv = make_tab_view();
+        tv.add_tab("A", None, None::<&str>);
+        tv.add_tab("B", None, None::<&str>);
+        assert_eq!(tv.indicator_position(), 0.0);
+        tv.set_current_index(1);
+        assert_eq!(tv.indicator_position(), 0.0, "the slide starts from the tab it left");
+        assert!(tv.tick(16));
+        let mid = tv.indicator_position();
+        assert!(mid > 0.0 && mid < 1.0, "the indicator travels rather than teleports: {mid}");
+        while tv.tick(16) {}
+        assert_eq!(tv.indicator_position(), 1.0);
+    }
+
+    #[test]
+    fn a_horizontal_swipe_over_the_content_changes_tab() {
+        let mut tv = make_tab_view();
+        tv.add_tab("A", None, None::<&str>);
+        tv.add_tab("B", None, None::<&str>);
+        let rect = tv.content_rect();
+        let start = Point::new(rect.x + rect.width as i32 - 30, rect.y + 20);
+        tv.handle_event(&Event::MousePress { pos: start, button: 1, modifiers: 0 });
+        let end = Point::new(start.x - (rect.width as i32 / 2), start.y);
+        tv.handle_event(&Event::MouseRelease { pos: end, button: 1 });
+        assert_eq!(tv.selected_index(), Some(1));
+    }
+
+    #[test]
+    fn a_close_affordance_reports_the_tab_it_belongs_to() {
+        let mut tv = make_tab_view();
+        tv.add_tab("A", None, None::<&str>);
+        tv.add_tab("B", None, None::<&str>);
+        tv.set_closable(true);
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        let f = fired.clone();
+        tv.tab_close_requested.connect(move |index: std::sync::Arc<usize>| {
+            f.store(*index, std::sync::atomic::Ordering::SeqCst);
+        });
+        let run = tv.tab_run(tv.tab_bar_rect());
+        let first = run[0];
+        let close = tv.close_box(first).expect("closable tabs offer a close box");
+        let pos = Point::new(close.x + 2, close.y + 2);
+        tv.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        tv.handle_event(&Event::MouseRelease { pos, button: 1 });
+        assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn moving_a_tab_keeps_the_selected_tab_selected() {
+        let mut tv = make_tab_view();
+        tv.add_tab("A", None, None::<&str>);
+        tv.add_tab("B", None, None::<&str>);
+        tv.set_current_index(1);
+        assert!(tv.move_tab(1, 0));
+        assert_eq!(tv.selected_index(), Some(0));
+        assert_eq!(tv.tabs()[0].title, "B");
     }
 }

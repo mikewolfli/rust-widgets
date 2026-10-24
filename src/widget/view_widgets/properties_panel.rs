@@ -150,6 +150,10 @@ pub struct PropertiesPanel {
     /// leave the highlight on whatever visual row the entry used to occupy;
     /// category headers are separators and are never hovered.
     hovered_entry: Option<usize>,
+    /// The entry being edited and its scratch buffer.
+    editing: Option<(usize, String)>,
+    /// The entry carrying keyboard focus.
+    focused_entry: Option<usize>,
 }
 
 impl PropertiesPanel {
@@ -164,6 +168,8 @@ impl PropertiesPanel {
             grouped_cache: RefCell::new(None),
             display_cache: RefCell::new(None),
             hovered_entry: None,
+            editing: None,
+            focused_entry: None,
         }
     }
 
@@ -388,23 +394,28 @@ impl PropertiesPanel {
     /// threading an entry reference out of the hit-test loop) also avoids a second, divergent
     /// copy of the row walk.
     fn toggle_editable_row(&mut self, row_rect: Rect, pos: crate::core::Point) {
-        let Some(name) = self.editable_name_at(row_rect, pos) else { return };
-        // Only booleans toggle on click; every other kind needs a real editor, so the click is
-        // acknowledged by a redraw but must not silently rewrite the value.
-        if let Some(entry) = self.properties.iter().find(|e| e.name == name) {
-            if let PropertyValue::Bool(value) = entry.value {
-                self.set_property_value(&name, PropertyValue::Bool(!value));
+        let Some(index) = self.editable_index_at(row_rect, pos) else { return };
+        self.focused_entry = Some(index);
+        let Some(entry) = self.properties.get(index).cloned() else { return };
+        match entry.value.clone() {
+            PropertyValue::Bool(value) => {
+                self.commit_value(index, PropertyValue::Bool(!value));
             }
+            PropertyValue::Choice { options, selected } if !options.is_empty() => {
+                let next = (selected + 1) % options.len();
+                self.commit_value(index, PropertyValue::Choice { options, selected: next });
+            }
+            PropertyValue::Text(text) => self.begin_edit(index, text),
+            PropertyValue::Number(value) => self.begin_edit(index, value.to_string()),
+            // A colour or path needs a picker, not a text field; the click is acknowledged
+            // without rewriting the value.
+            _ => {}
         }
         self.base.request_redraw();
     }
 
-    /// The name of the editable property whose value column covers `pos`, when the row drawn
-    /// at `row_rect` is that property's row.
-    ///
-    /// A click on the name column or on a category header resolves to `None`: headers are not
-    /// editable, and the name column is a label, not a value editor.
-    fn editable_name_at(&self, row_rect: Rect, pos: crate::core::Point) -> Option<String> {
+    /// The entry index whose value column covers `pos`.
+    fn editable_index_at(&self, row_rect: Rect, pos: crate::core::Point) -> Option<usize> {
         let content = self.content_box();
         let value_rect = Rect::new(
             content.x + VALUE_COL_LEFT,
@@ -415,15 +426,83 @@ impl PropertiesPanel {
         if !value_rect.contains_point(pos) {
             return None;
         }
-        self.row_owner(row_rect.y - content.y + self.scroll_offset)
+        let offset = row_rect.y - content.y + self.scroll_offset;
+        if offset < 0 {
+            return None;
+        }
+        let target = offset as usize / ROW_HEIGHT as usize;
+        let mut row = 0usize;
+        for (_, indices) in self.grouped_indices().iter() {
+            if row == target {
+                return None;
+            }
+            row += 1;
+            for &index in indices {
+                if row == target {
+                    return self
+                        .properties
+                        .get(index)
+                        .filter(|entry| entry.editable)
+                        .map(|_| index);
+                }
+                row += 1;
+            }
+        }
+        None
+    }
+
+    /// Starts editing an entry with its current text.
+    pub fn begin_edit(&mut self, index: usize, text: String) {
+        let Some(entry) = self.properties.get(index) else { return };
+        if !entry.editable {
+            return;
+        }
+        self.editing = Some((index, text));
+        self.focused_entry = Some(index);
+        self.base.request_redraw();
+    }
+
+    /// Commits the open editor, parsing a number when the entry holds one.
+    pub fn commit_edit(&mut self) -> bool {
+        let Some((index, text)) = self.editing.take() else {
+            return false;
+        };
+        let Some(entry) = self.properties.get(index).cloned() else {
+            return false;
+        };
+        let value = match entry.value {
+            PropertyValue::Number(_) => match text.trim().parse::<f64>() {
+                Ok(number) => PropertyValue::Number(number),
+                // A value that does not parse is refused rather than coerced to zero.
+                Err(_) => return false,
+            },
+            _ => PropertyValue::Text(text),
+        };
+        self.commit_value(index, value);
+        true
+    }
+
+    /// Cancels the open editor, discarding its buffer.
+    pub fn cancel_edit(&mut self) {
+        if self.editing.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether an editor is open.
+    pub fn editing_entry(&self) -> Option<usize> {
+        self.editing.as_ref().map(|(index, _)| *index)
+    }
+
+    fn commit_value(&mut self, index: usize, value: PropertyValue) {
+        let Some(name) = self.properties.get(index).map(|entry| entry.name.clone()) else {
+            return;
+        };
+        self.set_property_value(&name, value);
     }
 
     /// The entry index under `pos`, or `None` when the pointer is over a category
     /// header or outside the content box.
-    ///
-    /// The same inverse walk [`Self::row_owner`] performs, minus the editable
-    /// filter: hover follows the pointer's fact, and a read-only entry is still
-    /// a row the pointer can be over.
     fn entry_index_at(&self, pos: crate::core::Point) -> Option<usize> {
         let content = self.content_box();
         if !content.contains_point(pos) {
@@ -439,33 +518,6 @@ impl PropertiesPanel {
             for &index in indices {
                 if row == target {
                     return Some(index);
-                }
-                row += 1;
-            }
-        }
-        None
-    }
-
-    /// Maps a visual row's vertical offset within the scrolled content back to the name of the
-    /// entry it carries, or `None` when the offset falls on a category header.
-    ///
-    /// This is the inverse of the row walk in `visual_row_count`: headers and entries occupy
-    /// exactly one `ROW_HEIGHT` band each, in the same order the grouping yields them.
-    fn row_owner(&self, offset: i32) -> Option<String> {
-        if offset < 0 {
-            return None;
-        }
-        let mut row = 0usize;
-        let target = offset as usize / ROW_HEIGHT as usize;
-        for (_, indices) in self.grouped_indices().iter() {
-            if row == target {
-                return None; // a category header
-            }
-            row += 1;
-            for &index in indices {
-                if row == target {
-                    let entry = self.properties.get(index)?;
-                    return entry.editable.then(|| entry.name.clone());
                 }
                 row += 1;
             }
@@ -734,7 +786,14 @@ impl Draw for PropertiesPanel {
                     content.width.saturating_sub(VALUE_COL_LEFT as u32),
                     ROW_HEIGHT,
                 );
-                let display = displays.get(index).map(String::as_str).unwrap_or("");
+                let display = match self.editing.as_ref() {
+                    Some((editing_index, buffer)) if *editing_index == index => {
+                        std::borrow::Cow::Owned(std::format!("{buffer}|"))
+                    }
+                    _ => std::borrow::Cow::Borrowed(
+                        displays.get(index).map(String::as_str).unwrap_or(""),
+                    ),
+                };
                 context.fill_rect(value_rect, value_background);
                 let value_line = context.text_line(value_rect, font);
                 if !display.is_empty() {
@@ -745,7 +804,7 @@ impl Draw for PropertiesPanel {
                             width: value_rect.width.saturating_sub(4),
                             height: value_line.height,
                         },
-                        display,
+                        &display,
                         font,
                         if entry.editable { value_color } else { readonly_value_color },
                         HorizontalAlignment::Left,
@@ -822,7 +881,63 @@ impl EventHandler for PropertiesPanel {
                 self.base.handle_event(event);
             }
             Event::Wheel { delta, modifiers: _ } => {
-                self.scroll_offset = (self.scroll_offset - delta.y * 3).max(0);
+                // One notch is one row: the old `* 3` had no row semantics and scrolled a
+                // different distance per host.
+                let step = ROW_HEIGHT as i32 * delta.y.signum();
+                let max =
+                    ((self.visual_row_count().saturating_sub(1)) * ROW_HEIGHT as usize) as i32;
+                self.scroll_offset = (self.scroll_offset - step).clamp(0, max.max(0));
+                self.base.request_redraw();
+            }
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => {
+                if let Some((_, buffer)) = self.editing.as_mut() {
+                    match *key {
+                        crate::event::key_codes::ENTER => {
+                            let _ = self.commit_edit();
+                        }
+                        crate::event::key_codes::ESCAPE => self.cancel_edit(),
+                        crate::event::key_codes::BACKSPACE => {
+                            buffer.pop();
+                            self.base.request_redraw();
+                        }
+                        32..=126 => {
+                            if let Some(character) = char::from_u32(*key) {
+                                buffer.push(character);
+                                self.base.request_redraw();
+                            }
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+                let visible = self.visual_row_count();
+                if visible == 0 {
+                    return;
+                }
+                let current = self.focused_entry.unwrap_or(0);
+                let page = (self.content_box().height / ROW_HEIGHT).max(1) as usize;
+                let next = match *key {
+                    crate::event::key_codes::UP => current.saturating_sub(1),
+                    crate::event::key_codes::DOWN => {
+                        current.saturating_add(1).min(self.properties.len().saturating_sub(1))
+                    }
+                    crate::event::key_codes::HOME => 0,
+                    crate::event::key_codes::END => self.properties.len().saturating_sub(1),
+                    crate::event::key_codes::PAGE_UP => current.saturating_sub(page),
+                    crate::event::key_codes::PAGE_DOWN => {
+                        current.saturating_add(page).min(self.properties.len().saturating_sub(1))
+                    }
+                    crate::event::key_codes::ENTER | crate::event::key_codes::SPACE => {
+                        if let Some(entry) = self.properties.get(current).cloned() {
+                            if let PropertyValue::Bool(value) = entry.value {
+                                self.commit_value(current, PropertyValue::Bool(!value));
+                            }
+                        }
+                        current
+                    }
+                    _ => current,
+                };
+                self.focused_entry = Some(next);
                 self.base.request_redraw();
             }
             _ => {
@@ -1274,5 +1389,38 @@ mod tests {
         let first = panel.row_rect_for(1);
         panel.handle_event(&Event::MouseMove { pos: Point::new(first.x + 10, first.y + 13) });
         assert_eq!(panel.hovered_entry, None);
+    }
+
+    /// Text/number editors open on click, commit on Enter, and the wheel moves by rows.
+    #[test]
+    fn editors_wheel_rows_and_keyboard_are_wired() {
+        use crate::event::EventHandler;
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 320, 200));
+        panel.add_property(PropertyEntry::new(
+            "count",
+            PropertyValue::Number(3.0),
+            Some("General"),
+            None,
+            true,
+        ));
+        let row = panel.row_rect_for(1);
+        panel.handle_event(&Event::MousePress {
+            pos: Point::new(row.x + VALUE_COL_LEFT + 4, row.y + 13),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(panel.editing_entry(), Some(0), "a click opens the number editor");
+        panel.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        panel.handle_event(&Event::KeyPress { key: 49, modifiers: 0 });
+        panel.handle_event(&Event::KeyPress { key: crate::event::key_codes::ENTER, modifiers: 0 });
+        assert_eq!(panel.editing_entry(), None);
+        assert!(matches!(
+            panel.properties()[0].value,
+            PropertyValue::Number(value) if value >= 31.0
+        ));
+
+        panel.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert!(panel.scroll_offset >= 0);
+        let _ = crate::widget::svg::render_to_svg(&mut panel);
     }
 }

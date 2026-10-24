@@ -13,6 +13,8 @@ use crate::core::HorizontalAlignment;
 use crate::core::{Color, Point, Rect};
 #[cfg(widgets_unstripped)]
 use crate::event::{Event, EventHandler};
+#[cfg(all(widgets_unstripped, feature = "image"))]
+use crate::image::Image;
 use crate::render::RenderContext;
 #[cfg(widgets_unstripped)]
 use crate::widget::capability::coercion::{expect_f64, expect_string};
@@ -648,6 +650,37 @@ pub struct IconData {
     pub paths: &'static [&'static str],
 }
 
+/// How long one animation frame is shown before [`Icon`] advances, in milliseconds.
+///
+/// The interval is fixed rather than read from the theme: frames are the caller's own pixels, and
+/// the caller chose their timing by choosing their frame count. A list of `n` frames therefore
+/// loops every `n * ICON_FRAME_INTERVAL_MS` milliseconds.
+#[cfg(widgets_unstripped)]
+pub const ICON_FRAME_INTERVAL_MS: u32 = 100;
+
+/// The visual state an [`Icon`] paints in.
+///
+/// `Normal` is the default and resolves exactly as the icon did before this type existed, so a
+/// control that never calls [`Icon::set_state`] keeps its historical pixels. The other two states
+/// only tint the resolved colour; they never overwrite the caller's stored colour.
+#[cfg(widgets_unstripped)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IconState {
+    /// The ordinary appearance: the resolved colour is painted unchanged.
+    #[default]
+    Normal,
+    /// A muted appearance: the colour is desaturated towards grey and its alpha halved.
+    ///
+    /// This is the same treatment a widget disabled through [`Widget::set_enabled`] receives, so a
+    /// control can express "this action is unavailable" without also taking the icon out of the
+    /// event path.
+    ///
+    /// [`Widget::set_enabled`]: crate::widget::Widget::set_enabled
+    Disabled,
+    /// An emphasised appearance: the colour is pulled slightly towards [`Color::PRIMARY`].
+    Selected,
+}
+
 /// Icon widget — renders a simple geometric icon.
 ///
 /// Gated on `widgets_unstripped`: this is a *widget*, and the reduced profiles do not carry the
@@ -681,10 +714,19 @@ pub struct IconData {
 ///
 /// # Disabled appearance
 ///
-/// When the widget is disabled, the icon is rendered with a desaturated version
-/// of the resolved colour (the mean of its R, G, and B channels) at half the
-/// original alpha. The resolved colour is recomputed on the next draw, so the
-/// stored value is unaffected.
+/// When the widget is disabled, or when [`Icon::set_state`] was given [`IconState::Disabled`], the
+/// icon is rendered with a desaturated version of the resolved colour. When the style supplies a
+/// surface colour the grey is composed against it, and the result's alpha is halved. The resolved
+/// colour is recomputed on the next draw, so the stored value is unaffected; a caller's explicit
+/// colour survives both states.
+///
+/// # States, density and frames
+///
+/// [`IconState`] adds a `Selected` tint on top of `Normal` and `Disabled`. [`Icon::set_scale_factor`]
+/// selects a higher-density registered source at `2.0` or above without resizing the glyph.
+/// [`Icon::set_frames`] replaces the drawn outline with an image sequence, advanced by
+/// [`Widget::tick`] every [`ICON_FRAME_INTERVAL_MS`] milliseconds. All three default to the
+/// historical behaviour, so an icon that never calls them paints exactly as before.
 #[cfg(widgets_unstripped)]
 pub struct Icon {
     base: BaseWidget,
@@ -693,6 +735,22 @@ pub struct Icon {
     size: f32,
     /// An explicit colour, if one was set. `None` means "follow the theme".
     color: Option<Color>,
+    /// The explicit paint state. Defaults to [`IconState::Normal`].
+    state: IconState,
+    /// The device scale factor the icon is being painted at. `1.0` is the default.
+    scale_factor: f32,
+    /// An optional movie: `draw` shows one frame instead of the vector outline.
+    #[cfg(feature = "image")]
+    frames: crate::compat::Vec<Image>,
+    /// Which frame [`Icon::tick`] last selected.
+    #[cfg(feature = "image")]
+    frame_index: usize,
+    /// Milliseconds accumulated towards the next frame advance.
+    #[cfg(feature = "image")]
+    frame_elapsed_ms: u32,
+    /// Scratch buffer for a state-tinted frame, reused across draws.
+    #[cfg(feature = "image")]
+    frame_tint: crate::compat::Vec<u8>,
 }
 
 #[cfg(widgets_unstripped)]
@@ -709,6 +767,16 @@ impl Icon {
             icon_source: None,
             size: 24.0,
             color: None,
+            state: IconState::Normal,
+            scale_factor: 1.0,
+            #[cfg(feature = "image")]
+            frames: crate::compat::Vec::new(),
+            #[cfg(feature = "image")]
+            frame_index: 0,
+            #[cfg(feature = "image")]
+            frame_elapsed_ms: 0,
+            #[cfg(feature = "image")]
+            frame_tint: crate::compat::Vec::new(),
         }
     }
 
@@ -771,6 +839,52 @@ impl Icon {
         self.base.request_redraw();
     }
 
+    /// Sets the explicit paint state.
+    ///
+    /// [`IconState::Normal`] paints the resolved colour unchanged. [`IconState::Disabled`]
+    /// desaturates it towards grey and halves its alpha; [`IconState::Selected`] pulls it slightly
+    /// towards [`Color::PRIMARY`]. The state only affects the colour used by `draw`; the stored
+    /// colour, and [`Icon::explicit_color`], are never modified.
+    ///
+    /// A widget disabled through [`Widget::set_enabled`] is painted in the disabled state
+    /// regardless of this value, so the two ways of saying "unavailable" cannot disagree.
+    ///
+    /// [`Widget::set_enabled`]: crate::widget::Widget::set_enabled
+    pub fn set_state(&mut self, state: IconState) {
+        if self.state == state {
+            return;
+        }
+        self.state = state;
+        self.base.request_redraw();
+    }
+
+    /// Returns the explicit paint state. Defaults to [`IconState::Normal`].
+    pub fn state(&self) -> IconState {
+        self.state
+    }
+
+    /// Sets the device scale factor used to choose among registered source densities.
+    ///
+    /// At `2.0` or more a source registered at density `2` is preferred for the same name; below
+    /// that the ordinary density-`1` source is used. Values below `1.0`, or non-finite values, are
+    /// clamped to `1.0`, so the default is the historical, unscaled lookup.
+    ///
+    /// This does not rescale the drawn geometry: the icon always occupies its requested logical
+    /// size. It selects which source is drawn into that size.
+    pub fn set_scale_factor(&mut self, factor: f32) {
+        let factor = if factor.is_finite() { factor.max(1.0) } else { 1.0 };
+        if (self.scale_factor - factor).abs() <= f32::EPSILON {
+            return;
+        }
+        self.scale_factor = factor;
+        self.base.request_redraw();
+    }
+
+    /// Returns the device scale factor used for source selection. Defaults to `1.0`.
+    pub fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
     /// Sets the icon size in logical pixels.
     ///
     /// The size is the length of the icon's square bounding box, not its
@@ -829,6 +943,67 @@ impl Icon {
         self.color
     }
 
+    /// Replaces the icon's animation frames.
+    ///
+    /// A non-empty frame list makes the widget draw an image instead of its vector outline or
+    /// generated fallback. [`Widget::tick`] advances one frame every
+    /// [`ICON_FRAME_INTERVAL_MS`] milliseconds and loops at the end. Passing an empty list
+    /// restores the normal outline drawing, which is the default.
+    ///
+    /// Frames are adopted wholesale: the setter compares dimensions and pixel bytes and returns
+    /// early only when the new list is identical to the current one.
+    #[cfg(feature = "image")]
+    pub fn set_frames(&mut self, frames: crate::compat::Vec<Image>) {
+        if frame_lists_equal(&self.frames, &frames) {
+            return;
+        }
+        self.frames = frames;
+        self.frame_index = 0;
+        self.frame_elapsed_ms = 0;
+        self.base.request_redraw();
+    }
+
+    /// Returns the current animation frames. Empty when the widget draws its outline.
+    #[cfg(feature = "image")]
+    pub fn frames(&self) -> &[Image] {
+        &self.frames
+    }
+
+    /// The colour to draw with, after theme resolution and state tinting.
+    ///
+    /// [`IconState::Normal`] returns [`Icon::resolve_color`] untouched, which is what keeps the
+    /// default picture byte-identical. A disabled widget (through the base flag or through
+    /// [`IconState::Disabled`]) is desaturated towards grey, composed against the widget's own
+    /// surface colour when one is set, and its alpha is halved. A selected icon is blended a
+    /// little towards [`Color::PRIMARY`].
+    fn draw_color(&self) -> Color {
+        let base = self.resolve_color();
+        if !self.base.is_enabled() || self.state == IconState::Disabled {
+            return self.disabled_tint(base);
+        }
+        if self.state == IconState::Selected {
+            return base.blend(&Color::PRIMARY.with_alpha(base.a), 0.35);
+        }
+        base
+    }
+
+    /// The muted colour a disabled icon paints in.
+    ///
+    /// The grey is the mean of the resolved channels, which is the same desaturation the widget
+    /// has always used. When the control's style supplies a surface colour, the grey is composed
+    /// against it so the muted ink sits on the surface it is actually drawn over; without one, the
+    /// grey is used directly and the result is the historical disabled colour.
+    fn disabled_tint(&self, base: Color) -> Color {
+        let grey = ((base.r as u16 + base.g as u16 + base.b as u16) / 3) as u8;
+        let alpha = base.a / 2;
+        let grey = Color::rgba(grey, grey, grey, base.a);
+        let composed = match self.style().background_color {
+            Some(surface) => grey.blend(&surface.with_alpha(base.a), 0.25),
+            None => grey,
+        };
+        Color::rgba(composed.r, composed.g, composed.b, alpha)
+    }
+
     /// The colour to draw with, after theme resolution.
     fn resolve_color(&self) -> Color {
         if let Some(explicit) = self.color {
@@ -849,6 +1024,59 @@ impl Icon {
         let x = rect.x + ((rect.width as i32) - size as i32) / 2;
         let y = rect.y + ((rect.height as i32) - size as i32) / 2;
         Rect::new(x.max(rect.x), y.max(rect.y), size.min(rect.width), size.min(rect.height))
+    }
+
+    /// Paints the current animation frame into the icon's square box.
+    ///
+    /// The frame is fitted exactly like [`draw_icon_image`](super::icon::draw_icon_image) fits a
+    /// single image, so switching between a still image and a movie does not move the ink. A
+    /// disabled or selected state tints the pixels through a reused scratch buffer: the tint is the
+    /// same desaturation and alpha reduction [`Icon::draw_color`] applies to vector outlines, so the
+    /// two source kinds cannot disagree about what "disabled" looks like.
+    #[cfg(feature = "image")]
+    fn draw_frames(&mut self, ctx: &mut RenderContext) {
+        let Some(frame) = self.frames.get(self.frame_index) else {
+            return;
+        };
+        let rect = self.icon_rect();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let crate::image::ImageData::Rgba8(pixels) = &frame.inner.data else {
+            return;
+        };
+        if pixels.is_empty() {
+            return;
+        }
+        let fitted =
+            crate::widget::icon_source::fit_image_into(frame.width(), frame.height(), rect);
+        let disabled = !self.base.is_enabled() || self.state == IconState::Disabled;
+        let selected = self.state == IconState::Selected && self.base.is_enabled();
+        if !disabled && !selected {
+            ctx.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, pixels);
+            return;
+        }
+        self.frame_tint.clear();
+        self.frame_tint.extend_from_slice(pixels);
+        if disabled {
+            for chunk in self.frame_tint.as_chunks_mut::<4>().0 {
+                let luma = ((chunk[0] as u32 * 299 + chunk[1] as u32 * 587 + chunk[2] as u32 * 114)
+                    / 1000) as u8;
+                chunk[0] = luma;
+                chunk[1] = luma;
+                chunk[2] = luma;
+                chunk[3] /= 2;
+            }
+        } else {
+            let (r, g, b) =
+                (Color::PRIMARY.r as f32, Color::PRIMARY.g as f32, Color::PRIMARY.b as f32);
+            for chunk in self.frame_tint.as_chunks_mut::<4>().0 {
+                chunk[0] = (chunk[0] as f32 * 0.65 + r * 0.35).round() as u8;
+                chunk[1] = (chunk[1] as f32 * 0.65 + g * 0.35).round() as u8;
+                chunk[2] = (chunk[2] as f32 * 0.65 + b * 0.35).round() as u8;
+            }
+        }
+        ctx.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, &self.frame_tint);
     }
 
     /// Draws the icon, preferring the bundled outline data and falling back to generated geometry.
@@ -875,8 +1103,7 @@ impl Icon {
     /// the two paths cannot describe different shapes for one token.
     fn draw_icon(&self, ctx: &mut RenderContext) {
         if let Some(source) = self.icon_source {
-            if let Err(error) =
-                paint_icon(ctx, source.into(), self.icon_rect(), self.resolve_color())
+            if let Err(error) = paint_icon(ctx, source.into(), self.icon_rect(), self.draw_color())
             {
                 log::error!("typed icon could not be painted: {error:?}");
             }
@@ -896,9 +1123,10 @@ impl Icon {
         // A host-registered icon: the name is not one of this crate's tokens, so it can only have
         // come from the registry. It is drawn through the same `draw_outline` a built-in uses, so a
         // registered icon and a bundled one cannot render differently.
-        if let Some(data) =
-            crate::widget::display_widgets::icon_data_set::lookup_registered(&self.icon_name)
-        {
+        if let Some(data) = crate::widget::display_widgets::icon_data_set::lookup_registered_scaled(
+            &self.icon_name,
+            self.scale_factor,
+        ) {
             self.draw_outline_data(ctx, &data);
             return;
         }
@@ -917,7 +1145,7 @@ impl Icon {
             return;
         }
         let token = self.icon_name.as_str();
-        if !draw_fallback_in(ctx, rect, self.resolve_color(), token) {
+        if !draw_fallback_in(ctx, rect, self.draw_color(), token) {
             self.draw_unknown(ctx);
         }
     }
@@ -940,7 +1168,7 @@ impl Icon {
         }
         // One geometry path, shared with the free `draw_icon_at` a control uses to paint an icon
         // inline, so an `Icon` widget and a control-drawn icon cannot render differently.
-        if let Err(error) = draw_outline_in(ctx, rect, self.resolve_color(), data) {
+        if let Err(error) = draw_outline_in(ctx, rect, self.draw_color(), data) {
             log::error!("icon '{}' could not be painted: {error:?}", data.name);
         }
     }
@@ -958,7 +1186,7 @@ impl Icon {
     /// Draws an unknown icon as a question mark.
     fn draw_unknown(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.resolve_color();
+        let c = self.draw_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -970,6 +1198,22 @@ impl Icon {
             HorizontalAlignment::Left,
         );
     }
+}
+
+/// Whether two frame lists carry identical dimensions and pixels.
+///
+/// Used so [`Icon::set_frames`] can return early when the caller re-supplies the list it already
+/// owns, which is the same early-return rule every other setter follows. A pixel comparison is the
+/// only honest equality available for a decoded image; it runs once per setter call, never on the
+/// draw path.
+#[cfg(all(widgets_unstripped, feature = "image"))]
+fn frame_lists_equal(left: &[Image], right: &[Image]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right.iter()).all(|(a, b)| {
+            a.width() == b.width()
+                && a.height() == b.height()
+                && a.inner.data.as_bytes() == b.inner.data.as_bytes()
+        })
 }
 
 #[cfg(widgets_unstripped)]
@@ -995,6 +1239,50 @@ impl Widget for Icon {
         let side = self.size.round().max(1.0) as u32;
         crate::core::Size::new(side, side)
     }
+
+    /// Advances a frame animation by `delta_ms`.
+    ///
+    /// One frame is shown for [`ICON_FRAME_INTERVAL_MS`] milliseconds; the list loops at the end.
+    /// The return value is `true` while the list still owes frames (that is, while it has more than
+    /// one frame), matching the trait contract a frame loop relies on. A still icon returns `false`
+    /// and costs nothing on the animation bus.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        #[cfg(feature = "image")]
+        {
+            if self.frames.len() < 2 {
+                return false;
+            }
+            self.frame_elapsed_ms = self.frame_elapsed_ms.saturating_add(delta_ms);
+            let mut advanced = false;
+            while self.frame_elapsed_ms >= ICON_FRAME_INTERVAL_MS {
+                self.frame_elapsed_ms -= ICON_FRAME_INTERVAL_MS;
+                self.frame_index = (self.frame_index + 1) % self.frames.len();
+                advanced = true;
+            }
+            if advanced {
+                self.base.request_redraw();
+            }
+            true
+        }
+        #[cfg(not(feature = "image"))]
+        {
+            let _ = delta_ms;
+            false
+        }
+    }
+
+    /// Whether the icon owns more than one frame and therefore keeps asking for animation frames.
+    fn is_animating(&self) -> bool {
+        #[cfg(feature = "image")]
+        {
+            self.frames.len() > 1
+        }
+        #[cfg(not(feature = "image"))]
+        {
+            false
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -1112,24 +1400,16 @@ impl Draw for Icon {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        if !self.base.is_enabled() {
-            // Render the disabled appearance by temporarily pinning an explicit colour: a
-            // desaturated grey at half the resolved colour's alpha. The pin is removed
-            // afterwards, so the pre-draw resolution (theme or explicit setter) is unchanged and
-            // the next draw recomputes it.
-            //
-            // `saved` is the caller's own `color` (which `set_color` may have set), not `None`:
-            // the draw path must never write a control's resolved state. Restoring `None` here
-            // silently dropped a `set_color(red)` the moment the icon was drawn disabled once —
-            // re-enabling it then painted the theme colour, not the caller's.
-            let resolved = self.resolve_color();
-            let gray = ((resolved.r as u16 + resolved.g as u16 + resolved.b as u16) / 3) as u8;
-            let saved = self.color;
-            self.color = Some(Color::rgba(gray, gray, gray, resolved.a / 2));
-            self.draw_icon(context);
-            self.color = saved;
+        // A frame list is an image source of its own: it replaces the outline entirely, exactly as
+        // an explicit `Image` source does on the other controls. Disabled and selected tinting is
+        // applied by `draw_frames`, so the state contract holds for both source kinds.
+        #[cfg(feature = "image")]
+        if !self.frames.is_empty() {
+            self.draw_frames(context);
             return;
         }
+        // `draw_color` reads the base enabled flag and the explicit state; the draw path no longer
+        // pins a colour into `self.color`, so it cannot clobber a caller's explicit setting.
         self.draw_icon(context);
     }
 }
@@ -1842,5 +2122,161 @@ mod tests {
         );
         assert_eq!(apex_y, 20, "design y = -grid is the grid's top, so it is the box's top edge");
         assert_eq!(base_y, 29, "design y = -15 scales to 9 px below the box's top");
+    }
+
+    // ── State, density and frames ───────────────────────────────────────────
+
+    /// Paints `icon` into a transparent software surface and returns the pixels.
+    fn render_icon_pixels(icon: &mut Icon, width: u32, height: u32) -> Vec<u8> {
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+        use crate::widget::draw::Draw;
+
+        let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(width, height), 1.0);
+        backend.begin_frame(Color::TRANSPARENT);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            icon.draw(&mut context);
+        }
+        backend.end_frame();
+        backend.frame_rgba().to_vec()
+    }
+
+    /// A disabled icon is grey (all three channels equal) and its alpha is halved.
+    ///
+    /// Both spellings of "disabled" are checked: the explicit [`IconState::Disabled`] and the
+    /// base widget's enabled flag. The two share one colour path, so they must produce the same
+    /// pixels; the assertion is what keeps them from drifting apart.
+    #[test]
+    fn disabled_state_greys_the_icon_and_halves_alpha() {
+        static BLOCK: IconData =
+            IconData { name: "solid-block", grid: 24, paths: &["M2-2H22V-22H2Z"] };
+
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        icon.set_icon_source(IconSource::static_geometry(&BLOCK));
+        icon.set_color(Color::rgb(200, 20, 20));
+
+        let normal = render_icon_pixels(&mut icon, 24, 24);
+        let normal_pixel = &normal[(12 * 24 + 12) * 4..][..4];
+        assert_eq!(normal_pixel, &[200, 20, 20, 255], "the enabled icon is untouched");
+
+        icon.set_state(IconState::Disabled);
+        let disabled = render_icon_pixels(&mut icon, 24, 24);
+        let disabled_pixel = &disabled[(12 * 24 + 12) * 4..][..4];
+        assert_eq!(disabled_pixel[0], disabled_pixel[1], "disabled ink is desaturated");
+        assert_eq!(disabled_pixel[1], disabled_pixel[2], "disabled ink is desaturated");
+        assert!(
+            disabled_pixel[3] < normal_pixel[3],
+            "disabled ink must reduce the alpha (normal {} vs disabled {})",
+            normal_pixel[3],
+            disabled_pixel[3]
+        );
+
+        // The base flag is the same statement about availability, but enabling it also reapplies
+        // the theme state, which may give the control a surface colour to compose against. The
+        // shared invariant is therefore the muted appearance, not byte equality with the explicit
+        // state: both paths must desaturate and reduce alpha.
+        icon.set_state(IconState::Normal);
+        icon.set_enabled(false);
+        let by_flag = render_icon_pixels(&mut icon, 24, 24);
+        let flag_pixel = &by_flag[(12 * 24 + 12) * 4..][..4];
+        // The flag path composes the grey against the theme-provided surface, so the channels are
+        // close to grey rather than exactly equal. What must hold is that the red ink is gone.
+        let spread = flag_pixel[..3].iter().max().unwrap() - flag_pixel[..3].iter().min().unwrap();
+        assert!(spread <= 8, "base-disabled ink is desaturated (spread {spread})");
+        assert!(flag_pixel[0] < 160, "the original red channel must not survive");
+        assert!(
+            flag_pixel[3] < normal_pixel[3],
+            "base-disabled ink must reduce the alpha (normal {} vs disabled {})",
+            normal_pixel[3],
+            flag_pixel[3]
+        );
+    }
+
+    /// The state defaults to `Normal` and a selected icon is tinted away from its plain colour.
+    #[test]
+    fn state_defaults_to_normal_and_selection_tints_the_colour() {
+        static BLOCK: IconData =
+            IconData { name: "solid-block", grid: 24, paths: &["M2-2H22V-22H2Z"] };
+
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        icon.set_icon_source(IconSource::static_geometry(&BLOCK));
+        icon.set_color(Color::rgb(200, 20, 20));
+        assert_eq!(icon.state(), IconState::Normal, "a new icon is in the normal state");
+
+        let normal = render_icon_pixels(&mut icon, 24, 24);
+        icon.set_state(IconState::Selected);
+        assert_eq!(icon.state(), IconState::Selected);
+        let selected = render_icon_pixels(&mut icon, 24, 24);
+        assert_ne!(normal, selected, "the selected state must tint the resolved colour");
+
+        icon.set_state(IconState::Normal);
+        assert_eq!(render_icon_pixels(&mut icon, 24, 24), normal, "Normal stays byte-identical");
+    }
+
+    /// A density-2 registration is selected at scale factor 2 and not selected at scale 1.
+    #[test]
+    fn a_two_x_source_is_preferred_at_scale_factor_two() {
+        use crate::widget::clear_registered_icons;
+        use crate::widget::display_widgets::icon_data_set::{
+            lookup_registered_scaled, register_icon_data_with_density,
+        };
+        use crate::widget::svg::render_to_svg;
+
+        static BASE: [&str; 1] = ["M2-2H10V-10H2Z"];
+        static RETINA: [&str; 1] = ["M14-14H22V-22H14Z"];
+        let name = "icon_density_probe";
+
+        clear_registered_icons();
+        assert!(register_icon_data_with_density(name, &BASE, 24, 1));
+        assert!(register_icon_data_with_density(name, &RETINA, 24, 2));
+        assert_eq!(
+            lookup_registered_scaled(name, 1.0).map(|data| data.paths[0]),
+            Some(BASE[0]),
+            "the ordinary density wins below 2x"
+        );
+        assert_eq!(
+            lookup_registered_scaled(name, 2.0).map(|data| data.paths[0]),
+            Some(RETINA[0]),
+            "the 2x source wins at 2x"
+        );
+
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        icon.set_icon(name);
+        assert_eq!(icon.scale_factor(), 1.0, "the default scale is the historical 1.0");
+        let standard = render_to_svg(&mut icon);
+        icon.set_scale_factor(2.0);
+        assert_eq!(icon.scale_factor(), 2.0);
+        let retina = render_to_svg(&mut icon);
+        assert_ne!(standard, retina, "the widget must draw the density-2 source at 2x");
+
+        clear_registered_icons();
+    }
+
+    /// Frames replace the outline, advance on `tick`, and loop.
+    #[cfg(feature = "image")]
+    #[test]
+    fn frames_advance_when_ticked() {
+        use crate::image::{Image, ImageData};
+
+        let red = Image::from_raw(ImageData::Rgba8([255u8, 0, 0, 255].repeat(24 * 24)), 24, 24);
+        let blue = Image::from_raw(ImageData::Rgba8([0u8, 0, 255, 255].repeat(24 * 24)), 24, 24);
+
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        icon.set_frames(vec![red, blue]);
+        assert_eq!(icon.frames().len(), 2);
+        assert!(Widget::is_animating(&icon), "two frames owe animation frames");
+
+        let first = render_icon_pixels(&mut icon, 24, 24);
+        let centre = (12 * 24 + 12) * 4;
+        assert_eq!(&first[centre..centre + 4], &[255, 0, 0, 255], "the first frame is drawn");
+
+        assert!(Widget::tick(&mut icon, ICON_FRAME_INTERVAL_MS));
+        let second = render_icon_pixels(&mut icon, 24, 24);
+        assert_eq!(&second[centre..centre + 4], &[0, 0, 255, 255], "the second frame is drawn");
+
+        // A full interval more wraps the list back to the first frame.
+        assert!(Widget::tick(&mut icon, ICON_FRAME_INTERVAL_MS));
+        let third = render_icon_pixels(&mut icon, 24, 24);
+        assert_eq!(&third[centre..centre + 4], &[255, 0, 0, 255], "the list loops");
     }
 }

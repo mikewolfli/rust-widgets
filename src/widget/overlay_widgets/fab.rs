@@ -11,12 +11,36 @@
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The three size classes a floating action button may be drawn at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FabSize {
+    /// The standard 56 px button.
+    #[default]
+    Regular,
+    /// The 40 px mini button.
+    Mini,
+    /// The 96 px large button introduced with the expressive Material sizes.
+    Large,
+}
+
+impl FabSize {
+    /// The edge length, in logical pixels, a host should give this size class.
+    pub const fn edge(self) -> u32 {
+        match self {
+            Self::Regular => 56,
+            Self::Mini => 40,
+            Self::Large => 96,
+        }
+    }
+}
 
 /// Floating Action Button widget.
 ///
@@ -30,8 +54,20 @@ pub struct FAB {
     icon_source: Option<IconSource>,
     /// The fill color of the circular button.
     accent_color: Color,
-    /// Whether this is a mini FAB (smaller size).
-    mini: bool,
+    /// Which size class the button is drawn at.
+    size_kind: FabSize,
+    /// An optional label that turns the circular button into an extended capsule.
+    extended_label: Option<String>,
+    /// How far the press shrink has travelled, `0.0` at rest and `1.0` fully pressed.
+    ///
+    /// A driver rather than a multiplication of `is_pressed`: the scale is an animation, and
+    /// jumping between the two ends was the whole gap this replaces. At rest the value is
+    /// exactly zero, so the drawn radius is byte-identical to the un-animated button.
+    press: PropertyDriver,
+    /// How much of the button is visible, `0.0` hidden to `1.0` shown.
+    visibility: PropertyDriver,
+    /// Whether downward scrolling hides the button.
+    hide_on_scroll: bool,
 }
 
 impl FAB {
@@ -55,7 +91,11 @@ impl FAB {
             icon_text: String::from("+"),
             icon_source: None,
             accent_color: Self::DEFAULT_ACCENT_COLOR,
-            mini: false,
+            size_kind: FabSize::Regular,
+            extended_label: None,
+            press: PropertyDriver::at(0.0, MotionSlot::Fast),
+            visibility: PropertyDriver::at(1.0, MotionSlot::Normal),
+            hide_on_scroll: false,
         }
     }
 
@@ -112,16 +152,87 @@ impl FAB {
     /// The geometry rect should be adjusted separately; this flag controls
     /// visual proportions like shadow offset and press scale factor.
     pub fn set_mini(&mut self, mini: bool) {
-        if self.mini == mini {
-            return;
-        }
-        self.mini = mini;
-        self.base.request_redraw();
+        let size_kind = if mini { FabSize::Mini } else { FabSize::Regular };
+        self.set_size(size_kind);
     }
 
     /// Returns whether this FAB is in mini mode.
     pub fn is_mini(&self) -> bool {
-        self.mini
+        self.size_kind == FabSize::Mini
+    }
+
+    /// Returns the button's size class.
+    pub fn size_kind(&self) -> FabSize {
+        self.size_kind
+    }
+
+    /// Sets the button's size class.
+    ///
+    /// This changes the size the control reports in [`Widget::size_hint`]; a host that
+    /// controls the geometry itself should also give it the class's own edge.
+    pub fn set_size(&mut self, size: FabSize) {
+        if self.size_kind == size {
+            return;
+        }
+        self.size_kind = size;
+        self.base.request_redraw();
+    }
+
+    /// Turns the button into an extended capsule when `label` is set, or back into a circle
+    /// when it is `None`.
+    pub fn set_extended_label(&mut self, label: Option<impl Into<String>>) {
+        let label = label.map(Into::into);
+        if self.extended_label == label {
+            return;
+        }
+        self.extended_label = label;
+        self.base.request_redraw();
+    }
+
+    /// Returns the extended label, when the button is a capsule.
+    pub fn extended_label(&self) -> Option<&str> {
+        self.extended_label.as_deref()
+    }
+
+    /// Enables hiding the button while the page scrolls down.
+    pub fn set_hide_on_scroll(&mut self, hide: bool) {
+        if self.hide_on_scroll == hide {
+            return;
+        }
+        self.hide_on_scroll = hide;
+        self.base.request_redraw();
+    }
+
+    /// Reports a scroll in wheel notches: a downward scroll hides the button, an upward one
+    /// shows it again. Does nothing unless [`Self::set_hide_on_scroll`] is enabled.
+    pub fn report_scroll(&mut self, delta_y: i32) {
+        if !self.hide_on_scroll || delta_y == 0 {
+            return;
+        }
+        self.visibility.set_target(if delta_y > 0 { 0.0 } else { 1.0 });
+        self.base.request_redraw();
+    }
+
+    /// How much of the button is currently shown, `0.0` to `1.0`.
+    pub fn visibility_progress(&self) -> f32 {
+        self.visibility.value()
+    }
+
+    /// Advances the press and visibility animations; `true` while either is moving.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        let pressed = self.press.tick(delta_ms);
+        let visible = self.visibility.tick(delta_ms);
+        pressed || visible
+    }
+
+    /// Whether either animation is between two values.
+    pub fn is_animating(&self) -> bool {
+        self.press.is_moving() || self.visibility.is_moving()
+    }
+
+    /// Retargets the press driver from the control's own pressed latch.
+    fn sync_press_driver(&mut self) {
+        self.press.set_target(if self.base.is_pressed() { 1.0 } else { 0.0 });
     }
 
     /// Programmatically trigger a click cycle (press then release).
@@ -143,7 +254,21 @@ impl Widget for FAB {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(56, 56)
+        let edge = self.size_kind.edge();
+        let width = match self.extended_label.as_deref() {
+            Some(label) => edge + 16 + (label.chars().count() as u32) * 8,
+            None => edge,
+        };
+        crate::core::Size::new(width, edge)
+    }
+
+    /// Advances the press and visibility animations.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        FAB::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        FAB::is_animating(self)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -246,14 +371,20 @@ impl Draw for FAB {
         let base_radius =
             (rect.width.min(rect.height) / 2).saturating_sub(max_shadow_offset / 2 + 1);
 
-        // When pressed, shrink by ~10% for press animation
-        let (radius, shadow_offset) = if self.base.is_pressed() && is_enabled {
-            let shrunk = (base_radius as f32 * 0.9) as u32;
-            (shrunk, (2.0 * dpi) as u32)
-        } else {
-            (base_radius, (3.0 * dpi) as u32)
-        };
-
+        // When pressed, the shrink follows the driver rather than the boolean: at rest the
+        // fraction is exactly zero, so the radius is the historical one, and a press now
+        // reaches that radius over frames instead of in one.
+        let press = if is_enabled { self.press.value().clamp(0.0, 1.0) } else { 0.0 };
+        let visibility = self.visibility.value().clamp(0.0, 1.0);
+        if visibility <= 0.001 {
+            return;
+        }
+        let radius = (base_radius as f32 * (1.0 - 0.1 * press)) as u32;
+        let shadow_offset =
+            if press > 0.0 { ((3.0 - press) * dpi) as u32 } else { (3.0 * dpi) as u32 };
+        // The hide-on-scroll transition moves the button below its own band as it leaves.
+        let hide_shift = ((1.0 - visibility) * rect.height as f32) as i32;
+        let cy = cy + hide_shift;
         let center = Point::new(cx, cy);
 
         // Draw shadow (offset darker circle underneath)
@@ -298,8 +429,34 @@ impl Draw for FAB {
         // uses for a filled action rather than a fixed white that can vanish on a light accent.
         let icon_color = if !is_enabled { themed_ink.with_alpha_f32(0.5) } else { themed_ink };
 
-        // Draw filled circle
-        context.fill_circle_aa(center, radius, fill_color);
+        // Draw filled circle, or an extended capsule when a label is set.
+        if let Some(label) = self.extended_label.as_deref() {
+            let capsule = Rect::new(
+                rect.x + max_shadow_offset as i32,
+                cy - radius as i32,
+                (rect.width.saturating_sub(max_shadow_offset * 2)).max(1),
+                radius * 2,
+            );
+            context.fill_rounded_rect(capsule, radius, fill_color);
+            let font_size = (radius as f32 * 0.5).max(14.0);
+            use crate::core::Font;
+            let font = Font::new("sans-serif", font_size, false, false);
+            let label_band = Rect::new(
+                capsule.x + radius as i32,
+                context.text_line(capsule, &font).y,
+                capsule.width.saturating_sub(radius),
+                radius * 2,
+            );
+            context.draw_text_fitted_cow(
+                label_band,
+                label,
+                &font,
+                icon_color,
+                HorizontalAlignment::Left,
+            );
+        } else {
+            context.fill_circle_aa(center, radius, fill_color);
+        }
 
         // Draw icon text centred on the button. The glyph origin is the glyph's **top-left**,
         // so the vertical centre is half the line box; adding `ascent` on top of an
@@ -317,7 +474,7 @@ impl Draw for FAB {
             }
         } else if !self.icon_text.is_empty() {
             // Use a default monospace-like font at a size proportional to button
-            let font_size = if self.mini {
+            let font_size = if self.size_kind == FabSize::Mini {
                 (radius as f32 * 0.7).max(12.0)
             } else {
                 (radius as f32 * 0.7).max(16.0)
@@ -376,12 +533,14 @@ impl EventHandler for FAB {
                     // before delivery, but a direct dispatch does not, and an unguarded
                     // press leaves the latch armed for a release belonging elsewhere.
                     self.base.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
+                    self.sync_press_driver();
                     self.base.request_redraw();
                 }
             }
             Event::MouseRelease { pos, button } => {
                 if *button == crate::event::mouse_button::PRIMARY && self.base.is_pressed() {
                     self.base.set_pressed(false);
+                    self.sync_press_driver();
                     // Inside commits; outside cancels silently. `clicked` is what a caller
                     // routes an action on, so it must mean "this gesture completed here".
                     if self.base.contains_point_with_touch_expansion(*pos) {
@@ -395,18 +554,21 @@ impl EventHandler for FAB {
                 // signal — because the release that ends the gesture decides its outcome.
                 if self.base.is_pressed() {
                     self.base.set_pressed(false);
+                    self.sync_press_driver();
                     self.base.request_redraw();
                 }
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
                 self.base.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
+                self.sync_press_driver();
                 self.base.request_redraw();
             }
             #[cfg(feature = "touch")]
             Event::TouchEnd { pos, .. } => {
                 if self.base.is_pressed() {
                     self.base.set_pressed(false);
+                    self.sync_press_driver();
                     if self.base.contains_point_with_touch_expansion(*pos) {
                         self.base.clicked.emit();
                     }
@@ -419,6 +581,10 @@ impl EventHandler for FAB {
             Event::Tap { .. } => {
                 self.base.clicked.emit();
                 self.base.request_redraw();
+            }
+            Event::Wheel { delta, .. } => {
+                self.report_scroll(delta.y);
+                self.base.handle_event(event);
             }
             _ => {
                 self.base.handle_event(event);
@@ -664,5 +830,41 @@ mod tests {
         });
         signal.emit();
         assert!(fired.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn the_press_shrink_is_animated_rather_than_switched() {
+        let mut fab = make_fab();
+        fab.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
+        assert!(fab.is_animating(), "a press starts a movement");
+        assert!(fab.tick(16));
+        fab.handle_event(&Event::MouseRelease { pos: Point::new(5, 5), button: 1 });
+        while fab.tick(16) {}
+        assert!(!fab.is_animating());
+    }
+
+    #[test]
+    fn an_extended_fab_reports_a_capsule_width() {
+        let mut fab = FAB::new(Rect::new(0, 0, 56, 56));
+        let round = fab.size_hint();
+        fab.set_extended_label(Some("Compose"));
+        assert!(fab.size_hint().width > round.width);
+        assert_eq!(fab.extended_label(), Some("Compose"));
+        fab.set_extended_label(None::<String>);
+        assert_eq!(fab.size_hint().width, round.width);
+    }
+
+    #[test]
+    fn scrolling_hides_and_reshows_the_fab_only_when_asked() {
+        let mut fab = make_fab();
+        fab.report_scroll(3);
+        assert_eq!(fab.visibility_progress(), 1.0, "hiding is opt-in");
+        fab.set_hide_on_scroll(true);
+        fab.report_scroll(3);
+        while fab.tick(16) {}
+        assert_eq!(fab.visibility_progress(), 0.0);
+        fab.report_scroll(-3);
+        while fab.tick(16) {}
+        assert_eq!(fab.visibility_progress(), 1.0);
     }
 }

@@ -3,7 +3,7 @@
 
 //! Window widget and platform integration.
 use crate::compat::{String, ToString};
-use crate::core::{Color, ObjectId, Rect, Size};
+use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -29,6 +29,25 @@ pub struct Window {
     /// its accessors are absent rather than carrying a duplicate local enum.
     #[cfg(device_profile)]
     material: Material,
+    /// Minimum client size requested from the platform, when one was set.
+    min_size: Option<(u32, u32)>,
+    /// Maximum client size recorded for the host. The platform trait has no maximum-size call,
+    /// so this is reported to a host that applies it itself.
+    max_size: Option<(u32, u32)>,
+    /// Whether the window is modal. The platform trait has no modality call, so this is a
+    /// host-facing flag rather than a window-system request.
+    modal: bool,
+    /// Whether the window asks to float above others (host-facing, like `modal`).
+    always_on_top: bool,
+    /// Window opacity in `0.0..=1.0` (host-facing).
+    opacity: f32,
+    /// Icon path requested through the platform, when one was set.
+    icon: Option<String>,
+    /// Whether the window paints its own chrome for a borderless window.
+    ///
+    /// Off by default: a decorated window is drawn by the window manager, and painting a
+    /// second title bar inside it was the defect this control already records in `draw`.
+    decorated: bool,
     /// Emitted when the window is closed.
     pub closed: GenericSignal,
 }
@@ -43,6 +62,13 @@ impl Window {
             button_spacing: 40,
             #[cfg(device_profile)]
             material: Material::None,
+            min_size: None,
+            max_size: None,
+            modal: false,
+            always_on_top: false,
+            opacity: 1.0,
+            icon: None,
+            decorated: false,
             closed: GenericSignal::new(),
         }
     }
@@ -138,6 +164,133 @@ impl Window {
             return;
         }
         self.material = material;
+        self.base.request_redraw();
+    }
+
+    /// Bytes the platform paints for this window's state, when it can answer.
+    ///
+    /// `flag` is one of the platform's window-state flags (maximised, minimised, fullscreen,
+    /// resizable, decorated). The call is forwarded to the active backend with this widget's id,
+    /// so the widget layer and the platform layer finally share one model: the backend both
+    /// records the state and, on a desktop, applies it to the native window.
+    ///
+    /// Returns `false` when the backend cannot honour the flag.
+    #[cfg(not(alloc_frugal))]
+    pub fn set_window_state(&mut self, flag: crate::platform::WindowStateFlag, on: bool) -> bool {
+        crate::platform::runtime::get_platform().set_window_state(self.id(), flag, on)
+    }
+
+    /// Returns the backend's answer for `flag`, or `None` when it does not model the state.
+    #[cfg(not(alloc_frugal))]
+    pub fn window_state(&self, flag: crate::platform::WindowStateFlag) -> Option<bool> {
+        crate::platform::runtime::get_platform().is_window_in_state(self.id(), flag)
+    }
+
+    /// Requests a minimum client size from the platform.
+    #[cfg(not(alloc_frugal))]
+    pub fn set_min_size(&mut self, width: u32, height: u32) -> bool {
+        self.min_size = Some((width, height));
+        crate::platform::runtime::get_platform().set_window_min_size(self.id(), width, height)
+    }
+
+    /// The minimum client size last requested.
+    pub fn min_size(&self) -> Option<(u32, u32)> {
+        self.min_size
+    }
+
+    /// Records a maximum client size for the host to apply.
+    pub fn set_max_size(&mut self, width: u32, height: u32) {
+        if self.max_size == Some((width, height)) {
+            return;
+        }
+        self.max_size = Some((width, height));
+        self.base.request_redraw();
+    }
+
+    /// The maximum client size last recorded.
+    pub fn max_size(&self) -> Option<(u32, u32)> {
+        self.max_size
+    }
+
+    /// Marks the window modal for the host.
+    ///
+    /// The platform trait has no modality request, so this is a state the host reads when it
+    /// decides whether to block input behind the window. It is deliberately not documented as a
+    /// window-system call.
+    pub fn set_modal(&mut self, modal: bool) {
+        if self.modal == modal {
+            return;
+        }
+        self.modal = modal;
+        self.base.request_redraw();
+    }
+
+    /// Whether the window is marked modal.
+    pub fn is_modal(&self) -> bool {
+        self.modal
+    }
+
+    /// Marks the window as always-on-top for the host.
+    pub fn set_always_on_top(&mut self, always_on_top: bool) {
+        if self.always_on_top == always_on_top {
+            return;
+        }
+        self.always_on_top = always_on_top;
+        self.base.request_redraw();
+    }
+
+    /// Whether the window asks to float above others.
+    pub fn is_always_on_top(&self) -> bool {
+        self.always_on_top
+    }
+
+    /// Sets the window opacity in `0.0..=1.0` (host-facing).
+    pub fn set_opacity(&mut self, opacity: f32) {
+        if !opacity.is_finite() {
+            return;
+        }
+        let opacity = opacity.clamp(0.0, 1.0);
+        if self.opacity == opacity {
+            return;
+        }
+        self.opacity = opacity;
+        self.base.request_redraw();
+    }
+
+    /// The window opacity last set.
+    pub fn opacity(&self) -> f32 {
+        self.opacity
+    }
+
+    /// Requests a window icon from the platform.
+    ///
+    /// Returns `false` when the backend has no icon path or the path was refused.
+    #[cfg(not(alloc_frugal))]
+    pub fn set_icon(&mut self, path: &str) -> bool {
+        self.icon = Some(path.to_string());
+        crate::platform::runtime::get_platform().set_window_icon(self.id(), path)
+    }
+
+    /// The icon path last requested.
+    pub fn icon(&self) -> Option<&str> {
+        self.icon.as_deref()
+    }
+
+    /// Whether the window paints its own chrome (for a borderless window).
+    pub fn is_decorated(&self) -> bool {
+        self.decorated
+    }
+
+    /// Enables or disables the window's own painted chrome.
+    ///
+    /// Off by default, because a window the window manager decorates must not paint a second
+    /// title bar inside itself. A borderless window turns it on to get a title strip and its
+    /// three window buttons.
+    pub fn set_decorated(&mut self, decorated: bool) {
+        if self.decorated == decorated {
+            return;
+        }
+        self.decorated = decorated;
         self.base.request_redraw();
     }
 
@@ -264,6 +417,20 @@ impl WidgetProperties for Window {
 impl EventHandler for Window {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if let Event::MousePress { pos, button, .. } = event {
+            if *button == 1 && self.decorated {
+                // The close dot is the first of the three painted buttons. Tapping it is the
+                // only window action the self-drawn chrome offers: minimise/maximise are the
+                // window manager's job and remain reachable through `set_window_state`.
+                let dot = self.close_button_size.clamp(6, 20) as i32;
+                let y = (self.title_bar_height as i32 - dot) / 2;
+                let close = Rect::new(8, y, dot as u32, dot as u32);
+                if close.contains_point(*pos) {
+                    self.close();
+                    return;
+                }
+            }
+        }
         if matches!(event, Event::Quit) {
             self.base.closed.emit();
             self.closed.emit();
@@ -367,6 +534,40 @@ impl Draw for Window {
             }
         }
         context.fill_rect(client, bg_color);
+
+        // Self-drawn chrome for a borderless window. It is opt-in precisely because a
+        // window-manager-decorated window must not paint a second title bar inside itself.
+        if self.decorated {
+            let bar_height = self.title_bar_height.min(rect.height);
+            let bar = Rect::new(0, 0, rect.width, bar_height);
+            let title_fill = bg_color.blend(&bg_color.contrast_color(), 0.06);
+            context.fill_rect(bar, title_fill);
+            let dot = self.close_button_size.clamp(6, 20) as i32;
+            let y = (bar_height as i32 - dot) / 2;
+            let gap = (self.button_spacing.max(self.close_button_size + 6)) as i32;
+            for (index, color) in [
+                Color::rgba(255, 95, 86, 255),
+                Color::rgba(255, 189, 46, 255),
+                Color::rgba(39, 201, 63, 255),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let x = 8 + index as i32 * gap;
+                context.fill_circle_aa(Point::new(x + dot / 2, y + dot / 2), dot as u32 / 2, color);
+            }
+            if !self.title.is_empty() {
+                let font = crate::widget::metrics::role_font(self.style(), 13.0);
+                let text = self.title.clone();
+                context.draw_text_fitted_cow(
+                    context.text_line(bar, &font),
+                    &text,
+                    &font,
+                    bg_color.contrast_color(),
+                    crate::core::HorizontalAlignment::Center,
+                );
+            }
+        }
     }
 }
 // NOTE: The show() method is now handled by platform backend.
@@ -584,5 +785,56 @@ mod material_draw_tests {
 
         drop(previous);
         uninstall_environment();
+    }
+}
+
+#[cfg(test)]
+mod window_contract_tests {
+    use super::*;
+    use crate::widget::svg::render_to_svg;
+
+    #[test]
+    fn host_facing_window_facts_round_trip() {
+        let mut window = Window::new("Doc".to_string(), Rect::new(0, 0, 400, 300));
+        assert!(!window.is_modal());
+        window.set_modal(true);
+        assert!(window.is_modal());
+        assert!(!window.is_always_on_top());
+        window.set_always_on_top(true);
+        assert!(window.is_always_on_top());
+        window.set_opacity(0.5);
+        assert_eq!(window.opacity(), 0.5);
+        window.set_max_size(800, 600);
+        assert_eq!(window.max_size(), Some((800, 600)));
+        assert_eq!(window.min_size(), None);
+    }
+
+    #[test]
+    fn self_drawn_chrome_is_opt_in_and_clickable() {
+        let mut window = Window::new("Doc".to_string(), Rect::new(0, 0, 400, 300));
+        assert!(!window.is_decorated());
+        window.set_decorated(true);
+        assert!(window.is_decorated());
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let c = closed.clone();
+        window.closed.connect(move || {
+            c.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        window.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(12, 16),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_plain_window_still_paints_only_its_client_fill() {
+        let mut window = Window::new("Doc".to_string(), Rect::new(0, 0, 400, 300));
+        let plain = render_to_svg(&mut window);
+        window.set_decorated(true);
+        let chrome = render_to_svg(&mut window);
+        assert!(plain.starts_with("<svg"));
+        assert_ne!(plain, chrome, "the chrome is opt-in and visibly different");
     }
 }

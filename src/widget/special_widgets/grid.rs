@@ -60,10 +60,24 @@ pub struct GridWidget {
     cell_width: u32,
     cell_height: u32,
     hovered_cell: Option<(u32, u32)>,
+    /// The cell keyboard focus is on.
+    focused_cell: Option<(u32, u32)>,
+    /// Selected cells; more than one when multi-select is enabled.
+    selected_cells: Vec<(u32, u32)>,
+    /// Whether a click adds to the selection instead of replacing it.
+    multi_select: bool,
+    /// Cell spans as `(row, column, row_span, column_span)`.
+    spans: Vec<(u32, u32, u32, u32)>,
+    /// Rows shown per page, or `None` to show every row.
+    page_rows: Option<u32>,
+    /// The page currently drawn when paging is enabled.
+    page: u32,
     /// Emitted when a cell is clicked.
     pub cell_clicked: Signal1<(u32, u32)>,
     /// Emitted when pointer hover changes to another cell.
     pub cell_hovered: Signal1<(u32, u32)>,
+    /// Emitted when a context menu is requested over a cell.
+    pub context_menu_requested: Signal1<(u32, u32)>,
 }
 
 impl GridWidget {
@@ -80,8 +94,15 @@ impl GridWidget {
             cell_width: geometry.width,
             cell_height: geometry.height,
             hovered_cell: None,
+            focused_cell: None,
+            selected_cells: Vec::new(),
+            multi_select: false,
+            spans: Vec::new(),
+            page_rows: None,
+            page: 0,
             cell_clicked: Signal1::new(),
             cell_hovered: Signal1::new(),
+            context_menu_requested: Signal1::new(),
         }
     }
 
@@ -98,8 +119,15 @@ impl GridWidget {
             cell_width: geometry.width / columns.max(1),
             cell_height: geometry.height / rows.max(1),
             hovered_cell: None,
+            focused_cell: None,
+            selected_cells: Vec::new(),
+            multi_select: false,
+            spans: Vec::new(),
+            page_rows: None,
+            page: 0,
             cell_clicked: Signal1::new(),
             cell_hovered: Signal1::new(),
+            context_menu_requested: Signal1::new(),
         }
     }
 
@@ -193,9 +221,9 @@ impl GridWidget {
         }
         let local_y = (y - rect.y) as u32;
         let step = (self.cell_height + self.spacing).max(1);
-        let row = local_y / step;
-        if row < self.rows {
-            Some(row)
+        let visible_row = local_y / step;
+        if visible_row < self.visible_rows() {
+            Some(self.first_row() + visible_row)
         } else {
             None
         }
@@ -227,15 +255,161 @@ impl GridWidget {
         Some((row, col))
     }
 
-    /// Returns the bounding rectangle of a specific cell.
+    /// Returns the bounding rectangle of a specific cell, including any span.
     pub fn cell_rect(&self, row: u32, col: u32) -> Option<Rect> {
         if row >= self.rows || col >= self.columns {
             return None;
         }
         let rect = self.base.geometry();
+        let visible_row = row.saturating_sub(self.first_row());
+        if row < self.first_row() || visible_row >= self.visible_rows() {
+            return None;
+        }
+        let (row_span, column_span) = self.cell_span(row, col);
         let x = rect.x + (col * (self.cell_width + self.spacing)) as i32;
-        let y = rect.y + (row * (self.cell_height + self.spacing)) as i32;
-        Some(Rect::new(x, y, self.cell_width, self.cell_height))
+        let y = rect.y + (visible_row * (self.cell_height + self.spacing)) as i32;
+        let width = self.cell_width.saturating_mul(column_span)
+            + self.spacing.saturating_mul(column_span.saturating_sub(1));
+        let height = self.cell_height.saturating_mul(row_span)
+            + self.spacing.saturating_mul(row_span.saturating_sub(1));
+        Some(Rect::new(x, y, width, height))
+    }
+
+    /// Sets the span of a cell.
+    ///
+    /// A span of `(1, 1)` is an ordinary cell and removes the entry. The span is clipped to
+    /// the grid so it can never address a cell that does not exist.
+    pub fn set_cell_span(
+        &mut self,
+        row: u32,
+        column: u32,
+        row_span: u32,
+        column_span: u32,
+    ) -> bool {
+        if row >= self.rows || column >= self.columns {
+            return false;
+        }
+        let row_span = row_span.max(1).min(self.rows - row);
+        let column_span = column_span.max(1).min(self.columns - column);
+        self.spans.retain(|(r, c, _, _)| *r != row || *c != column);
+        if row_span > 1 || column_span > 1 {
+            self.spans.push((row, column, row_span, column_span));
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// Returns the span of a cell as `(row_span, column_span)`; an ordinary cell answers `(1, 1)`.
+    pub fn cell_span(&self, row: u32, column: u32) -> (u32, u32) {
+        self.spans
+            .iter()
+            .find(|(r, c, _, _)| *r == row && *c == column)
+            .map_or((1, 1), |(_, _, row_span, column_span)| (*row_span, *column_span))
+    }
+
+    /// Enables or disables multi-cell selection.
+    pub fn set_multi_select(&mut self, multi: bool) {
+        if self.multi_select == multi {
+            return;
+        }
+        self.multi_select = multi;
+        if !multi && self.selected_cells.len() > 1 {
+            let keep = self.selected_cells[0];
+            self.selected_cells.clear();
+            self.selected_cells.push(keep);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether multi-cell selection is enabled.
+    pub fn multi_select(&self) -> bool {
+        self.multi_select
+    }
+
+    /// Returns the selected cells in selection order.
+    pub fn selected_cells(&self) -> &[(u32, u32)] {
+        &self.selected_cells
+    }
+
+    /// Toggles `cell` in the selection, replacing it when multi-select is off.
+    pub fn select_cell(&mut self, cell: (u32, u32)) {
+        if cell.0 >= self.rows || cell.1 >= self.columns {
+            return;
+        }
+        if self.multi_select {
+            if let Some(index) = self.selected_cells.iter().position(|selected| *selected == cell) {
+                self.selected_cells.remove(index);
+            } else {
+                self.selected_cells.push(cell);
+            }
+        } else {
+            self.selected_cells.clear();
+            self.selected_cells.push(cell);
+        }
+        self.focused_cell = Some(cell);
+        self.base.request_redraw();
+    }
+
+    /// Clears the selection.
+    pub fn clear_selection(&mut self) {
+        if self.selected_cells.is_empty() {
+            return;
+        }
+        self.selected_cells.clear();
+        self.base.request_redraw();
+    }
+
+    /// Enables paging with `rows_per_page` rows per page.
+    pub fn set_page_rows(&mut self, rows_per_page: Option<u32>) {
+        let rows_per_page = rows_per_page.map(|rows| rows.max(1));
+        if self.page_rows == rows_per_page {
+            return;
+        }
+        self.page_rows = rows_per_page;
+        self.page = 0;
+        self.base.request_redraw();
+    }
+
+    /// Returns the rows shown per page, if paging is enabled.
+    pub fn page_rows(&self) -> Option<u32> {
+        self.page_rows
+    }
+
+    /// Returns the current page index.
+    pub fn page(&self) -> u32 {
+        self.page
+    }
+
+    /// Sets the current page, clamped to the available pages.
+    pub fn set_page(&mut self, page: u32) {
+        let pages = self.page_count();
+        let page = page.min(pages.saturating_sub(1));
+        if self.page == page {
+            return;
+        }
+        self.page = page;
+        self.base.request_redraw();
+    }
+
+    /// Returns how many pages the grid has.
+    pub fn page_count(&self) -> u32 {
+        match self.page_rows {
+            Some(rows) if rows > 0 => self.rows.div_ceil(rows).max(1),
+            _ => 1,
+        }
+    }
+
+    /// The first row drawn on the current page.
+    fn first_row(&self) -> u32 {
+        self.page.saturating_mul(self.page_rows.unwrap_or(0))
+    }
+
+    /// The number of rows drawn on the current page.
+    fn visible_rows(&self) -> u32 {
+        match self.page_rows {
+            Some(rows) => rows.min(self.rows.saturating_sub(self.first_row())),
+            None => self.rows,
+        }
     }
 
     // ── Recalculate cell dimensions ────────────────────────
@@ -335,6 +509,14 @@ impl WidgetProperties for GridWidget {
             }),
             "cell_width" => Ok(CapabilityValue::UInt(self.cell_width() as u64)),
             "cell_height" => Ok(CapabilityValue::UInt(self.cell_height() as u64)),
+            "selected_cell" => Ok(match self.selected_cells.first().copied() {
+                Some((row, column)) => CapabilityValue::UInt(
+                    u64::from(row) * u64::from(self.columns.max(1)) + u64::from(column),
+                ),
+                None => CapabilityValue::Null,
+            }),
+            "selected_count" => Ok(CapabilityValue::UInt(self.selected_cells.len() as u64)),
+            "page" => Ok(CapabilityValue::UInt(u64::from(self.page))),
             _ => base_property_get(self, name),
         }
     }
@@ -368,7 +550,36 @@ impl WidgetProperties for GridWidget {
             }
             // Cell extents are recomputed from the geometry and the row/column
             // counts, so they are derived reads rather than assignments.
-            "cell_width" | "cell_height" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "cell_width" | "cell_height" | "selected_count" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            "selected_cell" => {
+                match value {
+                    CapabilityValue::Null => self.clear_selection(),
+                    CapabilityValue::UInt(index) => {
+                        let columns = self.columns.max(1);
+                        let row = (index / u64::from(columns)) as u32;
+                        let column = (index % u64::from(columns)) as u32;
+                        if row >= self.rows || column >= self.columns {
+                            return Err(CapabilityAccessError::OutOfRange);
+                        }
+                        self.select_cell((row, column));
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
+            "page" => {
+                let CapabilityValue::UInt(page) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                let page = u32::try_from(page).map_err(|_| CapabilityAccessError::OutOfRange)?;
+                if page >= self.page_count() {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                self.set_page(page);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -381,6 +592,9 @@ impl WidgetProperties for GridWidget {
             "line_color",
             "cell_width",
             "cell_height",
+            "selected_cell",
+            "selected_count",
+            "page",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -406,7 +620,13 @@ impl WidgetProperties for GridWidget {
     /// instead of being enumerated one by one.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
-            "select_cell" | "clear_selection" => Err(CapabilityAccessError::UnsupportedOnWidget),
+            "clear_selection" => {
+                self.clear_selection();
+                Ok(())
+            }
+            // `select_cell` needs the cell to select, which a bare command cannot carry; the
+            // `selected_cell` property is the value-carrying spelling.
+            "select_cell" => Err(CapabilityAccessError::OutOfRange),
             _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
@@ -474,6 +694,31 @@ impl Draw for GridWidget {
             .unwrap_or_else(|| cell_fill.blend(&secondary, 0.45));
         context.draw_rect(rect, border_color);
 
+        // Selection and hover are chrome states, so they are tints of the resolved ink rather
+        // than colours of their own. They are painted before the separators, so a line stays
+        // visible over a filled cell.
+        let selection_fill = ink.blend(&cell_fill, 0.72);
+        let hover_fill = ink.blend(&cell_fill, 0.88);
+        for row in self.first_row()..self.first_row() + self.visible_rows() {
+            for column in 0..self.columns {
+                let Some(cell) = self.cell_rect(row, column) else {
+                    continue;
+                };
+                if self.selected_cells.contains(&(row, column)) {
+                    context.fill_rect(cell, selection_fill);
+                } else if self.hovered_cell == Some((row, column)) {
+                    context.fill_rect(cell, hover_fill);
+                }
+            }
+        }
+        if !self.selected_cells.is_empty() {
+            // A focused cell keeps a visible ring after the pointer leaves, so keyboard
+            // navigation has something to show for itself.
+            if let Some(cell) = self.focused_cell.and_then(|(r, c)| self.cell_rect(r, c)) {
+                context.draw_rect(cell, ink);
+            }
+        }
+
         // Grid lines (skip for 1×1, also skip if color is None). A caller-set line colour still
         // wins; `Some(None)` means the caller chose nothing, so the separators are derived from the
         // themed border and move with it. There is no sentinel value here: the old form compared
@@ -488,8 +733,8 @@ impl Draw for GridWidget {
 
         let total_w = self.columns * self.cell_width
             + self.spacing.saturating_mul(self.columns.saturating_sub(1));
-        let total_h =
-            self.rows * self.cell_height + self.spacing.saturating_mul(self.rows.saturating_sub(1));
+        let total_h = self.visible_rows() * self.cell_height
+            + self.spacing.saturating_mul(self.visible_rows().saturating_sub(1));
 
         // Vertical lines
         for col in 1..self.columns {
@@ -504,7 +749,7 @@ impl Draw for GridWidget {
         }
 
         // Horizontal lines
-        for row in 1..self.rows {
+        for row in 1..self.visible_rows() {
             let y = rect.y + (row * (self.cell_height + self.spacing)) as i32
                 - (self.spacing / 2) as i32;
             let y = y.max(rect.y).min(rect.y + total_h as i32);
@@ -540,11 +785,47 @@ impl EventHandler for GridWidget {
                 self.base.set_mouse_pressed(true);
                 if let Some(cell) = self.cell_at(pos) {
                     self.base.clicked.emit();
+                    self.select_cell(cell);
                     self.cell_clicked.emit(cell);
                 }
             }
             Event::MouseRelease { pos: _, button: 1 } => {
                 self.base.set_mouse_pressed(false);
+            }
+            Event::ContextMenu { pos } => {
+                if let Some(cell) = self.cell_at(pos) {
+                    self.context_menu_requested.emit(cell);
+                }
+            }
+            Event::KeyPress { key, .. } => {
+                let pressed = crate::shortcut::Key::from_key_code(key);
+                let current = self.focused_cell.unwrap_or((0, 0));
+                let (mut row, mut column) = current;
+                match pressed {
+                    Some(crate::shortcut::Key::Left) => column = column.saturating_sub(1),
+                    Some(crate::shortcut::Key::Right) => {
+                        column = (column + 1).min(self.columns.saturating_sub(1));
+                    }
+                    Some(crate::shortcut::Key::Up) => row = row.saturating_sub(1),
+                    Some(crate::shortcut::Key::Down) => {
+                        row = (row + 1).min(self.rows.saturating_sub(1));
+                    }
+                    Some(crate::shortcut::Key::Home) => column = 0,
+                    Some(crate::shortcut::Key::End) => column = self.columns.saturating_sub(1),
+                    Some(crate::shortcut::Key::Enter) | Some(crate::shortcut::Key::Space) => {
+                        self.select_cell(current);
+                        self.cell_clicked.emit(current);
+                        return;
+                    }
+                    _ => return,
+                }
+                self.focused_cell = Some((row, column));
+                if self.multi_select {
+                    // Arrow navigation moves the focus only; Space/Enter commits it.
+                } else {
+                    self.select_cell((row, column));
+                }
+                self.base.request_redraw();
             }
             _ => { /* Other events are not relevant */ }
         }

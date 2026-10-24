@@ -48,6 +48,190 @@ pub(crate) const PAN_MIN_DISTANCE: f32 = 8.0;
 pub(crate) const TAP_TIMEOUT_MS: u64 = 300;
 
 // ────────────────────────────────────────────
+// Tuning, lifecycle and conflict policy
+// ────────────────────────────────────────────
+
+/// Which recogniser a policy or priority applies to.
+///
+/// A named enum rather than a string so a typo cannot silently configure nothing, and rather
+/// than a `TypeId` so a priority table survives a rebuild of the crate (a `TypeId` is not
+/// stable across compilations).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GestureKind {
+    /// Single tap.
+    Tap,
+    /// Double tap.
+    DoubleTap,
+    /// Stationary long press.
+    LongPress,
+    /// Long press followed by a drag.
+    LongPressDrag,
+    /// Continuous drag.
+    Pan,
+    /// Directional swipe.
+    Swipe,
+    /// High-velocity swipe.
+    Fling,
+    /// Two-finger tap.
+    TwoFingerTap,
+    /// Two-finger swipe.
+    TwoFingerSwipe,
+    /// Two-finger pinch.
+    Pinch,
+    /// Two-finger rotation.
+    Rotate,
+    /// A host-supplied recogniser that has no built-in kind.
+    Custom(&'static str),
+}
+
+impl GestureKind {
+    /// The stable name used in diagnostics and priority keys.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Tap => "tap",
+            Self::DoubleTap => "double_tap",
+            Self::LongPress => "long_press",
+            Self::LongPressDrag => "long_press_drag",
+            Self::Pan => "pan",
+            Self::Swipe => "swipe",
+            Self::Fling => "fling",
+            Self::TwoFingerTap => "two_finger_tap",
+            Self::TwoFingerSwipe => "two_finger_swipe",
+            Self::Pinch => "pinch",
+            Self::Rotate => "rotate",
+            Self::Custom(name) => name,
+        }
+    }
+}
+
+/// Where a recogniser is in its own attempt.
+///
+/// # Why a state and not only an event
+///
+/// A recogniser that has not emitted anything is not necessarily idle: a pinch whose fingers
+/// are down but whose scale has not crossed the emit threshold is in `Maybe`, and a consumer
+/// that wants to preview it (a zoom that follows the fingers before it is committed) needs to
+/// know the difference between "nothing is happening" and "a gesture is in progress".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GestureState {
+    /// The recogniser is tracking input but has not committed to a gesture.
+    #[default]
+    Maybe,
+    /// The recogniser produced a semantic event on this update.
+    Triggered,
+    /// The recogniser finished its gesture normally and has reset.
+    Finished,
+    /// The gesture was cancelled from outside (a touch cancelled, a host sweep).
+    Canceled,
+}
+
+/// What one update through the chain produced.
+#[derive(Debug, Clone)]
+pub struct GestureUpdate {
+    /// The lifecycle state after the update.
+    pub state: GestureState,
+    /// The semantic event, when the update produced one.
+    pub event: Option<Event>,
+    /// Whether the update claims the raw input.
+    ///
+    /// A recogniser can produce a **preview** without claiming the input — that is the
+    /// `consume = false` case — which is what lets a scroll view keep following the fingers
+    /// while a pinch previews a zoom.
+    pub consume: bool,
+}
+
+impl GestureUpdate {
+    /// An update with no event, in the given state.
+    pub fn none(state: GestureState) -> Self {
+        Self { state, event: None, consume: false }
+    }
+
+    /// An update carrying `event`, which claims the input.
+    pub fn triggered(event: Event) -> Self {
+        Self { state: GestureState::Triggered, event: Some(event), consume: true }
+    }
+
+    /// A preview event: produced, but not claiming the input.
+    pub fn preview(event: Event) -> Self {
+        Self { state: GestureState::Maybe, event: Some(event), consume: false }
+    }
+}
+
+/// The numeric thresholds the recognisers use.
+///
+/// # Why these are runtime tokens
+///
+/// The constants are the defaults, not the only possible values: a platform with a different
+/// pointer density or a host with a different feel needs a different swipe bar, and a global
+/// compile-time constant cannot express that. The tuning value is thread-local for the same
+/// reason the widget registry is — recognisers run on the UI thread, and a test can install a
+/// tuning value without racing another thread's gestures.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GestureTuning {
+    /// Minimum swipe velocity, in logical pixels per second.
+    pub swipe_min_velocity: f32,
+    /// Minimum swipe travel, in logical pixels.
+    pub swipe_min_distance: f32,
+    /// Minimum flick speed for a fling, in logical pixels per second.
+    ///
+    /// Lower than [`Self::swipe_min_velocity`]: a fling is allowed to cover a shorter
+    /// distance, so its speed bar is the one a flick actually has to clear.
+    pub fling_min_velocity: f32,
+    /// Minimum flick travel for a fling, in logical pixels.
+    pub fling_min_distance: f32,
+    /// Maximum gap between the two taps of a double-tap, in milliseconds.
+    pub double_tap_timeout_ms: u64,
+    /// Minimum hold for a long press, in milliseconds.
+    pub long_press_min_ms: u64,
+    /// Maximum press duration for a single tap, in milliseconds.
+    pub tap_timeout_ms: u64,
+    /// Travel before a pan begins emitting, in logical pixels.
+    pub pan_min_distance: f32,
+    /// Movement that still counts as stationary, in logical pixels.
+    pub max_stationary_distance: f32,
+    /// Movement allowed during a long-press hold, in logical pixels.
+    pub long_press_max_move: f32,
+}
+
+impl Default for GestureTuning {
+    fn default() -> Self {
+        Self {
+            swipe_min_velocity: SWIPE_MIN_VELOCITY,
+            swipe_min_distance: SWIPE_MIN_DISTANCE,
+            fling_min_velocity: 300.0,
+            fling_min_distance: 15.0,
+            double_tap_timeout_ms: DOUBLE_TAP_TIMEOUT_MS,
+            long_press_min_ms: LONG_PRESS_MIN_MS,
+            tap_timeout_ms: TAP_TIMEOUT_MS,
+            pan_min_distance: PAN_MIN_DISTANCE,
+            max_stationary_distance: MAX_STATIONARY_DISTANCE,
+            long_press_max_move: LONG_PRESS_MAX_MOVE,
+        }
+    }
+}
+
+thread_local! {
+    /// The tuning in force on this thread, or `None` for the compiled defaults.
+    static ACTIVE_TUNING: core::cell::Cell<Option<GestureTuning>> =
+        const { core::cell::Cell::new(None) };
+}
+
+/// The gesture thresholds in force on this thread.
+///
+/// Falls back to [`GestureTuning::default`], which is the compiled constant set, so an
+/// untouched build recognises exactly what it did before the tokens existed.
+pub fn tuning() -> GestureTuning {
+    ACTIVE_TUNING.try_with(|cell| cell.get()).ok().flatten().unwrap_or_default()
+}
+
+/// Replaces this thread's gesture thresholds; `None` restores the defaults.
+///
+/// Returns the previous value, so a test can restore what it found.
+pub fn set_tuning(value: Option<GestureTuning>) -> Option<GestureTuning> {
+    ACTIVE_TUNING.try_with(|cell| cell.replace(value)).ok().flatten()
+}
+
+// ────────────────────────────────────────────
 // GestureRecognizer trait
 // ────────────────────────────────────────────
 
@@ -62,6 +246,33 @@ pub trait GestureRecognizer: std::fmt::Debug + Send {
 
     /// Reset the recognizer to its initial idle state.
     fn reset(&mut self);
+
+    /// Which gesture this recogniser recognises.
+    ///
+    /// Used by the priority and conflict configuration; a host-supplied recogniser that does
+    /// not override this is configurable only through [`GestureKind::Custom`].
+    fn kind(&self) -> GestureKind {
+        GestureKind::Custom("gesture")
+    }
+
+    /// Where the recogniser is in its current attempt.
+    ///
+    /// The default is [`GestureState::Maybe`], the neutral answer for a recogniser that does not
+    /// track phases: it is never wrong to say "possibly in progress", and a caller that needs a
+    /// precise phase opts in.
+    fn status(&self) -> GestureState {
+        GestureState::Maybe
+    }
+
+    /// The in-progress gesture as an event, when the recogniser can describe one.
+    ///
+    /// This is the **partial delivery** hook: a pinch can report its current scale and centre
+    /// before it crosses the commit threshold, a drag can report its displacement, and a host
+    /// that wants live preview gets it without the recogniser having to emit a full gesture.
+    /// `None` (the default) means the recogniser has nothing to preview.
+    fn partial(&self) -> Option<Event> {
+        None
+    }
 }
 
 // ────────────────────────────────────────────
@@ -77,6 +288,27 @@ pub trait GestureRecognizer: std::fmt::Debug + Send {
 pub struct GestureEngine {
     recognizers: Vec<Box<dyn GestureRecognizer>>,
     last_timestamp_ms: u64,
+    /// How more than one produced event in one update is resolved.
+    conflict: GestureConflictPolicy,
+    /// Explicit priorities, consulted only by [`GestureConflictPolicy::Priority`] and
+    /// [`GestureConflictPolicy::Exclusive`]. A recogniser absent here has priority `0`.
+    priorities: crate::compat::HashMap<GestureKind, i32>,
+}
+
+/// How the chain resolves several recognisers producing an event in one update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GestureConflictPolicy {
+    /// The default: the **most specific** event wins (see `is_more_specific`). Explicit
+    /// priorities are ignored, so existing chains behave exactly as before.
+    #[default]
+    Specificity,
+    /// The **highest explicit priority** wins, with specificity breaking ties. This is how a host
+    /// says "the canvas's pan beats the parent page's scroll" without reordering recognisers.
+    Priority,
+    /// The highest-priority producer **claims** the update: every other recogniser is reset, so
+    /// the losers cannot interleave a second gesture while the winner is running. Useful where
+    /// two recognisers would otherwise alternate (a pinch and a rotate on the same fingers).
+    Exclusive,
 }
 
 impl GestureEngine {
@@ -95,7 +327,26 @@ impl GestureEngine {
             Box::new(PinchGesture::new()),
             Box::new(RotateGesture::new()),
         ];
-        Self { recognizers, last_timestamp_ms: 0 }
+        Self {
+            recognizers,
+            last_timestamp_ms: 0,
+            conflict: GestureConflictPolicy::default(),
+            priorities: crate::compat::HashMap::new(),
+        }
+    }
+
+    /// Builds an engine around a caller-supplied recogniser chain.
+    ///
+    /// The standard chain is [`Self::new`]; this constructor is for a host that wants its own
+    /// recognisers, its own order, or a shorter chain (a canvas that only pans and zooms). All
+    /// conflict configuration applies to the supplied chain unchanged.
+    pub fn from_recognizers(recognizers: Vec<Box<dyn GestureRecognizer>>) -> Self {
+        Self {
+            recognizers,
+            last_timestamp_ms: 0,
+            conflict: GestureConflictPolicy::default(),
+            priorities: crate::compat::HashMap::new(),
+        }
     }
 
     /// Feeds an event through all recognizers and returns the most specific semantic
@@ -134,9 +385,11 @@ impl GestureEngine {
     /// cannot loop.
     pub fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
         self.last_timestamp_ms = now_ms;
-        let mut produced: Option<Event> = None;
+        let mut produced: Option<(Event, i32, usize)> = None;
         let mut derived: Option<Event> = None;
-        for r in &mut self.recognizers {
+        let conflict = self.conflict;
+        let priorities = &self.priorities;
+        for (index, r) in self.recognizers.iter_mut().enumerate() {
             // The raw event first: recognizers that track the touch sequence directly
             // (tap, press, swipe, pinch, rotate) read this one.
             let mut hit = r.process(event, now_ms);
@@ -148,15 +401,104 @@ impl GestureEngine {
                 }
             }
             if let Some(gesture_event) = hit {
-                // Most specific wins, not first: see the note above.
-                if produced.as_ref().is_none_or(|best| Self::is_more_specific(&gesture_event, best))
-                {
-                    produced = Some(gesture_event.clone());
+                let priority = priorities.get(&r.kind()).copied().unwrap_or(0);
+                let better = match (conflict, produced.as_ref()) {
+                    // No incumbent: any produced event wins.
+                    (_, None) => true,
+                    (GestureConflictPolicy::Specificity, Some((best, _, _))) => {
+                        Self::is_more_specific(&gesture_event, best)
+                    }
+                    // A higher explicit priority wins; equal priorities fall back to the
+                    // specificity rule so the outcome is stable for an unconfigured chain.
+                    (GestureConflictPolicy::Priority, Some((best, best_priority, _))) => {
+                        priority > *best_priority
+                            || (priority == *best_priority
+                                && Self::is_more_specific(&gesture_event, best))
+                    }
+                    // Exclusive uses priority only: the first of the highest-priority
+                    // producers wins and the ordering within one priority is registration
+                    // order, so an unconfigured exclusive chain is still deterministic.
+                    (GestureConflictPolicy::Exclusive, Some((_, best_priority, _))) => {
+                        priority > *best_priority
+                    }
+                };
+                if better {
+                    produced = Some((gesture_event.clone(), priority, index));
                 }
+                // The derived event is the *most specific* output of this round, regardless
+                // of which producer wins: it is what the later refiners (double-tap building
+                // on tap) should see.
                 derived = Some(gesture_event);
             }
         }
-        produced
+        if conflict == GestureConflictPolicy::Exclusive {
+            if let Some((_, _, winner)) = produced.as_ref() {
+                for (index, recognizer) in self.recognizers.iter_mut().enumerate() {
+                    if index != *winner {
+                        recognizer.reset();
+                    }
+                }
+            }
+        }
+        produced.map(|(event, _, _)| event)
+    }
+
+    /// Configures how simultaneous producers are resolved.
+    ///
+    /// [`GestureConflictPolicy::Specificity`] is the default and reproduces the historical
+    /// behaviour, so a chain that is not configured here cannot change its output.
+    pub fn set_conflict_policy(&mut self, policy: GestureConflictPolicy) {
+        self.conflict = policy;
+    }
+
+    /// The conflict policy in force.
+    pub fn conflict_policy(&self) -> GestureConflictPolicy {
+        self.conflict
+    }
+
+    /// Sets an explicit priority for `kind`; higher wins under
+    /// [`GestureConflictPolicy::Priority`] and [`GestureConflictPolicy::Exclusive`].
+    pub fn set_priority(&mut self, kind: GestureKind, priority: i32) {
+        self.priorities.insert(kind, priority);
+    }
+
+    /// The explicit priority configured for `kind`, or `0` when none was set.
+    pub fn priority_of(&self, kind: GestureKind) -> i32 {
+        self.priorities.get(&kind).copied().unwrap_or(0)
+    }
+
+    /// Feeds one event and reports the lifecycle as well as the event.
+    ///
+    /// [`Self::process`] answers "did this produce a gesture"; this answers "and what is the
+    /// recogniser's state now", which is what a caller needs for partial delivery and for an
+    /// outside cancellation. Prefer this entry point when the answer drives UI state; `process`
+    /// stays for the loop's existing call site and for tests that only assert the event.
+    pub fn process_update(&mut self, event: &Event, now_ms: u64) -> GestureUpdate {
+        match self.process(event, now_ms) {
+            Some(event) => GestureUpdate::triggered(event),
+            None => GestureUpdate::none(GestureState::Maybe),
+        }
+    }
+
+    /// The in-progress previews of every recogniser that can describe one.
+    ///
+    /// This is the "partial delivery" half of [`GestureUpdate`]: a pinch reports its current
+    /// scale and centre, so a consumer can follow the fingers before the recogniser commits.
+    pub fn previews(&self) -> Vec<Event> {
+        self.recognizers.iter().filter_map(|recognizer| recognizer.partial()).collect()
+    }
+
+    /// Cancels any in-progress gesture from outside and resets every recogniser.
+    ///
+    /// # Why a cancel needs to be reported
+    ///
+    /// A host that knows the interaction is over (a modal opened, the target was hidden, a
+    /// touch sequence was interrupted) must be able to tell a consumer to abandon its preview.
+    /// Resetting silently left the consumer with a half-applied zoom and no notification that
+    /// it would never be completed.
+    pub fn cancel(&mut self) -> GestureUpdate {
+        self.reset_all();
+        GestureUpdate::none(GestureState::Canceled)
     }
 
     /// Returns whether `candidate` describes the user's gesture more precisely than
@@ -518,7 +860,7 @@ mod tests {
             engine.process(&Event::TouchMove { pos: Point::new(300, 100), touch_id: 2 }, 10);
 
         match produced {
-            Some(Event::Pinch { scale }) => {
+            Some(Event::Pinch { scale, .. }) => {
                 assert!(scale > 1.0, "spreading the fingers must zoom in (scale > 1), got {scale}")
             }
             other => panic!("two fingers moving apart must produce Pinch, got {other:?}"),
@@ -567,7 +909,7 @@ mod tests {
             engine.process(&Event::TouchMove { pos: Point::new(260, 100), touch_id: 2 }, 3);
 
         match produced {
-            Some(Event::Pinch { scale }) => assert!(
+            Some(Event::Pinch { scale, .. }) => assert!(
                 scale > 1.0,
                 "spreading two identified fingers must zoom in, got scale {scale}"
             ),
@@ -666,5 +1008,113 @@ mod tests {
         assert_eq!(ax, 1u32 << 31, "`|-2^31|` is representable as a `u32`");
         let (bx, _) = point_delta_abs(Point::new(i32::MAX, 0), Point::new(i32::MIN, 0));
         assert_eq!(bx, u32::MAX, "the full-range span saturates at u32::MAX");
+    }
+}
+
+#[cfg(test)]
+mod engine_policy_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A recogniser that produces one fixed event on every input.
+    #[derive(Debug)]
+    struct Emits {
+        event: Event,
+        kind: GestureKind,
+        resets: Arc<AtomicUsize>,
+    }
+
+    impl GestureRecognizer for Emits {
+        fn process(&mut self, _event: &Event, _now_ms: u64) -> Option<Event> {
+            Some(self.event.clone())
+        }
+
+        fn reset(&mut self) {
+            self.resets.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn kind(&self) -> GestureKind {
+            self.kind
+        }
+    }
+
+    fn emits(event: Event, kind: GestureKind) -> (Box<dyn GestureRecognizer>, Arc<AtomicUsize>) {
+        let resets = Arc::new(AtomicUsize::new(0));
+        let recognizer = Emits { event, kind, resets: Arc::clone(&resets) };
+        (Box::new(recognizer), resets)
+    }
+
+    /// Under the priority policy, the higher explicit priority wins even when the other
+    /// event would be more specific.
+    #[test]
+    fn the_priority_policy_picks_the_higher_configured_priority() {
+        let (low, _) = emits(
+            Event::LongPress { pos: crate::core::Point::new(0, 0) },
+            GestureKind::Custom("low"),
+        );
+        let (high, _) =
+            emits(Event::Tap { pos: crate::core::Point::new(0, 0) }, GestureKind::Custom("high"));
+        let mut engine = GestureEngine::from_recognizers(vec![low, high]);
+        engine.set_conflict_policy(GestureConflictPolicy::Priority);
+        engine.set_priority(GestureKind::Custom("low"), 0);
+        engine.set_priority(GestureKind::Custom("high"), 10);
+
+        let produced = engine.process(&Event::Paint, 0);
+        assert!(matches!(produced, Some(Event::Tap { .. })), "got {produced:?}");
+    }
+
+    /// Exclusive claims the update and resets the losing recognisers.
+    #[test]
+    fn the_exclusive_policy_resets_the_losers() {
+        let (first, first_resets) =
+            emits(Event::Tap { pos: crate::core::Point::new(0, 0) }, GestureKind::Custom("first"));
+        let (second, _) = emits(
+            Event::DoubleTap { pos: crate::core::Point::new(0, 0) },
+            GestureKind::Custom("second"),
+        );
+        let mut engine = GestureEngine::from_recognizers(vec![first, second]);
+        engine.set_conflict_policy(GestureConflictPolicy::Exclusive);
+        engine.set_priority(GestureKind::Custom("second"), 5);
+
+        let produced = engine.process(&Event::Paint, 0);
+        assert!(matches!(produced, Some(Event::DoubleTap { .. })), "got {produced:?}");
+        assert_eq!(
+            first_resets.load(Ordering::SeqCst),
+            1,
+            "the loser must be reset so it cannot interleave"
+        );
+    }
+
+    /// The default policy is the historical specificity rule, so an unconfigured chain is
+    /// unaffected by the new configuration surface.
+    #[test]
+    fn the_default_policy_is_specificity() {
+        let engine = GestureEngine::new();
+        assert_eq!(engine.conflict_policy(), GestureConflictPolicy::Specificity);
+        assert_eq!(engine.priority_of(GestureKind::Pan), 0);
+    }
+
+    /// An outside cancel reports the state and resets everything.
+    #[test]
+    fn cancel_reports_canceled_and_resets_the_chain() {
+        let (recognizer, resets) =
+            emits(Event::Tap { pos: crate::core::Point::new(0, 0) }, GestureKind::Tap);
+        let mut engine = GestureEngine::from_recognizers(vec![recognizer]);
+        let update = engine.cancel();
+        assert_eq!(update.state, GestureState::Canceled);
+        assert!(update.event.is_none());
+        assert_eq!(resets.load(Ordering::SeqCst), 1);
+    }
+
+    /// The tuning tokens default to the compiled constants and can be overridden per thread.
+    #[test]
+    fn tuning_tokens_override_the_compiled_defaults() {
+        assert_eq!(tuning(), GestureTuning::default());
+        let custom = GestureTuning { swipe_min_velocity: 900.0, ..GestureTuning::default() };
+        let previous = set_tuning(Some(custom));
+        assert_eq!(tuning().swipe_min_velocity, 900.0);
+        set_tuning(previous);
+        assert_eq!(tuning(), GestureTuning::default());
     }
 }

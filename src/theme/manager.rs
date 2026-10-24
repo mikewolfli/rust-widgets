@@ -23,9 +23,39 @@ use crate::style::{HighContrastMode, Margin, Padding, ThemeMode, WidgetState, Wi
 /// at, and an older one is simply ignored.
 static THEME_REVISION: AtomicU64 = AtomicU64::new(0);
 
+// The revision a cache on **this thread** validates against.
+//
+// In a test build each thread tracks its own revision, alongside its own theme registry (see
+// `global_theme_manager`). A theme switch in one test would otherwise invalidate the caches of
+// every other test thread, turning a cache-hit assertion into a race: the second read would
+// re-resolve and hand back a different `Rc`.
+#[cfg(test)]
+thread_local! {
+    static TEST_THEME_REVISION: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// The revision the calling thread should validate cached resolutions against.
+fn theme_revision() -> u64 {
+    #[cfg(test)]
+    {
+        TEST_THEME_REVISION.with(|revision| revision.get())
+    }
+    #[cfg(not(test))]
+    {
+        THEME_REVISION.load(Ordering::Relaxed)
+    }
+}
+
+/// Advances the revision on this thread and, in production, process-wide.
+fn bump_theme_revision() {
+    THEME_REVISION.fetch_add(1, Ordering::Relaxed);
+    #[cfg(test)]
+    TEST_THEME_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
+}
+
 /// Marks the process-wide theme as changed, so cached resolutions are no longer used.
 fn note_theme_mutation() {
-    THEME_REVISION.fetch_add(1, Ordering::Relaxed);
+    bump_theme_revision();
     // The revision only makes the *next* paint resolve the new colours; this arms the
     // paint itself. Every control paints differently after a theme change while no
     // control's own state changed, so without it an idle, event-driven host kept the
@@ -1066,27 +1096,59 @@ use crate::compat::{lock, Mutex, MutexGuard, OnceLock};
 /// the caller having to register anything first. That seeding is what turns the
 /// previously unreachable [`Theme::dark`] preset into a usable switch.
 pub fn global_theme_manager() -> MutexGuard<'static, ThemeManager> {
-    static MANAGER: OnceLock<Mutex<ThemeManager>> = OnceLock::new();
-    lock(MANAGER.get_or_init(|| {
-        let mut manager = ThemeManager::new();
-        let dark = Theme::dark();
-        // `register_theme` keys by the theme's own name, so re-seeding is
-        // impossible and the dark preset cannot overwrite the light default.
-        manager.register_theme(dark);
-        // Arm the platform's accent observer once, on the thread that creates the registry.
-        //
-        // # Why here
-        //
-        // The observer has to be installed exactly once per process and needs AppKit's main
-        // thread; the first access to the global registry is the earliest point at which both
-        // are known, and it is called from the UI thread of every desktop host. An installation
-        // that fails (off-main, or an AppKit without the notification) is not fatal: the
-        // observer function leaves the explicit `refresh_system_accent` entry point as the
-        // hook, which is the documented boundary for backends with no notification source.
-        #[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
-        crate::platform::macos::environment::install_system_color_observer();
-        Mutex::new(manager)
-    }))
+    // A test build isolates the registry per thread.
+    //
+    // The registry is process-wide by design, which is right for an application but wrong
+    // for a test binary: a test that switches the appearance (or registers a theme) is
+    // otherwise visible to every frame another test is asserting on, so a pixel comparison
+    // can fail or pass depending on thread scheduling. The per-thread copy keeps such a
+    // switch local to the test that made it. Integration tests are separate crates and do
+    // not see `cfg(test)`, so they keep the process-wide registry and serialise their
+    // mutations through [`theme_test_guard`].
+    #[cfg(test)]
+    {
+        TEST_MANAGER.with(|manager| lock(manager))
+    }
+    #[cfg(not(test))]
+    {
+        static MANAGER: OnceLock<Mutex<ThemeManager>> = OnceLock::new();
+        lock(MANAGER.get_or_init(seeded_theme_manager))
+    }
+}
+
+/// Creates the registry a fresh process (or a fresh test thread) starts with.
+///
+/// The dark preset is registered alongside the light default so a caller can switch without
+/// registering anything first. `register_theme` keys by the theme's own name, so re-seeding is
+/// impossible and the dark preset cannot overwrite the light default.
+fn seeded_theme_manager() -> Mutex<ThemeManager> {
+    let mut manager = ThemeManager::new();
+    let dark = Theme::dark();
+    manager.register_theme(dark);
+    // Arm the platform's accent observer once, on the thread that creates the registry.
+    //
+    // # Why here
+    //
+    // The observer has to be installed exactly once per process and needs AppKit's main
+    // thread; the first access to the global registry is the earliest point at which both
+    // are known, and it is called from the UI thread of every desktop host. An installation
+    // that fails (off-main, or an AppKit without the notification) is not fatal: the
+    // observer function leaves the explicit `refresh_system_accent` entry point as the
+    // hook, which is the documented boundary for backends with no notification source.
+    #[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
+    crate::platform::macos::environment::install_system_color_observer();
+    Mutex::new(manager)
+}
+
+// The per-thread registry a test build resolves against.
+//
+// The value is leaked so the guard `global_theme_manager` hands out can borrow it for
+// `'static`, which is the lifetime its non-test form also has. A test binary has a bounded
+// number of threads and exits afterwards, so the leak is bounded by the test run itself.
+#[cfg(test)]
+thread_local! {
+    static TEST_MANAGER: &'static Mutex<ThemeManager> =
+        crate::compat::Box::leak(crate::compat::Box::new(seeded_theme_manager()));
 }
 
 /// Serialises tests that mutate the process-wide theme registry.
@@ -1128,7 +1190,7 @@ const RESOLVED_STYLE_CACHE_LIMIT: usize = 256;
 /// when the snapshot differs from the previous frame's. Without it a 1.5× text preference
 /// resolved the same cached style as 1.0×.
 pub(crate) fn invalidate_resolved_style_cache() {
-    THEME_REVISION.fetch_add(1, Ordering::Relaxed);
+    bump_theme_revision();
 }
 
 /// `kind name -> (state -> (revision, style))`.
@@ -1176,7 +1238,7 @@ const RESOLVED_STATE_STYLE_CACHE_LIMIT: usize = 256;
 /// still deep-cloned `WidgetStyle` — `Font.family` and gradient stops included — defeating the
 /// cache. This variant returns the cache entry itself; a hit is a refcount bump.
 pub fn resolved_theme_style_shared(widget_name: &str) -> Option<Rc<WidgetStyle>> {
-    let revision = THEME_REVISION.load(Ordering::Relaxed);
+    let revision = theme_revision();
     if let Some(style) = RESOLVED_STYLE_CACHE.with(|cache| {
         cache
             .borrow()
@@ -1193,6 +1255,10 @@ pub fn resolved_theme_style_shared(widget_name: &str) -> Option<Rc<WidgetStyle>>
         manager.resolve_style(widget_name)
     };
     let style = Rc::new(style);
+    // Re-read the revision: resolving may have initialised the registry, and the seeding
+    // registers the dark preset, which bumps the revision. Storing the earlier value would
+    // make the entry stale the moment it was written.
+    let revision = theme_revision();
     RESOLVED_STYLE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.len() >= RESOLVED_STYLE_CACHE_LIMIT {
@@ -1235,7 +1301,7 @@ thread_local! {
 /// caller-owned [`ThemeManager`] can. The returned value is the cache entry itself, so a hit does
 /// not clone the palette.
 pub fn active_palette_shared() -> Option<Rc<Colors>> {
-    let revision = THEME_REVISION.load(Ordering::Relaxed);
+    let revision = theme_revision();
     if let Some(colors) = ACTIVE_PALETTE_CACHE.with(|cache| {
         cache
             .borrow()
@@ -1251,6 +1317,9 @@ pub fn active_palette_shared() -> Option<Rc<Colors>> {
     // for callers that cannot express absence, but this accessor's contract is to report it.
     manager.current_theme()?;
     let colors = Rc::new(manager.effective_colors());
+    // Re-read after the resolution for the same reason as the style cache: the registry may
+    // have been seeded by this very call, and seeding bumps the revision.
+    let revision = theme_revision();
     ACTIVE_PALETTE_CACHE.with(|cache| {
         *cache.borrow_mut() = Some((revision, Rc::clone(&colors)));
     });
@@ -1285,7 +1354,7 @@ pub fn resolved_theme_style_for_state_shared(
     kind_name: &str,
     state: crate::style::WidgetState,
 ) -> Option<Rc<WidgetStyle>> {
-    let revision = THEME_REVISION.load(Ordering::Relaxed);
+    let revision = theme_revision();
     let cached = RESOLVED_STATE_STYLE_CACHE.with(|cache| {
         cache
             .borrow()
@@ -1301,6 +1370,8 @@ pub fn resolved_theme_style_for_state_shared(
     let manager = global_theme_manager();
     manager.current_theme()?;
     let style = Rc::new(manager.resolve_style_for_state(kind_name, Some(state)));
+    // Re-read for the same reason as the other caches: this call may have seeded the registry.
+    let revision = theme_revision();
     RESOLVED_STATE_STYLE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.len() >= RESOLVED_STATE_STYLE_CACHE_LIMIT {

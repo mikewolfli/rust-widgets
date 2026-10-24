@@ -2,6 +2,24 @@
 // SPDX-License-Identifier: MIT
 
 //! Lightweight, already-resolved icon content for widget presentation.
+//!
+//! # What a widget needs beyond "one icon source"
+//!
+//! Three things, and this module owns all three so a control does not invent them:
+//!
+//! * [`IconSource`] — a drawable glyph, either a crate token or static geometry.
+//! * [`SharedIconPixels`] — validated RGBA8 bytes plus the fit rule for an icon slot.
+//! * [`IconModeSet`] — the **state variants** of one logical icon: its on/off pair, its
+//!   idle/hover/pressed renditions and its disabled rendition. A control that changes
+//!   glyph with its state (a check box's tick, a lock's open/closed pair, a speaker's
+//!   mute) declares that set once, and the fallback rule is applied here rather than in
+//!   each draw path.
+//!
+//! High-density (`@2x`) sources are not a separate type: the host registers a second
+//! source under the same name at density 2 (see
+//! [`crate::widget::icon_registry::register_icon_at_density`]), and the icon widget selects
+//! it when its scale factor calls for it. That keeps the *name* the identity and the
+//! density an attribute of the stored source.
 
 use crate::compat::String;
 use crate::widget::display_widgets::icon::{IconData, IconName};
@@ -286,6 +304,175 @@ impl IconSpec {
             Self::Builtin(name) => Some(IconSource::Builtin(*name)),
             Self::Resource { .. } => None,
         }
+    }
+}
+
+/// A control state that can supply its **own glyph**, rather than a tint of one glyph.
+///
+/// # Why this is distinct from the paint state
+///
+/// The icon widget's paint state (normal / disabled / selected) changes how one glyph is
+/// *painted*. This enum answers a different question: a check box's tick, a lock's
+/// open/closed pair and a speaker's mute are **different shapes**, and no tint derived
+/// from one outline can produce the other. A control declares the set through
+/// [`IconModeSet`] and asks it for the shape its current state calls for.
+///
+/// The names are the states a control already has ([`crate::style::WidgetState`] for the
+/// interactive ones), reduced to the ones that commonly change a glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IconMode {
+    /// The idle appearance.
+    Normal,
+    /// The pointer is over the control.
+    Hovered,
+    /// The control is held.
+    Pressed,
+    /// The control's boolean value is on (a tick, a closed lock).
+    Checked,
+    /// The control's boolean value is off (an empty box, an open lock).
+    Unchecked,
+    /// The control is disabled.
+    Disabled,
+}
+
+/// The glyph variants of one logical icon, with an explicit fallback per state.
+///
+/// # Fallback rule
+///
+/// A state that declares no source falls back along the chain a user would expect, never
+/// to silence:
+///
+/// | Asked | Falls back to |
+/// |---|---|
+/// | `Hovered` | `Normal` |
+/// | `Pressed` | `Hovered`, then `Normal` |
+/// | `Checked` | `Normal` |
+/// | `Unchecked` | `Normal` |
+/// | `Disabled` | `Normal` |
+///
+/// This is what makes the set safe to declare partially: a control that only has an on/off
+/// pair still paints while hovered, and a control that only has an idle glyph still paints
+/// when disabled. Falling back to `None` instead would make a missing variant look like a
+/// missing icon.
+///
+/// # Why `Default` is empty
+///
+/// An empty set answers `None` for every state, which is "this control declares no state
+/// variants" — the behaviour of every control before this type existed. A control opts in
+/// by constructing a set, so the default cannot change an existing rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct IconModeSet {
+    normal: Option<IconSource>,
+    hovered: Option<IconSource>,
+    pressed: Option<IconSource>,
+    checked: Option<IconSource>,
+    unchecked: Option<IconSource>,
+    disabled: Option<IconSource>,
+}
+
+impl IconModeSet {
+    /// A set with no variants at all; every lookup answers `None`.
+    pub const EMPTY: Self = Self {
+        normal: None,
+        hovered: None,
+        pressed: None,
+        checked: None,
+        unchecked: None,
+        disabled: None,
+    };
+
+    /// Starts a set from the glyph every state falls back to.
+    pub const fn new(normal: IconSource) -> Self {
+        Self {
+            normal: Some(normal),
+            hovered: None,
+            pressed: None,
+            checked: None,
+            unchecked: None,
+            disabled: None,
+        }
+    }
+
+    /// Declares the glyph for `mode`, replacing any earlier declaration.
+    ///
+    /// A builder rather than a setter so a control can state the whole group where it
+    /// builds its icon:
+    ///
+    /// ```text
+    /// let icons = IconModeSet::new(idle)
+    ///     .with(IconMode::Checked, tick)
+    ///     .with(IconMode::Unchecked, empty_box);
+    /// ```
+    pub const fn with(mut self, mode: IconMode, source: IconSource) -> Self {
+        match mode {
+            IconMode::Normal => self.normal = Some(source),
+            IconMode::Hovered => self.hovered = Some(source),
+            IconMode::Pressed => self.pressed = Some(source),
+            IconMode::Checked => self.checked = Some(source),
+            IconMode::Unchecked => self.unchecked = Some(source),
+            IconMode::Disabled => self.disabled = Some(source),
+        }
+        self
+    }
+
+    /// The glyph declared for exactly `mode`, without any fallback.
+    ///
+    /// A caller uses this to tell "the control declared this state" from "this state
+    /// resolved to the idle glyph": the two paint the same shape but mean different
+    /// things to a test or a state inspector.
+    pub const fn declared(&self, mode: IconMode) -> Option<IconSource> {
+        match mode {
+            IconMode::Normal => self.normal,
+            IconMode::Hovered => self.hovered,
+            IconMode::Pressed => self.pressed,
+            IconMode::Checked => self.checked,
+            IconMode::Unchecked => self.unchecked,
+            IconMode::Disabled => self.disabled,
+        }
+    }
+
+    /// The glyph to paint in `mode`, applying the documented fallback chain.
+    ///
+    /// `None` only when the set has no `Normal` source and no source for the requested
+    /// state — the empty set, or a set whose only declarations are for states this one
+    /// does not fall back to.
+    pub const fn resolve(&self, mode: IconMode) -> Option<IconSource> {
+        match mode {
+            IconMode::Normal => self.normal,
+            IconMode::Hovered => match self.hovered {
+                Some(source) => Some(source),
+                None => self.normal,
+            },
+            IconMode::Pressed => match self.pressed {
+                Some(source) => Some(source),
+                None => match self.hovered {
+                    Some(source) => Some(source),
+                    None => self.normal,
+                },
+            },
+            IconMode::Checked => match self.checked {
+                Some(source) => Some(source),
+                None => self.normal,
+            },
+            IconMode::Unchecked => match self.unchecked {
+                Some(source) => Some(source),
+                None => self.normal,
+            },
+            IconMode::Disabled => match self.disabled {
+                Some(source) => Some(source),
+                None => self.normal,
+            },
+        }
+    }
+
+    /// Whether the set declares no glyph at all.
+    pub const fn is_empty(&self) -> bool {
+        self.normal.is_none()
+            && self.hovered.is_none()
+            && self.pressed.is_none()
+            && self.checked.is_none()
+            && self.unchecked.is_none()
+            && self.disabled.is_none()
     }
 }
 
@@ -609,5 +796,75 @@ mod binding_tests {
         assert_eq!(binding.current(), None);
         assert_eq!(binding.revision(), None);
         assert!(!binding.is_loading());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::IconName;
+
+    fn source(name: IconName) -> IconSource {
+        IconSource::Builtin(name)
+    }
+
+    /// The fallback chain is the whole contract: a partially declared group still paints.
+    ///
+    /// A control with only an on/off pair must survive hover, press and disabled without
+    /// the icon vanishing — silence is the failure mode this rule exists to prevent.
+    #[test]
+    fn a_partial_mode_set_resolves_through_the_documented_fallback() {
+        let idle = source(IconName::Check);
+        let ticked = source(IconName::Star);
+        let group = IconModeSet::new(idle).with(IconMode::Checked, ticked);
+
+        assert_eq!(group.resolve(IconMode::Normal), Some(idle));
+        assert_eq!(group.resolve(IconMode::Checked), Some(ticked));
+        assert_eq!(group.resolve(IconMode::Unchecked), Some(idle), "no unchecked glyph");
+        assert_eq!(group.resolve(IconMode::Hovered), Some(idle), "hover falls back to idle");
+        assert_eq!(group.resolve(IconMode::Disabled), Some(idle), "disabled falls back to idle");
+        assert_eq!(group.declared(IconMode::Checked), Some(ticked));
+        assert_eq!(group.declared(IconMode::Unchecked), None, "not declared, only resolved");
+        assert!(!group.is_empty());
+    }
+
+    /// `Pressed` prefers a pressed glyph, then the hover glyph, then the idle one.
+    #[test]
+    fn pressed_prefers_its_own_glyph_then_hover_then_normal() {
+        let idle = source(IconName::Check);
+        let hover = source(IconName::Star);
+        let press = source(IconName::Cross);
+
+        let full =
+            IconModeSet::new(idle).with(IconMode::Hovered, hover).with(IconMode::Pressed, press);
+        assert_eq!(full.resolve(IconMode::Pressed), Some(press));
+
+        let without_press = IconModeSet::new(idle).with(IconMode::Hovered, hover);
+        assert_eq!(without_press.resolve(IconMode::Pressed), Some(hover));
+
+        let bare = IconModeSet::new(idle);
+        assert_eq!(bare.resolve(IconMode::Pressed), Some(idle));
+    }
+
+    /// The empty set declares nothing, which is how a control opts out.
+    ///
+    /// This is the default every control has until it constructs a set, so it has to
+    /// answer `None` rather than inventing a glyph.
+    #[test]
+    fn the_default_mode_set_declares_no_glyph() {
+        let empty = IconModeSet::default();
+        assert!(empty.is_empty());
+        for mode in [
+            IconMode::Normal,
+            IconMode::Hovered,
+            IconMode::Pressed,
+            IconMode::Checked,
+            IconMode::Unchecked,
+            IconMode::Disabled,
+        ] {
+            assert_eq!(empty.resolve(mode), None, "{mode:?} must not invent a source");
+            assert_eq!(empty.declared(mode), None);
+        }
+        assert_eq!(IconModeSet::EMPTY, empty);
     }
 }

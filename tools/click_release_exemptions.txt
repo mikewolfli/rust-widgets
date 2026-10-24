@@ -35,6 +35,7 @@
 # `clicked.emit()` on the press arm (grid.rs:452) is unreachable. The release arm (grid.rs:456) only
 # clears `mouse_pressed` and emits nothing.
 src/widget/special_widgets/grid.rs    press-arm-only    containment via cell_at, which bounds-checks rect in cell_at_y/cell_at_x
+src/widget/display_widgets/roller.rs    press-arm-only    the emit is the centre-row press; the release only clears drag_origin and never emits, and the press already bounds-checks the drawn wheel band
 
 # FIXED — `radar_chart` and `property_grid` were recorded here as live defects and both are now
 # guarded at the source, so their entries are gone rather than kept as stale licences (a stale

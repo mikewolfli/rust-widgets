@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::core::{Color, HorizontalAlignment, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::Event;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -114,6 +114,28 @@ pub struct TreeTable {
     pub projection_changed: Signal1<usize>,
     /// Emits selected visible row index changes.
     pub selection_changed: Signal1<Option<usize>>,
+    /// Emitted when a row's expansion changes: `(path, expanded)`.
+    pub expansion_changed: Signal1<(Vec<usize>, bool)>,
+    /// First visible row.
+    scroll_row: usize,
+    /// Indent per depth level, in pixels.
+    indent: u32,
+    /// Whether a column-title row is painted above the data.
+    show_header: bool,
+    /// The column whose sibling order is sorted, if any.
+    sort_column: Option<usize>,
+    /// Whether the sort is descending.
+    sort_descending: bool,
+    /// Emitted when the header is clicked and the sort changed: `(column, descending)`.
+    pub sort_changed: Signal1<(usize, bool)>,
+    /// Emitted when the context menu is requested at a point.
+    pub context_menu_requested: Signal1<Point>,
+    /// Whether the projection materializes only the rows around the viewport.
+    windowed_projection: bool,
+    /// Rows materialized past the viewport in windowed mode.
+    window_overscan: usize,
+    /// Whether the last projection stopped before the end of the tree.
+    projection_truncated: bool,
 }
 
 impl TreeTable {
@@ -131,6 +153,17 @@ impl TreeTable {
             hovered_row: None,
             projection_changed: Signal1::new(),
             selection_changed: Signal1::new(),
+            expansion_changed: Signal1::new(),
+            scroll_row: 0,
+            indent: 14,
+            show_header: false,
+            sort_column: None,
+            sort_descending: false,
+            sort_changed: Signal1::new(),
+            context_menu_requested: Signal1::new(),
+            windowed_projection: false,
+            window_overscan: 8,
+            projection_truncated: false,
         }
     }
 
@@ -276,7 +309,8 @@ impl TreeTable {
         if !self.path_has_children(&path) {
             return false;
         }
-        if self.expanded_paths.insert(path) {
+        if self.expanded_paths.insert(path.clone()) {
+            self.expansion_changed.emit((path, true));
             self.rebuild_projection();
             self.base.request_layout();
             self.base.request_redraw();
@@ -291,6 +325,7 @@ impl TreeTable {
         };
         if self.expanded_paths.remove(&path) {
             self.expanded_paths.retain(|expanded| !Self::is_descendant_of(expanded, &path));
+            self.expansion_changed.emit((path, false));
             self.rebuild_projection();
             self.base.request_layout();
             self.base.request_redraw();
@@ -330,18 +365,25 @@ impl TreeTable {
         let mut next = Vec::new();
         let Some(model) = self.model.as_ref() else {
             self.visible_rows = next;
+            self.projection_truncated = false;
             self.selected_row = None;
             self.projection_changed.emit(0);
             self.announce_selection_change(previous_selection);
             return;
         };
 
-        for root in 0..model.root_count() {
+        let budget = self.projection_budget();
+        let mut truncated = false;
+        for root in self.ordered_children(model.as_ref(), None, model.root_count()) {
             let mut path = vec![root];
-            self.flatten_path(model.as_ref(), &mut next, &mut path, 0);
+            if !self.flatten_path(model.as_ref(), &mut next, &mut path, 0, budget) {
+                truncated = true;
+                break;
+            }
         }
 
         self.visible_rows = next;
+        self.projection_truncated = truncated;
         self.selected_row = self.selected_row.filter(|row| *row < self.visible_rows.len());
         self.projection_changed.emit(self.visible_rows.len());
         self.announce_selection_change(previous_selection);
@@ -362,35 +404,240 @@ impl TreeTable {
         }
     }
 
+    /// Flattens `path` into `acc`, stopping at `budget` rows.
+    ///
+    /// Returns `false` when the budget was reached, which lets the caller stop walking the
+    /// remaining roots and report a truncated projection.
     fn flatten_path(
         &self,
         model: &dyn TreeTableModel,
         acc: &mut Vec<VisibleRow>,
         path: &mut Vec<usize>,
         depth: usize,
-    ) {
+        budget: usize,
+    ) -> bool {
+        if acc.len() >= budget {
+            return false;
+        }
         acc.push(VisibleRow { path: path.clone(), depth });
 
         if !self.expanded_paths.contains(path) {
-            return;
+            return true;
         }
 
         let child_count = model.child_count(path);
-        for child_index in 0..child_count {
+        let children = self.ordered_children(model, Some(path.as_slice()), child_count);
+        for child_index in children {
             path.push(child_index);
-            self.flatten_path(model, acc, path, depth + 1);
+            let keep_going = self.flatten_path(model, acc, path, depth + 1, budget);
             let _ = path.pop();
+            if !keep_going {
+                return false;
+            }
         }
+        true
+    }
+
+    /// The child indices below `parent` in painted order.
+    ///
+    /// Model order is preserved unless a sort column is set; the sort compares the cell text
+    /// case-insensitively and falls back to the child index so equal keys keep a stable order.
+    fn ordered_children(
+        &self,
+        model: &dyn TreeTableModel,
+        parent: Option<&[usize]>,
+        count: usize,
+    ) -> Vec<usize> {
+        let children: Vec<usize> = (0..count).collect();
+        let Some(column) = self.sort_column else {
+            return children;
+        };
+        let mut keyed: Vec<(String, usize)> = children
+            .iter()
+            .map(|child| {
+                let key = match parent {
+                    Some(parent) => {
+                        let mut path = parent.to_vec();
+                        path.push(*child);
+                        model.data(&path, column).unwrap_or_default().to_lowercase()
+                    }
+                    None => model.data(&[*child], column).unwrap_or_default().to_lowercase(),
+                };
+                (key, *child)
+            })
+            .collect();
+        keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        if self.sort_descending {
+            keyed.reverse();
+        }
+        keyed.into_iter().map(|(_, child)| child).collect()
     }
 
     fn row_at(&self, y: i32) -> Option<usize> {
         let rect = self.base.geometry();
-        if y < rect.y || y >= rect.y + rect.height as i32 {
+        let top = rect.y + self.header_offset();
+        if y < top || y >= rect.y + rect.height as i32 {
             return None;
         }
-        let local = (y - rect.y).max(0) as usize;
-        let index = local / self.row_height as usize;
+        let local = (y - top).max(0) as usize;
+        let index = local / self.row_height as usize + self.scroll_row;
         (index < self.visible_rows.len()).then_some(index)
+    }
+
+    /// The vertical room the column-title row takes.
+    fn header_offset(&self) -> i32 {
+        if self.show_header {
+            self.row_height as i32
+        } else {
+            0
+        }
+    }
+
+    /// The first visible row.
+    pub fn scroll_row(&self) -> usize {
+        self.scroll_row
+    }
+
+    /// Sets the first visible row, clamped to the projection.
+    pub fn set_scroll_row(&mut self, row: usize) {
+        // In windowed mode the projection stops near the viewport, so a scroll past its end
+        // re-materializes it with a budget that reaches the requested row.
+        if self.windowed_projection
+            && self.projection_truncated
+            && row >= self.visible_rows.len().saturating_sub(self.window_overscan)
+        {
+            self.scroll_row = row;
+            self.rebuild_projection();
+        }
+        let max = self.visible_rows.len().saturating_sub(1);
+        let next = row.min(max);
+        if next == self.scroll_row {
+            return;
+        }
+        self.scroll_row = next;
+        self.base.request_redraw();
+    }
+
+    /// Indent per depth level in pixels.
+    pub fn indent(&self) -> u32 {
+        self.indent
+    }
+
+    /// Sets the indent per depth level.
+    pub fn set_indent(&mut self, indent: u32) {
+        let indent = indent.min(64);
+        if self.indent == indent {
+            return;
+        }
+        self.indent = indent;
+        self.base.request_redraw();
+    }
+
+    /// Whether the column-title row is painted.
+    pub fn show_header(&self) -> bool {
+        self.show_header
+    }
+
+    /// Enables or disables the column-title row.
+    pub fn set_show_header(&mut self, show: bool) {
+        if self.show_header == show {
+            return;
+        }
+        self.show_header = show;
+        self.base.request_redraw();
+    }
+
+    /// The column whose sibling order is sorted, if any.
+    pub fn sort_column(&self) -> Option<usize> {
+        self.sort_column
+    }
+
+    /// Whether the sibling sort is descending.
+    pub fn sort_descending(&self) -> bool {
+        self.sort_descending
+    }
+
+    /// Sorts siblings by `column`, or restores model order with `None`.
+    pub fn set_sort_column(&mut self, column: Option<usize>) {
+        let column = column.filter(|column| *column < self.column_count());
+        if self.sort_column == column {
+            return;
+        }
+        self.sort_column = column;
+        self.sort_descending = false;
+        self.rebuild_projection();
+        self.base.request_redraw();
+    }
+
+    /// Toggles the sort direction of `column`, selecting it when it was not sorted.
+    pub fn toggle_sort_column(&mut self, column: usize) {
+        if column >= self.column_count() {
+            return;
+        }
+        if self.sort_column == Some(column) {
+            self.sort_descending = !self.sort_descending;
+        } else {
+            self.sort_column = Some(column);
+            self.sort_descending = false;
+        }
+        let descending = self.sort_descending;
+        self.rebuild_projection();
+        self.sort_changed.emit((column, descending));
+        self.base.request_redraw();
+    }
+
+    /// Whether the projection materializes only the rows around the viewport.
+    pub fn windowed_projection(&self) -> bool {
+        self.windowed_projection
+    }
+
+    /// Enables or disables the windowed projection.
+    ///
+    /// Off by default because the un-windowed projection is what `row_count` has always
+    /// reported. When on, a rebuild materializes only the rows the viewport can show plus
+    /// overscan, so opening a branch of a large tree stops flattening as soon as the visible
+    /// window is full. [`Self::projection_truncated`] says whether more rows remain, and
+    /// scrolling extends the projection on demand.
+    pub fn set_windowed_projection(&mut self, windowed: bool) {
+        if self.windowed_projection == windowed {
+            return;
+        }
+        self.windowed_projection = windowed;
+        self.rebuild_projection();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Whether the last projection stopped before the end of the tree.
+    pub fn projection_truncated(&self) -> bool {
+        self.projection_truncated
+    }
+
+    /// The column whose header band covers `pos`, when the header row is shown.
+    fn header_column_at(&self, pos: Point) -> Option<usize> {
+        if !self.show_header {
+            return None;
+        }
+        let rect = self.base.geometry();
+        let band = Rect::new(rect.x, rect.y, rect.width, self.row_height);
+        if !band.contains_point(pos) {
+            return None;
+        }
+        let column = (pos.x - rect.x).max(0) as usize / self.column_width.max(1) as usize;
+        (column < self.column_count()).then_some(column)
+    }
+
+    /// How many rows the projection may materialize.
+    fn projection_budget(&self) -> usize {
+        if !self.windowed_projection {
+            return usize::MAX;
+        }
+        let capacity = (self.base.geometry().height / self.row_height.max(1)) as usize;
+        self.scroll_row
+            .saturating_add(capacity)
+            .saturating_add(self.window_overscan)
+            .max(capacity)
+            .max(1)
     }
 
     fn is_descendant_of(path: &[usize], ancestor: &[usize]) -> bool {
@@ -640,8 +887,29 @@ impl Draw for TreeTable {
         let cell_font = effective_font(style);
         let mut cell_text = String::new();
 
-        for row in 0..self.visible_rows.len() {
-            let y = rect.y + row as i32 * row_h;
+        if self.show_header {
+            let columns = self.column_count();
+            for col in 0..columns {
+                let x = rect.x + col as i32 * col_w;
+                if x >= rect.x + rect.width as i32 {
+                    break;
+                }
+                let band = Rect::new(x, rect.y, self.column_width, self.row_height);
+                context.fill_rect(band, surface.blend(&ink, 0.08));
+                let label = std::format!("Column {}", col + 1);
+                context.draw_text_fitted_cow(
+                    context.text_line(band, cell_font),
+                    &label,
+                    cell_font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
+
+        let top = rect.y + self.header_offset();
+        for row in self.scroll_row..self.visible_rows.len() {
+            let y = top + (row - self.scroll_row) as i32 * row_h;
             if y >= rect.y + rect.height as i32 {
                 break;
             }
@@ -669,8 +937,11 @@ impl Draw for TreeTable {
                 // visible cell (via `item`) and resolve the font twice per cell.
                 cell_text.clear();
                 if self.fill_item(row, col, &mut cell_text) {
-                    let indent =
-                        if col == 0 { self.row_depth(row).unwrap_or(0) as i32 * 14 } else { 0 };
+                    let indent = if col == 0 {
+                        self.row_depth(row).unwrap_or(0) as i32 * self.indent as i32
+                    } else {
+                        0
+                    };
                     // The indented cell is the band: `y + row_h / 2` as a `draw_text` origin put
                     // the glyph box's *top* edge on the row's middle line, drawing every label
                     // half a line low. The band starts after the indent, so the tree's hierarchy
@@ -705,10 +976,15 @@ impl crate::event::EventHandler for TreeTable {
 
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
+                if let Some(column) = self.header_column_at(*pos) {
+                    self.toggle_sort_column(column);
+                    return;
+                }
                 if let Some(row) = self.row_at(pos.y) {
                     let _ = self.select_row(row);
                 }
             }
+            Event::ContextMenu { pos } => self.context_menu_requested.emit(*pos),
             Event::MousePress { pos, button, .. } if *button == 2 => {
                 if let Some(row) = self.row_at(pos.y) {
                     let _ = self.toggle_row_expanded(row);
@@ -731,6 +1007,40 @@ impl crate::event::EventHandler for TreeTable {
             // A leave with nothing highlighted still runs `take()`, which is what the bare arm is
             // for: it must not fall through to the catch-all and leave a stale row set.
             Event::MouseLeave { .. } => {}
+            Event::Wheel { delta, modifiers } => {
+                let scroll = crate::event::WheelScroll::from_event(*delta, *modifiers, 1);
+                let next = self.scroll_row as isize - scroll.lines_y as isize;
+                self.set_scroll_row(next.max(0) as usize);
+            }
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => {
+                let page = (self.base.geometry().height / self.row_height.max(1)) as usize;
+                let last = self.visible_rows.len().saturating_sub(1);
+                let current = self.selected_row.unwrap_or(0);
+                let next = match *key {
+                    crate::event::key_codes::UP => current.saturating_sub(1),
+                    crate::event::key_codes::DOWN => current.saturating_add(1).min(last),
+                    crate::event::key_codes::HOME => 0,
+                    crate::event::key_codes::END => last,
+                    crate::event::key_codes::PAGE_UP => current.saturating_sub(page.max(1)),
+                    crate::event::key_codes::PAGE_DOWN => {
+                        current.saturating_add(page.max(1)).min(last)
+                    }
+                    crate::event::key_codes::ENTER | crate::event::key_codes::SPACE => {
+                        if self.selected_row.is_some() {
+                            let _ = self.toggle_row_expanded(current);
+                        }
+                        current
+                    }
+                    _ => current,
+                };
+                if self.select_row(next) {
+                    if next < self.scroll_row {
+                        self.set_scroll_row(next);
+                    } else if next >= self.scroll_row + page.max(1) {
+                        self.set_scroll_row(next + 1 - page.max(1));
+                    }
+                }
+            }
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -1150,5 +1460,116 @@ mod tests {
         tree.handle_event(&Event::MouseLeave { pos: below });
         assert_eq!(tree.hovered_row, None, "leaving clears the row rather than latching it");
         assert_eq!(tree.widget_state(), WidgetState::Normal);
+    }
+
+    /// Scroll, keyboard paging, the header row, indent and the expansion signal are wired.
+    #[test]
+    fn scrolling_header_keyboard_and_expansion_signal_are_wired() {
+        use crate::event::EventHandler;
+        let mut tree = TreeTable::new(Rect::new(0, 0, 300, 100));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+        tree.set_row_height(24);
+        tree.set_indent(20);
+        assert_eq!(tree.indent(), 20);
+        tree.set_show_header(true);
+        assert!(tree.show_header());
+        let expansion = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&expansion);
+        tree.expansion_changed.connect(move |event| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some((*event).clone());
+            }
+        });
+        assert!(tree.expand_row(0));
+        assert!(
+            expansion.lock().map(|slot| slot.is_some()).unwrap_or(false),
+            "opening a row broadcasts its path"
+        );
+
+        tree.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, -1), modifiers: 0 });
+        assert!(tree.scroll_row() > 0 || tree.row_count() < 2);
+        tree.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        tree.handle_event(&Event::KeyPress { key: crate::event::key_codes::END, modifiers: 0 });
+        assert!(tree.selected_row().is_some());
+        let _ = crate::widget::svg::render_to_svg(&mut tree);
+    }
+
+    /// A windowed projection stops at the viewport and extends on demand.
+    #[test]
+    fn a_windowed_projection_stops_at_the_viewport_and_extends() {
+        struct ManyRoots;
+        impl TreeTableModel for ManyRoots {
+            fn root_count(&self) -> usize {
+                2_000
+            }
+            fn child_count(&self, _path: &[usize]) -> usize {
+                0
+            }
+            fn column_count(&self) -> usize {
+                1
+            }
+            fn data(&self, path: &[usize], _column: usize) -> Option<String> {
+                Some(std::format!("{:04}", path[0]))
+            }
+        }
+
+        let mut tree = TreeTable::new(Rect::new(0, 0, 300, 200));
+        tree.set_row_height(24);
+        tree.set_model(Arc::new(ManyRoots));
+        assert_eq!(tree.row_count(), 2_000, "the eager projection is complete");
+
+        tree.set_windowed_projection(true);
+        assert!(tree.windowed_projection());
+        assert!(tree.projection_truncated());
+        let materialized = tree.row_count();
+        assert!(materialized < 2_000, "only the window is materialized: {materialized}");
+
+        tree.set_scroll_row(900);
+        assert!(tree.row_count() > 900, "scrolling extends the projection");
+        assert_eq!(tree.scroll_row(), 900);
+        assert_eq!(tree.row_path(900).map(|path| path.to_vec()), Some(vec![900]));
+    }
+
+    /// Clicking a header sorts siblings and broadcasts the new direction.
+    #[test]
+    fn a_header_click_sorts_siblings_and_broadcasts() {
+        use crate::event::EventHandler;
+        let mut tree = TreeTable::new(Rect::new(0, 0, 300, 200));
+        tree.set_rows(vec!["charlie".to_string(), "alpha".to_string(), "bravo".to_string()]);
+        tree.set_show_header(true);
+        let sorted = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&sorted);
+        tree.sort_changed.connect(move |spec| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*spec);
+            }
+        });
+        tree.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(10, 5),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(tree.sort_column(), Some(0));
+        assert_eq!(tree.item(0, 0), Some("alpha".to_string()));
+        assert_eq!(tree.item(2, 0), Some("charlie".to_string()));
+        assert_eq!(sorted.lock().map(|slot| *slot).unwrap_or(None), Some((0, false)));
+
+        tree.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(10, 5),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(tree.sort_descending());
+        assert_eq!(tree.item(0, 0), Some("charlie".to_string()));
+
+        let context = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&context);
+        tree.context_menu_requested.connect(move |point| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*point);
+            }
+        });
+        tree.handle_event(&Event::ContextMenu { pos: crate::core::Point::new(40, 60) });
+        assert!(context.lock().map(|slot| slot.is_some()).unwrap_or(false));
     }
 }

@@ -204,3 +204,17 @@ src/widget/dialog/alert_dialogs.rs ConfirmDialog fixed-chrome
 src/widget/dialog/alert_dialogs.rs AboutDialog fixed-chrome
 src/widget/display_widgets/clock.rs Clock fixed-chrome
 src/widget/special_widgets/code_editor/editor/widget_impl.rs CodeEditor backlog
+# ── macOS component set (2026-10-24) ─────────────────────────────────────────────
+# These five controls are chrome with a fixed extent: a segmented picker, a sidebar, a
+# stepper, a toolbar row and a titlebar. The numbers are the AppKit-baseline metrics
+# recorded in the module, not derived content, so `ControlMetrics::implicit_size` would
+# reproduce the same constants with more ceremony.
+src/widget/macos/segmented_control.rs MacSegmentedControl fixed-chrome
+src/widget/macos/source_list.rs MacSourceList fixed-chrome
+src/widget/macos/stepper.rs MacStepper fixed-chrome
+src/widget/macos/toolbar.rs MacToolbar fixed-chrome
+src/widget/macos/window_chrome.rs MacWindowChrome fixed-chrome
+# `ItemDelegate::size_hint` is a per-cell hint that defaults to `None`; it is not a
+# control's own size hint. The scan matches the method name, so the trait is recorded
+# here rather than contorting the trait to satisfy a lexical rule.
+src/widget/view_widgets/table_widget.rs <free> not-a-control-hint

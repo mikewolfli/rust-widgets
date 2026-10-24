@@ -10,7 +10,7 @@
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::style::EdgeOffsets;
@@ -112,6 +112,12 @@ pub struct Dropdown {
     alignment: crate::core::Alignment,
     /// Signal emitted when the selection changes.
     pub changed: GenericSignal,
+    /// Maximum number of rows the expanded list shows at once. `None` shows them all.
+    max_visible: Option<usize>,
+    /// Index of the first row painted in the popup.
+    scroll_offset: usize,
+    /// Prefix typed since the last navigation, for first-letter selection.
+    type_ahead: String,
 }
 
 impl Dropdown {
@@ -127,6 +133,9 @@ impl Dropdown {
             alignment: crate::core::Alignment::Left,
             changed: GenericSignal::new(),
             items,
+            max_visible: None,
+            scroll_offset: 0,
+            type_ahead: String::new(),
         }
     }
 
@@ -205,6 +214,7 @@ impl Dropdown {
         }
         self.expanded = expanded;
         if expanded {
+            self.ensure_selected_visible();
             #[cfg(not(alloc_frugal))]
             crate::widget::runtime::set_popup_grab(self.id());
         } else {
@@ -244,7 +254,10 @@ impl Dropdown {
     /// Only meaningful when `expanded == true`.
     fn item_rect(&self, index: usize) -> Rect {
         let geo = self.geometry();
-        let item_y = geo.y + geo.height as i32 + (index as u32 * ITEM_HEIGHT) as i32;
+        // `index` is a row in the model; the paint stacks visible rows from the scroll
+        // offset, so this maps it into the window the popup actually shows.
+        let row = index.saturating_sub(self.clamp_scroll(self.scroll_offset));
+        let item_y = geo.y + geo.height as i32 + (row as u32 * ITEM_HEIGHT) as i32;
         Rect::new(geo.x, item_y, geo.width, ITEM_HEIGHT)
     }
 
@@ -253,7 +266,87 @@ impl Dropdown {
         if !self.expanded {
             return None;
         }
-        (0..self.items.len()).position(|i| self.item_rect(i).contains_point(pos))
+        let (start, end) = self.visible_range();
+        (start..end).find(|&index| self.item_rect(index).contains_point(pos))
+    }
+
+    /// The maximum number of rows the popup shows at once.
+    pub fn max_visible(&self) -> Option<usize> {
+        self.max_visible
+    }
+
+    /// Caps the number of rows the popup paints.
+    ///
+    /// `None` restores full expansion. A cap of zero is treated as one row, because an open
+    /// popup with no rows reads as a glitch rather than as a setting.
+    pub fn set_max_visible(&mut self, max_visible: Option<usize>) {
+        let max_visible = max_visible.map(|value| value.max(1));
+        if self.max_visible == max_visible {
+            return;
+        }
+        self.max_visible = max_visible;
+        self.ensure_selected_visible();
+        self.base.request_redraw();
+    }
+
+    /// Index of the first row painted in the popup.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Sets the first painted row, clamped so the popup stays full when it can.
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        let next = self.clamp_scroll(offset);
+        if self.scroll_offset == next {
+            return;
+        }
+        self.scroll_offset = next;
+        self.base.request_redraw();
+    }
+
+    /// Number of rows the popup shows at once.
+    pub fn page_size(&self) -> usize {
+        self.max_visible.unwrap_or(self.items.len()).max(1)
+    }
+
+    fn clamp_scroll(&self, offset: usize) -> usize {
+        let page = self.page_size();
+        let max_offset = self.items.len().saturating_sub(page.min(self.items.len()));
+        offset.min(max_offset)
+    }
+
+    /// Scrolls the popup so the selected row is inside the visible window.
+    pub fn ensure_selected_visible(&mut self) {
+        if self.items.is_empty() {
+            self.scroll_offset = 0;
+            return;
+        }
+        let page = self.page_size();
+        if self.selected_index < self.scroll_offset {
+            self.scroll_offset = self.selected_index;
+        } else if self.selected_index >= self.scroll_offset + page {
+            self.scroll_offset = self.selected_index + 1 - page;
+        }
+        self.scroll_offset = self.clamp_scroll(self.scroll_offset);
+    }
+
+    /// Rows currently inside the popup window.
+    fn visible_range(&self) -> (usize, usize) {
+        let start = self.clamp_scroll(self.scroll_offset);
+        let end = (start + self.page_size()).min(self.items.len());
+        (start, end)
+    }
+
+    /// Selects the first row at or after `start` whose label starts with `prefix`.
+    fn find_prefix(&self, prefix: &str, start: usize) -> Option<usize> {
+        let needle = prefix.to_lowercase();
+        let count = self.items.len();
+        if count == 0 {
+            return None;
+        }
+        (0..count)
+            .map(|offset| (start + offset) % count)
+            .find(|&index| self.items[index].to_lowercase().starts_with(&needle))
     }
 }
 
@@ -346,6 +439,11 @@ impl WidgetProperties for Dropdown {
             }
             "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
             "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
+            "max_visible" => match self.max_visible() {
+                Some(max) => Ok(CapabilityValue::UInt(max as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "scroll_offset" => Ok(CapabilityValue::UInt(self.scroll_offset() as u64)),
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
@@ -367,6 +465,17 @@ impl WidgetProperties for Dropdown {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
             }
+            "max_visible" => {
+                match value {
+                    CapabilityValue::Null => self.set_max_visible(None),
+                    other => self.set_max_visible(Some(expect_usize(other)?)),
+                }
+                Ok(())
+            }
+            "scroll_offset" => {
+                self.set_scroll_offset(expect_usize(value)?);
+                Ok(())
+            }
             // `text` follows the selection and `item_count` the item list.
             "text" | "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -381,6 +490,8 @@ impl WidgetProperties for Dropdown {
             "item_count",
             "expanded",
             "alignment",
+            "max_visible",
+            "scroll_offset",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -446,22 +557,51 @@ impl EventHandler for Dropdown {
 
             Event::KeyPress { key, modifiers: _ } => {
                 if !self.expanded {
-                    // Up / Down arrow keys open the list
-                    if (*key == key_codes::DOWN || *key == key_codes::UP) && !self.items.is_empty()
+                    // Up / Down / Home / End / Enter / Space open the list.
+                    if matches!(*key, key_codes::UP | key_codes::DOWN | 36 | 35 | 13 | 32)
+                        && !self.items.is_empty()
                     {
                         self.expanded = true;
+                        self.ensure_selected_visible();
+                        self.base.request_redraw();
                     }
                     return;
                 }
 
+                let page = self.page_size();
                 match *key {
                     38 if self.selected_index > 0 => {
                         // Up arrow — previous item
                         self.set_selected_index(self.selected_index - 1);
+                        self.ensure_selected_visible();
                     }
                     40 if self.selected_index + 1 < self.items.len() => {
                         // Down arrow — next item
                         self.set_selected_index(self.selected_index + 1);
+                        self.ensure_selected_visible();
+                    }
+                    33 => {
+                        // Page Up.
+                        let target = self.selected_index.saturating_sub(page);
+                        self.set_selected_index(target);
+                        self.ensure_selected_visible();
+                    }
+                    34 => {
+                        // Page Down.
+                        let target =
+                            (self.selected_index + page).min(self.items.len().saturating_sub(1));
+                        self.set_selected_index(target);
+                        self.ensure_selected_visible();
+                    }
+                    36 => {
+                        // Home.
+                        self.set_selected_index(0);
+                        self.ensure_selected_visible();
+                    }
+                    35 => {
+                        // End.
+                        self.set_selected_index(self.items.len().saturating_sub(1));
+                        self.ensure_selected_visible();
                     }
                     13 => {
                         // Enter — commit selection, collapse
@@ -470,8 +610,32 @@ impl EventHandler for Dropdown {
                     27 => {
                         // Escape — cancel, collapse
                         self.expanded = false;
+                        self.type_ahead.clear();
+                    }
+                    32..=126 => {
+                        // First-letter selection, wrapping from the current row.
+                        if let Some(ch) = char::from_u32(*key) {
+                            self.type_ahead.push(ch);
+                            let start = (self.selected_index + 1).min(self.items.len());
+                            if let Some(index) = self.find_prefix(&self.type_ahead, start) {
+                                self.set_selected_index(index);
+                                self.ensure_selected_visible();
+                            }
+                            self.base.request_redraw();
+                        }
                     }
                     _ => {}
+                }
+            }
+            Event::Wheel { delta, modifiers } => {
+                if self.expanded {
+                    let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                    if scroll.lines_y != 0 {
+                        let offset = (self.scroll_offset as i32 + scroll.lines_y).max(0) as usize;
+                        self.set_scroll_offset(offset);
+                    }
+                } else {
+                    self.base.handle_event(event);
                 }
             }
 
@@ -590,7 +754,8 @@ impl Draw for Dropdown {
             return;
         }
 
-        for i in 0..self.items.len() {
+        let (first, last) = self.visible_range();
+        for i in first..last {
             let item_geo = self.item_rect(i);
 
             // Background
@@ -623,6 +788,23 @@ impl Draw for Dropdown {
                 font,
                 item_color,
                 HorizontalAlignment::Left,
+            );
+        }
+
+        // A capped popup shows a thin thumb, so a window of a longer list cannot look like
+        // the whole list.
+        if self.max_visible.is_some() && self.items.len() > self.page_size() {
+            let page = self.page_size();
+            let track_top = self.item_rect(first).y;
+            let track_height = (page * ITEM_HEIGHT as usize) as i32;
+            let thumb_height =
+                ((track_height as usize * page) / self.items.len().max(1)).max(8) as i32;
+            let max_offset = self.items.len().saturating_sub(page).max(1);
+            let thumb_top = track_top
+                + ((track_height - thumb_height) * self.scroll_offset as i32 / max_offset as i32);
+            context.fill_rect(
+                Rect::new(geo.x + geo.width as i32 - 4, thumb_top, 3, thumb_height as u32),
+                list_border,
             );
         }
     }
@@ -1027,5 +1209,51 @@ mod tests {
             rest = &rect[end..];
         }
         panic!("fewer than two popup rows at or below y={field_bottom}");
+    }
+
+    /// A capped popup scrolls with the wheel and pages with the keyboard.
+    #[test]
+    fn a_capped_list_scrolls_and_pages() {
+        let items: Vec<String> = (0..10).map(|index| format!("Item {index}")).collect();
+        let mut dropdown = Dropdown::new(items, Rect::new(0, 0, 160, 24));
+        dropdown.set_max_visible(Some(3));
+        assert_eq!(dropdown.max_visible(), Some(3));
+        dropdown.set_expanded(true);
+        dropdown.set_selected_index(0);
+
+        dropdown.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(dropdown.scroll_offset(), 1, "a notch scrolls the popup");
+
+        dropdown.handle_event(&Event::KeyPress { key: 34, modifiers: 0 }); // PageDown
+        assert!(dropdown.selected_index().unwrap() >= 3);
+        assert!(dropdown.scroll_offset() >= 1);
+
+        dropdown.handle_event(&Event::KeyPress { key: 35, modifiers: 0 }); // End
+        assert_eq!(dropdown.selected_index(), Some(9));
+        assert_eq!(dropdown.scroll_offset(), 7, "the selection is kept visible");
+
+        // Type-ahead wraps and selects the first matching label.
+        dropdown.handle_event(&Event::KeyPress { key: 73, modifiers: 0 }); // 'I'
+        dropdown.handle_event(&Event::KeyPress { key: 116, modifiers: 0 }); // 't'
+        assert_eq!(dropdown.selected_text(), Some("Item 1"));
+    }
+
+    /// The row cap and the scroll offset are published and writable.
+    #[test]
+    fn the_popup_window_is_published() {
+        let items: Vec<String> = (0..8).map(|index| format!("Item {index}")).collect();
+        let mut dropdown = Dropdown::new(items, Rect::new(0, 0, 160, 24));
+        assert_eq!(dropdown.get("max_visible").unwrap(), CapabilityValue::Null);
+        dropdown.set("max_visible", CapabilityValue::UInt(3)).unwrap();
+        assert_eq!(dropdown.max_visible(), Some(3));
+        dropdown.set("max_visible", CapabilityValue::Null).unwrap();
+        assert_eq!(dropdown.max_visible(), None);
+
+        dropdown.set("max_visible", CapabilityValue::UInt(2)).unwrap();
+        dropdown.set("scroll_offset", CapabilityValue::UInt(1)).unwrap();
+        assert_eq!(dropdown.get("scroll_offset").unwrap(), CapabilityValue::UInt(1));
+        // The offset is clamped to what the window can show rather than stored raw.
+        dropdown.set("scroll_offset", CapabilityValue::UInt(99)).unwrap();
+        assert_eq!(dropdown.scroll_offset(), 6);
     }
 }

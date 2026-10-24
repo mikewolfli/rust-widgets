@@ -88,6 +88,10 @@ pub struct GroupBox {
     #[cfg(device_profile)]
     material: crate::theme::Material,
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
+    /// Whether the frame and face are omitted, leaving only the caption and content.
+    flat: bool,
+    /// Optional content size, used to make the size hint content-driven.
+    content_size_hint: Option<Size>,
 }
 impl GroupBox {
     /// Creates a group box.
@@ -100,11 +104,45 @@ impl GroupBox {
             checked: true,
             toggled: Signal1::new(),
             cached_title_width: None,
+            flat: false,
+            content_size_hint: None,
             #[cfg(device_profile)]
             material: crate::theme::Material::None,
             registry: None,
         }
     }
+    /// Whether the group box draws without a frame or face.
+    pub fn is_flat(&self) -> bool {
+        self.flat
+    }
+
+    /// Enables or disables the flat appearance.
+    ///
+    /// A flat group box keeps its title and content but omits the face and border, which is
+    /// the `flat` variant a form uses to group fields without drawing another box.
+    pub fn set_flat(&mut self, flat: bool) {
+        if self.flat == flat {
+            return;
+        }
+        self.flat = flat;
+        self.base.request_redraw();
+    }
+
+    /// The content size this group box should reserve room for.
+    pub fn content_size_hint(&self) -> Option<Size> {
+        self.content_size_hint
+    }
+
+    /// Sets (or clears, with `None`) the content size used by [`Widget::size_hint`].
+    pub fn set_content_size_hint(&mut self, size: Option<Size>) {
+        if self.content_size_hint == size {
+            return;
+        }
+        self.content_size_hint = size;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
     /// Returns title.
     pub fn title(&self) -> &str {
         &self.title
@@ -469,7 +507,19 @@ impl Widget for GroupBox {
             title + padding.horizontal_total() + (Self::TITLE_INSET as u32) * 2,
             self.content_top() as u32 + padding.bottom,
         );
-        ControlMetrics::implicit_size(Size::new(0, 0), padding, floor)
+        let hint = ControlMetrics::implicit_size(Size::new(0, 0), padding, floor);
+        match self.content_size_hint {
+            Some(content) => Size::new(
+                hint.width.max(content.width.saturating_add(padding.horizontal_total())),
+                hint.height.max(
+                    content
+                        .height
+                        .saturating_add(self.content_top() as u32)
+                        .saturating_add(padding.bottom),
+                ),
+            ),
+            None => hint,
+        }
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -641,18 +691,20 @@ impl Draw for GroupBox {
                 })
             }
         };
-        if let Some(face) = face {
-            context.face_with_gradient(
-                rect,
-                face,
-                self.style().background_gradient.as_ref(),
-                self.style().surface.unwrap_or_default(),
-                self.style().border_radius.unwrap_or(0),
-                Color::BLACK,
-            );
+        if !self.flat {
+            if let Some(face) = face {
+                context.face_with_gradient(
+                    rect,
+                    face,
+                    self.style().background_gradient.as_ref(),
+                    self.style().surface.unwrap_or_default(),
+                    self.style().border_radius.unwrap_or(0),
+                    Color::BLACK,
+                );
+            }
+            // Draw border
+            context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(200, 200, 200)));
         }
-        // Draw border
-        context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(200, 200, 200)));
         // Draw title background to hide the border behind the title. The band is widened
         // by `TITLE_PADDING` on both sides, so it is clipped to the frame: a band that ran
         // past `rect.right()` would paint over the sibling to the right of this group. Its
@@ -662,7 +714,7 @@ impl Draw for GroupBox {
         let title_bg_right = (title_rect.x + title_rect.width as i32 + TITLE_PADDING)
             .min(rect.x + rect.width as i32);
         let title_bg_width = (title_bg_right - title_bg_left).max(0) as u32;
-        if title_bg_width > 0 {
+        if title_bg_width > 0 && !self.flat {
             context.fill_rect(
                 Rect::new(
                     title_bg_left,
@@ -1196,5 +1248,20 @@ mod tests {
             empty_width,
             "a cleared title must report the same wish as a box that never had one"
         );
+    }
+
+    /// A flat box omits its frame, and a content size makes the hint content-driven.
+    #[test]
+    fn flat_mode_and_content_size_are_wired() {
+        let mut gb = GroupBox::new(Rect::new(0, 0, 200, 100));
+        let framed = gb.size_hint();
+        gb.set_content_size_hint(Some(Size::new(120, 80)));
+        assert!(gb.size_hint().height >= framed.height);
+        assert!(gb.size_hint().height >= 80 + 4);
+
+        gb.set_flat(true);
+        assert!(gb.is_flat());
+        let svg = crate::widget::svg::render_widget_to_svg(&mut gb, Rect::new(0, 0, 200, 100));
+        assert!(!svg.is_empty());
     }
 }
