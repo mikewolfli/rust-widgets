@@ -5,6 +5,43 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.9.1 (2026-10-25) — four-level submenus, opt-in session state, pager jump, chart value easing
+
+### Cascading submenus
+
+- `DropdownMenu`, `MenuButton` and `Menu` open child panels up to **four levels** deep. The three controls share `widget::menu_toolbar::MAX_SUBMENU_DEPTH`, so they cannot disagree about the limit.
+- Opening a branch replaces that level and everything below it; Escape/Left unwind one level per press, and only a leaf commits.
+- A branch on the deepest level still announces `submenu_requested` but opens no fifth panel, and the deepest panel paints no disclosure arrow. The depth contract is documented on the constant.
+- `Menu`'s hit test now accepts its child panels (the runtime previously rejected presses outside the popup rectangle), and `DropdownMenu`/`MenuButton` hit-test every open level.
+
+### Session state
+
+- New `SaveState` trait plus `collect_save_state` / `restore_save_state` and `SavedState { key, version, bytes }`. A control declares its user-visible state and a format version; the host supplies the explicit key, because `ObjectId`s do not survive a restart.
+- The walk covers tree children **and** surfaces mounted under the window (`mount_surface`), so no hosted control is silently skipped. Entries are sorted by key; a version mismatch or malformed blob is refused without touching the control.
+- Adopted by `Splitter` (pane layout), `TabWidget` (selection), `DockWidget`, `CollapsiblePane` and `Pagination` (page size and page).
+
+### Pagination
+
+- Optional jump-to-page cell (`set_show_jump_input`): digits, Enter jumps, Escape/outside press cancels, an out-of-range page clamps to the last page.
+- Optional page-size selector (`set_show_page_size_selector` plus `set_page_size_options`): normalized ascending options, popup above or below the bar, Escape/outside press closes.
+- Both are off by default; the numbered cells keep their previous layout when neither is enabled.
+
+### Charts
+
+- `BarChart::set_animate_value_changes(true)` eases a data update from the values currently painted to the new ones for single- and multi-series data, driven by a `PropertyDriver` (so reduce-motion applies). Shape changes and switching between the single- and multi-series models jump. Default `false` keeps the previous immediate behaviour.
+
+### Demos, docs, release
+
+- `demo/control` gained a pagination bar (jump plus page-size cells), an eased bar chart with a shuffle button, a tab strip, and an in-memory save/restore demonstration.
+- README, tutorial, architecture notes and all three cookbooks document the new contracts; install snippets are 2.9.1.
+
+### Verification
+
+- `cargo test --lib`: 8849 passed; `runtime-fonts`: 8853; `3d`: 8907; `cargo test` (workspace, including 55 doctests): all pass.
+- `cargo fmt --all -- --check`: clean. Three clippy profiles (default / `desktop,3d` / `macos`) with `--all-targets -D warnings`: clean.
+- `check_profiles.sh`: all profile checks pass (mini/embedded/tablet/mobile included). `check_svg_snapshots.sh` and `check_control_rendering.sh`: 218/0. `check_cookbook.sh`: 228 API names, all three books build clean. Source-structure and event gates pass.
+- All three demos `cargo check` clean.
+
 ## 2.9.0 (2026-10-22) — review round: theme-correct chrome, bounded per-frame work, leak-free teardown
 
 This release is a full-project review pass over `docs/issues/issue-20261022.md` plus a new scan of

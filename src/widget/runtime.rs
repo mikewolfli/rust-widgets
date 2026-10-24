@@ -3870,6 +3870,28 @@ pub fn surface_window_for(surface: ObjectId) -> Option<ObjectId> {
     SURFACE_WINDOWS.try_with(|map| map.borrow().get(&surface).copied()).unwrap_or(None)
 }
 
+/// Every mounted surface recorded as belonging to `window`.
+///
+/// A surface mounted through `mount_surface` is **not** a child in the widget tree: the
+/// backend paints it, and `SURFACE_WINDOWS` is the only record of which window owns it.
+/// A tree walk that is meant to cover everything a window shows therefore has to add these
+/// ids itself — [`crate::widget::save_state::collect_save_state`] does, so a control mounted
+/// as a surface is not silently skipped by session restore.
+///
+/// The order is unspecified (the link is a map); a caller that needs determinism sorts by its
+/// own key.
+pub fn surfaces_of(window: ObjectId) -> Vec<ObjectId> {
+    SURFACE_WINDOWS
+        .try_with(|map| {
+            map.borrow()
+                .iter()
+                .filter(|(_, host)| **host == window)
+                .map(|(surface, _)| *surface)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Returns the top-level **window** widget that `id` lives under, if any.
 ///
 /// Walks the parent links up to the root and reports it only when the root is a

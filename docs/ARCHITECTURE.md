@@ -121,6 +121,26 @@ single mechanism would have to be the weakest of all three. The cost is that the
 underlying fact ("the button was pressed") can be observed in more than one place; the
 benefit is that neither path is forced to carry the other's constraints.
 
+### Opt-in State Persistence
+
+A settings file is the one artifact a user keeps across releases, so the library never writes one
+implicitly. Restoring a session is a **host decision**, and the contract is deliberately narrow:
+
+* A control implements `widget::save_state::SaveState` when it has user-visible state, declaring a
+  format version plus `save_state`/`restore_state`. Bump the version to change the format; an older
+  blob is then refused instead of misread.
+* The framework moves bytes and nothing else. `widget::save_state::collect_save_state` walks a
+  window (tree children **and** surfaces mounted under it) and returns `SavedState { key, version,
+  bytes }` entries sorted by key; `restore_save_state` applies the entries whose version matches.
+* The **key is supplied by the host**. `ObjectId`s are allocated at run time and cannot survive a
+  restart, and a key derived from tree position would silently reattach state after a reorder.
+
+Adopters are `Splitter`, `TabWidget`, `DockWidget`, `CollapsiblePane` and `Pagination`. The trait
+is reached through `Widget::save_state_dyn`/`save_state_dyn_mut`, which default to `None`, so a
+control opts out by doing nothing. This is the opt-in half of the decision recorded in
+`docs/issues/issue-20261023.md` (C25); the automatic, reflective variant was rejected because it
+would persist data the host owns and couple the settings format to private field layout.
+
 ### Where the `rw_` Prefix Belongs
 
 The `rw_` prefix names the **C ABI** (`src/bindings/`), and stays there. A C caller gets

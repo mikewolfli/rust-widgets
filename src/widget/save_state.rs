@@ -26,7 +26,9 @@
 //! control that does not implement [`SaveState`] contributes nothing.
 
 use crate::compat::{String, Vec};
+#[cfg(not(alloc_frugal))]
 use crate::core::ObjectId;
+#[cfg(not(alloc_frugal))]
 use crate::widget::runtime::{children_of, read_widget, with_widget_mut};
 
 /// One widget's state as it crosses the persistence boundary.
@@ -88,6 +90,10 @@ pub trait SaveState {
 /// A key declared by more than one widget is kept for the **first** widget in the walk and a
 /// warning is logged for the rest; two components that answer to one key could not be restored
 /// apart.
+///
+/// Collection needs a widget registry, which the `alloc_frugal` profiles compile out; those
+/// builds keep the trait and [`SavedState`] but cannot walk a tree.
+#[cfg(not(alloc_frugal))]
 pub fn collect_save_state(
     root: ObjectId,
     key_of: impl Fn(ObjectId) -> Option<String>,
@@ -133,6 +139,7 @@ pub fn collect_save_state(
 ///
 /// A widget that answers `false` from [`SaveState::restore_state`] is also left untouched and is
 /// not counted; a malformed payload therefore cannot make the returned count lie.
+#[cfg(not(alloc_frugal))]
 pub fn restore_save_state(
     root: ObjectId,
     states: &[SavedState],
@@ -166,7 +173,11 @@ pub fn restore_save_state(
 /// Depth-first pre-order walk over the mounted subtree rooted at `root`.
 ///
 /// A visited list guards against a malformed parent link that would otherwise loop forever: an
-/// id is visited once even if two parents claim it.
+/// id is visited once even if two parents claim it. Mounted surfaces are visited too: they are
+/// not tree children (the backend paints them), but the window's surface links are part of what
+/// that window shows, and skipping them would make session restore silently lose every control
+/// hosted through `mount_surface`.
+#[cfg(not(alloc_frugal))]
 fn walk(root: ObjectId, visit: &mut impl FnMut(ObjectId)) {
     let mut stack = Vec::new();
     stack.push(root);
@@ -178,12 +189,13 @@ fn walk(root: ObjectId, visit: &mut impl FnMut(ObjectId)) {
         visited.push(id);
         visit(id);
         let mut children = children_of(id);
+        children.extend(crate::widget::runtime::surfaces_of(id));
         children.reverse();
         stack.extend(children);
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(alloc_frugal), widgets_unstripped))]
 mod tests {
     use super::*;
     use crate::core::Rect;
@@ -191,7 +203,6 @@ mod tests {
     use crate::widget::container_widgets::splitter::Splitter;
     use crate::widget::container_widgets::tabwidget::TabWidget;
     use crate::widget::runtime::{register, unregister};
-    use crate::widget::Widget;
 
     /// A root with one splitter and one tab widget, cleaned up by `Drop`.
     struct Fixture {
@@ -271,6 +282,27 @@ mod tests {
         })
         .flatten()
         .expect("the id addresses a tab widget")
+    }
+
+    #[test]
+    fn collect_follows_a_surface_that_is_not_a_tree_child() {
+        let root = register(Box::new(GroupBox::new(Rect::new(0, 0, 400, 300))))
+            .expect("a test thread has a registry");
+        let tabs = register(Box::new(TabWidget::new(Rect::new(0, 0, 200, 200))))
+            .expect("a test thread has a registry");
+        with_widget_mut(tabs, |widget| {
+            let tabs =
+                (widget as &mut dyn core::any::Any).downcast_mut::<TabWidget>().expect("tabs");
+            tabs.add_tab("Only".to_string(), None);
+        });
+        // A mounted surface is recorded on the window, not in the child list.
+        assert!(crate::widget::runtime::set_surface_window(tabs, root));
+        let states =
+            collect_save_state(root, |id| (id == tabs).then(|| "surface.tabs".to_string()));
+        assert_eq!(states.len(), 1, "a mounted surface must not be skipped");
+        assert_eq!(states[0].key, "surface.tabs");
+        unregister(tabs);
+        unregister(root);
     }
 
     #[test]

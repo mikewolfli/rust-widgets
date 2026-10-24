@@ -12,7 +12,7 @@
 
 ```toml
 [dependencies]
-rust_widgets = "2.9.0"
+rust_widgets = "2.9.1"
 ```
 
 ## Step 2: Create a Window
@@ -83,6 +83,29 @@ nav_bar.add_item("🔍", "Search");
 nav_bar.add_item("⚙️", "Settings");
 ```
 
+## Step 6: Restore State on the Next Launch
+
+Restoring a session is explicit. A control opts in by implementing `SaveState`; the host decides
+which mounted instance a key names, because runtime object ids do not survive a restart:
+
+```rust
+use rust_widgets::{collect_save_state, restore_save_state, SavedState};
+
+let key_of = |id| {
+    if id == splitter_id { Some("workspace.split".to_string()) }
+    else if id == pagination_id { Some("table.pager".to_string()) }
+    else { None }
+};
+
+let saved: Vec<SavedState> = collect_save_state(window_id, key_of);
+// Write `saved` with the host's own settings store, then on the next launch:
+let applied = restore_save_state(window_id, &saved, key_of);
+```
+
+The walk covers tree children and surfaces mounted under the window. Each entry carries the
+control's format version, so a format change refuses old bytes instead of misreading them. Ready
+adopters: `Splitter`, `TabWidget`, `DockWidget`, `CollapsiblePane` and `Pagination`.
+
 ## Full Examples
 
 Two places hold runnable code, and they answer different questions:
@@ -91,7 +114,8 @@ Two places hold runnable code, and they answer different questions:
 stack (app framework, layout, events, theming). Start here to see the library used the
 way an application uses it:
 
-- `demo/control` — six tabbed pages covering 28 controls, with a live event log
+- `demo/control` — the control gallery: inputs, containers, a pagination bar with jump and
+  page-size cells, an eased bar chart, and an in-memory save/restore demonstration
 - `demo/code_editor` — project tree plus editor, wired through the layout managers
 - `demo/finance` — candlestick / depth / order-book widgets over live-shaped data
 

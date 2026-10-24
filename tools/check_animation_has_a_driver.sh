@@ -42,12 +42,14 @@
 #
 # # Why the injection target is a file with no `tick` at all
 #
-# The scan's unit is a *file*: it reports a file that declares an animation `tick` and no
-# trait bridge. Injecting into a file that **already** bridges its tick (`skeleton_loader.rs`,
+# The scan's unit is a *file*: it reports a file that declares more animation ticks than
+# trait bridges. Injecting into a file that already bridges its tick (`skeleton_loader.rs`,
 # the first target) therefore could not change the verdict -- the file already answers "has a
 # bridge" -- and the injection reported a false defect in the gate rather than in the tree.
-# `label.rs` is a plain control with neither shape, so the injected tick is the only one and
-# the finding appears (BLUE23 §A.11.3 item 3, closed here).
+# `label.rs` used to be a plain control, but it later gained its own hover-fade tick and
+# bridge, so the same false negative returned. `button_group.rs` is a plain control with
+# neither shape, so the injected tick is the only declaration and the finding appears
+# (BLUE23 §A.11.3 item 3, closed here).
 #
 # Usage: tools/check_animation_has_a_driver.sh
 # Exit 0 = every animation tick is reachable from the bus.
@@ -69,7 +71,7 @@ if ! "$PYTHON" tools/animation_driver_scan.py; then
     exit 1
 fi
 
-if "$PYTHON" tools/animation_driver_scan.py --inject=src/widget/base_widgets/label.rs >/dev/null 2>&1; then
+if "$PYTHON" tools/animation_driver_scan.py --inject=src/widget/base_widgets/button_group.rs >/dev/null 2>&1; then
     echo "FAIL: injecting an undispatched tick did not change the result, so the check is"
     echo "      not comparing against the widget tree"
     exit 1

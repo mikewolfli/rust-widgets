@@ -30,6 +30,9 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// Ellipsis glyph used to mark a collapsed run of page numbers.
 const ELLIPSIS: char = '\u{2026}';
 
+/// Version tag of the blob produced by [`Pagination::save_state`].
+const PAGINATION_STATE_VERSION: u8 = 1;
+
 /// Suggested width of the trailing page-size selector cell, in pixels.
 const PAGE_SIZE_CELL_WIDTH: u32 = 84;
 
@@ -363,6 +366,42 @@ impl Pagination {
             self.page_size_hover = None;
         }
         self.base.request_redraw();
+    }
+
+    /// Serialises the user's paging preference: the page size and the current page.
+    ///
+    /// The item `total` is **not** stored: it is the host's data model, not user state, and a
+    /// restored total would contradict whatever the host fetched this session. Only the two
+    /// numbers a user chose are kept.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut state = Vec::with_capacity(17);
+        state.push(PAGINATION_STATE_VERSION);
+        state.extend_from_slice(&(self.page_size as u64).to_le_bytes());
+        state.extend_from_slice(&(self.page as u64).to_le_bytes());
+        state
+    }
+
+    /// Restores a blob produced by [`Self::save_state`].
+    ///
+    /// Returns `false` for a malformed blob or a zero page size, leaving the control unchanged.
+    /// The page is clamped to the range the current `total` allows: the saved page is a
+    /// preference, not an assertion that the data set has not shrunk.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if state.len() != 17 || state[0] != PAGINATION_STATE_VERSION {
+            return false;
+        }
+        let page_size = u64::from_le_bytes([
+            state[1], state[2], state[3], state[4], state[5], state[6], state[7], state[8],
+        ]) as usize;
+        if page_size == 0 {
+            return false;
+        }
+        let page = u64::from_le_bytes([
+            state[9], state[10], state[11], state[12], state[13], state[14], state[15], state[16],
+        ]) as usize;
+        self.set_page_size(page_size);
+        self.set_page(page);
+        true
     }
 
     /// The cells to draw, in order, for the current state.
@@ -824,6 +863,14 @@ impl Widget for Pagination {
         &mut self.base
     }
 
+    fn save_state_dyn(&self) -> Option<&dyn crate::widget::save_state::SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn crate::widget::save_state::SaveState> {
+        Some(self)
+    }
+
     fn size_hint(&self) -> Size {
         let layout = self.layout();
         let cell_count = self.cell_plan().len().max(1);
@@ -854,6 +901,21 @@ impl Widget for Pagination {
             }
             _ => None,
         }
+    }
+}
+
+/// `Pagination`'s opt-in persistence: the page size and the current page.
+impl crate::widget::save_state::SaveState for Pagination {
+    fn state_version(&self) -> u16 {
+        PAGINATION_STATE_VERSION as u16
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        Pagination::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        Pagination::restore_state(self, state)
     }
 }
 
@@ -1693,5 +1755,43 @@ mod tests {
         assert_eq!(selector.x + selector.width as i32, bar_rect.x + bar_rect.width as i32);
         assert!(jump.width <= bar_rect.width * 2 / 5);
         assert!(selector.width <= bar_rect.width * 2 / 5);
+    }
+
+    /// The paging preference survives a rebuild; the item count is the host's data, not state.
+    #[test]
+    fn save_state_round_trips_the_page_size_and_page() {
+        let mut bar = Pagination::new(Rect::new(0, 0, 400, 32));
+        bar.set_total(95);
+        bar.set_page_size(20);
+        bar.set_page(3);
+        let state = bar.save_state();
+
+        let mut rebuilt = Pagination::new(Rect::new(0, 0, 400, 32));
+        // A different data set: restore must not touch `total`, only the user's preference.
+        rebuilt.set_total(40);
+        assert!(rebuilt.restore_state(&state));
+        assert_eq!(rebuilt.page_size(), 20);
+        assert_eq!(rebuilt.page(), 1, "the saved page is clamped into the new range");
+        assert_eq!(rebuilt.total(), 40, "the host's item count is not state");
+    }
+
+    /// A malformed blob, a zero page size or an unknown version is refused untouched.
+    #[test]
+    fn restore_rejects_malformed_pagination_state() {
+        let mut bar = Pagination::new(Rect::new(0, 0, 400, 32));
+        bar.set_total(95);
+        bar.set_page_size(10);
+        bar.set_page(2);
+
+        assert!(!bar.restore_state(&[]));
+        assert!(!bar.restore_state(&[1, 0, 0]));
+        let mut zero_size = bar.save_state();
+        zero_size[1..9].copy_from_slice(&0u64.to_le_bytes());
+        assert!(!bar.restore_state(&zero_size), "zero page size");
+        let mut wrong_version = bar.save_state();
+        wrong_version[0] = 2;
+        assert!(!bar.restore_state(&wrong_version));
+        assert_eq!(bar.page_size(), 10);
+        assert_eq!(bar.page(), 2);
     }
 }

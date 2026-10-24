@@ -17,6 +17,9 @@ services at all.
 
 - **200 widget kinds** — inputs, tables, trees, docks, dialogs, media, charts, editors and more,
   with one implementation shared by every platform.
+- **Cascading menus and real session state** — dropdowns, menu buttons and menus open up to four
+  nested submenu levels, and controls opt in to `SaveState` so a host can restore their user state
+  with explicit, restart-stable keys.
 - **Reproducible output** — SVG and pixel snapshots are committed per control and per appearance,
   so a visual change is a reviewable diff rather than a screenshot in a chat.
 - **Honest capabilities** — a service the host cannot provide returns `false` / `None`; it is
@@ -30,7 +33,7 @@ services at all.
 
 ```toml
 [dependencies]
-rust_widgets = "2.9.0"
+rust_widgets = "2.9.1"
 ```
 
 Choose **exactly one** device profile. They are mutually exclusive: `mini` and `embedded` compile
@@ -38,11 +41,11 @@ parts of the crate *out*, so pairing one with `desktop` is not a lowest common d
 a build that cannot work.
 
 ```toml
-rust_widgets = { version = "2.9.0", features = ["desktop"] }                       # default
-rust_widgets = { version = "2.9.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.9.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.9.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.9.0", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.9.1", features = ["desktop"] }                       # default
+rust_widgets = { version = "2.9.1", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.9.1", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.9.1", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.9.1", default-features = false, features = ["mini"] }
 ```
 
 | Profile | Intended for |

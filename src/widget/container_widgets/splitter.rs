@@ -793,14 +793,23 @@ mod tests {
         assert_eq!(sp.pane_count(), 0);
     }
 
+    /// Pane ids used by these tests.
+    ///
+    /// They sit far above the object-id sequence on purpose: `add_child_linked` refuses a child
+    /// whose id equals the container's own id, and the object counter is global, so a literal `1`
+    /// made these tests depend on how many objects earlier tests had allocated. A high id cannot
+    /// collide with the splitter's own.
+    const TEST_PANE_A: ObjectId = 1 << 40;
+    const TEST_PANE_B: ObjectId = (1 << 40) + 1;
+
     #[test]
     fn splitter_add_and_remove_pane() {
         let mut sp = Splitter::new(Rect::new(0, 0, 300, 200));
-        let pane_id: ObjectId = 1;
+        let pane_id: ObjectId = TEST_PANE_A;
         let idx = sp.add_pane(pane_id, 1);
         assert_eq!(idx, 0);
         assert_eq!(sp.pane_count(), 1);
-        assert_eq!(sp.pane_ids(), &[1]);
+        assert_eq!(sp.pane_ids(), &[TEST_PANE_A]);
         assert!(sp.remove_pane(pane_id));
         assert_eq!(sp.pane_count(), 0);
     }
@@ -817,8 +826,8 @@ mod tests {
     /// Two equal panes across a 300px horizontal splitter.
     fn two_pane_splitter() -> Splitter {
         let mut sp = Splitter::new(Rect::new(0, 0, 300, 200));
-        sp.add_pane(1, 1);
-        sp.add_pane(2, 1);
+        sp.add_pane(TEST_PANE_A, 1);
+        sp.add_pane(TEST_PANE_B, 1);
         sp
     }
 
@@ -832,8 +841,8 @@ mod tests {
 
         let saved_ratios = source.ratios();
         let mut rebuilt = Splitter::new(source.geometry());
-        rebuilt.add_pane(1, 1);
-        rebuilt.add_pane(2, 1);
+        rebuilt.add_pane(TEST_PANE_A, 1);
+        rebuilt.add_pane(TEST_PANE_B, 1);
         assert!(rebuilt.set_ratios(&saved_ratios));
         assert_eq!(
             rebuilt.ratios(),
@@ -895,9 +904,9 @@ mod tests {
     #[test]
     fn panes_are_linked_as_children() {
         let mut sp = two_pane_splitter();
-        assert_eq!(sp.children(), &[1, 2]);
-        assert!(sp.remove_pane(1));
-        assert_eq!(sp.children(), &[2]);
+        assert_eq!(sp.children(), &[TEST_PANE_A, TEST_PANE_B]);
+        assert!(sp.remove_pane(TEST_PANE_A));
+        assert_eq!(sp.children(), &[TEST_PANE_B]);
     }
 
     #[test]
@@ -991,8 +1000,8 @@ mod tests {
     fn splitter_orientation_selects_which_axis_a_handle_moves_on() {
         let mut sp = Splitter::new(Rect::new(0, 0, 300, 200));
         sp.set_orientation(Orientation::Vertical);
-        sp.add_pane(1, 1);
-        sp.add_pane(2, 1);
+        sp.add_pane(TEST_PANE_A, 1);
+        sp.add_pane(TEST_PANE_B, 1);
 
         // The divider's y comes from the control's own derivation, the same one the fill
         // and the hit test use. Recomputing `ratio(0) * height` here (the raw weight) put

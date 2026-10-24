@@ -4,7 +4,7 @@ This chapter provides a comprehensive, module-by-module reference for the
 entire `rust_widgets` public API. Use this as a quick lookup when you need to
 find the right type, function, or trait for your task.
 
-The library version documented here is **2.9.0**. Code examples assume
+The library version documented here is **2.9.1**. Code examples assume
 `use rust_widgets::*;` or explicit paths as shown.
 
 ---
@@ -761,6 +761,45 @@ pub enum CapabilityAccessError {
     UnknownCommand,
 }
 ```
+
+### Widget state persistence *(2.9.1)*
+
+`SaveState` is the opt-in half of session restore: a control declares which of its fields are
+user state, a format version, and the framework only moves bytes. Nothing serialises
+automatically, and the key is the host's decision — an `ObjectId` is allocated at run time and
+cannot survive a restart.
+
+```rust
+use rust_widgets::{collect_save_state, restore_save_state, SavedState};
+
+// The host names the instances it cares about.
+let key_of = |id| {
+    if id == splitter_id { Some("workspace.split".to_string()) }
+    else if id == tabs_id { Some("workspace.tabs".to_string()) }
+    else { None }
+};
+
+let saved: Vec<SavedState> = collect_save_state(window_id, key_of);
+// ...persist `saved` in your own settings store...
+let applied = restore_save_state(window_id, &saved, key_of);
+```
+
+The walk follows widget-tree children **and** mounted surfaces, so a control hosted with
+`mount_surface` is not skipped. Entries are sorted by key and carry the control's format
+version; a version mismatch is refused rather than misread, and a malformed blob leaves the
+control untouched.
+
+Adopted by `Splitter` (pane layout), `TabWidget` (selection), `DockWidget` and
+`CollapsiblePane` (their existing blobs), and `Pagination` (page size and page). A control
+opts in by implementing `SaveState` and returning `Some(self)` from
+`Widget::save_state_dyn` / `save_state_dyn_mut`.
+
+`Pagination` also gained two optional cells: `set_show_jump_input(true)` adds a "Go" cell
+(digits, then Enter), and `set_show_page_size_selector(true)` plus `set_page_size_options`
+adds a page-size menu. Both are off by default.
+
+`BarChart::set_animate_value_changes(true)` eases a data update from the values currently on
+screen to the new ones instead of jumping; `false` keeps the immediate behaviour.
 
 ### Widget Sub-types
 
@@ -2832,7 +2871,7 @@ full C API.
 These modules are gated by the `audio`, `video` and `image` features. `desktop`, `tablet` and
 `mobile` enable all three; `mini` and `embedded` do not.
 
-Since 2.9.0, decoding runs on a worker thread in every entry point that takes a whole buffer, so
+Since 2.9.1, decoding runs on a worker thread in every entry point that takes a whole buffer, so
 the frame loop is not blocked by a long track or a large image. Each entry point also keeps its
 synchronous form, and every async one falls back to a synchronous decode when a thread cannot be
 spawned — the failure mode is "slower", never "nothing loads".

@@ -11,7 +11,10 @@
 //!   行 3 — Selection:   ComboBox, ListBox
 //!   行 4 — Range:       Slider, ProgressBar, indeterminate ProgressBar
 //!   行 5 — Text area:   ScrollArea（内含多行 Label）+ Panel + Frame
-//!   行 6-10 — Log:      事件日志标题与最近四条事件（随控件事件实时更新）
+//!   行 6 — Paging:      Pagination (jump cell + page-size selector) + TabWidget
+//!   行 7 — Chart:       BarChart (eased value changes)
+//!   行 8 — State:       Shuffle data / Save state / Restore state
+//!   行 9-13 — Log:      事件日志标题与最近四条事件（随控件事件实时更新）
 //!   隐藏 — MessageBox（由 “Click Me” 打开）
 //!
 //! 菜单栏（File / Edit / View）由 `new_menu_bar` + `new_menu` 创建：每个 `new_menu`
@@ -31,12 +34,19 @@
 //! 一个平台若暂时无法承载自绘型控件，接口会如实回答 `false`，而不是让调用方
 //! 去按 OS 分支。
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use rust_widgets::app::{App, AppConfig, WidgetHandle, WindowHandle};
 use rust_widgets::core::{ObjectId, Orientation, Rect};
 use rust_widgets::layout::Layout as LayoutTrait;
 use rust_widgets::theme::{global_theme_manager, AppearanceMode, Theme};
+use rust_widgets::widget::chart_widgets::bar_chart::{BarChart, BarEntry};
+use rust_widgets::widget::container_widgets::tabwidget::TabWidget;
+use rust_widgets::widget::nav_widgets::pagination::Pagination;
+use rust_widgets::widget::runtime::{with_widget, with_widget_mut};
+use rust_widgets::{collect_save_state, restore_save_state, SavedState};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 外观（暗色）
@@ -666,6 +676,113 @@ fn register_window_layout(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// In-memory save state — the 2.9.1 capability showcase
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Key naming the pagination inside a saved snapshot.
+const PAGINATION_KEY: &str = "demo.pagination";
+/// Key naming the tab widget inside a saved snapshot.
+const TABS_KEY: &str = "demo.tabs";
+
+thread_local! {
+    /// The most recent snapshot taken by the "Save state" button.
+    ///
+    /// `Rc<RefCell<..>>` is enough because the snapshot never leaves the loop thread: the widget
+    /// registry, the layout and every control callback belong to it. The buttons reach the cell
+    /// through this thread-local instead of capturing the `Rc`, because
+    /// `WidgetHandle::on_click` requires a `Send` closure and an `Rc` is not `Send`.
+    static SAVED_STATES: Rc<RefCell<Option<Vec<SavedState>>>> = Rc::new(RefCell::new(None));
+}
+
+/// The demo's whole save-state naming decision.
+///
+/// Only the two controls this demonstration persists answer with a key; every other widget in
+/// the window answers `None`, so it contributes no bytes to the snapshot.
+fn demo_key(pagination: Option<ObjectId>, tabs: ObjectId) -> impl Fn(ObjectId) -> Option<String> {
+    move |id| {
+        if Some(id) == pagination {
+            Some(PAGINATION_KEY.to_string())
+        } else if id == tabs {
+            Some(TABS_KEY.to_string())
+        } else {
+            None
+        }
+    }
+}
+
+/// Collects the demo's opted-in controls into one snapshot.
+///
+/// Both controls are reachable from the window id: the tab widget is a tree child, and the
+/// runtime records a surface's owning window, which the collector's walk follows. Sorting by
+/// key makes the log line stable regardless of traversal order.
+fn collect_demo_state(
+    window: ObjectId,
+    key_of: impl Fn(ObjectId) -> Option<String>,
+) -> Vec<SavedState> {
+    let mut states = collect_save_state(window, &key_of);
+    states.sort_by(|left, right| left.key.cmp(&right.key));
+    states
+}
+
+/// Applies a snapshot to the same two controls and returns how many accepted it.
+fn restore_demo_state(
+    window: ObjectId,
+    states: &[SavedState],
+    key_of: impl Fn(ObjectId) -> Option<String>,
+) -> usize {
+    restore_save_state(window, states, &key_of)
+}
+
+/// Deterministic "random-ish" bar values for the chart's shuffle button.
+///
+/// A hash of the round number and the bar index rather than a random-number dependency: the
+/// values are reproducible, so the log line can name exactly the numbers that started the
+/// easing. The labels never change, which is what lets `set_bars` ease instead of jumping.
+fn shuffled_bars(round: u64) -> Vec<BarEntry> {
+    (0..8u64)
+        .map(|index| {
+            let mixed =
+                round.wrapping_mul(0x9E37_79B9).wrapping_add(index.wrapping_mul(0x85EB_CA6B));
+            // 10..=100 keeps every bar visible while still moving each one a long way.
+            BarEntry::new(format!("B{}", index + 1), 10.0 + (mixed % 91) as f64)
+        })
+        .collect()
+}
+
+/// Advances the shuffle counter and returns the new round.
+///
+/// The counter is shared with the button closure, so it lives behind a `Mutex`. A poisoned lock
+/// is recovered rather than panicking: a demo must not die because an earlier callback failed.
+fn next_shuffle_round(counter: &Mutex<u64>) -> u64 {
+    let mut round = match counter.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let next = round.wrapping_add(1);
+    *round = next;
+    next
+}
+
+/// The pagination's page, one-based, when the control is mounted.
+fn pagination_page(id: Option<ObjectId>) -> Option<usize> {
+    let id = id?;
+    with_widget(id, |widget| {
+        (widget as &dyn core::any::Any).downcast_ref::<Pagination>().map(|bar| bar.page() + 1)
+    })
+    .flatten()
+}
+
+/// The tab widget's selected index, when the control is mounted.
+fn selected_tab(id: ObjectId) -> Option<usize> {
+    with_widget(id, |widget| {
+        (widget as &dyn core::any::Any)
+            .downcast_ref::<TabWidget>()
+            .and_then(|tabs| tabs.selected_index())
+    })
+    .flatten()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // 构建所有控件 + 日志面板
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1012,15 +1129,215 @@ fn build_all_controls(
     frame.set_text("分组框");
     log.append(format!("[Panel] id={:?}  [Frame] id={:?}", panel.raw_id(), frame.raw_id()));
 
+    // ── Row 6: Pagination / TabWidget (the new 2.9.1 cells) ──────
+    log.append("=== Row: Pagination / TabWidget ===");
+
+    let mut pagination = Pagination::new(Rect::new(20, 396, 500, 32));
+    pagination.set_total(245);
+    pagination.set_page_size(20);
+    pagination.set_page_size_options(vec![10, 20, 50]);
+    // Both trailing cells are opt-in: the jump-to-page cell and the page-size selector are the
+    // two capabilities this row exists to show.
+    pagination.set_show_jump_input(true);
+    pagination.set_show_page_size_selector(true);
+    let l = Arc::clone(log);
+    pagination.page_changed.connect(move |page| {
+        // The control counts from zero; the log counts pages the way a reader does.
+        let page = *page;
+        l.append(format!("[Pagination] page={} (zero-based {page})", page + 1));
+    });
+    let pagination_id = match win.mount_surface(Box::new(pagination), Rect::new(20, 396, 500, 32)) {
+        Ok(surface) => {
+            let id = surface.raw_id();
+            slots.push(Slot {
+                id,
+                band: Band::Content,
+                row: 6,
+                weight: 5,
+                nominal: (20, 396, 500, 32),
+            });
+            log.append(format!(
+                "[Pagination] mounted id={id:?} total=245 page_size=20 options=[10,20,50] \
+                 jump+size cells on"
+            ));
+            Some(id)
+        }
+        Err(error) => {
+            log.append(format!("[Pagination] mount failed ({error}); the paging row is not shown"));
+            None
+        }
+    };
+
+    let tabs = win.new_tab_widget(540, 396, 300, 32);
+    for title in ["One", "Two"] {
+        match tabs.add_tab(title, None) {
+            Some(index) => log.append(format!("[TabWidget] tab '{title}' at index {index}")),
+            None => log.append(format!("[TabWidget] WARN: tab '{title}' could not be added")),
+        }
+    }
+    slots.push(Slot {
+        id: tabs.raw_id(),
+        band: Band::Content,
+        row: 6,
+        weight: 3,
+        nominal: (540, 396, 300, 32),
+    });
+    let tabs_id = tabs.raw_id();
+    let l = Arc::clone(log);
+    let wired = with_widget_mut(tabs_id, |widget| {
+        let Some(tabs) = (widget as &mut dyn core::any::Any).downcast_mut::<TabWidget>() else {
+            return false;
+        };
+        tabs.current_changed.connect(move |index| {
+            l.append(format!("[TabWidget] selected index={}", *index));
+        });
+        true
+    })
+    .unwrap_or(false);
+    if wired {
+        log.append(format!("[TabWidget] id={tabs_id:?} with tabs One/Two; selection log wired"));
+    } else {
+        log.append(format!(
+            "[TabWidget] WARN: id={tabs_id:?} is not a TabWidget; selection log is not wired"
+        ));
+    }
+
+    // ── Row 7: BarChart with eased value changes ────────────────
+    log.append("=== Row: BarChart (eased value changes) ===");
+
+    let mut chart = BarChart::new(Rect::new(20, 436, 680, 110));
+    chart.set_animate_value_changes(true);
+    chart.set_bars(shuffled_bars(0));
+    let chart_id = match win.mount_surface(Box::new(chart), Rect::new(20, 436, 680, 110)) {
+        Ok(surface) => {
+            let id = surface.raw_id();
+            slots.push(Slot {
+                id,
+                band: Band::Content,
+                row: 7,
+                weight: 1,
+                nominal: (20, 436, 680, 110),
+            });
+            log.append(format!("[BarChart] mounted id={id:?} with 8 bars; value easing on"));
+            Some(id)
+        }
+        Err(error) => {
+            log.append(format!("[BarChart] mount failed ({error}); the chart row is not shown"));
+            None
+        }
+    };
+
+    // ── Row 8: Shuffle / Save state / Restore state ─────────────
+    log.append("=== Row: State Demo (shuffle + save/restore) ===");
+
+    let window_id = win.raw_id();
+    let shuffle_round = Arc::new(Mutex::new(0u64));
+
+    let shuffle = row!(win.new_button("Shuffle data", 20, 556, 200, 32), 8, 1, (20, 556, 200, 32));
+    let l = Arc::clone(log);
+    let round_counter = Arc::clone(&shuffle_round);
+    let chart_target = chart_id;
+    let pager_target = pagination_id;
+    let tabs_target = tabs_id;
+    shuffle.on_click(move || {
+        let round = next_shuffle_round(&round_counter);
+        let bars = shuffled_bars(round);
+        let values: Vec<String> = bars.iter().map(|bar| format!("{:.0}", bar.value)).collect();
+        let eased = match chart_target {
+            Some(id) => with_widget_mut(id, |widget| {
+                let Some(chart) = (widget as &mut dyn core::any::Any).downcast_mut::<BarChart>()
+                else {
+                    return false;
+                };
+                // Same labels, new values: `set_bars` can ease from what is on screen.
+                chart.set_bars(bars);
+                true
+            })
+            .unwrap_or(false),
+            None => false,
+        };
+        l.append(format!(
+            "[BarChart] shuffle round {round}: values=[{}] accepted={eased}",
+            values.join(", ")
+        ));
+
+        // Move both persisted controls away from the saved state, so a later Restore has
+        // something visible to return.
+        if let Some(id) = pager_target {
+            let page = with_widget_mut(id, |widget| {
+                let Some(bar) = (widget as &mut dyn core::any::Any).downcast_mut::<Pagination>()
+                else {
+                    return None;
+                };
+                let next = if bar.page() >= bar.last_page() { 0 } else { bar.page() + 1 };
+                bar.set_page(next);
+                Some(next + 1)
+            })
+            .flatten();
+            match page {
+                Some(page) => l.append(format!("[Pagination] shuffle -> page {page}")),
+                None => l.append("[Pagination] shuffle could not reach the control"),
+            }
+        }
+
+        let selected = with_widget_mut(tabs_target, |widget| {
+            let Some(tabs) = (widget as &mut dyn core::any::Any).downcast_mut::<TabWidget>() else {
+                return None;
+            };
+            if tabs.count() < 2 {
+                return None;
+            }
+            let next = if tabs.selected_index() == Some(0) { 1 } else { 0 };
+            tabs.set_current_index(next);
+            Some(next)
+        })
+        .flatten();
+        match selected {
+            Some(index) => l.append(format!("[TabWidget] shuffle -> index {index}")),
+            None => l.append("[TabWidget] shuffle could not move the selection"),
+        }
+    });
+    log.append("[Button] 'Shuffle data' updates the chart and both saved controls");
+
+    let save = row!(win.new_button("Save state", 230, 556, 180, 32), 8, 1, (230, 556, 180, 32));
+    let l = Arc::clone(log);
+    save.on_click(move || {
+        let states = collect_demo_state(window_id, demo_key(pager_target, tabs_target));
+        let keys = states.iter().map(|entry| entry.key.as_str()).collect::<Vec<_>>().join(", ");
+        let page = pagination_page(pager_target);
+        let tab = selected_tab(tabs_target);
+        l.append(format!("[SaveState] saved {} entries: [{}]", states.len(), keys));
+        l.append(format!("[SaveState] snapshot page={page:?} tab={tab:?}"));
+        SAVED_STATES.with(|slot| *slot.borrow_mut() = Some(states));
+    });
+
+    let restore =
+        row!(win.new_button("Restore state", 420, 556, 180, 32), 8, 1, (420, 556, 180, 32));
+    let l = Arc::clone(log);
+    restore.on_click(move || {
+        let saved = SAVED_STATES.with(|slot| slot.borrow().clone());
+        let Some(states) = saved else {
+            l.append("[SaveState] nothing saved yet; press 'Save state' first");
+            return;
+        };
+        let applied = restore_demo_state(window_id, &states, demo_key(pager_target, tabs_target));
+        let page = pagination_page(pager_target);
+        let tab = selected_tab(tabs_target);
+        l.append(format!(
+            "[SaveState] restore applied {applied}/{} widgets; page={page:?} tab={tab:?}",
+            states.len()
+        ));
+    });
+
     // ── Log Panel (底部 4 行标签) ─────────────────────────────────────
     log.append("=== Log Panel ===");
 
-    let _title = row!(win.new_label("事件日志", 20, 496, 680, 18), 6, 1, (20, 496, 680, 18));
+    let _title = row!(win.new_label("事件日志", 20, 496, 680, 18), 9, 1, (20, 496, 680, 18));
     let mut log_rows = Vec::new();
     for i in 0..4 {
         let entry = row!(
             win.new_label("", 20, 518 + i * 20, 680, 18),
-            7 + i as u16,
+            10 + i as u16,
             1,
             (20, 518 + i * 20, 680, 18)
         );

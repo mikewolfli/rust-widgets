@@ -232,7 +232,9 @@ pub use crate::image::Image;
 pub use crate::image::ImageFormat;
 pub use kind::WidgetKind;
 pub use registry::SimpleRegistry;
-pub use save_state::{collect_save_state, restore_save_state, SaveState, SavedState};
+#[cfg(not(alloc_frugal))]
+pub use save_state::{collect_save_state, restore_save_state};
+pub use save_state::{SaveState, SavedState};
 pub use widget_trait::Widget;
 // Re-export widget types from subfolders
 #[cfg(widgets_unstripped)]

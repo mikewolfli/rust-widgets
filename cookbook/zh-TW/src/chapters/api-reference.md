@@ -2,7 +2,7 @@
 
 本章提供完整的、按模組劃分的 `rust_widgets` 公開 API 參考文件。當您需要為任務查找正確的型別、函式或特徵時，可將其用作快速查閱手冊。
 
-此處記載的函式庫版本為 **2.9.0**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
+此處記載的函式庫版本為 **2.9.1**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
 
 ---
 
@@ -754,6 +754,33 @@ pub enum CapabilityAccessError {
     UnknownCommand,
 }
 ```
+
+### 控制項狀態持久化 *(2.9.1)*
+
+`SaveState` 是「工作階段恢復」的選擇性加入部分：控件宣告哪些欄位屬於使用者狀態、用哪個格式版本，框架只負責搬運位元組。不會自動序列化任何東西；鍵由宿主決定 —— `ObjectId` 在執行時分配，無法跨重啟存活。
+
+```rust
+use rust_widgets::{collect_save_state, restore_save_state, SavedState};
+
+// 由宿主為關心的實例命名。
+let key_of = |id| {
+    if id == splitter_id { Some("workspace.split".to_string()) }
+    else if id == tabs_id { Some("workspace.tabs".to_string()) }
+    else { None }
+};
+
+let saved: Vec<SavedState> = collect_save_state(window_id, key_of);
+// ……把 `saved` 存進你自己的設定儲存……
+let applied = restore_save_state(window_id, &saved, key_of);
+```
+
+遍歷會同時涵蓋控件樹子節點與已掛載 surface，因此用 `mount_surface` 託管的控件不會被遺漏。條目按 key 排序，並攜帶控件的格式版本；版本不符會被拒絕而不是誤讀，損壞的位元組不會改動控件。
+
+已接入的控件：`Splitter`（分欄佈局）、`TabWidget`（選取頁）、`DockWidget` 與 `CollapsiblePane`（既有 blob）、`Pagination`（每頁筆數與目前頁）。控件透過實作 `SaveState` 並在 `Widget::save_state_dyn` / `save_state_dyn_mut` 回傳 `Some(self)` 來加入。
+
+`Pagination` 另新增兩個可選單元：`set_show_jump_input(true)` 增加「Go」跳頁輸入（輸入數字後按 Enter），`set_show_page_size_selector(true)` 搭配 `set_page_size_options` 增加每頁筆數選單。兩者預設關閉。
+
+`BarChart::set_animate_value_changes(true)` 會把資料更新從螢幕上的目前值緩動到新值，而不是直接跳變；`false` 保持原本的立即更新行為。
 
 ### 控制項子型別
 
@@ -2811,7 +2838,7 @@ pub mod java_jni;
 這三個模組分別由 `audio`、`video`、`image` 功能旗標啟用。`desktop`、`tablet`、`mobile` 會啟用全部三個；
 `mini` 與 `embedded` 不包含。
 
-自 2.9.0 起，所有接收整塊資料的入口都把解碼放在工作執行緒上，影格迴圈不會被長音訊或大圖片阻塞。
+自 2.9.1 起，所有接收整塊資料的入口都把解碼放在工作執行緒上，影格迴圈不會被長音訊或大圖片阻塞。
 每個入口都保留同步形式；所有非同步入口在執行緒無法建立時退回同步解碼——失敗模式是「更慢」，
 而不是「永遠載入不出來」。
 
