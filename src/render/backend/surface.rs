@@ -347,6 +347,17 @@ pub struct SoftwareSurface {
     /// ligature or a contextual form is drawn as the shaper chose it rather than as its individual
     /// characters.
     pub(crate) glyph_run_text: bool,
+    /// Depth buffer for the `3d` mesh raster path, one `f32` per pixel.
+    ///
+    /// Depth is normalised `0..=1`, with `0` at the camera's near plane and `1` at its far plane.
+    /// The buffer lives on the surface rather than on one draw so that two mesh commands in a frame
+    /// are ordered by depth rather than by recording order; [`Self::begin_frame`] marks it stale and
+    /// the next mesh draw refills it with the far value. A 2D command never reads it.
+    #[cfg(feature = "3d")]
+    pub(crate) depth_buffer: Vec<f32>,
+    /// Whether [`Self::depth_buffer`] still holds the previous frame's depths and must be cleared.
+    #[cfg(feature = "3d")]
+    pub(crate) depth_dirty: bool,
 }
 /// Public software render configuration for quality-related knobs.
 ///

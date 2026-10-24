@@ -151,6 +151,9 @@ impl Widget for ColorWell {
         use crate::signal::EventSignalRef;
         match name {
             "clicked" => Some(EventSignalRef::unit("clicked", &self.clicked)),
+            "picker_requested" => {
+                Some(EventSignalRef::unit("picker_requested", &self.picker_requested))
+            }
             _ => None,
         }
     }

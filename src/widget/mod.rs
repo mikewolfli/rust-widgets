@@ -123,6 +123,8 @@ pub mod sample_data;
 /// filling is a step the **verification** paths take rather than something `create` does.
 #[cfg(full_widgets)]
 pub mod sample_fill;
+/// The opt-in contract a control implements when it can hand its user state across a restart.
+pub mod save_state;
 /// Byte-index helpers shared by the text-editing controls.
 pub mod text_utils;
 pub mod widget_trait;
@@ -230,6 +232,7 @@ pub use crate::image::Image;
 pub use crate::image::ImageFormat;
 pub use kind::WidgetKind;
 pub use registry::SimpleRegistry;
+pub use save_state::{collect_save_state, restore_save_state, SaveState, SavedState};
 pub use widget_trait::Widget;
 // Re-export widget types from subfolders
 #[cfg(widgets_unstripped)]

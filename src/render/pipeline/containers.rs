@@ -142,6 +142,10 @@ impl SoftwareSurface {
             text_coverage_scratch: Vec::new(),
             blend_mode: BlendMode::Normal,
             glyph_run_text: false,
+            #[cfg(feature = "3d")]
+            depth_buffer: Vec::new(),
+            #[cfg(feature = "3d")]
+            depth_dirty: true,
         }
     }
 
@@ -200,6 +204,12 @@ impl SoftwareSurface {
     /// Clears the current back buffer with a solid color.
     pub fn begin_frame(&mut self, clear: Color) {
         fill_pixels(self.buffer.back_mut(), clear);
+        // A new frame starts with no geometry in front of the camera. The buffer is cleared lazily
+        // by the first mesh draw of the frame, so a 2D-only frame pays nothing for the feature.
+        #[cfg(feature = "3d")]
+        {
+            self.depth_dirty = true;
+        }
     }
     /// Presents the back buffer as the current frame.
     pub fn end_frame(&mut self) {
@@ -241,6 +251,10 @@ impl SoftwareSurface {
     /// Resizes the surface buffers.
     pub fn resize(&mut self, size: Size) {
         self.buffer.resize(size);
+        #[cfg(feature = "3d")]
+        {
+            self.depth_dirty = true;
+        }
     }
     /// Sets logical DPI scale for text and geometry.
     pub fn set_dpi_scale(&mut self, dpi_scale: f32) {

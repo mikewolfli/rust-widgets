@@ -556,6 +556,19 @@ impl Widget for VirtualTable {
                     ]))
                 },
             )),
+            "selection_changed" => {
+                Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
+                    match v {
+                        Some(value) => crate::widget::capability::CapabilityValue::Tuple(
+                            crate::compat::Vec::from([
+                                crate::widget::capability::CapabilityValue::UInt(value.0 as u64),
+                                crate::widget::capability::CapabilityValue::UInt(value.1 as u64),
+                            ]),
+                        ),
+                        None => crate::widget::capability::CapabilityValue::Null,
+                    }
+                }))
+            }
             _ => None,
         }
     }

@@ -964,6 +964,37 @@ impl Widget for DataGrid {
                     ])
                 },
             )),
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| crate::widget::capability::CapabilityValue::String(format!("{},{}", v.x, v.y)),
+            )),
+            "edit_requested" => {
+                Some(EventSignalRef::mapped("edit_requested", &self.edit_requested, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Int(v.0 as i64),
+                        crate::widget::capability::CapabilityValue::Int(v.1 as i64),
+                    ]))
+                }))
+            }
+            "filter_changed" => {
+                Some(EventSignalRef::mapped("filter_changed", &self.filter_changed, |v| {
+                    crate::widget::capability::CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "header_clicked" => {
+                Some(EventSignalRef::mapped("header_clicked", &self.header_clicked, |v| {
+                    crate::widget::capability::CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "sort_changed" => {
+                Some(EventSignalRef::mapped("sort_changed", &self.sort_changed, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
+                        crate::widget::capability::CapabilityValue::Bool(v.1),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }

@@ -543,10 +543,35 @@ pub fn outline(
     points: &mut [OutlinePoint],
     contours: &mut [(usize, usize)],
 ) -> Option<usize> {
+    outline_at_weight(ch, cell, family, crate::core::Font::default_weight(), points, contours)
+}
+
+/// [`outline`] at an explicit weight.
+///
+/// # Why this exists
+///
+/// A variable face is one face with a `wght` axis, so the family alone does not identify the shape
+/// to draw: `"SF Pro"` at 400 and at 700 are the same bytes and different outlines. The weight is
+/// therefore part of the request. It is mapped onto the face's `wght` axis by
+/// [`crate::render::text::variable`], clamped to the axis range, and left alone when the face has no
+/// such axis — a static face draws its one weight whatever is asked for.
+///
+/// [`outline`] is this function at [`crate::core::Font::default_weight`], which is what every
+/// existing caller that has no weight in hand (and every face this crate ships, all static) uses.
+/// Keeping it as a separate entry point is what makes the default build's geometry byte-identical.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+pub fn outline_at_weight(
+    ch: char,
+    cell: Cell,
+    family: &str,
+    weight: u16,
+    points: &mut [OutlinePoint],
+    contours: &mut [(usize, usize)],
+) -> Option<usize> {
     // The face the caller's `Font` names, if this build ships it — the same selection the shaper
     // makes, so measurement and drawing cannot disagree about which face is in play.
     let face_bytes = super::shaping::face_for_family(family)?;
-    outline_in_face(ch, cell, face_bytes, points, contours)
+    outline_in_face(ch, cell, face_bytes, weight, points, contours)
 }
 
 /// [`outline`], but selecting the face by **coverage** rather than by family name.
@@ -589,8 +614,25 @@ pub fn outline_by_coverage(
     points: &mut [OutlinePoint],
     contours: &mut [(usize, usize)],
 ) -> Option<usize> {
+    outline_by_coverage_at_weight(ch, cell, crate::core::Font::default_weight(), points, contours)
+}
+
+/// [`outline_by_coverage`] at an explicit weight.
+///
+/// The face is selected by coverage exactly as [`outline_by_coverage`] selects it; `weight` is
+/// applied to that face's `wght` axis through the same instantiation the measuring path uses. A
+/// caller that paints a shaped run — which knows the `Font` and therefore its weight — asks this
+/// one, so the geometry it emits is the instance the pixels would show.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+pub fn outline_by_coverage_at_weight(
+    ch: char,
+    cell: Cell,
+    weight: u16,
+    points: &mut [OutlinePoint],
+    contours: &mut [(usize, usize)],
+) -> Option<usize> {
     let face_bytes = super::font_assets::outline_face_for(ch)?;
-    outline_in_face(ch, cell, face_bytes, points, contours)
+    outline_in_face(ch, cell, face_bytes, weight, points, contours)
 }
 
 /// The geometry itself, once a face has been chosen.
@@ -603,15 +645,16 @@ fn outline_in_face(
     ch: char,
     cell: Cell,
     face_bytes: super::font_assets::FaceBytes,
+    weight: u16,
     points: &mut [OutlinePoint],
     contours: &mut [(usize, usize)],
 ) -> Option<usize> {
     if cell.is_empty() || points.len() < MAX_POINTS || contours.len() < MAX_CONTOURS {
         return None;
     }
-    // The cached parse: the SVG backend emits one outline per character per frame, so this is on the
-    // same per-glyph path as `VectorSource::paint`.
-    super::font_assets::with_parsed_face(face_bytes, |face| {
+    // The cached parse, instantiated at `weight`. A static face (every face this crate ships) takes
+    // the original cached parse unchanged: `with_weighted_face` checks for a `wght` axis first.
+    super::variable::with_weighted_face(face_bytes, weight, |face| {
         outline_in_parsed_face(ch, cell, face, points, contours)
     })
     .flatten()
@@ -701,11 +744,36 @@ pub fn outline_glyph(
     points: &mut [OutlinePoint],
     contours: &mut [(usize, usize)],
 ) -> Option<usize> {
+    outline_glyph_at_weight(
+        glyph_id,
+        cell,
+        family,
+        crate::core::Font::default_weight(),
+        points,
+        contours,
+    )
+}
+
+/// [`outline_glyph`] at an explicit weight.
+///
+/// The glyph ids come from a shaped run, and a run shaped at weight `w` has advances from the same
+/// instance this outlines at. Passing the `Font`'s weight at both ends is what keeps the pen
+/// positions and the ink describing one face; the default-weight form above is kept for callers
+/// that have no weight.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+pub fn outline_glyph_at_weight(
+    glyph_id: u16,
+    cell: Cell,
+    family: &str,
+    weight: u16,
+    points: &mut [OutlinePoint],
+    contours: &mut [(usize, usize)],
+) -> Option<usize> {
     if cell.is_empty() || points.len() < MAX_POINTS || contours.len() < MAX_CONTOURS {
         return None;
     }
     let face_bytes = super::shaping::face_for_family(family)?;
-    super::font_assets::with_parsed_face(face_bytes, |face| {
+    super::variable::with_weighted_face(face_bytes, weight, |face| {
         outline_in_parsed_face_id(ttf_parser::GlyphId(glyph_id), cell, face, points, contours)
     })
     .flatten()
@@ -722,7 +790,7 @@ pub const OUTLINE_MAX_CONTOURS: usize = MAX_CONTOURS;
 /// Rasterises `ch` through the build's vector faces into coverage.
 pub struct VectorSource;
 
-/// One cached rasterisation: which face, which character, which device cell.
+/// One cached rasterisation: which face, which character, which device cell, which weight.
 ///
 /// # Why the face is identified by its bytes' address
 ///
@@ -730,7 +798,13 @@ pub struct VectorSource;
 /// life of the process and is the same for two lookups that resolved the same face. Using
 /// the address rather than the family name also keeps two shards with the same friendly
 /// name from sharing an entry that was rasterised from different outlines.
-type CoverageKey = (usize, char, u32, u32);
+///
+/// # Why the weight is part of the key
+///
+/// A variable face's coverage depends on the instantiated axis coordinate: the same face at 400
+/// and at 700 draws different ink, and a key without the weight would serve the first one asked
+/// for to both. Static faces ignore the weight, so they keep one entry per glyph as before.
+type CoverageKey = (usize, char, u32, u32, u16);
 
 /// How many rasterised glyph cells are kept per thread.
 ///
@@ -863,36 +937,57 @@ impl GlyphSource for VectorSource {
         // re-reading the table directory for every character of every label was the single largest
         // cost in a window repaint (measured at 25.6ms of a 26.5ms frame on `demo/control`).
         // The parse borrows the face's own `'static` bytes, so the reuse copies no font data.
+        //
+        // This entry point has no `Font` and therefore no weight: it paints the face's default
+        // instance. A caller that holds a `Font` (the glyph atlas does) uses
+        // [`rasterize_face_at_weight`], which is this same code path with the axis moved.
         super::font_assets::with_parsed_face(face_bytes, |face| {
-            Self::paint_in_face(ch, cell, out, face_bytes, face)
+            Self::paint_in_face(
+                ch,
+                cell,
+                out,
+                face_bytes,
+                crate::core::Font::default_weight(),
+                face,
+            )
         })
         .flatten()
     }
 }
 
-/// Rasterises `ch` from `face` into a fresh coverage buffer for the glyph atlas.
+/// Rasterises `ch` from `face` at an explicit weight into a fresh coverage buffer for the glyph
+/// atlas.
 ///
 /// This is the same [`VectorSource::paint_in_face`] the [`GlyphSource`] path uses, with the same
 /// parse cache and the same per-cell coverage cache, so the bytes it returns are byte-identical to
-/// an uncached paint that selected the same face. A face with no glyph for `ch`, or one whose
-/// outline does not fit the fixed scratch, answers `None` and the atlas falls back to the active
-/// stack rather than fabricating ink.
+/// an uncached paint that selected the same face and instance. A face with no glyph for `ch`, or
+/// one whose outline does not fit the fixed scratch, answers `None` and the atlas falls back to the
+/// active stack rather than fabricating ink.
+///
+/// # Why the weight is a parameter
+///
+/// [`GlyphKey`](super::atlas::GlyphKey) already carries the requested weight, and a variable face's
+/// coverage differs per instance. A static face (every face this crate ships) delegates to the
+/// original cached parse through [`super::variable::with_weighted_face`], so its bytes are
+/// unchanged. The default-weight form this replaced is `weight =
+/// [`crate::core::Font::default_weight`]`, which is what a caller with no `Font` in hand passes.
 ///
 /// The buffer is one coverage byte per cell pixel. Colour ink needs four bytes per pixel and is
 /// deliberately not represented here: the atlas caches coverage, and a colour-only character falls
 /// through the active stack to the next 1-bit face, exactly as a direct paint with a
 /// coverage-sized buffer does.
-pub(crate) fn rasterize_face(
+pub(crate) fn rasterize_face_at_weight(
     face: FaceBytes,
     ch: char,
     cell: Cell,
+    weight: u16,
 ) -> Option<crate::compat::Vec<u8>> {
     if cell.is_empty() {
         return None;
     }
     let mut out = crate::compat::vec![0u8; cell.area()];
-    super::font_assets::with_parsed_face(face, |parsed| {
-        VectorSource::paint_in_face(ch, cell, &mut out, face, parsed)
+    super::variable::with_weighted_face(face, weight, |parsed| {
+        VectorSource::paint_in_face(ch, cell, &mut out, face, weight, parsed)
     })
     .flatten()
     .map(|_| out)
@@ -908,16 +1003,18 @@ impl VectorSource {
         cell: Cell,
         out: &mut [u8],
         face_bytes: super::font_assets::FaceBytes,
+        weight: u16,
         face: &ttf_parser::Face<'_>,
     ) -> Option<Painted> {
         let area = cell.area();
-        let key: CoverageKey = (face_bytes.bytes.as_ptr() as usize, ch, cell.width, cell.height);
+        let key: CoverageKey =
+            (face_bytes.bytes.as_ptr() as usize, ch, cell.width, cell.height, weight);
         // # Why the cache is consulted before anything else
         //
-        // Coverage is a function of (face, character, device cell) alone. A repaint draws the
-        // same captions again and again, and rasterising them again was the dominant per-widget
-        // cost in a frame (see `CoverageCache`). A hit is one hash lookup plus one memcpy of a
-        // few hundred bytes.
+        // Coverage is a function of (face, instance weight, character, device cell) alone. A repaint
+        // draws the same captions again and again, and rasterising them again was the dominant
+        // per-widget cost in a frame (see `CoverageCache`). A hit is one hash lookup plus one memcpy
+        // of a few hundred bytes.
         if let Some(cached) = CoverageCache::lookup(key) {
             #[cfg(test)]
             COVERAGE_CACHE_HITS.with(|hits| hits.set(hits.get() + 1));
@@ -1490,5 +1587,161 @@ mod tests {
             "the second paint must answer from the cache, not rasterise again"
         );
         assert_eq!(out, expected, "a cached cell must have the pixels the miss produced");
+    }
+
+    /// The variable fixture this module's weight tests rasterise. See
+    /// [`super::super::font_assets::variable_fixtures`] for its provenance and exact geometry.
+    #[cfg(feature = "text-shaping")]
+    const VARIABLE_FIXTURE: &[u8] =
+        super::super::font_assets::variable_fixtures::VARIABLE_WEIGHT_TTF;
+
+    /// The covered device pixels as an inclusive box `(min_x, min_y, max_x, max_y)`.
+    #[cfg(feature = "text-shaping")]
+    fn ink_box(ink: &[u8], cell: Cell) -> Option<(u32, u32, u32, u32)> {
+        let mut bounds: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..cell.height {
+            for x in 0..cell.width {
+                if ink[(y * cell.width + x) as usize] != 0 {
+                    bounds = Some(match bounds {
+                        None => (x, y, x, y),
+                        Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                    });
+                }
+            }
+        }
+        bounds
+    }
+
+    /// The outline's device-space box, rounded outward to whole pixels.
+    #[cfg(feature = "text-shaping")]
+    fn outline_box(
+        points: &[OutlinePoint],
+        count: usize,
+        contours: &[(usize, usize)],
+    ) -> Option<(u32, u32, u32, u32)> {
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for &(start, end) in &contours[..count] {
+            for point in &points[start..end] {
+                min_x = min_x.min(point.x);
+                min_y = min_y.min(point.y);
+                max_x = max_x.max(point.x);
+                max_y = max_y.max(point.y);
+            }
+        }
+        if !min_x.is_finite() || !min_y.is_finite() {
+            return None;
+        }
+        Some((min_x.floor() as u32, min_y.floor() as u32, max_x.ceil() as u32, max_y.ceil() as u32))
+    }
+
+    /// The variable face's ink and its outline must describe one instance at each weight.
+    ///
+    /// This is the draw-side half of the agreement the issue asks for: the coverage the rasteriser
+    /// produces and the polygons the outline path emits are both derived from the same instantiated
+    /// face, so their boxes agree. It also pins that 700 is *not* 400: a regression that dropped
+    /// the axis would make both weights identical here.
+    #[cfg(feature = "text-shaping")]
+    #[test]
+    fn the_weight_instance_rasterises_the_outline_it_reports() {
+        let face = FaceBytes { name: "Variable Test", bytes: VARIABLE_FIXTURE };
+        let cell = Cell::new(64, 64);
+
+        let mut boxes = crate::compat::Vec::new();
+        let mut inks = crate::compat::Vec::new();
+        for weight in [400u16, 700] {
+            let mut points = [OutlinePoint { x: 0.0, y: 0.0 }; OUTLINE_MAX_POINTS];
+            let mut contours = [(0usize, 0usize); OUTLINE_MAX_CONTOURS];
+            let count = outline_in_face('A', cell, face, weight, &mut points, &mut contours)
+                .expect("the fixture covers A");
+            let outline = outline_box(&points, count, &contours).expect("non-empty outline");
+
+            let ink = rasterize_face_at_weight(face, 'A', cell, weight)
+                .expect("the fixture's outline fits the cell");
+            let raster = ink_box(&ink, cell).expect("the instance drew ink");
+
+            // The rasteriser's edge is one pixel wide, so its last covered pixel can sit one past
+            // the geometric edge; a larger difference means the two used different instances.
+            for (ink_edge, outline_edge) in [raster.0, raster.1, raster.2, raster.3]
+                .iter()
+                .zip([outline.0, outline.1, outline.2, outline.3])
+            {
+                assert!(
+                    ink_edge.abs_diff(outline_edge) <= 1,
+                    "weight {weight}: ink box {raster:?} must match outline box {outline:?}"
+                );
+            }
+            boxes.push(outline);
+            inks.push(ink);
+        }
+
+        // The fixture's default master is a 400x600 box in a 1000-unit em, so in a 64 px cell its
+        // right edge is 25.6 px: the outline's ink reaches pixel 25 and the box rounds up to 26.
+        assert_eq!((boxes[0].2, boxes[0].3), (26, 53), "the 400 instance's box in a 64 px cell");
+        assert!(boxes[1].2 > boxes[0].2, "700 is wider: {:?} > {:?}", boxes[1], boxes[0]);
+        assert!(boxes[1].1 < boxes[0].1, "700 starts higher: {:?} < {:?}", boxes[1], boxes[0]);
+        assert_ne!(inks[0], inks[1], "the rasterised coverage must differ at the two weights");
+    }
+
+    /// A static face rasterises the same bytes at every requested weight.
+    ///
+    /// With no `wght` axis the weight is not part of what the face can express, and the weighted
+    /// path delegates to the pre-existing cached parse. This is the in-process evidence that the
+    /// default build's pixels do not change: every face this crate ships is static.
+    #[cfg(feature = "text-shaping")]
+    #[test]
+    fn a_static_face_rasterises_identically_at_every_weight() {
+        let cell = Cell::new(24, 24);
+        for face in super::super::font_assets::active_faces() {
+            let covered = ['A', 'o', '中'].into_iter().find(|&ch| {
+                super::super::font_assets::with_parsed_face(*face, |parsed| {
+                    parsed.glyph_index(ch).is_some()
+                })
+                .unwrap_or(false)
+            });
+            let Some(ch) = covered else { continue };
+            let regular = rasterize_face_at_weight(*face, ch, cell, 400);
+            let bold = rasterize_face_at_weight(*face, ch, cell, 700);
+            assert_eq!(
+                regular, bold,
+                "{} has no weight axis; both requests must rasterise its one instance",
+                face.name
+            );
+        }
+    }
+
+    /// [`outline_at_weight`] is [`outline`] for a static face, which is what keeps every existing
+    /// caller's geometry byte-identical when the weight is not part of the face.
+    #[cfg(feature = "text-shaping")]
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-cjk"))]
+    #[test]
+    fn the_weighted_outline_matches_the_default_one_for_a_static_face() {
+        let cell = Cell::new(40, 40);
+        let mut plain_points = [OutlinePoint { x: 0.0, y: 0.0 }; OUTLINE_MAX_POINTS];
+        let mut plain_contours = [(0usize, 0usize); OUTLINE_MAX_CONTOURS];
+        let plain = outline('A', cell, latin_family(), &mut plain_points, &mut plain_contours)
+            .expect("the Latin family covers A");
+
+        let mut weighted_points = [OutlinePoint { x: 0.0, y: 0.0 }; OUTLINE_MAX_POINTS];
+        let mut weighted_contours = [(0usize, 0usize); OUTLINE_MAX_CONTOURS];
+        let weighted = outline_at_weight(
+            'A',
+            cell,
+            latin_family(),
+            crate::core::Font::BOLD_WEIGHT,
+            &mut weighted_points,
+            &mut weighted_contours,
+        )
+        .expect("the Latin family covers A");
+
+        assert_eq!(plain, weighted);
+        assert_eq!(plain_contours[..plain], weighted_contours[..weighted]);
+        assert_eq!(
+            plain_points[..plain_contours[..plain].iter().map(|&(_, end)| end).max().unwrap_or(0)],
+            weighted_points
+                [..weighted_contours[..weighted].iter().map(|&(_, end)| end).max().unwrap_or(0)]
+        );
     }
 }

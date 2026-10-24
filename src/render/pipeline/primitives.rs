@@ -1016,6 +1016,9 @@ impl SoftwareSurface {
                     h: glyph_height as u32,
                     color,
                     clip,
+                    // The line above measured its clusters at this weight, so the glyph must be
+                    // painted at it too — a variable face is one face with a `wght` axis.
+                    weight: font.weight(),
                 };
                 // Colour ink needs the four-byte scratch, and the two calls are mutually exclusive
                 // by what each one's buffer means: `blend_color_glyph` refuses coverage ink and
@@ -1072,11 +1075,13 @@ impl SoftwareSurface {
         alignment: HorizontalAlignment,
     ) -> bool {
         use crate::render::text::{
-            outline_glyph, shaping, Cell, OutlinePoint, OUTLINE_MAX_CONTOURS, OUTLINE_MAX_POINTS,
+            outline_glyph_at_weight, shaping, Cell, OutlinePoint, OUTLINE_MAX_CONTOURS,
+            OUTLINE_MAX_POINTS,
         };
 
         let scale = self.dpi_scale();
-        let Some(run) = shaping::glyph_run_for_family(text, font, scale) else {
+        let weight = font.weight();
+        let Some(run) = shaping::glyph_run_for_family_at_weight(text, font, scale, weight) else {
             return false;
         };
         let line = crate::render::TextMetrics::for_font(font, scale);
@@ -1099,9 +1104,14 @@ impl SoftwareSurface {
         for (index, (&glyph_id, &(x_offset, y_offset))) in
             run.glyph_ids.iter().zip(run.positions.iter()).enumerate()
         {
-            let Some(count) =
-                outline_glyph(glyph_id as u16, cell, font.family(), &mut points, &mut contours)
-            else {
+            let Some(count) = outline_glyph_at_weight(
+                glyph_id as u16,
+                cell,
+                font.family(),
+                weight,
+                &mut points,
+                &mut contours,
+            ) else {
                 continue;
             };
             let vertex_count = contours[..count].iter().map(|&(_, end)| end).max().unwrap_or(0);

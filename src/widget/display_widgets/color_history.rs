@@ -279,6 +279,16 @@ impl Widget for ColorHistory {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
             }
+            "color_removed" => {
+                Some(EventSignalRef::mapped("color_removed", &self.color_removed, |v| {
+                    crate::widget::capability::CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+            )),
             _ => None,
         }
     }

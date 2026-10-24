@@ -600,6 +600,22 @@ impl Widget for ImageGallery {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "fullscreen_requested" => Some(EventSignalRef::mapped(
+                "fullscreen_requested",
+                &self.fullscreen_requested,
+                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+            )),
+            "selection_changed" => {
+                Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(
+                        v.iter()
+                            .map(|item| {
+                                crate::widget::capability::CapabilityValue::UInt(*item as u64)
+                            })
+                            .collect(),
+                    )
+                }))
+            }
             _ => None,
         }
     }

@@ -529,6 +529,22 @@ impl Widget for RadarChart {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "vertex_clicked" => {
+                Some(EventSignalRef::mapped("vertex_clicked", &self.vertex_clicked, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Int(v.0 as i64),
+                        crate::widget::capability::CapabilityValue::Int(v.1 as i64),
+                    ]))
+                }))
+            }
+            "vertex_hovered" => {
+                Some(EventSignalRef::mapped("vertex_hovered", &self.vertex_hovered, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Int(v.0 as i64),
+                        crate::widget::capability::CapabilityValue::Int(v.1 as i64),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }

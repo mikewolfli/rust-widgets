@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::{expect_orientation, orientation_to_str
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::save_state::SaveState;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -339,6 +340,20 @@ impl Splitter {
         (0..count - 1).filter_map(|index| self.divider_center(index)).collect()
     }
 }
+impl SaveState for Splitter {
+    fn state_version(&self) -> u16 {
+        1
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        Splitter::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        Splitter::restore_state(self, state)
+    }
+}
+
 impl Widget for Splitter {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -348,6 +363,14 @@ impl Widget for Splitter {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn save_state_dyn(&self) -> Option<&dyn SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn SaveState> {
+        Some(self)
     }
 
     fn size_hint(&self) -> crate::core::Size {

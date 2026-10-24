@@ -1859,10 +1859,13 @@ fn host_system_accent() -> SystemAccent {
 ///
 /// Only the text roles move: the monospace role keeps its own family, because the system UI face
 /// is a proportional face and code and aligned columns need a fixed advance. The font **descriptor**
-/// keeps the weight and italic flags [`Font::with_family`] carries over, but the face itself is the
-/// host's system UI font, which on a stock macOS is the variable `SFNS.ttf`; variable-axis
-/// instancing is not implemented here, so the shaper draws the face's default instance. Naming the
-/// family therefore does not claim that separate static weight faces exist.
+/// keeps the weight and italic flags [`Font::with_family`] carries over, and the face itself is the
+/// host's system UI font. On a stock macOS that face is the variable font at
+/// `/System/Library/Fonts/SFNS.ttf`, so one registered slot serves every text role: the renderer
+/// instantiates it at the role's [`Font::weight`] through the `wght` axis
+/// ([`crate::render::text::VariableFace`]), which is why the bold role draws bold without a second
+/// static face being installed. A host face with no `wght` axis keeps its default instance, which
+/// is the honest answer when there is no axis to move.
 fn apply_system_ui_family(fonts: &mut Fonts, family: &str) {
     fonts.regular = fonts.regular.with_family(family);
     fonts.bold = fonts.bold.with_family(family);
@@ -2332,6 +2335,84 @@ mod tests {
             before + 1,
             "a theme change must arm exactly one full repaint"
         );
+    }
+
+    /// The macOS preset maps every text role onto the one registered system UI slot.
+    ///
+    /// # Why this test does not register anything
+    ///
+    /// The registry is process-global and the test runner is parallel, so a test that registers a
+    /// family changes what every concurrent test resolves a character to (a real host family named
+    /// `Arial` shadows the compiled Latin face for the rest of the process). The registration
+    /// honesty — "report success only for a face that is in the registry" — is asserted by
+    /// [`the_macos_preset_only_names_the_system_ui_face_when_it_was_registered`]. What this test
+    /// pins is the *mapping*: one family moves all eight text roles, preserves each role's weight
+    /// (which is what makes the variable face serve bold from the same slot), and leaves the
+    /// monospace role alone.
+    #[test]
+    fn the_system_ui_family_maps_every_text_role_and_preserves_weights() {
+        let mut fonts = Theme::default().fonts;
+        let monospace = fonts.monospace.family().to_string();
+        let families = [
+            fonts.regular.family().to_string(),
+            fonts.bold.family().to_string(),
+            fonts.italic.family().to_string(),
+            fonts.caption.family().to_string(),
+            fonts.body.family().to_string(),
+            fonts.title.family().to_string(),
+            fonts.headline.family().to_string(),
+            fonts.display.family().to_string(),
+        ];
+        let weights = [
+            fonts.regular.weight(),
+            fonts.bold.weight(),
+            fonts.italic.weight(),
+            fonts.caption.weight(),
+            fonts.body.weight(),
+            fonts.title.weight(),
+            fonts.headline.weight(),
+            fonts.display.weight(),
+        ];
+
+        apply_system_ui_family(&mut fonts, "System UI Fixture");
+
+        for family in [
+            &fonts.regular,
+            &fonts.bold,
+            &fonts.italic,
+            &fonts.caption,
+            &fonts.body,
+            &fonts.title,
+            &fonts.headline,
+            &fonts.display,
+        ] {
+            assert_eq!(family.family(), "System UI Fixture", "every text role moves");
+        }
+        assert_eq!(
+            fonts.monospace.family(),
+            monospace,
+            "the monospace role keeps a fixed-advance face"
+        );
+
+        let moved_weights = [
+            fonts.regular.weight(),
+            fonts.bold.weight(),
+            fonts.italic.weight(),
+            fonts.caption.weight(),
+            fonts.body.weight(),
+            fonts.title.weight(),
+            fonts.headline.weight(),
+            fonts.display.weight(),
+        ];
+        assert_eq!(moved_weights, weights, "a family change must not change a role's weight");
+        assert_eq!(
+            fonts.bold.weight(),
+            crate::core::Font::BOLD_WEIGHT,
+            "the bold role asks for 700, which the variable face supplies from its wght axis"
+        );
+
+        // The compiled families are what the roles held before, so the fallback is observable.
+        assert!(families.iter().all(|family| family != "System UI Fixture"));
     }
 }
 

@@ -86,6 +86,11 @@ pub(crate) fn for_each_cluster(text: &str, mut visit: impl FnMut(&str, (usize, u
 /// See the module docs for the four steps. `scale` is the device scale the advances are
 /// expressed in; it is not applied twice, and it is the same value the backend uses for every
 /// other metric, so a line measures and paints at one scale.
+///
+/// A variable face is one face with a `wght` axis, so `font`'s weight is part of the request: the
+/// advances here come from the instance at [`Font::weight`], and the renderer's drawing halves
+/// (`paint_active_at_weight`, `outline_*_at_weight`) instantiate the same one. A static face — every
+/// face this crate ships — has no axis and returns the unmodified parse.
 pub(crate) fn shape_line(text: &str, font: &Font, scale: f32) -> ShapedText {
     let mut clusters: Vec<TextCluster> = Vec::new();
     let mut ranges: Vec<(usize, usize)> = Vec::new();

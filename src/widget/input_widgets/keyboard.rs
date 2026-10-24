@@ -793,6 +793,11 @@ impl Widget for Keyboard {
                 Some(EventSignalRef::unit("backspace_pressed", &self.backspace_pressed))
             }
             "space_pressed" => Some(EventSignalRef::unit("space_pressed", &self.space_pressed)),
+            "text_committed" => {
+                Some(EventSignalRef::mapped("text_committed", &self.text_committed, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
             _ => None,
         }
     }

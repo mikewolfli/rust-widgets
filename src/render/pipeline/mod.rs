@@ -12,6 +12,9 @@
 //! - `pixel_ops`: Pixel-level operations (fill_pixels, blend_pixel, set_pixel) and
 //!   coverage/geometry helpers for anti-aliased rendering
 mod containers;
+// The depth-buffered `3d` mesh rasteriser, compiled only with the `3d` feature.
+#[cfg(feature = "3d")]
+mod mesh;
 mod pixel_ops;
 mod primitives;
 

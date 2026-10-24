@@ -370,6 +370,14 @@ impl Widget for CupertinoDatePicker {
                     ])
                 }))
             }
+            "time_changed" => {
+                Some(EventSignalRef::mapped("time_changed", &self.time_changed, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
+                        crate::widget::capability::CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }

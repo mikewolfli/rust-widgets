@@ -844,6 +844,42 @@ impl Widget for QueryBuilder {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
             }
+            "rows_changed" => {
+                Some(EventSignalRef::mapped("rows_changed", &self.rows_changed, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(
+                        v.iter()
+                            .map(|row| {
+                                crate::widget::capability::CapabilityValue::Tuple(
+                                    crate::compat::Vec::from([
+                                        crate::widget::capability::CapabilityValue::UInt(
+                                            row.field as u64,
+                                        ),
+                                        crate::widget::capability::CapabilityValue::String(
+                                            format!("{:?}", row.operator),
+                                        ),
+                                        crate::widget::capability::CapabilityValue::String(
+                                            row.operand.clone(),
+                                        ),
+                                        crate::widget::capability::CapabilityValue::Bool(
+                                            row.negated,
+                                        ),
+                                        match row.group {
+                                            Some(group) => {
+                                                crate::widget::capability::CapabilityValue::UInt(
+                                                    group as u64,
+                                                )
+                                            }
+                                            None => {
+                                                crate::widget::capability::CapabilityValue::Null
+                                            }
+                                        },
+                                    ]),
+                                )
+                            })
+                            .collect(),
+                    )
+                }))
+            }
             _ => None,
         }
     }

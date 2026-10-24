@@ -401,6 +401,14 @@ impl Widget for AppBar {
         match name {
             "back_pressed" => Some(EventSignalRef::unit("back_pressed", &self.back_pressed)),
             "action_pressed" => Some(EventSignalRef::unit("action_pressed", &self.action_pressed)),
+            "action_index_pressed" => Some(EventSignalRef::mapped(
+                "action_index_pressed",
+                &self.action_index_pressed,
+                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+            )),
+            "action_overflow_pressed" => {
+                Some(EventSignalRef::unit("action_overflow_pressed", &self.action_overflow_pressed))
+            }
             _ => None,
         }
     }

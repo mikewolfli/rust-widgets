@@ -767,7 +767,12 @@ unicode-bidi = { version = "0.3.18", optional = true, default-features = false, 
 # which would turn the Android, iOS and wasm gates red. `ttf-parser` comes with it for the
 # face data the shaper reads.
 rustybuzz = { version = "0.20.1", optional = true }
-ttf-parser = { version = "0.25.1", optional = true }
+# `gvar-alloc`: a variable face's glyph may carry more than the parser's 32-tuple stack
+# capacity, in which case the parser needs the heap to read its deltas. A real system face
+# (four axes, dozens of regions) does exactly that — measured on macOS' SFNS.ttf, every Latin
+# glyph failed to outline without this feature, because its per-glyph tuple count exceeded
+# the stack limit. The feature pulls `std`, which this dependency already uses by default.
+ttf-parser = { version = "0.25.1", optional = true, features = ["gvar-alloc"] }
 pollster = { version = "0.4", optional = true }
 chrono = { version = "0.4", optional = true }
 notify = { version = "7.0", optional = true }

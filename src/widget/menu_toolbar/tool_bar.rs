@@ -870,6 +870,9 @@ impl Widget for ToolBar {
                     CapabilityValue::Bool(*v)
                 }))
             }
+            "customize_requested" => {
+                Some(EventSignalRef::unit("customize_requested", &self.customize_requested))
+            }
             _ => None,
         }
     }

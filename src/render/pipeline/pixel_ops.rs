@@ -35,6 +35,13 @@ pub(crate) struct GlyphDrawConfig<'a> {
     pub canvas: &'a mut [u8],
     /// Active render clip, if any.
     pub clip: Option<(i32, i32, u32, u32)>,
+    /// The text weight the glyph is drawn at, in the conventional `100..=900` scale.
+    ///
+    /// Carried here because the paint call is where a variable face's instance is chosen: the cell
+    /// the caller measured came from the same weight, so passing it on is what keeps the pen
+    /// positions and the ink describing one face. A build with no shaper has no `fvar` reader, so
+    /// the field is deliberately not consulted there (see [`blend_painted_glyph`]).
+    pub weight: u16,
 }
 
 /// The solid rectangles one glyph's bitmap produces inside its own box.
@@ -153,7 +160,19 @@ pub(crate) fn blend_painted_glyph(
     //
     // A colour face needs `cell.area() * 4` bytes, so a caller that reserved one byte per pixel is
     // told `None` rather than having its buffer overrun.
-    let Some(painted) = crate::render::text::paint_active(ch, cell, coverage) else {
+    // A variable face is one face with a `wght` axis, so the weight is part of *which glyph* this
+    // is. The cell above was sized from the line the shaper measured at the same weight, so the two
+    // halves cannot disagree: `paint_active_at_weight` moves the axis through the same cache the
+    // measurement used. Without the shaper there is no `fvar` reader and no face can vary, so the
+    // weight is not consulted and the original path runs.
+    #[cfg(feature = "text-shaping")]
+    let painted = crate::render::text::paint_active_at_weight(ch, cell, coverage, config.weight);
+    #[cfg(not(feature = "text-shaping"))]
+    let painted = {
+        let _ = config.weight;
+        crate::render::text::paint_active(ch, cell, coverage)
+    };
+    let Some(painted) = painted else {
         return false;
     };
     if painted.is_color() {

@@ -757,10 +757,10 @@ mod tests {
     /// # The defect this pins
     ///
     /// `WidgetKind` is not one-to-one with capability: `WidgetKind::WebEngineView` backs both
-    /// `media_player` (4 published events) and `web_engine_view` (11). The wiring-outcome table was
+    /// `media_player` (5 published events) and `web_engine_view` (13). The wiring-outcome table was
     /// keyed by kind alone and folded the two counts with `max` **independently**, so a fully-wired
-    /// `MediaPlayer` inherited `published = 11` from its larger sibling while keeping `wired = 4` of
-    /// its own — `unwired_events_for` then reported **7 unwired events that do not exist**, which is
+    /// `MediaPlayer` inherited `published = 13` from its larger sibling while keeping `wired = 4` of
+    /// its own — `unwired_events_for` then reported **9 unwired events that do not exist**, which is
     /// precisely the false shortfall this query exists to make impossible.
     ///
     /// `WidgetKind::Table` is the extreme case: five capabilities (2, 2, 1, 1, 1 events) share one
@@ -788,7 +788,7 @@ mod tests {
         let mut binder = EventSignalBinder::new(hub);
 
         let view = crate::widget::web_widgets::web_engine::WebEngineView::new(r);
-        assert_eq!(binder.forward_all(&view), 11, "`web_engine_view` publishes eleven events");
+        assert_eq!(binder.forward_all(&view), 13, "`web_engine_view` publishes thirteen events");
 
         let player = crate::widget::special_widgets::media_player::MediaPlayer::new(r);
         for name in ["playback_changed", "position_changed", "volume_changed"] {
@@ -797,9 +797,9 @@ mod tests {
 
         assert_eq!(
             binder.unwired_events_for(&player),
-            Some(1),
-            "the shortfall is this control's own (4 published - 3 wired), not `WebEngineView`'s \
-             four extra names folded in through a shared `WidgetKind`"
+            Some(2),
+            "the shortfall is this control's own (5 published - 3 wired), not `WebEngineView`'s \
+             eight extra names folded in through a shared `WidgetKind`"
         );
         // The larger sibling is still fully wired; neither answer may be read off the other.
         assert_eq!(binder.unwired_events_for(&view), Some(0));

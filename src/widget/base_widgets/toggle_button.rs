@@ -809,6 +809,12 @@ impl Widget for ToggleButton {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
             }
+            #[cfg(full_widgets)]
+            "item_triggered" => {
+                Some(EventSignalRef::mapped("item_triggered", &self.item_triggered, |v| {
+                    crate::widget::capability::CapabilityValue::UInt(*v)
+                }))
+            }
             _ => None,
         }
     }

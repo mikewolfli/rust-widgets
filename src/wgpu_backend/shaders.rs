@@ -149,6 +149,65 @@ fn fs_main(@location(0) color: vec4f) -> @location(0) vec4f {
     return color;
 }"#;
 
+/// Vertex shader for the depth-tested `3d` mesh pipeline.
+///
+/// One vertex buffer carries the mesh, interleaved at a **32-byte stride**:
+///
+/// | location | format | offset | meaning |
+/// |---|---|---|---|
+/// | 0 | `Float32x4` | 0 | model-space position `(x, y, z, 1)` |
+/// | 1 | `Float32x4` | 16 | straight RGBA colour, `0.0..=1.0` |
+///
+/// The vertex stage multiplies the position by the model-view-projection matrix the caller
+/// composed. That matrix already includes the viewport placement and the `-1..=1` to `0..=1` depth
+/// remap that [`crate::render::mesh3d::viewport_matrix`] performs, because WebGPU's depth
+/// attachment compares in `0..=1` while [`crate::render::math3d::Mat4::perspective`] emits the
+/// conventional `-1..=1` range.
+///
+/// Bind group layout:
+///
+/// | group | binding | type | name | stage | meaning |
+/// |---|---|---|---|---|---|
+/// | 0 | 0 | `uniform mat4x4f` | `uMVP` | vertex | model space to clip space |
+///
+/// The matching fragment shader is [`MESH3D_FS`], and the pipeline that uses them owns a
+/// `Depth32Float` attachment cleared to `1.0` and compared with `Less`, so a nearer fragment wins
+/// regardless of the order the triangles arrive in.
+#[cfg(feature = "3d")]
+pub(crate) const MESH3D_VS: &str = r#"
+struct MeshInput {
+    @location(0) position: vec4f,
+    @location(1) color: vec4f,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) color: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> uMVP: mat4x4f;
+
+@vertex
+fn vs_main(input: MeshInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = uMVP * input.position;
+    output.color = input.color;
+    return output;
+}"#;
+
+/// Fragment shader for [`MESH3D_VS`]: the interpolated per-vertex colour.
+///
+/// The software rasteriser flat-shades each triangle with its mean vertex colour. A cube's faces
+/// use one colour per face, so the two paths agree on such a mesh; a mesh with a colour gradient
+/// across a face is drawn smoothly on the GPU and flat in software, which is the documented limit of
+/// the software path rather than a depth difference.
+#[cfg(feature = "3d")]
+pub(crate) const MESH3D_FS: &str = r#"
+@fragment
+fn fs_main(@location(0) color: vec4f) -> @location(0) vec4f {
+    return color;
+}"#;
+
 /// Rectangle fill fragment shader.
 /// Takes per-instance color from a uniform buffer.
 ///

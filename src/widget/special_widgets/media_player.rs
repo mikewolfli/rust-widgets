@@ -541,6 +541,11 @@ impl Widget for MediaPlayer {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "fullscreen_requested" => Some(EventSignalRef::mapped(
+                "fullscreen_requested",
+                &self.fullscreen_requested,
+                |v| crate::widget::capability::CapabilityValue::Bool(*v),
+            )),
             _ => None,
         }
     }

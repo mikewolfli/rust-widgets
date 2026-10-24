@@ -417,6 +417,16 @@ impl Widget for TerminalView {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "completion_requested" => Some(EventSignalRef::mapped(
+                "completion_requested",
+                &self.completion_requested,
+                |v| crate::widget::capability::CapabilityValue::String(v.clone()),
+            )),
+            "interrupt_requested" => Some(EventSignalRef::mapped(
+                "interrupt_requested",
+                &self.interrupt_requested,
+                |v| crate::widget::capability::CapabilityValue::String(v.clone()),
+            )),
             _ => None,
         }
     }

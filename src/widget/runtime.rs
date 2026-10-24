@@ -3802,7 +3802,9 @@ fn global_repaint_generation() -> u64 {
 /// The epoch a theme mutation bumps, so `theme::manager` can assert it armed the repaint.
 #[cfg(test)]
 pub(crate) fn global_repaint_epoch_for_test() -> u64 {
-    GLOBAL_REPAINT_EPOCH.load(core::sync::atomic::Ordering::Relaxed)
+    // The thread-local generation, for the same reason `flush_global_repaint` compares against it:
+    // a concurrent test's theme mutation must not make "exactly one repaint" unassertable.
+    global_repaint_generation()
 }
 
 /// Performs the full repaint `arm_global_repaint` requested, once per epoch.

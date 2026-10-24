@@ -16,6 +16,13 @@
 //! upstream names live on as `covers` strings (a font *faces* an application by its family
 //! name, which is a different thing), never as this crate's public identifiers.
 
+// Test-only variable faces: a `wght` face and a `wdth`-only face, built for the variable-font
+// tests so they can assert exact geometry. Compiled only under `test`, so no shipped binary
+// carries them; they live here because every embedded font payload has to have its home under
+// this directory (see `tools/check_font_data_is_opt_in.sh`).
+#[cfg(all(test, feature = "text-shaping"))]
+pub(crate) mod variable_fixtures;
+
 #[cfg(feature = "fonts-vector-latin")]
 mod latin;
 #[cfg(feature = "fonts-vector-latin")]

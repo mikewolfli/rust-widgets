@@ -107,6 +107,15 @@ pub struct BaseWidget {
     /// identity; the affine-only path keeps using [`Self::item_transform`].
     #[cfg(feature = "3d")]
     pub(crate) item_projective: crate::render::math3d::Mat4,
+    /// The mesh this control draws through [`Self::camera_3d`], or `None` when it draws none.
+    #[cfg(feature = "3d")]
+    pub(crate) mesh_3d: Option<crate::render::mesh3d::Mesh3D>,
+    /// Model matrix applied to [`Self::mesh_3d`].
+    #[cfg(feature = "3d")]
+    pub(crate) model_3d: crate::render::math3d::Mat4,
+    /// The camera [`Self::mesh_3d`] is drawn through, or `None` until one is set.
+    #[cfg(feature = "3d")]
+    pub(crate) camera_3d: Option<crate::render::mesh3d::Camera>,
     pub(crate) min_size: Option<Size>,
     pub(crate) max_size: Option<Size>,
     pub(crate) parent: Option<ObjectId>,
@@ -270,6 +279,12 @@ impl BaseWidget {
             item_rotation: None,
             #[cfg(feature = "3d")]
             item_projective: crate::render::math3d::Mat4::IDENTITY,
+            #[cfg(feature = "3d")]
+            mesh_3d: None,
+            #[cfg(feature = "3d")]
+            model_3d: crate::render::math3d::Mat4::IDENTITY,
+            #[cfg(feature = "3d")]
+            camera_3d: None,
             min_size: None,
             max_size: None,
             parent: None,
@@ -460,6 +475,90 @@ impl BaseWidget {
     #[cfg(feature = "3d")]
     pub fn item_transform(&self) -> crate::render::math3d::Mat3 {
         self.item_transform
+    }
+
+    /// Sets the triangle mesh this control draws through its 3D camera (`3d` feature only).
+    ///
+    /// `model` places the mesh in world space; [`Self::set_camera_3d`] supplies the eye and the
+    /// projection. The control's own [`Self::geometry`] is the viewport the camera projects into, so
+    /// the mesh occupies the rectangle the control reports — the command it produces is
+    /// [`Self::mesh_3d_command`].
+    ///
+    /// A control draws nothing three-dimensional until both a mesh and a camera are set. An
+    /// identical mesh and model leave the stored state and the redraw state untouched.
+    #[cfg(feature = "3d")]
+    pub fn set_mesh_3d(
+        &mut self,
+        mesh: crate::render::mesh3d::Mesh3D,
+        model: crate::render::math3d::Mat4,
+    ) {
+        if self.mesh_3d.as_ref() == Some(&mesh) && self.model_3d == model {
+            return;
+        }
+        self.mesh_3d = Some(mesh);
+        self.model_3d = model;
+        self.request_redraw();
+    }
+
+    /// Removes the control's mesh, so it draws no 3D geometry (`3d` feature only).
+    ///
+    /// The camera is kept: setting a mesh again reuses it. Clearing an already-empty mesh is a
+    /// no-op.
+    #[cfg(feature = "3d")]
+    pub fn clear_mesh_3d(&mut self) {
+        if self.mesh_3d.take().is_some() {
+            self.request_redraw();
+        }
+    }
+
+    /// The control's mesh, or `None` when it draws no 3D geometry (`3d` feature only).
+    #[cfg(feature = "3d")]
+    pub fn mesh_3d(&self) -> Option<&crate::render::mesh3d::Mesh3D> {
+        self.mesh_3d.as_ref()
+    }
+
+    /// The model matrix applied to [`Self::mesh_3d`] (`3d` feature only).
+    #[cfg(feature = "3d")]
+    pub fn model_3d(&self) -> crate::render::math3d::Mat4 {
+        self.model_3d
+    }
+
+    /// Sets the camera the control's mesh is drawn through (`3d` feature only).
+    ///
+    /// The camera is plain data and is sanitised by the projection itself, so an inconsistent eye, a
+    /// zero field of view or an inverted clip range still produces a defined picture. The call
+    /// requests a redraw only when the camera actually changes.
+    #[cfg(feature = "3d")]
+    pub fn set_camera_3d(&mut self, camera: crate::render::mesh3d::Camera) {
+        if self.camera_3d == Some(camera) {
+            return;
+        }
+        self.camera_3d = Some(camera);
+        self.request_redraw();
+    }
+
+    /// The control's 3D camera, or `None` until [`Self::set_camera_3d`] is called (`3d` feature only).
+    #[cfg(feature = "3d")]
+    pub fn camera_3d(&self) -> Option<crate::render::mesh3d::Camera> {
+        self.camera_3d
+    }
+
+    /// Builds the storable command that draws this control's mesh, if it has both a mesh and a
+    /// camera (`3d` feature only).
+    ///
+    /// The viewport is [`Self::geometry`]. A control nested inside a container is drawn at its
+    /// parent's origin, which this type does not know; a caller that records the command for a
+    /// nested control offsets the viewport itself, exactly as it does for any other primitive.
+    #[cfg(feature = "3d")]
+    pub fn mesh_3d_command(&self) -> Option<crate::render::RenderCommand> {
+        let mesh = self.mesh_3d.as_ref()?;
+        let camera = self.camera_3d?;
+        Some(crate::render::RenderCommand::DrawMesh3D {
+            mesh: mesh.clone(),
+            model: self.model_3d,
+            camera,
+            viewport: self.geometry,
+        })
     }
     /// The minimum size, or `None` when unset. Enforced by `set_geometry` and reported
     /// through [`crate::widget::Widget::hints`].
@@ -2304,5 +2403,103 @@ mod tests {
             "a NaN angle must be stored as zero, not propagated"
         );
         assert_eq!(bw.item_projective_transform(), Mat4::IDENTITY);
+    }
+
+    /// A base widget draws no 3D geometry until both a mesh and a camera are set.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn mesh_3d_is_empty_until_a_mesh_and_a_camera_are_set() {
+        use crate::core::Color;
+        use crate::render::mesh3d::{Camera, Mesh3D, Vec3};
+
+        let mut bw = make_base();
+        assert!(bw.mesh_3d().is_none());
+        assert!(bw.camera_3d().is_none());
+        assert!(bw.mesh_3d_command().is_none());
+
+        let cube = Mesh3D::cube(Vec3::ZERO, 2.0, [Color::RED; 6]);
+        bw.set_mesh_3d(cube, crate::render::math3d::Mat4::IDENTITY);
+        assert!(bw.mesh_3d().is_some());
+        assert!(bw.mesh_3d_command().is_none(), "a mesh without a camera has no command");
+
+        bw.set_camera_3d(Camera::new(
+            Vec3::new(0.0, 0.0, 6.0),
+            Vec3::ZERO,
+            Vec3::new(0.0, 1.0, 0.0),
+        ));
+        let command = bw.mesh_3d_command().expect("a mesh and a camera produce a command");
+        match command {
+            crate::render::RenderCommand::DrawMesh3D { mesh, viewport, .. } => {
+                assert_eq!(mesh.triangle_count(), 12);
+                assert_eq!(viewport, bw.geometry(), "the control's rectangle is the viewport");
+            }
+            other => panic!("expected DrawMesh3D, got {other:?}"),
+        }
+
+        bw.clear_mesh_3d();
+        assert!(bw.mesh_3d().is_none());
+        assert!(bw.mesh_3d_command().is_none());
+    }
+
+    /// Setting the same mesh or camera again is a no-op; a change requests one repaint.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn mesh_and_camera_setters_request_repaint_only_on_change() {
+        use crate::core::Color;
+        use crate::render::mesh3d::{Camera, Mesh3D, Vec3};
+
+        let mut bw = make_base();
+        let redraws = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let r = redraws.clone();
+        bw.redraw_requested.connect(move || {
+            r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        let cube = Mesh3D::cube(Vec3::ZERO, 2.0, [Color::RED; 6]);
+        bw.set_mesh_3d(cube.clone(), crate::render::math3d::Mat4::IDENTITY);
+        assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 1);
+        bw.set_mesh_3d(cube, crate::render::math3d::Mat4::IDENTITY);
+        assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 1, "same mesh is a no-op");
+
+        let camera = Camera::new(Vec3::new(0.0, 0.0, 6.0), Vec3::ZERO, Vec3::new(0.0, 1.0, 0.0));
+        bw.set_camera_3d(camera);
+        assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 2);
+        bw.set_camera_3d(camera);
+        assert_eq!(redraws.load(std::sync::atomic::Ordering::SeqCst), 2, "same camera is a no-op");
+    }
+
+    /// The whole path: a base widget's camera and mesh become a real cube on a surface.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_base_widget_draws_its_mesh_through_its_camera() {
+        use crate::core::Color;
+        use crate::render::mesh3d::{Camera, Mesh3D, Vec3};
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+        let mut bw = BaseWidget::new(WidgetKind::Button, Rect::new(0, 0, 120, 120), "Button");
+        bw.set_mesh_3d(
+            Mesh3D::cube(Vec3::ZERO, 2.0, [Color::rgb(200, 40, 40); 6]),
+            crate::render::math3d::Mat4::IDENTITY,
+        );
+        bw.set_camera_3d(Camera::new(
+            Vec3::new(3.0, 2.0, 6.0),
+            Vec3::ZERO,
+            Vec3::new(0.0, 1.0, 0.0),
+        ));
+        let command = bw.mesh_3d_command().expect("a mesh and a camera produce a command");
+
+        let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(120, 120), 1.0);
+        backend.begin_frame(Color::WHITE);
+        backend.execute_command(&command);
+        backend.end_frame();
+
+        let painted = backend
+            .frame_rgba()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|pixel| pixel[0] != 255 || pixel[1] != 255 || pixel[2] != 255)
+            .count();
+        assert!(painted > 500, "the control's cube must paint a real area, got {painted}");
     }
 }

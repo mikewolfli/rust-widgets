@@ -292,6 +292,16 @@ impl Widget for CupertinoNavigationBar {
                     CapabilityValue::Null
                 }))
             }
+            "leading_item_pressed" => Some(EventSignalRef::mapped(
+                "leading_item_pressed",
+                &self.leading_item_pressed,
+                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+            )),
+            "trailing_item_pressed" => Some(EventSignalRef::mapped(
+                "trailing_item_pressed",
+                &self.trailing_item_pressed,
+                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+            )),
             _ => None,
         }
     }

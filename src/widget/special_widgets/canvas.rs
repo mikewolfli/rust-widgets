@@ -446,6 +446,11 @@ impl Widget for Canvas {
                 CapabilityValue::String(format!("{v:?}"))
             })),
             "double_clicked" => Some(EventSignalRef::unit("double_clicked", &self.double_clicked)),
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| crate::widget::capability::CapabilityValue::String(format!("{},{}", v.x, v.y)),
+            )),
             _ => None,
         }
     }

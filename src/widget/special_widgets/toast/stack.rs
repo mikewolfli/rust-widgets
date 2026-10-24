@@ -379,6 +379,11 @@ impl Widget for ToastStack {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "toast_action" => {
+                Some(EventSignalRef::mapped("toast_action", &self.toast_action, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
             _ => None,
         }
     }

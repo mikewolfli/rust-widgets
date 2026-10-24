@@ -29,6 +29,12 @@ pub mod font_assets;
 #[cfg(feature = "text-shaping")]
 pub mod shaping;
 
+// Variable-face (`fvar`/`gvar`) axes and instantiation. Gated on the shaper because that is the
+// feature that brings the font parser in: a build without it has no face to vary, and none of
+// this module's call sites exist either.
+#[cfg(feature = "text-shaping")]
+pub mod variable;
+
 // Host-registered faces (`runtime-fonts`). Gated on the feature, and on `text-shaping` because a
 // runtime face is only useful to a shaper or the vector rasteriser, both of which need the engine.
 // A host that registers a face on a build with no vector path would hand in bytes nothing reads.
@@ -73,13 +79,22 @@ pub use atlas::{AtlasSlot, GlyphAtlas, GlyphKey};
 #[cfg(feature = "text-shaping")]
 pub use raster::{OutlinePoint, VectorSource};
 
+// Variable-face axes and instantiation: the weight-aware half of the text layer. Re-exported at
+// `text::` because a host that registers a variable face is the caller that asks for its axes.
+#[cfg(feature = "text-shaping")]
+pub use variable::{
+    VariableAxis, VariableFace, VariableInstance, VariableOutlineBuilder, MAX_INSTANCES,
+    WEIGHT_AXIS_TAG,
+};
+
 // The two outline entry points and their capacity constants exist only when a vector face does —
 // each selects a face and outlines a glyph from it. A build with `text-shaping` but no face data
 // (e.g. `mini,runtime-fonts`) compiles `raster` for its types and not these, so re-exporting them
 // under `text-shaping` alone failed to resolve.
 #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 pub use raster::{
-    outline, outline_by_coverage, outline_glyph, OUTLINE_MAX_CONTOURS, OUTLINE_MAX_POINTS,
+    outline, outline_at_weight, outline_by_coverage, outline_by_coverage_at_weight, outline_glyph,
+    outline_glyph_at_weight, OUTLINE_MAX_CONTOURS, OUTLINE_MAX_POINTS,
 };
 
 // Colour bitmap faces (G-6): `CBDT`/`CBLC` plus the PNG decoder that reads what they point at.
@@ -106,6 +121,11 @@ pub use glyph_source::{
     active_stack, paint_active, resolve, source_for, BitOrder, Cell, Font8x8Source, FontStack,
     GlyphBitmap, GlyphSource, InkKind, Painted, TOFU,
 };
+
+// The weight-aware paint entry point. Gated on the shaper because it instantiates an `fvar` axis,
+// which is the same gate as [`variable`] itself.
+#[cfg(feature = "text-shaping")]
+pub use glyph_source::paint_active_at_weight;
 
 // The face lookup the backends share, exposed so a host can ask which face would draw a character
 // (and therefore whether its own registered face is the one answering).

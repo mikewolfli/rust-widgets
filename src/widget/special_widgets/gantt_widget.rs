@@ -450,6 +450,11 @@ impl Widget for GanttWidget {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "task_rescheduled" => {
+                Some(EventSignalRef::mapped("task_rescheduled", &self.task_rescheduled, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
             _ => None,
         }
     }

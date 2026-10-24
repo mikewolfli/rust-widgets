@@ -1000,6 +1000,20 @@ impl Widget for TreeView {
                     None => CapabilityValue::Null,
                 },
             )),
+            "activated" => Some(EventSignalRef::mapped("activated", &self.activated, |v| {
+                crate::widget::capability::CapabilityValue::UInt(*v as u64)
+            })),
+            "collapsed" => Some(EventSignalRef::mapped("collapsed", &self.collapsed, |v| {
+                crate::widget::capability::CapabilityValue::UInt(*v as u64)
+            })),
+            "expanded" => Some(EventSignalRef::mapped("expanded", &self.expanded, |v| {
+                crate::widget::capability::CapabilityValue::UInt(*v as u64)
+            })),
+            "node_double_clicked" => Some(EventSignalRef::mapped(
+                "node_double_clicked",
+                &self.node_double_clicked,
+                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+            )),
             _ => None,
         }
     }

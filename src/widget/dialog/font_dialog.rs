@@ -1169,8 +1169,43 @@ mod tests {
     use crate::event::Event;
     use std::sync::{Arc, Mutex};
 
+    /// Keeps this module's tests out of the process-wide runtime face registry.
+    ///
+    /// [`FontDialog::apply_selection`] registers the selected family's file so the renderer can draw
+    /// it by name. The registry is process-global while the tests run in parallel, so a registration
+    /// made here changes what *every* concurrent test resolves a Latin character to — a real host
+    /// family named `Arial` shadows the compiled Latin face, which moved two unrelated widget tests'
+    /// metrics. Taking the registry's test lock serialises this module against the other tests that
+    /// touch it, and clearing on drop restores the compiled set for the rest of the suite.
+    ///
+    /// Under a build without the registry (the default profile) there is nothing to register and
+    /// the helper is a no-op.
+    #[cfg(feature = "runtime-fonts")]
+    struct FaceRegistryGuard(#[allow(dead_code)] crate::compat::MutexGuard<'static, ()>);
+
+    #[cfg(feature = "runtime-fonts")]
+    impl Drop for FaceRegistryGuard {
+        fn drop(&mut self) {
+            crate::render::text::clear_faces();
+        }
+    }
+
+    #[cfg(feature = "runtime-fonts")]
+    fn isolate_face_registry() -> FaceRegistryGuard {
+        FaceRegistryGuard(crate::render::text::runtime_fonts::runtime_fonts_test_guard())
+    }
+
+    #[cfg(not(feature = "runtime-fonts"))]
+    struct FaceRegistryGuard;
+
+    #[cfg(not(feature = "runtime-fonts"))]
+    fn isolate_face_registry() -> FaceRegistryGuard {
+        FaceRegistryGuard
+    }
+
     #[test]
     fn set_current_font_emits_font_selected() {
+        let _guard = isolate_face_registry();
         let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
         let seen = Arc::new(Mutex::new(Font::default()));
         let seen_clone = Arc::clone(&seen);
@@ -1189,6 +1224,7 @@ mod tests {
 
     #[test]
     fn enter_accepts_and_escape_rejects() {
+        let _guard = isolate_face_registry();
         let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
         let accepted = Arc::new(Mutex::new(0usize));
         let rejected = Arc::new(Mutex::new(0usize));
@@ -1220,6 +1256,7 @@ mod tests {
 
     #[test]
     fn a_press_on_the_painted_buttons_accepts_or_rejects() {
+        let _guard = isolate_face_registry();
         let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
         let accepted = Arc::new(Mutex::new(0usize));
         let rejected = Arc::new(Mutex::new(0usize));
@@ -1264,6 +1301,7 @@ mod tests {
 
     #[test]
     fn font_families_are_sorted_de_duplicated_and_blank_free() {
+        let _guard = isolate_face_registry();
         let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
         dialog.set_font_families(vec![
             "Beta".to_string(),
@@ -1280,6 +1318,7 @@ mod tests {
 
     #[test]
     fn set_system_fonts_replaces_the_catalogue() {
+        let _guard = isolate_face_registry();
         let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
         dialog.set_system_fonts(&[
             SystemFont {
@@ -1297,6 +1336,7 @@ mod tests {
 
     #[test]
     fn clicking_a_family_row_applies_it() {
+        let _guard = isolate_face_registry();
         let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
         dialog.set_font_families(vec!["Beta".to_string(), "Alpha".to_string()]);
         let layout = dialog.layout();
@@ -1312,6 +1352,7 @@ mod tests {
 
     #[test]
     fn arrow_keys_move_within_the_active_column_and_apply_the_row() {
+        let _guard = isolate_face_registry();
         let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
         dialog.set_font_families(vec!["Alpha".to_string(), "Beta".to_string()]);
         dialog.select_row(0, 0);
@@ -1328,6 +1369,7 @@ mod tests {
 
     #[test]
     fn selecting_a_size_row_updates_the_current_font() {
+        let _guard = isolate_face_registry();
         let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
         let target = dialog.font_sizes().last().copied().expect("sizes are never empty");
         let index = dialog.font_sizes().len() - 1;
@@ -1339,6 +1381,7 @@ mod tests {
 
     #[test]
     fn a_host_provider_makes_the_styles_family_specific() {
+        let _guard = isolate_face_registry();
         let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
         assert_eq!(dialog.font_style_choices().len(), 5, "the built-in five are the default");
         dialog.set_font_style_provider(Box::new(|family| {
@@ -1370,6 +1413,7 @@ mod tests {
 
     #[test]
     fn options_hide_parts_of_the_dialog() {
+        let _guard = isolate_face_registry();
         let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
         dialog.show();
         let _ = crate::widget::svg::render_to_svg(&mut dialog);
@@ -1384,6 +1428,7 @@ mod tests {
 
     #[test]
     fn typing_digits_into_the_size_column_applies_a_size() {
+        let _guard = isolate_face_registry();
         let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
         dialog.active_column = 2;
         dialog.handle_event(&Event::key_press(50, 0)); // '2'
@@ -1393,6 +1438,7 @@ mod tests {
 
     #[test]
     fn underline_and_strikethrough_decorate_the_preview() {
+        let _guard = isolate_face_registry();
         let mut dialog = FontDialog::new(Rect::new(0, 0, 420, 320));
         dialog.show();
         let plain = crate::widget::svg::render_to_svg(&mut dialog);

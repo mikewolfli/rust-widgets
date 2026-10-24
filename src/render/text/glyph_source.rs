@@ -693,6 +693,50 @@ pub fn paint_active(ch: char, cell: Cell, out: &mut [u8]) -> Option<Painted> {
     Some(Painted::bitmap("tofu", Some(Cell::new(8, 8))))
 }
 
+/// [`paint_active`] at an explicit instance weight.
+///
+/// # Why this exists beside [`paint_active`]
+///
+/// [`GlyphSource::paint`] has no font in hand, so the active stack paints a variable face's
+/// **default instance**. A caller that holds a [`crate::core::Font`] — the text layout does — knows
+/// the weight, and drawing the default instance while the line was measured at another one is
+/// exactly the "measure with A, draw with B" defect the text layer exists to prevent. This entry
+/// point is the drawing half of the weight-aware pair; the measuring half is
+/// `shaping::cluster_advances`, which instantiates through the same
+/// [`crate::render::text::variable`] cache.
+///
+/// # What it selects, and when it falls through
+///
+/// The face is chosen by **coverage** ([`crate::render::text::font_assets::outline_face_for`]), the
+/// same lookup the rasteriser uses, and instantiated at `weight`. When no outline face covers
+/// `ch` (a colour glyph, a build with no vector face, tofu), this delegates to [`paint_active`],
+/// whose stack walk and tofu fallback are the documented behaviour. The default weight also
+/// delegates, so a build whose only caller passes `400` keeps the original allocation-free path
+/// byte for byte.
+#[cfg(feature = "text-shaping")]
+pub fn paint_active_at_weight(
+    ch: char,
+    cell: Cell,
+    out: &mut [u8],
+    weight: u16,
+) -> Option<Painted> {
+    if weight != crate::core::Font::default_weight() && !cell.is_empty() && out.len() >= cell.area()
+    {
+        if let Some(face) = super::font_assets::outline_face_for(ch) {
+            if let Some(coverage) = super::raster::rasterize_face_at_weight(face, ch, cell, weight)
+            {
+                out[..cell.area()].copy_from_slice(&coverage);
+                return Some(Painted {
+                    source: face.name,
+                    source_cell: None,
+                    ink: InkKind::Coverage,
+                });
+            }
+        }
+    }
+    paint_active(ch, cell, out)
+}
+
 /// Which source answers `ch` on this build, or `None` for tofu.
 ///
 /// Exposed so a test can assert the resolution *path* without inspecting pixels.

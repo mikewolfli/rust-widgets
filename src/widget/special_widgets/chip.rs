@@ -721,6 +721,16 @@ impl Widget for Chip {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "chip_removed" => {
+                Some(EventSignalRef::mapped("chip_removed", &self.chip_removed, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
+            "chip_reordered" => {
+                Some(EventSignalRef::mapped("chip_reordered", &self.chip_reordered, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
             _ => None,
         }
     }

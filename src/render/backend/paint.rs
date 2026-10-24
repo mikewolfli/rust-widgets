@@ -510,6 +510,10 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
         #[cfg(feature = "3d")]
         RenderCommand::FillQuadAA { corners, color } => surface.fill_quad_aa(*corners, *color),
         #[cfg(feature = "3d")]
+        RenderCommand::DrawMesh3D { mesh, model, camera, viewport } => {
+            surface.draw_mesh_3d(mesh, model, camera, *viewport);
+        }
+        #[cfg(feature = "3d")]
         RenderCommand::StrokeQuad { corners, color, width } => {
             // Four connected edges, each drawn by the same line primitive a `DrawLineStroke`
             // uses. A closed polygon outline would also work, but its joins are mitered, and the

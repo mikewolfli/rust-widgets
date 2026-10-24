@@ -453,6 +453,16 @@ impl Widget for NotificationCenter {
                 &self.unread_count_changed,
                 |v| CapabilityValue::UInt(*v as u64),
             )),
+            "clear_all_requested" => Some(EventSignalRef::mapped(
+                "clear_all_requested",
+                &self.clear_all_requested,
+                |_| crate::widget::capability::CapabilityValue::Null,
+            )),
+            "notification_dismissed" => Some(EventSignalRef::mapped(
+                "notification_dismissed",
+                &self.notification_dismissed,
+                |v| crate::widget::capability::CapabilityValue::String(v.clone()),
+            )),
             _ => None,
         }
     }

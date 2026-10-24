@@ -11,9 +11,9 @@
 //!
 //! # What this is **not**
 //!
-//! It is not a second rasteriser. A miss calls the rasteriser's `rasterize_face`, which is the
-//! same code path a direct paint takes, with the same face cache and the same per-cell coverage
-//! cache. The atlas therefore cannot change a glyph's bytes: it only decides whether to compute
+//! It is not a second rasteriser. A miss calls the rasteriser's `rasterize_face_at_weight`, which
+//! is the same code path a direct paint takes, with the same face cache and the same per-cell
+//! coverage cache. The atlas therefore cannot change a glyph's bytes: it only decides whether to compute
 //! them again.
 //!
 //! # Scope
@@ -31,7 +31,7 @@
 use crate::compat::{HashMap, Rc};
 
 use super::glyph_source::{paint_active, Cell, InkKind};
-use super::raster::rasterize_face;
+use super::raster::rasterize_face_at_weight;
 use super::shaping::face_for_family;
 
 /// How many frames a slot may go unrequested before [`GlyphAtlas::begin_frame`] recycles it.
@@ -51,9 +51,9 @@ pub const ATLAS_GC_FRAMES: u64 = 2;
 /// * `ch` is the character, not a shaped glyph id: the atlas is consulted from text layout,
 ///   where the character is what is known.
 /// * `size_px` is the device pixel size, because coverage is rasterised at one size.
-/// * `weight` is part of the key even though the currently shipped faces carry one weight. It is
-///   here so a caller that adds weighted faces does not have to re-key or invalidate the atlas;
-///   until then two weights rasterise identical bytes into separate slots.
+/// * `weight` is part of the key because a variable face is one face with a `wght` axis: the same
+///   character at 400 and at 700 is different ink. A static face ignores it, so the key still
+///   identifies exactly what was rasterised for every face this crate ships.
 ///
 /// `Ord` is derived as well as `Hash`/`Eq` because this crate's [`HashMap`](crate::compat::HashMap)
 /// alias becomes an ordered map on allocation-frugal builds.
@@ -237,7 +237,7 @@ fn rasterise(key: GlyphKey, epoch: u64) -> AtlasSlot {
     // that has no glyph for the character, falls through to the active stack rather than
     // inventing ink.
     if let Some(face) = face_for_family(key.face) {
-        if let Some(bitmap) = rasterize_face(face, key.ch, cell) {
+        if let Some(bitmap) = rasterize_face_at_weight(face, key.ch, cell, key.weight) {
             return AtlasSlot {
                 width: cell.width,
                 height: cell.height,

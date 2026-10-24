@@ -664,6 +664,16 @@ impl Widget for FileDialog {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "overwrite_requested" => Some(EventSignalRef::mapped(
+                "overwrite_requested",
+                &self.overwrite_requested,
+                |v| crate::widget::capability::CapabilityValue::String(v.clone()),
+            )),
+            "quick_look_requested" => Some(EventSignalRef::mapped(
+                "quick_look_requested",
+                &self.quick_look_requested,
+                |v| crate::widget::capability::CapabilityValue::String(v.clone()),
+            )),
             _ => None,
         }
     }

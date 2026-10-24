@@ -4,6 +4,10 @@
 //! Render commands for composing widget visuals.
 use crate::compat::{String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+#[cfg(feature = "3d")]
+use crate::render::math3d::Mat4;
+#[cfg(feature = "3d")]
+use crate::render::mesh3d::{Camera, Mesh3D};
 use crate::style::Gradient;
 
 /// A packed set of closed contours used by a non-zero winding fill.
@@ -198,6 +202,39 @@ pub enum RenderCommand {
         corners: [Point; 4],
         /// Fill color.
         color: Color,
+    },
+    /// Draw an indexed triangle mesh through a camera, with a depth buffer.
+    ///
+    /// This is the only command whose geometry is genuinely three-dimensional. `model` places the
+    /// mesh in world space, `camera` owns the eye and the projection, and `viewport` is the
+    /// rectangle of the render target the camera looks through (in that target's pixel
+    /// coordinates).
+    ///
+    /// # Depth
+    ///
+    /// Every backend tests an `f32` depth per pixel in the normalised `0..=1` range, where `0` is
+    /// the near plane and `1` the far plane: smaller is nearer. The software rasteriser keeps one
+    /// depth buffer per frame on the surface, so the outcome does not depend on the order mesh
+    /// commands are recorded in. A two-dimensional command recorded after a mesh paints over it in
+    /// painter order, because a flat control has no depth to compare.
+    ///
+    /// # Back faces
+    ///
+    /// No triangle is culled. The depth buffer decides what is visible, which keeps a mesh valid
+    /// when its winding is inconsistent or when a caller deliberately wants a two-sided surface.
+    /// The SVG backend has no depth buffer, so it sorts the triangles far-to-near instead
+    /// (painter's algorithm); with opaque faces on a closed mesh the two produce the same picture,
+    /// and with intersecting geometry the SVG is an approximation where the software path is exact.
+    #[cfg(feature = "3d")]
+    DrawMesh3D {
+        /// The indexed triangle mesh to draw.
+        mesh: Mesh3D,
+        /// Model matrix placing the mesh in world space.
+        model: Mat4,
+        /// Eye position, orientation and projection.
+        camera: Camera,
+        /// Target rectangle the camera projects into, in target pixels.
+        viewport: Rect,
     },
     /// Outline the quadrilateral spanned by `corners`.
     ///

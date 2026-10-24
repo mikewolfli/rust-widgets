@@ -24,6 +24,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{effective_font, estimate_text_width};
+use crate::widget::save_state::SaveState;
 use crate::widget::IconSource;
 #[cfg(feature = "image")]
 use crate::widget::Image;
@@ -479,6 +480,36 @@ impl TabWidget {
     /// Returns tab at index.
     pub fn tab(&self, index: usize) -> Option<&Tab> {
         self.tabs.get(index)
+    }
+
+    /// Serialises the selected tab, so a host can restore it on the next launch.
+    ///
+    /// The tab's *title and content* belong to the host's model; only the selection is user
+    /// state, so only the index is stored.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut state = Vec::with_capacity(5);
+        state.push(TAB_STATE_VERSION);
+        state.extend_from_slice(&(self.current_index as u32).to_le_bytes());
+        state
+    }
+
+    /// Restores a blob produced by [`Self::save_state`].
+    ///
+    /// Returns `false` for a malformed blob, or when the widget currently has no tabs (there is
+    /// no selection to restore). An index past the current last tab is clamped to that tab: the
+    /// tab set is the host's model, and a saved index is a preference rather than an assertion
+    /// that the set has not shrunk.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        if state.len() != 5 || state[0] != TAB_STATE_VERSION {
+            return false;
+        }
+        if self.tabs.is_empty() {
+            return false;
+        }
+        let index = u32::from_le_bytes([state[1], state[2], state[3], state[4]]) as usize;
+        let index = index.min(self.tabs.len() - 1);
+        self.set_current_index(index);
+        true
     }
 
     /// Places the current page in the content box.
@@ -1295,6 +1326,23 @@ const TAB_DRAG_TYPE: &str = "tab_widget_tab";
 /// the press and the move are the same gesture to the OS.
 const TAB_DRAG_THRESHOLD: i32 = 4;
 
+/// Version tag of the blob produced by [`TabWidget::save_state`].
+const TAB_STATE_VERSION: u8 = 1;
+
+impl SaveState for TabWidget {
+    fn state_version(&self) -> u16 {
+        TAB_STATE_VERSION as u16
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        TabWidget::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        TabWidget::restore_state(self, state)
+    }
+}
+
 // Implement Widget trait
 impl Widget for TabWidget {
     fn base(&self) -> &BaseWidget {
@@ -1306,6 +1354,14 @@ impl Widget for TabWidget {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn save_state_dyn(&self) -> Option<&dyn SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn SaveState> {
+        Some(self)
     }
 
     fn size_hint(&self) -> crate::core::Size {

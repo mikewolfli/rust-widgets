@@ -171,7 +171,16 @@ pub(crate) fn cluster_advances(
     // `text_line` measures before `draw_text` shapes, so a single text control parsed the font
     // twice a frame. Measured, one `measure_text("M")` cost ~18us, which multiplied out to the
     // 25ms a frame of `demo/control` spent rendering 36 controls.
-    super::font_assets::with_shaper_face(face, |parsed| {
+    //
+    // # Why the weight is part of the request
+    //
+    // A variable face is one face with a `wght` axis, so 400 and 700 are different advances from the
+    // same bytes. The renderer's drawing halves take the weight too — `paint_active_at_weight` for
+    // the cluster path, `outline_*_at_weight` for the geometry — and all of them instantiate through
+    // the same clamp-and-cache rule, so a line cannot be measured with one instance and drawn with
+    // another. A static face has no axis and takes the original cached parse untouched, which is why
+    // every face this crate ships is unaffected.
+    super::variable::with_shaper_face_at_weight(face, font.weight(), |parsed| {
         cluster_advances_in_face(text, ranges, font, scale, parsed)
     })
     .flatten()
@@ -297,7 +306,22 @@ impl RustybuzzShaper {
     /// its `height` is the font's line box — the same box
     /// [`crate::render::text::line`]'s model reports.
     pub fn shape_face(&self, text: &str, font_size: f32, scale: f32) -> Option<ShapedGlyphRun> {
-        self.shape_face_with(text, font_size, scale, ligature_free_features())
+        self.shape_face_with(text, font_size, scale, ligature_free_features(), None)
+    }
+
+    /// [`Self::shape_face`] at an explicit weight.
+    ///
+    /// The face's `wght` axis is moved before shaping, so a variable face's advances and glyph ids
+    /// come from the instance the caller asked for. A static face ignores the weight, so this is the
+    /// same answer as [`Self::shape_face`] for every face this crate ships.
+    pub fn shape_face_at_weight(
+        &self,
+        text: &str,
+        font_size: f32,
+        scale: f32,
+        weight: u16,
+    ) -> Option<ShapedGlyphRun> {
+        self.shape_face_with(text, font_size, scale, ligature_free_features(), Some(weight))
     }
 
     /// Shape `text` with the face's standard ligatures enabled.
@@ -313,20 +337,41 @@ impl RustybuzzShaper {
         font_size: f32,
         scale: f32,
     ) -> Option<ShapedGlyphRun> {
-        self.shape_face_with(text, font_size, scale, &[])
+        self.shape_face_with(text, font_size, scale, &[], None)
     }
 
-    /// Shapes one run with an explicit feature set.
+    /// [`Self::shape_face_with_ligatures`] at an explicit weight.
+    ///
+    /// The ligature-enabled form of [`Self::shape_face_at_weight`]; the two differ only in the
+    /// feature set, exactly as their default-weight counterparts do.
+    pub fn shape_face_with_ligatures_at_weight(
+        &self,
+        text: &str,
+        font_size: f32,
+        scale: f32,
+        weight: u16,
+    ) -> Option<ShapedGlyphRun> {
+        self.shape_face_with(text, font_size, scale, &[], Some(weight))
+    }
+
+    /// Shapes one run with an explicit feature set and, when `weight` is `Some`, an instance weight.
+    ///
+    /// `None` is the face's **own** instance, which is what [`Self::shape_face`] means and what the
+    /// renderer's unweighted path takes. `Some(w)` instantiates the face at `w` through the same
+    /// clamp-and-cache rule the outline paths use; for a face with no `wght` axis the two are the
+    /// same bytes.
     fn shape_face_with(
         &self,
         text: &str,
         font_size: f32,
         scale: f32,
         features: &[rustybuzz::Feature],
+        weight: Option<u16>,
     ) -> Option<ShapedGlyphRun> {
         // The name-keyed shaper cache: a label is measured and then drawn, and the same face is
-        // shaped again across frames, so this must not re-read the table directory per call.
-        super::font_assets::with_shaper_face(self.face, |parsed| {
+        // shaped again across frames, so this must not re-read the table directory per call. The
+        // instance cache is keyed by weight as well, so two weights are two parses of one face.
+        let shape = |parsed: &rustybuzz::Face<'_>| {
             let units_per_em = parsed.units_per_em() as f32;
             if units_per_em <= 0.0 {
                 return None;
@@ -353,7 +398,11 @@ impl RustybuzzShaper {
                 positions,
                 font_size,
             })
-        })
+        };
+        match weight {
+            Some(weight) => super::variable::with_shaper_face_at_weight(self.face, weight, shape),
+            None => super::font_assets::with_shaper_face(self.face, shape),
+        }
         .flatten()
     }
 }
@@ -361,12 +410,24 @@ impl RustybuzzShaper {
 /// The glyph run the software renderer paints when glyph-level text is enabled.
 ///
 /// Face selection is the same one measurement uses ([`face_for_family`]), so enabling the
-/// glyph-level path never changes which face a named family resolves to. It returns `None` on a
-/// build with no face for `font.family()`, which is the caller's cue to fall back to the cluster
-/// renderer.
-pub(crate) fn glyph_run_for_family(text: &str, font: &Font, scale: f32) -> Option<ShapedGlyphRun> {
+/// glyph-level path never changes which face a named family resolves to. The run is shaped at
+/// `weight`, and the caller must outline the ids at the same weight
+/// ([`crate::render::text::outline_glyph_at_weight`]) or the pen positions and the ink describe two
+/// different instances. It returns `None` on a build with no face for `font.family()`, which is the
+/// caller's cue to fall back to the cluster renderer.
+pub fn glyph_run_for_family_at_weight(
+    text: &str,
+    font: &Font,
+    scale: f32,
+    weight: u16,
+) -> Option<ShapedGlyphRun> {
     let face = face_for_family(font.family())?;
-    RustybuzzShaper::new(face)?.shape_face_with_ligatures(text, font.size(), scale)
+    RustybuzzShaper::new(face)?.shape_face_with_ligatures_at_weight(
+        text,
+        font.size(),
+        scale,
+        weight,
+    )
 }
 
 impl TextShaper for RustybuzzShaper {

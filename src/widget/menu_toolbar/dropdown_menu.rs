@@ -170,6 +170,23 @@ impl DropdownItem {
     }
 }
 
+/// The maximum number of **nested** submenu panels below the field's own list.
+///
+/// Re-exported from [`crate::widget::menu_toolbar::MAX_SUBMENU_DEPTH`] so the whole menu
+/// family shares one depth contract. The field's own list is level 0, so the deepest visible
+/// row sits at level 4.
+pub use crate::widget::menu_toolbar::MAX_SUBMENU_DEPTH;
+
+/// One open child panel: the rows it shows, its rectangle and its keyboard-active row.
+///
+/// The stack keeps one of these per open level, which is what makes a four-deep cascade one
+/// control state instead of a chain of mutually exclusive `Option` fields.
+struct SubmenuPanel {
+    items: Vec<DropdownItem>,
+    rect: Rect,
+    active: Option<usize>,
+}
+
 /// The colours one dropdown list is painted with.
 ///
 /// Resolved once per frame so the field's list and a child panel cannot drift apart: both read
@@ -192,6 +209,12 @@ struct ListPaint<'a> {
     icon_sources: &'a [(crate::compat::String, IconSource)],
     selected_value: Option<&'a str>,
     highlight_selection: bool,
+    /// Whether a row with children paints its disclosure arrow.
+    ///
+    /// Only the level that is allowed to open a deeper panel says `true`; the deepest
+    /// panel says `false` because a fifth level is refused by [`MAX_SUBMENU_DEPTH`], and
+    /// an arrow that opens nothing would be a promise the control cannot keep.
+    branches_open: bool,
 }
 
 /// Paints the rows of one dropdown list.
@@ -287,7 +310,7 @@ fn draw_item_list(
         );
 
         // Submenu indicator if item has children
-        if !item.children.is_empty() && item.enabled {
+        if paint.branches_open && !item.children.is_empty() && item.enabled {
             let sub_x = row.x + row.width as i32 - PADDING - 8;
             let sub_y = row.y + row.height as i32 / 2 - 4;
             context.execute_command(RenderCommand::DrawPath {
@@ -334,11 +357,8 @@ pub struct DropdownMenu {
     reveal: PopupReveal,
     /// Scroll offset for the item list.
     scroll_offset: usize,
-    /// The open child panel's rows. One level is opened at a time: opening another branch
-    /// replaces whatever child panel was showing.
-    submenu_open: Option<Vec<DropdownItem>>,
-    /// The rectangle the open child panel occupies, computed when the branch opens.
-    submenu_panel: Option<Rect>,
+    /// The open child panels, deepest last. One panel per level, up to [`MAX_SUBMENU_DEPTH`].
+    submenus: Vec<SubmenuPanel>,
     /// The top-level row the pointer last addressed, so Right can open its submenu.
     active_index: Option<usize>,
     /// How the field's value and each item's label are aligned within their own row.
@@ -375,8 +395,7 @@ impl DropdownMenu {
             expanded: false,
             reveal: PopupReveal::new(false),
             scroll_offset: 0,
-            submenu_open: None,
-            submenu_panel: None,
+            submenus: Vec::new(),
             active_index: None,
             alignment: crate::core::Alignment::Left,
             item_selected: Signal1::new(),
@@ -442,10 +461,10 @@ impl DropdownMenu {
         }
         let changed = apply(&mut self.items, value, checked).unwrap_or(false);
         if changed {
-            // The open child panel holds a copy of the branch's rows, so mirror the new
-            // state into it or the panel would show a stale tick until it is reopened.
-            if let Some(children) = self.submenu_open.as_mut() {
-                apply(children, value, checked);
+            // Every open child panel holds a copy of the branch's rows, so mirror the new
+            // state into all of them or a panel would show a stale tick until it is reopened.
+            for panel in &mut self.submenus {
+                apply(&mut panel.items, value, checked);
             }
             self.item_toggled.emit(value.to_string());
             self.base.request_redraw();
@@ -468,70 +487,139 @@ impl DropdownMenu {
         out
     }
 
-    /// Moves the keyboard-active row by `delta`, skipping disabled rows and rows outside
-    /// the visible window.
-    fn move_active(&mut self, delta: i32) {
-        if !self.expanded || self.items.is_empty() {
+    /// The level that owns keyboard focus: the deepest open child panel, or the field's
+    /// own list when no panel is open.
+    fn focus_level(&self) -> usize {
+        self.submenus.len()
+    }
+
+    /// The rows shown at `level`: the field's list at level 0, a panel's rows below it.
+    fn items_at(&self, level: usize) -> Option<&[DropdownItem]> {
+        if level == 0 {
+            Some(&self.items)
+        } else {
+            self.submenus.get(level - 1).map(|panel| panel.items.as_slice())
+        }
+    }
+
+    /// The visible window of `level` as `(first, end)` plus the level's row count.
+    ///
+    /// Only the field's own list scrolls; a child panel shows every row it holds, so its
+    /// window is the whole list. Expressing both through one helper is what lets the
+    /// navigation below run unchanged at every level.
+    fn active_window(&self, level: usize) -> Option<(usize, usize, usize)> {
+        let len = self.items_at(level)?.len();
+        if level == 0 {
+            let end = (self.scroll_offset + self.max_visible_items()).min(len);
+            Some((self.scroll_offset, end, len))
+        } else {
+            Some((0, len, len))
+        }
+    }
+
+    /// The keyboard-active row of `level`.
+    fn active_at(&self, level: usize) -> Option<usize> {
+        if level == 0 {
+            self.active_index
+        } else {
+            self.submenus.get(level - 1).and_then(|panel| panel.active)
+        }
+    }
+
+    /// Sets the keyboard-active row of `level`.
+    fn set_active_at(&mut self, level: usize, index: Option<usize>) {
+        if level == 0 {
+            self.active_index = index;
+        } else if let Some(panel) = self.submenus.get_mut(level - 1) {
+            panel.active = index;
+        }
+    }
+
+    /// Whether row `index` of `level` is present and enabled.
+    fn row_enabled_at(&self, level: usize, index: usize) -> bool {
+        self.items_at(level).and_then(|items| items.get(index)).is_some_and(|item| item.enabled)
+    }
+
+    /// Moves the keyboard-active row of `level` by `delta`, skipping disabled rows and
+    /// rows outside the visible window.
+    fn move_active_at(&mut self, level: usize, delta: i32) {
+        if !self.expanded || delta == 0 {
             return;
         }
-        let visible = (self.scroll_offset + self.max_visible_items()).min(self.items.len());
-        let count = visible.saturating_sub(self.scroll_offset);
-        if count == 0 || delta == 0 {
+        let Some((first, end, _)) = self.active_window(level) else {
+            return;
+        };
+        let count = end.saturating_sub(first);
+        if count == 0 {
             return;
         }
-        let start = match self.active_index {
-            Some(index) if index >= self.scroll_offset && index < visible => index as i32,
-            _ if delta > 0 => self.scroll_offset as i32 - 1,
-            _ => visible as i32,
+        let start = match self.active_at(level) {
+            Some(index) if index >= first && index < end => index as i32,
+            _ if delta > 0 => first as i32 - 1,
+            _ => end as i32,
         };
         let mut index = start;
         for _ in 0..count {
             index += delta;
-            if index < self.scroll_offset as i32 {
-                index = visible as i32 - 1;
-            } else if index >= visible as i32 {
-                index = self.scroll_offset as i32;
+            if index < first as i32 {
+                index = end as i32 - 1;
+            } else if index >= end as i32 {
+                index = first as i32;
             }
-            if self.items[index as usize].enabled {
-                self.active_index = Some(index as usize);
+            if self.row_enabled_at(level, index as usize) {
+                self.set_active_at(level, Some(index as usize));
                 self.base.request_redraw();
                 return;
             }
         }
     }
 
-    /// Jumps the keyboard-active row to one end of the visible window.
-    fn jump_active(&mut self, to_end: bool) {
+    /// Jumps the keyboard-active row of `level` to one end of its visible window.
+    fn jump_active_at(&mut self, level: usize, to_end: bool) {
         if !self.expanded {
             return;
         }
-        let visible = (self.scroll_offset + self.max_visible_items()).min(self.items.len());
-        let range: Vec<usize> = (self.scroll_offset..visible).collect();
+        let Some((first, end, _)) = self.active_window(level) else {
+            return;
+        };
         let found = if to_end {
-            range.into_iter().rev().find(|index| self.items[*index].enabled)
+            (first..end).rev().find(|index| self.row_enabled_at(level, *index))
         } else {
-            range.into_iter().find(|index| self.items[*index].enabled)
+            (first..end).find(|index| self.row_enabled_at(level, *index))
         };
         if let Some(index) = found {
-            self.active_index = Some(index);
+            self.set_active_at(level, Some(index));
             self.base.request_redraw();
         }
     }
 
-    /// Selects the next enabled row whose label starts with `letter`.
+    /// Selects the next enabled row of `level` whose label starts with `letter`.
     ///
     /// Repeated presses of the same letter cycle forward from the current row, which is
     /// the behaviour a list with no timing state can still promise.
-    fn type_ahead(&mut self, letter: char) {
-        if !self.expanded || self.items.is_empty() {
+    fn type_ahead_at(&mut self, level: usize, letter: char) {
+        if !self.expanded {
             return;
         }
         let wanted = letter.to_ascii_lowercase();
-        let start = self.active_index.map(|index| index + 1).unwrap_or(self.scroll_offset);
-        let len = self.items.len();
+        let Some(len) = self.items_at(level).map(|items| items.len()) else {
+            return;
+        };
+        if len == 0 {
+            return;
+        }
+        let start = match self.active_at(level) {
+            Some(index) if index + 1 < len => index + 1,
+            Some(_) => 0,
+            None if level == 0 => self.scroll_offset,
+            None => 0,
+        };
+        let mut landed = None;
         for offset in 0..len {
             let index = (start + offset) % len;
-            let item = &self.items[index];
+            let Some(item) = self.items_at(level).and_then(|items| items.get(index)) else {
+                continue;
+            };
             if item.enabled
                 && item
                     .label
@@ -539,33 +627,40 @@ impl DropdownMenu {
                     .next()
                     .is_some_and(|first| first.to_ascii_lowercase() == wanted)
             {
-                self.active_index = Some(index);
-                self.scroll_offset = self
-                    .scroll_offset
-                    .min(index)
-                    .max(index.saturating_add(1).saturating_sub(self.max_visible_items()));
-                self.base.request_redraw();
-                return;
+                landed = Some(index);
+                break;
             }
         }
+        let Some(index) = landed else {
+            return;
+        };
+        self.set_active_at(level, Some(index));
+        if level == 0 {
+            self.scroll_offset = self
+                .scroll_offset
+                .min(index)
+                .max(index.saturating_add(1).saturating_sub(self.max_visible_items()));
+        }
+        self.base.request_redraw();
     }
 
-    /// Moves the keyboard-active row by one page inside the visible window.
+    /// Moves the keyboard-active row of `level` by one page inside its visible window.
     ///
     /// Paging does not wrap: the point of PageDown is to move a screenful in one
     /// direction, and a page that wrapped to the top would undo itself on the last
     /// press. The landing row is the nearest enabled one, searching toward the target.
-    fn page_active(&mut self, down: bool) {
-        if !self.expanded || self.items.is_empty() {
+    fn page_active_at(&mut self, level: usize, down: bool) {
+        if !self.expanded {
             return;
         }
-        let visible_start = self.scroll_offset;
-        let visible_end = (self.scroll_offset + self.max_visible_items()).min(self.items.len());
+        let Some((visible_start, visible_end, _)) = self.active_window(level) else {
+            return;
+        };
         if visible_end <= visible_start {
             return;
         }
         let page = self.max_visible_items().max(1);
-        let current = self.active_index.unwrap_or(visible_start);
+        let current = self.active_at(level).unwrap_or(visible_start);
         let target = if down {
             current.saturating_add(page).min(visible_end - 1)
         } else {
@@ -576,8 +671,9 @@ impl DropdownMenu {
         } else {
             (visible_start..=target).rev().collect()
         };
-        if let Some(index) = candidates.into_iter().find(|index| self.items[*index].enabled) {
-            self.active_index = Some(index);
+        if let Some(index) = candidates.into_iter().find(|index| self.row_enabled_at(level, *index))
+        {
+            self.set_active_at(level, Some(index));
             self.base.request_redraw();
         }
     }
@@ -698,9 +794,9 @@ impl DropdownMenu {
         let removed = self.items.len() < len_before;
         if removed {
             self.item_icon_sources.retain(|(id, _)| id != value);
-            // The child panel holds a snapshot of the removed row's subtree, so it can no
-            // longer be trusted to describe the list that is still there.
-            self.collapse_submenu();
+            // Every open panel holds a snapshot of the removed row's subtree, so none of
+            // them can be trusted to describe the list that is still there.
+            self.close_all_submenus();
             // Clear selection if the removed item was selected
             if self.selected_value.as_deref() == Some(value) {
                 self.selected_value = None;
@@ -722,7 +818,7 @@ impl DropdownMenu {
     /// answer rather than keeping an association the caller may have broken.
     pub fn items_mut(&mut self) -> &mut Vec<DropdownItem> {
         self.item_icon_sources.clear();
-        self.collapse_submenu();
+        self.close_all_submenus();
         &mut self.items
     }
 
@@ -757,8 +853,7 @@ impl DropdownMenu {
         self.expanded = true;
         self.reveal.set_open(true);
         self.scroll_offset = 0;
-        self.submenu_open = None;
-        self.submenu_panel = None;
+        self.submenus.clear();
         self.active_index = None;
         self.clamp_scroll();
         #[cfg(not(alloc_frugal))]
@@ -773,8 +868,7 @@ impl DropdownMenu {
         }
         self.expanded = false;
         self.reveal.set_open(false);
-        self.submenu_open = None;
-        self.submenu_panel = None;
+        self.submenus.clear();
         self.active_index = None;
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::clear_popup_grab_for(self.id());
@@ -784,7 +878,15 @@ impl DropdownMenu {
 
     /// Whether a branch's child panel is currently showing.
     pub fn is_submenu_open(&self) -> bool {
-        self.submenu_open.is_some()
+        !self.submenus.is_empty()
+    }
+
+    /// How many nested panels are open below the field's list.
+    ///
+    /// `0` when nothing is open and at most [`MAX_SUBMENU_DEPTH`], because a branch at
+    /// that depth is drawn with its arrow but refused by [`Self::open_submenu_at`].
+    pub fn submenu_depth(&self) -> usize {
+        self.submenus.len()
     }
 
     /// Toggles the expanded state.
@@ -826,15 +928,13 @@ impl DropdownMenu {
         Rect::new(panel.x, panel.y + index as i32 * ITEM_HEIGHT, panel.width, ITEM_HEIGHT as u32)
     }
 
-    /// Collapses the open child panel, leaving the field's list open.
+    /// Collapses the deepest open child panel, leaving its parent level open.
     fn collapse_submenu(&mut self) {
-        if self.submenu_open.is_none() && self.submenu_panel.is_none() {
+        if self.submenus.pop().is_none() {
             return;
         }
-        self.submenu_open = None;
-        self.submenu_panel = None;
         // The runtime clears the grab before delivering the outside press that collapsed
-        // this level. The parent list is still open, so it must take the grab back or a
+        // this level. The parent level is still open, so it must take the grab back or a
         // second outside press would reach the control behind it.
         #[cfg(not(alloc_frugal))]
         if self.expanded {
@@ -843,61 +943,89 @@ impl DropdownMenu {
         self.base.request_redraw();
     }
 
-    /// Opens the submenu of the top-level item at `index` to the right of the list.
+    /// Drops every open child panel, leaving the field's list open.
+    fn close_all_submenus(&mut self) {
+        if self.submenus.is_empty() {
+            return;
+        }
+        self.submenus.clear();
+        #[cfg(not(alloc_frugal))]
+        if self.expanded {
+            crate::widget::runtime::set_popup_grab(self.id());
+        }
+        self.base.request_redraw();
+    }
+
+    /// The panel rectangle at `level`: level 0 is the field's own list.
+    fn panel_rect_at(&self, level: usize) -> Option<Rect> {
+        if level == 0 {
+            Some(self.dropdown_rect())
+        } else {
+            self.submenus.get(level - 1).map(|panel| panel.rect)
+        }
+    }
+
+    /// Row `index` of `level`, when that row is inside the level's visible window.
+    fn row_rect_at(&self, level: usize, index: usize) -> Option<Rect> {
+        let panel = self.panel_rect_at(level)?;
+        if level == 0 {
+            let (first, end, _) = self.active_window(0)?;
+            (index >= first && index < end).then(|| self.item_rect(index))
+        } else {
+            let len = self.items_at(level)?.len();
+            (index < len).then(|| Self::submenu_row_rect(panel, index))
+        }
+    }
+
+    /// Opens the child panel of the row at `index` in `level`.
+    ///
+    /// `level` is the level the row belongs to: 0 is the field's list, `n` is the panel
+    /// opened by `submenus[n - 1]`. Opening replaces that level and every deeper one, so
+    /// picking a sibling branch closes the branch that was open beside it.
     ///
     /// Activating a branch is not a selection: no [`Self::item_selected`] fires and the list
     /// stays expanded, which is the difference between a row that leads somewhere and a row
     /// that does something.
-    fn open_submenu(&mut self, index: usize) {
-        let Some(item) = self.items.get(index) else {
+    ///
+    /// A `level` at or beyond [`MAX_SUBMENU_DEPTH`] is refused: the row keeps its
+    /// disclosure arrow but no fifth panel opens, which is the depth contract this control
+    /// advertises.
+    fn open_submenu_at(&mut self, level: usize, index: usize) {
+        if level >= MAX_SUBMENU_DEPTH {
+            return;
+        }
+        let Some(item) = self.items_at(level).and_then(|items| items.get(index)) else {
             return;
         };
         if !item.enabled || item.children.is_empty() {
             return;
         }
+        let Some(parent) = self.panel_rect_at(level) else {
+            return;
+        };
+        let Some(anchor_row) = self.row_rect_at(level, index) else {
+            return;
+        };
         let label = item.label.clone();
         let children = item.children.clone();
+        let count = children.len();
         self.submenu_requested.emit(label);
-        let parent = self.dropdown_rect();
-        let anchor_row = self.item_rect(index);
-        self.submenu_panel = Some(Self::child_panel_rect(parent, anchor_row, children.len()));
-        self.submenu_open = Some(children);
-        self.active_index = Some(index);
+        self.submenus.truncate(level);
+        self.submenus.push(SubmenuPanel {
+            items: children,
+            rect: Self::child_panel_rect(parent, anchor_row, count),
+            active: None,
+        });
+        self.set_active_at(level, Some(index));
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::set_popup_grab(self.id());
         self.base.request_redraw();
     }
 
-    /// Activates a top-level row: a branch opens its child panel, a leaf selects.
-    fn activate_top_level(&mut self, index: usize) {
-        let Some(item) = self.items.get(index) else {
-            return;
-        };
-        if !item.enabled {
-            return;
-        }
-        let value = item.value.clone();
-        let is_branch = !item.children.is_empty();
-        let checkable = item.checkable;
-        if is_branch {
-            self.open_submenu(index);
-        } else {
-            if checkable {
-                let next = !self.item_checked(&value).unwrap_or(false);
-                self.set_item_checked(&value, next);
-            }
-            self.selected_value = Some(value.clone());
-            self.item_selected.emit(value);
-            self.collapse();
-        }
-    }
-
-    /// Activates a row inside the open child panel.
-    fn activate_submenu_row(&mut self, index: usize) {
-        let Some(panel) = self.submenu_panel else {
-            return;
-        };
-        let Some(item) = self.submenu_open.as_ref().and_then(|items| items.get(index)) else {
+    /// Activates the row at `index` in `level`: a branch opens the next panel, a leaf
+    /// selects and closes the whole popup.
+    fn activate_row_at(&mut self, level: usize, index: usize) {
+        let Some(item) = self.items_at(level).and_then(|items| items.get(index)) else {
             return;
         };
         if !item.enabled {
@@ -905,54 +1033,62 @@ impl DropdownMenu {
         }
         let value = item.value.clone();
         let label = item.label.clone();
-        let children = item.children.clone();
+        let is_branch = !item.children.is_empty();
         let checkable = item.checkable;
-        if children.is_empty() {
-            if checkable {
-                let next = !self.item_checked(&value).unwrap_or(false);
-                self.set_item_checked(&value, next);
+        if is_branch {
+            if level >= MAX_SUBMENU_DEPTH {
+                // Depth contract: the row still announces that it leads somewhere, but a
+                // fifth panel is refused. The signal is the host's way to show the rest.
+                self.submenu_requested.emit(label);
+            } else {
+                self.open_submenu_at(level, index);
             }
-            self.selected_value = Some(value.clone());
-            self.item_selected.emit(value);
-            self.collapse();
-        } else {
-            self.submenu_requested.emit(label);
-            let anchor_row = Self::submenu_row_rect(panel, index);
-            self.submenu_panel = Some(Self::child_panel_rect(panel, anchor_row, children.len()));
-            self.submenu_open = Some(children);
-            self.base.request_redraw();
+            return;
         }
+        if checkable {
+            let next = !self.item_checked(&value).unwrap_or(false);
+            self.set_item_checked(&value, next);
+        }
+        self.selected_value = Some(value.clone());
+        self.item_selected.emit(value);
+        self.collapse();
     }
 
-    /// The index of the enabled top-level row a Right key should open.
-    fn keyboard_branch_index(&self) -> Option<usize> {
-        self.active_index
-            .filter(|index| {
-                self.items.get(*index).is_some_and(|item| item.enabled && !item.children.is_empty())
-            })
-            .or_else(|| {
-                // Only rows the list is actually showing can be opened: a branch scrolled out
-                // of the window has no row to anchor its child panel to.
-                let end = (self.scroll_offset + self.max_visible_items()).min(self.items.len());
-                (self.scroll_offset..end).find(|index| {
-                    self.items
-                        .get(*index)
-                        .is_some_and(|item| item.enabled && !item.children.is_empty())
-                })
-            })
+    /// Activates a top-level row: a branch opens its child panel, a leaf selects.
+    fn activate_top_level(&mut self, index: usize) {
+        self.activate_row_at(0, index);
     }
 
-    /// The child-panel row at `pos`, when one is enabled.
-    fn hit_test_submenu_item(&self, pos: Point) -> Option<usize> {
-        let panel = self.submenu_panel?;
-        let items = self.submenu_open.as_ref()?;
-        if !panel.contains_point(pos) {
-            return None;
-        }
-        items.iter().enumerate().find_map(|(index, item)| {
-            let row = Self::submenu_row_rect(panel, index);
-            (item.enabled && row.contains_point(pos)).then_some(index)
+    /// The index of the enabled row in `level` that a Right key should open.
+    fn keyboard_branch_index_at(&self, level: usize) -> Option<usize> {
+        let is_branch = |index: usize| {
+            self.items_at(level)
+                .and_then(|items| items.get(index))
+                .is_some_and(|item| item.enabled && !item.children.is_empty())
+        };
+        self.active_at(level).filter(|index| is_branch(*index)).or_else(|| {
+            // Only rows the level is actually showing can be opened: a branch scrolled out
+            // of the window has no row to anchor its child panel to.
+            let (first, end, _) = self.active_window(level)?;
+            (first..end).find(|index| is_branch(*index))
         })
+    }
+
+    /// The deepest enabled submenu row at `pos`, as `(level, index)`.
+    fn hit_test_submenu(&self, pos: Point) -> Option<(usize, usize)> {
+        for (offset, panel) in self.submenus.iter().enumerate().rev() {
+            if !panel.rect.contains_point(pos) {
+                continue;
+            }
+            let level = offset + 1;
+            for (index, item) in panel.items.iter().enumerate() {
+                let row = Self::submenu_row_rect(panel.rect, index);
+                if item.enabled && row.contains_point(pos) {
+                    return Some((level, index));
+                }
+            }
+        }
+        None
     }
 
     /// Computes the dropdown list rectangle below the text field.
@@ -1006,15 +1142,15 @@ impl Widget for DropdownMenu {
         &mut self.base
     }
 
-    /// The field, the expanded list, and a child panel all accept the pointer.
+    /// The field, the expanded list, and every child panel accept the pointer.
     ///
-    /// The list hangs below the field's own rectangle and a child panel to its right; without
-    /// this override a click on either was rejected by the hit test and never reached
-    /// `hit_test_item`.
+    /// The list hangs below the field's own rectangle and each panel sits to the right of
+    /// the one that opened it; without this override a click on any of them was rejected by
+    /// the hit test and never reached `hit_test_item`.
     fn contains_point(&self, point: crate::core::Point) -> bool {
         self.base().contains_point_with_touch_expansion(point)
             || (self.expanded && self.dropdown_rect().contains_point(point))
-            || self.submenu_panel.is_some_and(|panel| panel.contains_point(point))
+            || self.submenus.iter().any(|panel| panel.rect.contains_point(point))
     }
 
     fn has_open_popup(&self) -> bool {
@@ -1062,6 +1198,13 @@ impl Widget for DropdownMenu {
             "submenu_requested" => {
                 Some(EventSignalRef::mapped("submenu_requested", &self.submenu_requested, |v| {
                     CapabilityValue::String(v.clone())
+                }))
+            }
+            "about_to_hide" => Some(EventSignalRef::unit("about_to_hide", &self.about_to_hide)),
+            "about_to_show" => Some(EventSignalRef::unit("about_to_show", &self.about_to_show)),
+            "item_toggled" => {
+                Some(EventSignalRef::mapped("item_toggled", &self.item_toggled, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,
@@ -1319,6 +1462,7 @@ impl Draw for DropdownMenu {
                     icon_sources: &self.item_icon_sources,
                     selected_value: self.selected_value.as_deref(),
                     highlight_selection: true,
+                    branches_open: true,
                 },
                 style,
                 palette,
@@ -1355,25 +1499,30 @@ impl Draw for DropdownMenu {
             }
         }
 
-        // ── Draw the child panel ──
+        // ── Draw the child panels ──
         //
-        // It hangs to the right of the list, outside the list's reveal clip, so it is painted after
-        // the clip is popped. One level only: opening another branch replaces what is shown.
-        if let (Some(children), Some(panel)) = (self.submenu_open.as_ref(), self.submenu_panel) {
+        // Each panel hangs to the right of the level that opened it, outside the list's
+        // reveal clip, so they are painted after the clip is popped. One panel per open
+        // level, deepest last: opening another branch replaces that level and everything
+        // below it, which `open_submenu_at` does by truncating the stack first.
+        for (offset, panel) in self.submenus.iter().enumerate() {
             let panel_fill = super::effects::popup_face(background, &effects);
-            context.fill_rounded_rect(panel, 4, panel_fill);
-            context.draw_rounded_rect_stroke(panel, 4, border, 2);
+            context.fill_rounded_rect(panel.rect, 4, panel_fill);
+            context.draw_rounded_rect_stroke(panel.rect, 4, border, 2);
             draw_item_list(
                 context,
                 ListPaint {
-                    panel,
-                    items: children,
+                    panel: panel.rect,
+                    items: &panel.items,
                     first: 0,
-                    end: children.len(),
+                    end: panel.items.len(),
                     alignment: self.alignment,
                     icon_sources: &self.item_icon_sources,
                     selected_value: None,
                     highlight_selection: false,
+                    // `offset + 1` is the level these rows sit on; the deepest panel
+                    // cannot open another, so it paints no arrow.
+                    branches_open: offset + 1 < MAX_SUBMENU_DEPTH,
                 },
                 style,
                 palette,
@@ -1397,20 +1546,18 @@ impl EventHandler for DropdownMenu {
                     // Click on the text field — toggle expand
                     self.toggle();
                 } else if self.expanded {
-                    if self.submenu_open.is_some() {
-                        if let Some(index) = self.hit_test_submenu_item(*pos) {
-                            self.activate_submenu_row(index);
-                        } else if let Some(index) = self.hit_test_item(*pos) {
-                            self.active_index = Some(index);
-                            self.activate_top_level(index);
-                        } else {
-                            // An outside click collapses one level: the child panel first,
-                            // the list itself on the next click.
-                            self.collapse_submenu();
-                        }
+                    // The deepest panel wins: panels are laid out side by side, so only one
+                    // can contain the point, and asking deepest-first keeps the order honest
+                    // if a future layout ever overlaps them.
+                    if let Some((level, index)) = self.hit_test_submenu(*pos) {
+                        self.activate_row_at(level, index);
                     } else if let Some(index) = self.hit_test_item(*pos) {
                         self.active_index = Some(index);
                         self.activate_top_level(index);
+                    } else if !self.submenus.is_empty() {
+                        // An outside click collapses one level: the deepest panel first, the
+                        // list itself on the click after the last panel is gone.
+                        self.collapse_submenu();
                     } else {
                         // Click outside the dropdown — collapse
                         self.collapse();
@@ -1418,30 +1565,38 @@ impl EventHandler for DropdownMenu {
                 }
             }
             Event::KeyPress { key, modifiers } => match *key {
-                key_codes::ESCAPE if self.submenu_open.is_some() => self.collapse_submenu(),
+                key_codes::ESCAPE if !self.submenus.is_empty() => self.collapse_submenu(),
                 key_codes::ESCAPE if self.expanded => self.collapse(),
-                key_codes::RIGHT if self.expanded && self.submenu_open.is_none() => {
-                    if let Some(index) = self.keyboard_branch_index() {
-                        self.open_submenu(index);
+                key_codes::RIGHT if self.expanded => {
+                    // The deepest open panel owns the focus, so Right always means "go one
+                    // level deeper from here". The depth gate lives in `open_submenu_at`.
+                    let level = self.focus_level();
+                    if let Some(index) = self.keyboard_branch_index_at(level) {
+                        self.open_submenu_at(level, index);
                     }
                 }
-                key_codes::LEFT if self.submenu_open.is_some() => self.collapse_submenu(),
-                key_codes::DOWN if self.expanded => self.move_active(1),
-                key_codes::UP if self.expanded => self.move_active(-1),
-                key_codes::HOME if self.expanded => self.jump_active(false),
-                key_codes::END if self.expanded => self.jump_active(true),
-                key_codes::PAGE_DOWN if self.expanded => self.page_active(true),
-                key_codes::PAGE_UP if self.expanded => self.page_active(false),
+                key_codes::LEFT if !self.submenus.is_empty() => self.collapse_submenu(),
+                key_codes::DOWN if self.expanded => self.move_active_at(self.focus_level(), 1),
+                key_codes::UP if self.expanded => self.move_active_at(self.focus_level(), -1),
+                key_codes::HOME if self.expanded => self.jump_active_at(self.focus_level(), false),
+                key_codes::END if self.expanded => self.jump_active_at(self.focus_level(), true),
+                key_codes::PAGE_DOWN if self.expanded => {
+                    self.page_active_at(self.focus_level(), true)
+                }
+                key_codes::PAGE_UP if self.expanded => {
+                    self.page_active_at(self.focus_level(), false)
+                }
                 key_codes::ENTER | key_codes::LINE_FEED if self.expanded => {
-                    if let Some(index) = self.active_index {
-                        self.activate_top_level(index);
+                    let level = self.focus_level();
+                    if let Some(index) = self.active_at(level) {
+                        self.activate_row_at(level, index);
                     }
                 }
                 // Type-ahead: a bare letter or digit jumps to the next row starting with it.
                 // Chorded presses belong to the application's shortcuts, not to the list.
                 key if *modifiers == 0 && self.expanded => {
                     if let Some(letter) = char::from_u32(key).filter(char::is_ascii_alphanumeric) {
-                        self.type_ahead(letter);
+                        self.type_ahead_at(self.focus_level(), letter);
                     }
                 }
                 _ => { /* Other keys are not relevant */ }
@@ -1643,6 +1798,42 @@ mod tests {
         dm
     }
 
+    /// A dropdown whose branch chain is deeper than the control may open.
+    ///
+    /// Every level holds a branch named after the level below it plus a leaf named after
+    /// its own level, and a second top-level branch exercises sibling replacement. The
+    /// deepest branch ("Level 5") sits on level [`MAX_SUBMENU_DEPTH`], where opening is
+    /// refused.
+    fn dropdown_with_deep_chain() -> DropdownMenu {
+        let l5 = DropdownItem::new("l5", "Level 5")
+            .with_children(vec![DropdownItem::new("leaf5", "Leaf 5")]);
+        let l4 = DropdownItem::new("l4", "Level 4")
+            .with_children(vec![l5, DropdownItem::new("leaf4", "Leaf 4")]);
+        let l3 = DropdownItem::new("l3", "Level 3")
+            .with_children(vec![l4, DropdownItem::new("leaf3", "Leaf 3")]);
+        let l2 = DropdownItem::new("l2", "Level 2")
+            .with_children(vec![l3, DropdownItem::new("leaf2", "Leaf 2")]);
+        let l1 = DropdownItem::new("l1", "Level 1")
+            .with_children(vec![l2, DropdownItem::new("leaf1", "Leaf 1")]);
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        dm.add_item(l1);
+        dm.add_item(
+            DropdownItem::new("other", "Other")
+                .with_children(vec![DropdownItem::new("other1", "Other 1")]),
+        );
+        dm
+    }
+
+    /// Clicks row `index` of `level` (0 is the field's list).
+    fn click_row(dm: &mut DropdownMenu, level: usize, index: usize) {
+        let row = if level == 0 {
+            dm.item_rect(index)
+        } else {
+            DropdownMenu::submenu_row_rect(dm.submenus[level - 1].rect, index)
+        };
+        dm.handle_event(&Event::mouse_press(row.x + 5, row.y + 5, 1));
+    }
+
     /// Activating a branch opens the child panel to the right and leaves the list expanded.
     #[test]
     fn dropdown_menu_branch_opens_its_child_panel_without_selecting() {
@@ -1660,7 +1851,7 @@ mod tests {
         assert!(dm.is_expanded(), "a branch activation must not collapse the list");
         assert_eq!(selected.load(Ordering::SeqCst), 0, "a branch is not a selection");
         assert!(dm.is_submenu_open());
-        let panel = dm.submenu_panel.expect("the child panel has a rectangle");
+        let panel = dm.submenus[0].rect;
         assert!(panel.x >= dm.dropdown_rect().x + dm.dropdown_rect().width as i32);
         assert!(dm.contains_point(Point::new(panel.x + 5, panel.y + 5)));
     }
@@ -1711,7 +1902,7 @@ mod tests {
         dm.expand();
         let branch = dm.item_rect(0);
         dm.handle_event(&Event::mouse_press(branch.x + 5, branch.y + 5, 1));
-        let panel = dm.submenu_panel.expect("the child panel has a rectangle");
+        let panel = dm.submenus[0].rect;
         dm.handle_event(&Event::mouse_press(panel.x + 5, panel.y + 5, 1));
 
         assert_eq!(selected.lock().unwrap().as_deref(), Some("pdf"));
@@ -1731,6 +1922,137 @@ mod tests {
         dm.handle_event(&Event::key_press(37, 0));
         assert!(!dm.is_submenu_open());
         assert!(dm.is_expanded());
+    }
+
+    /// Four Rights open four panels, each to the right of the level that opened it.
+    #[test]
+    fn dropdown_menu_opens_four_nested_child_panels() {
+        let mut dm = dropdown_with_deep_chain();
+        dm.expand();
+        for _ in 0..MAX_SUBMENU_DEPTH {
+            dm.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        }
+
+        assert_eq!(dm.submenu_depth(), MAX_SUBMENU_DEPTH);
+        assert!(dm.is_expanded(), "opening panels must never collapse the list");
+        let mut parent = dm.dropdown_rect();
+        for panel in &dm.submenus {
+            assert_eq!(panel.rect.x, parent.x + parent.width as i32);
+            assert!(
+                dm.contains_point(Point::new(panel.rect.x + 2, panel.rect.y + 2)),
+                "every open panel accepts the pointer"
+            );
+            parent = panel.rect;
+        }
+        assert_eq!(
+            dm.submenus[3].items[0].value, "l5",
+            "the fourth panel holds the deepest branch"
+        );
+    }
+
+    /// The depth contract: a branch on the deepest level announces itself but opens nothing.
+    #[test]
+    fn dropdown_menu_refuses_a_fifth_panel_but_announces_the_branch() {
+        let mut dm = dropdown_with_deep_chain();
+        let requested = Arc::new(Mutex::new(Vec::new()));
+        let captured = requested.clone();
+        dm.submenu_requested.connect(move |label| {
+            captured.lock().unwrap().push(label.to_string());
+        });
+        dm.expand();
+        for _ in 0..MAX_SUBMENU_DEPTH {
+            dm.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        }
+        assert_eq!(dm.submenu_depth(), MAX_SUBMENU_DEPTH);
+        let before = requested.lock().unwrap().clone();
+
+        // "Level 5" is a branch, but it sits on the deepest allowed level.
+        click_row(&mut dm, MAX_SUBMENU_DEPTH, 0);
+
+        assert_eq!(dm.submenu_depth(), MAX_SUBMENU_DEPTH, "no fifth panel may open");
+        assert!(dm.is_expanded());
+        let after = requested.lock().unwrap().clone();
+        assert_eq!(after.len(), before.len() + 1);
+        assert_eq!(after.last().map(String::as_str), Some("Level 5"));
+    }
+
+    /// Escape closes one panel per press, deepest first, then the list itself.
+    #[test]
+    fn dropdown_menu_escape_unwinds_one_panel_per_press() {
+        let mut dm = dropdown_with_deep_chain();
+        dm.expand();
+        for _ in 0..MAX_SUBMENU_DEPTH {
+            dm.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        }
+        assert_eq!(dm.submenu_depth(), MAX_SUBMENU_DEPTH);
+
+        for expected in (0..MAX_SUBMENU_DEPTH).rev() {
+            dm.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+            assert_eq!(dm.submenu_depth(), expected);
+            assert!(dm.is_expanded(), "Escape leaves the field's list open until it is last");
+        }
+        dm.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+        assert!(!dm.is_expanded());
+    }
+
+    /// A leaf in the deepest panel is selectable and closes the whole popup.
+    #[test]
+    fn dropdown_menu_deep_leaf_selection_emits_item_selected() {
+        let mut dm = dropdown_with_deep_chain();
+        let selected = Arc::new(Mutex::new(None));
+        let captured = selected.clone();
+        dm.item_selected.connect(move |value| {
+            *captured.lock().unwrap() = Some(value.to_string());
+        });
+        dm.expand();
+        for level in 0..MAX_SUBMENU_DEPTH {
+            click_row(&mut dm, level, 0);
+        }
+        assert_eq!(dm.submenu_depth(), MAX_SUBMENU_DEPTH);
+
+        click_row(&mut dm, MAX_SUBMENU_DEPTH, 1);
+
+        assert_eq!(selected.lock().unwrap().as_deref(), Some("leaf4"));
+        assert_eq!(dm.selected_value(), Some("leaf4".to_string()));
+        assert!(!dm.is_expanded());
+        assert_eq!(dm.submenu_depth(), 0);
+    }
+
+    /// Choosing a sibling branch replaces the deeper panels instead of stacking them.
+    #[test]
+    fn dropdown_menu_opening_a_sibling_branch_discards_the_deeper_panels() {
+        let mut dm = dropdown_with_deep_chain();
+        dm.expand();
+        click_row(&mut dm, 0, 0);
+        click_row(&mut dm, 1, 0);
+        assert_eq!(dm.submenu_depth(), 2);
+
+        click_row(&mut dm, 0, 1);
+
+        assert_eq!(dm.submenu_depth(), 1);
+        assert_eq!(dm.submenus[0].items[0].value, "other1");
+    }
+
+    /// Down and Enter act on the deepest panel, not on the field's list.
+    #[test]
+    fn dropdown_menu_keyboard_selects_a_leaf_inside_a_panel() {
+        let mut dm = dropdown_with_deep_chain();
+        let selected = Arc::new(Mutex::new(None));
+        let captured = selected.clone();
+        dm.item_selected.connect(move |value| {
+            *captured.lock().unwrap() = Some(value.to_string());
+        });
+        dm.expand();
+        dm.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        assert_eq!(dm.submenu_depth(), 1);
+
+        dm.handle_event(&Event::key_press(key_codes::DOWN, 0));
+        // The first Down lands on the branch row, the second on the leaf beside it.
+        dm.handle_event(&Event::key_press(key_codes::DOWN, 0));
+        dm.handle_event(&Event::key_press(key_codes::ENTER, 0));
+
+        assert_eq!(selected.lock().unwrap().as_deref(), Some("leaf1"));
+        assert!(!dm.is_expanded());
     }
 
     #[test]

@@ -13,6 +13,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font};
+use crate::widget::save_state::SaveState;
 use crate::widget::{BaseWidget, Draw, IconName, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -23,6 +24,20 @@ use std::rc::Rc;
 /// A future change to the layout can bump this, and an older blob is then refused rather than
 /// misread as the new shape.
 const STATE_VERSION: u8 = 1;
+
+impl SaveState for CollapsiblePane {
+    fn state_version(&self) -> u16 {
+        STATE_VERSION as u16
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        CollapsiblePane::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        CollapsiblePane::restore_state(self, state)
+    }
+}
 
 /// A container widget that can be collapsed/expanded by clicking its header bar.
 ///
@@ -307,6 +322,14 @@ impl Widget for CollapsiblePane {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn save_state_dyn(&self) -> Option<&dyn SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn SaveState> {
+        Some(self)
     }
 
     fn size_hint(&self) -> Size {

@@ -577,6 +577,27 @@ pub trait Widget: EventHandler + Any {
     ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
         None
     }
+
+    /// Returns this widget as an opt-in [`SaveState`](crate::widget::save_state::SaveState)
+    /// participant, when it declares persistent state.
+    ///
+    /// # Why this hook exists
+    ///
+    /// The state collector walks `&dyn Widget`, but a control's serialisation lives on its
+    /// concrete type. This is the same shape as [`Widget::properties_dyn`]: the control answers
+    /// with itself, and a control that has not opted in answers `None` — which the collector
+    /// reads as "this widget contributes nothing", not as an error.
+    ///
+    /// Implementing it is one line next to the `impl SaveState for` block, and leaving it out
+    /// is the supported way to opt out.
+    fn save_state_dyn(&self) -> Option<&dyn crate::widget::save_state::SaveState> {
+        None
+    }
+
+    /// Mutable counterpart to [`Widget::save_state_dyn`].
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn crate::widget::save_state::SaveState> {
+        None
+    }
     /// Overrides the device pixel ratio for this widget.
     ///
     /// Non-positive or non-finite values are rejected by the base

@@ -398,6 +398,14 @@ impl Widget for Breadcrumb {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| crate::widget::capability::CapabilityValue::String(v.clone()),
+            )),
+            "path_edited" => Some(EventSignalRef::mapped("path_edited", &self.path_edited, |v| {
+                crate::widget::capability::CapabilityValue::String(v.clone())
+            })),
             _ => None,
         }
     }

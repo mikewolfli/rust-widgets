@@ -480,6 +480,16 @@ impl Widget for GridWidget {
                     ])
                 }))
             }
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Int(v.0 as i64),
+                        crate::widget::capability::CapabilityValue::Int(v.1 as i64),
+                    ]))
+                },
+            )),
             _ => None,
         }
     }

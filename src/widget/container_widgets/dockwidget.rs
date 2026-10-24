@@ -13,6 +13,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
+use crate::widget::save_state::SaveState;
 use crate::widget::text_utils::elide_end;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -251,6 +252,20 @@ const DOCK_SNAP_DIVISOR: u32 = 3;
 
 /// Version tag of the blob produced by [`DockWidget::save_state`].
 const DOCK_STATE_VERSION: u8 = 1;
+
+impl SaveState for DockWidget {
+    fn state_version(&self) -> u16 {
+        DOCK_STATE_VERSION as u16
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        DockWidget::save_state(self)
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> bool {
+        DockWidget::restore_state(self, state)
+    }
+}
 
 /// The byte a saved blob stores for `area`.
 fn area_tag(area: DockWidgetArea) -> u8 {
@@ -829,6 +844,14 @@ impl Widget for DockWidget {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn save_state_dyn(&self) -> Option<&dyn SaveState> {
+        Some(self)
+    }
+
+    fn save_state_dyn_mut(&mut self) -> Option<&mut dyn SaveState> {
+        Some(self)
     }
 
     fn size_hint(&self) -> crate::core::Size {

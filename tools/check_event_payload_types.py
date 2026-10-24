@@ -305,6 +305,11 @@ def main() -> int:
         fallback = derive.pascal_case(control)
         struct = derive.resolve_owner(control, aliases)
         for name, kind, shape in declared.get(control, []):
+            # A pair the derivation cannot type is recorded in `derive.MANUAL` with the wire
+            # representation the signal really uses; it is not a gap and must not be re-reported.
+            if (control, name) in derive.MANUAL:
+                checked += 1
+                continue
             declaration = derive.resolve_declaration(struct, name, fields, accessors, fallback)
             if declaration is None:
                 failures.append(f"{control}.{name}: no signal named `{name}` on `{struct}`")

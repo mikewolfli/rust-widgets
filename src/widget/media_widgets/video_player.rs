@@ -540,6 +540,41 @@ impl Widget for VideoPlayer {
                     CapabilityValue::Float(*v)
                 }))
             }
+            "buffering_progress_changed" => Some(EventSignalRef::mapped(
+                "buffering_progress_changed",
+                &self.buffering_progress_changed,
+                |v| crate::widget::capability::CapabilityValue::Float(*v),
+            )),
+            "error_occurred" => {
+                Some(EventSignalRef::mapped("error_occurred", &self.error_occurred, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
+            "fullscreen_changed" => {
+                Some(EventSignalRef::mapped("fullscreen_changed", &self.fullscreen_changed, |v| {
+                    crate::widget::capability::CapabilityValue::Bool(*v)
+                }))
+            }
+            "media_status_changed" => Some(EventSignalRef::mapped(
+                "media_status_changed",
+                &self.media_status_changed,
+                |v| crate::widget::capability::CapabilityValue::String(format!("{v:?}")),
+            )),
+            "mute_changed" => {
+                Some(EventSignalRef::mapped("mute_changed", &self.mute_changed, |v| {
+                    crate::widget::capability::CapabilityValue::Bool(*v)
+                }))
+            }
+            "playback_rate_changed" => Some(EventSignalRef::mapped(
+                "playback_rate_changed",
+                &self.playback_rate_changed,
+                |v| crate::widget::capability::CapabilityValue::Float(*v as f64),
+            )),
+            "volume_changed" => {
+                Some(EventSignalRef::mapped("volume_changed", &self.volume_changed, |v| {
+                    crate::widget::capability::CapabilityValue::Float(*v as f64)
+                }))
+            }
             _ => None,
         }
     }

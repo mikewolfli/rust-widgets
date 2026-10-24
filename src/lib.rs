@@ -983,6 +983,7 @@ pub use widget::BASE_PROPERTY_NAMES;
 pub use widget::FAB;
 #[cfg(widgets_unstripped)]
 pub use widget::MAX_REGISTERED_ICONS;
+pub use widget::{collect_save_state, restore_save_state, SaveState, SavedState};
 
 /// Drives every library-side task of one frame, in the order they must happen.
 ///

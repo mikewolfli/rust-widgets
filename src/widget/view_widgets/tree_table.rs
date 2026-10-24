@@ -698,6 +698,33 @@ impl Widget for TreeTable {
                     }
                 }))
             }
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| crate::widget::capability::CapabilityValue::String(format!("{},{}", v.x, v.y)),
+            )),
+            "expansion_changed" => {
+                Some(EventSignalRef::mapped("expansion_changed", &self.expansion_changed, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Tuple(
+                            v.0.iter()
+                                .map(|item| {
+                                    crate::widget::capability::CapabilityValue::UInt(*item as u64)
+                                })
+                                .collect(),
+                        ),
+                        crate::widget::capability::CapabilityValue::Bool(v.1),
+                    ]))
+                }))
+            }
+            "sort_changed" => {
+                Some(EventSignalRef::mapped("sort_changed", &self.sort_changed, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
+                        crate::widget::capability::CapabilityValue::Bool(v.1),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }

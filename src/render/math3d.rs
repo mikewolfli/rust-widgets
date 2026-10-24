@@ -244,6 +244,22 @@ impl Mat4 {
         let w = m[12] * x + m[13] * y + m[14] + m[15];
         (px, py, w)
     }
+
+    /// Transforms the homogeneous point `(x, y, z, 1)` and returns all four clip coordinates
+    /// `[x', y', z', w]`.
+    ///
+    /// This is the three-dimensional counterpart of [`Mat4::project_row`], whose third input
+    /// is a constant. A caller performing a perspective divide must discard `w <= 0`; those
+    /// points lie on or behind the view plane and need clipping, not division.
+    pub fn transform_point(&self, x: f32, y: f32, z: f32) -> [f32; 4] {
+        let m = &self.m;
+        [
+            m[0] * x + m[1] * y + m[2] * z + m[3],
+            m[4] * x + m[5] * y + m[6] * z + m[7],
+            m[8] * x + m[9] * y + m[10] * z + m[11],
+            m[12] * x + m[13] * y + m[14] * z + m[15],
+        ]
+    }
 }
 
 /// A saved transform for [`TransformStack`].
@@ -504,5 +520,20 @@ mod tests {
         assert_close(w, 1.0, "a translation keeps the homogeneous divisor");
         let moved = Transform::from_matrix(t);
         assert_eq!(moved.matrix(), t);
+    }
+
+    /// A homogeneous point transform keeps `z` and `w`, which is what a 3D projection needs.
+    #[test]
+    fn transform_point_returns_all_four_clip_coordinates() {
+        let m = Mat4::translation(2.0, 4.0, -8.0);
+        assert_eq!(m.transform_point(1.0, 1.0, 1.0), [3.0, 5.0, -7.0, 1.0]);
+
+        // The perspective matrix writes `w = -z`, so a point four units in front of the eye has
+        // a positive divisor and one behind it does not.
+        let p = Mat4::perspective(core::f32::consts::FRAC_PI_2, 1.0, 0.1, 100.0);
+        let front = p.transform_point(0.0, 0.0, -4.0);
+        assert_close(front[3], 4.0, "w is the distance in front of the eye");
+        let behind = p.transform_point(0.0, 0.0, 4.0);
+        assert!(behind[3] < 0.0, "a point behind the eye has a negative divisor");
     }
 }

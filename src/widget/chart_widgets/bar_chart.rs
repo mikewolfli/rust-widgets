@@ -153,6 +153,17 @@ pub struct BarChart {
     /// The bar growth fraction, used only while `animate_bars` is set.
     reveal: PropertyDriver,
     animate_bars: bool,
+    /// Whether data updates ease from the values currently on screen.
+    animate_value_changes: bool,
+    /// Progress of the running value-change transition, in `0.0..=1.0`.
+    ///
+    /// Only consulted while `animate_value_changes` is set; the start values live in
+    /// `value_from_bars` / `value_from_series`.
+    value_transition: PropertyDriver,
+    /// The starting value of each bar for the running transition (single-series model).
+    value_from_bars: Vec<f64>,
+    /// The starting values of each series for the running transition (multi-series model).
+    value_from_series: Vec<Vec<f64>>,
     /// The plot area from the last paint, reused for hit testing.
     last_plot_area: Option<Rect>,
     /// Emitted with the category index under the pointer when hover enters a bar.
@@ -198,6 +209,10 @@ impl BarChart {
             hovered: None,
             reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
             animate_bars: false,
+            animate_value_changes: false,
+            value_transition: PropertyDriver::at(1.0, MotionSlot::Normal),
+            value_from_bars: Vec::new(),
+            value_from_series: Vec::new(),
             last_plot_area: None,
             bar_hovered: Signal1::new(),
             bar_unhovered: Signal1::new(),
@@ -211,15 +226,39 @@ impl BarChart {
     /// multi-series mode and ignores [`Self::bars`]; setting an empty list returns it to the
     /// single-series model.
     pub fn set_series(&mut self, series: Vec<BarSeries>, category_labels: Vec<String>) {
-        self.series = series
+        let next: Vec<BarSeries> = series
             .into_iter()
             .map(|mut item| {
                 item.values.retain(|value| value.is_finite());
                 item
             })
             .collect();
-        self.category_labels = category_labels;
-        self.restart_growth();
+        if self.animate_value_changes && self.series_shape_matches(&next, &category_labels) {
+            let from: Vec<Vec<f64>> = (0..self.series.len())
+                .map(|series_index| {
+                    (0..self.series[series_index].values.len())
+                        .filter_map(|category| self.rendered_series_value(series_index, category))
+                        .collect()
+                })
+                .collect();
+            self.series = next;
+            self.category_labels = category_labels;
+            let unchanged = from.iter().zip(&self.series).all(|(start, series)| {
+                start.iter().zip(&series.values).all(|(old, new)| *old == *new)
+            });
+            if unchanged {
+                self.clear_value_transition();
+            } else {
+                self.value_from_series = from;
+                self.value_from_bars.clear();
+                self.start_value_transition();
+            }
+        } else {
+            self.clear_value_transition();
+            self.series = next;
+            self.category_labels = category_labels;
+            self.restart_growth();
+        }
         self.revalidate_hover();
         self.base.request_redraw();
     }
@@ -310,6 +349,40 @@ impl BarChart {
         self.animate_bars
     }
 
+    /// Enables easing of value changes made through [`Self::set_bars`] and [`Self::set_series`].
+    ///
+    /// # What eases and what jumps
+    ///
+    /// With this on, an update whose **shape** is unchanged keeps the values currently on screen
+    /// as the start and eases to the new ones through the crate's motion system. For the
+    /// single-series model the shape is the bar count; for the multi-series model it is the
+    /// series count, each series' value count, and the drawn category count.
+    ///
+    /// A shape change — a category added or removed, a series added or removed, or switching
+    /// between the single-series and multi-series models — has no compatible previous frame to
+    /// interpolate from, so it jumps to the new data instead. A pure value change eases.
+    ///
+    /// The default is off: a data update paints the new values on the next frame, exactly as
+    /// before. Turning it off during a transition lands the bars on their targets immediately.
+    ///
+    /// This flag is independent of [`Self::set_animate_bars`], which is the one-shot
+    /// grow-from-zero reveal. A value change that eases does not restart that reveal.
+    pub fn set_animate_value_changes(&mut self, animate: bool) {
+        if self.animate_value_changes == animate {
+            return;
+        }
+        self.animate_value_changes = animate;
+        if !animate {
+            self.clear_value_transition();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether data updates ease from the previously drawn values.
+    pub fn animate_value_changes(&self) -> bool {
+        self.animate_value_changes
+    }
+
     /// How far the bars have grown, in `0.0..=1.0`.
     pub fn growth_progress(&self) -> f32 {
         if self.animate_bars {
@@ -330,6 +403,79 @@ impl BarChart {
             self.reveal.jump_to(0.0);
             self.reveal.set_target(1.0);
         }
+    }
+
+    /// Lands the running value transition on its targets and drops its start values.
+    fn clear_value_transition(&mut self) {
+        self.value_transition.jump_to(1.0);
+        self.value_from_bars.clear();
+        self.value_from_series.clear();
+    }
+
+    /// Starts the progress driver; the caller has already installed the start values.
+    fn start_value_transition(&mut self) {
+        self.value_transition.jump_to(0.0);
+        self.value_transition.set_target(1.0);
+    }
+
+    /// The value the painter draws for `category` in the single-series model.
+    ///
+    /// This is the one place values are interpolated: the draw loop, the value labels and the
+    /// axis range all read through it, so a bar and the label above it can never disagree.
+    fn rendered_bar_value(&self, category: usize) -> Option<f64> {
+        let target = self.bars.get(category)?.value;
+        Some(self.eased_value(self.value_from_bars.get(category).copied(), target))
+    }
+
+    /// The value the painter draws for `category` in `series[series_index]`.
+    fn rendered_series_value(&self, series_index: usize, category: usize) -> Option<f64> {
+        let target = *self.series.get(series_index)?.values.get(category)?;
+        Some(
+            self.eased_value(
+                self.value_from_series
+                    .get(series_index)
+                    .and_then(|values| values.get(category))
+                    .copied(),
+                target,
+            ),
+        )
+    }
+
+    /// Interpolates a value between the point a transition started at and its target.
+    ///
+    /// `from` is `None` when no transition covers this value, in which case the target is drawn
+    /// as-is. That is also the answer whenever the easing flag is off, so a stale start value can
+    /// never move a bar the caller expects to be static.
+    fn eased_value(&self, from: Option<f64>, target: f64) -> f64 {
+        match from {
+            Some(from) if self.animate_value_changes => {
+                let progress = f64::from(self.value_transition.value().clamp(0.0, 1.0));
+                from + (target - from) * progress
+            }
+            _ => target,
+        }
+    }
+
+    /// Whether `next` has the same drawn shape as the current single-series model.
+    fn bar_shape_matches(&self, next: &[BarEntry]) -> bool {
+        self.series.is_empty() && self.bars.len() == next.len()
+    }
+
+    /// Whether `next` has the same drawn shape as the current multi-series model.
+    ///
+    /// Labels are compared by their contribution to the drawn category count rather than by
+    /// text: renaming a label keeps the slot layout and may ease, while adding or removing a
+    /// category slot may not.
+    fn series_shape_matches(&self, next: &[BarSeries], labels: &[String]) -> bool {
+        if self.series.is_empty() || self.series.len() != next.len() {
+            return false;
+        }
+        if !self.series.iter().zip(next).all(|(old, new)| old.values.len() == new.values.len()) {
+            return false;
+        }
+        let next_categories =
+            next.iter().map(|series| series.values.len()).max().unwrap_or(0).max(labels.len());
+        self.category_count() == next_categories
     }
 
     /// Drops a hover index the new data no longer has a bar for.
@@ -379,8 +525,24 @@ impl BarChart {
     /// A bar whose value is non-finite cannot be mapped to a height, so it is dropped rather than
     /// drawn at a fabricated position (see [`is_finite_sample`](crate::widget::chart_widgets::is_finite_sample)).
     pub fn set_bars(&mut self, entries: Vec<BarEntry>) {
-        self.bars = entries.into_iter().filter(|bar| bar.value.is_finite()).collect();
-        self.restart_growth();
+        let next: Vec<BarEntry> = entries.into_iter().filter(|bar| bar.value.is_finite()).collect();
+        if self.animate_value_changes && self.bar_shape_matches(&next) {
+            let from: Vec<f64> =
+                (0..self.bars.len()).filter_map(|index| self.rendered_bar_value(index)).collect();
+            self.bars = next;
+            let unchanged = from.iter().zip(&self.bars).all(|(start, bar)| *start == bar.value);
+            if unchanged {
+                self.clear_value_transition();
+            } else {
+                self.value_from_bars = from;
+                self.value_from_series.clear();
+                self.start_value_transition();
+            }
+        } else {
+            self.clear_value_transition();
+            self.bars = next;
+            self.restart_growth();
+        }
         self.revalidate_hover();
         self.base.request_redraw();
     }
@@ -397,6 +559,7 @@ impl BarChart {
             );
             return;
         }
+        self.clear_value_transition();
         self.bars.push(entry);
         self.base.request_redraw();
     }
@@ -405,6 +568,7 @@ impl BarChart {
     /// Returns `true` if the bar was removed, `false` if the index was out of bounds.
     pub fn remove_bar(&mut self, index: usize) -> bool {
         if index < self.bars.len() {
+            self.clear_value_transition();
             self.bars.remove(index);
             self.base.request_redraw();
             true
@@ -415,6 +579,7 @@ impl BarChart {
 
     /// Removes all bars from the chart.
     pub fn clear_bars(&mut self) {
+        self.clear_value_transition();
         self.bars.clear();
         self.base.request_redraw();
     }
@@ -538,17 +703,19 @@ impl BarChart {
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
         if self.series.is_empty() {
-            for bar in &self.bars {
-                min = min.min(bar.value);
-                max = max.max(bar.value);
+            for category in 0..self.bars.len() {
+                if let Some(value) = self.rendered_bar_value(category) {
+                    min = min.min(value);
+                    max = max.max(value);
+                }
             }
         } else if self.grouping == BarGrouping::Stacked {
             let categories = self.category_count();
             for category in 0..categories {
                 let (mut positive, mut negative) = (0.0f64, 0.0f64);
-                for series in &self.series {
-                    if let Some(value) = series.values.get(category) {
-                        if *value >= 0.0 {
+                for series_index in 0..self.series.len() {
+                    if let Some(value) = self.rendered_series_value(series_index, category) {
+                        if value >= 0.0 {
                             positive += value;
                         } else {
                             negative += value;
@@ -559,10 +726,12 @@ impl BarChart {
                 max = max.max(positive);
             }
         } else {
-            for series in &self.series {
-                for value in &series.values {
-                    min = min.min(*value);
-                    max = max.max(*value);
+            for series_index in 0..self.series.len() {
+                for category in 0..self.series[series_index].values.len() {
+                    if let Some(value) = self.rendered_series_value(series_index, category) {
+                        min = min.min(value);
+                        max = max.max(value);
+                    }
                 }
             }
         }
@@ -610,17 +779,26 @@ impl Widget for BarChart {
         crate::core::Size::new(400, 300)
     }
 
-    /// Advances the bar growth animation by `delta_ms`.
+    /// Advances the bar growth reveal and the value transition by `delta_ms`.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        if !self.animate_bars {
-            return false;
+        let mut moving = false;
+        if self.animate_bars {
+            moving |= self.reveal.tick(delta_ms);
         }
-        self.reveal.tick(delta_ms)
+        if self.animate_value_changes {
+            moving |= self.value_transition.tick(delta_ms);
+            if !self.value_transition.is_moving() {
+                self.value_from_bars.clear();
+                self.value_from_series.clear();
+            }
+        }
+        moving
     }
 
-    /// Whether the bar growth animation still owes frames.
+    /// Whether either animation still owes frames.
     fn is_animating(&self) -> bool {
-        self.animate_bars && self.reveal.is_moving()
+        (self.animate_bars && self.reveal.is_moving())
+            || (self.animate_value_changes && self.value_transition.is_moving())
     }
 
     impl_draw_bridge!();
@@ -762,12 +940,15 @@ impl Draw for BarChart {
         let mut label = String::with_capacity(16);
 
         for (i, bar) in self.bars.iter().enumerate() {
+            let Some(value) = self.rendered_bar_value(i) else {
+                continue;
+            };
             let bar_color = bar.color.unwrap_or(self.bar_color);
             let effective_color = if is_enabled { bar_color } else { disabled_color };
 
             let bar_x = plot_area.x
                 + (spacing_pixels * (i as f32 + 1.0) + bar_slot_width * i as f32) as i32;
-            let bar_height = ((bar.value - y_min) * growth / value_span * height_range) as i32;
+            let bar_height = ((value - y_min) * growth / value_span * height_range) as i32;
             let bar_y = baseline_y - bar_height;
 
             if bar_height > 0 {
@@ -787,7 +968,7 @@ impl Draw for BarChart {
             // pixels, and it scales with the label font.
             if self.show_values && is_enabled {
                 label.clear();
-                let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{:.1}", bar.value));
+                let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{:.1}", value));
                 let label_x = bar_x.max(plot_area.x) + (bar_width as i32 / 2).min(12);
                 let label_band = Rect {
                     x: label_x,
@@ -845,8 +1026,8 @@ impl BarChart {
                 for category in 0..categories {
                     let slot_x = plot_area.x + (slot * category as f32) as i32;
                     let (mut positive, mut negative) = (0.0f64, 0.0f64);
-                    for (series_index, series) in self.series.iter().enumerate() {
-                        let Some(value) = series.values.get(category).copied() else {
+                    for series_index in 0..self.series.len() {
+                        let Some(value) = self.rendered_series_value(series_index, category) else {
                             continue;
                         };
                         let color =
@@ -896,8 +1077,8 @@ impl BarChart {
                 for category in 0..categories {
                     let slot_y = plot_area.y + (slot * category as f32) as i32;
                     let (mut positive, mut negative) = (0.0f64, 0.0f64);
-                    for (series_index, series) in self.series.iter().enumerate() {
-                        let Some(value) = series.values.get(category).copied() else {
+                    for series_index in 0..self.series.len() {
+                        let Some(value) = self.rendered_series_value(series_index, category) else {
                             continue;
                         };
                         let color =
@@ -1496,5 +1677,182 @@ mod tests {
         assert_eq!(bc.hovered_bar(), Some(0));
         bc.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
         assert_eq!(bc.hovered_bar(), None);
+    }
+
+    // ── Value-change easing (issue-20261023, BarChart) ──
+
+    /// The easing is opt-in: with the flag off, an update is painted on the next frame and the
+    /// document is identical to a chart built directly from the new data.
+    #[test]
+    fn value_changes_are_immediate_and_identical_when_the_flag_is_off() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_bars(vec![BarEntry::new("A", 10.0), BarEntry::new("B", 20.0)]);
+        let before = render_to_svg(&mut chart);
+
+        chart.set_bars(vec![BarEntry::new("A", 4.0), BarEntry::new("B", 8.0)]);
+        assert!(!chart.animate_value_changes(), "the easing is opt-in");
+        assert!(!chart.is_animating(), "default-off updates do not owe frames");
+        let after = render_to_svg(&mut chart);
+
+        let mut fresh = BarChart::new(Rect::new(0, 0, 300, 200));
+        fresh.set_bars(vec![BarEntry::new("A", 4.0), BarEntry::new("B", 8.0)]);
+        assert_eq!(
+            after,
+            render_to_svg(&mut fresh),
+            "default-off must paint the new data immediately"
+        );
+        assert_ne!(before, after, "the update must still change the painted heights");
+    }
+
+    /// One frame into a transition draws a value strictly between the old and the new one.
+    #[test]
+    fn a_value_change_eases_between_the_old_and_new_heights() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_bars(vec![BarEntry::new("A", 0.0), BarEntry::new("B", 10.0)]);
+        chart.set_animate_value_changes(true);
+
+        chart.set_bars(vec![BarEntry::new("A", 100.0), BarEntry::new("B", -30.0)]);
+        assert!(chart.is_animating(), "the update starts a transition");
+        assert_eq!(chart.rendered_bar_value(0), Some(0.0), "the first frame is the old value");
+        assert_eq!(chart.rendered_bar_value(1), Some(10.0));
+
+        assert!(chart.tick(16), "a short frame leaves frames owing");
+        let a = chart.rendered_bar_value(0).expect("bar A exists");
+        let b = chart.rendered_bar_value(1).expect("bar B exists");
+        assert!(a > 0.0 && a < 100.0, "bar A must be strictly inside its ends, got {a}");
+        assert!(b < 10.0 && b > -30.0, "a negative target eases too, got {b}");
+    }
+
+    /// The transition lands exactly on the new values and stops owing frames.
+    #[test]
+    fn a_value_transition_settles_exactly_on_its_target() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_bars(vec![BarEntry::new("A", 0.0), BarEntry::new("B", 10.0)]);
+        chart.set_animate_value_changes(true);
+        chart.set_bars(vec![BarEntry::new("A", 42.0), BarEntry::new("B", -7.0)]);
+
+        let mut frames = 0;
+        while chart.tick(16) {
+            frames += 1;
+            assert!(frames < 200, "the transition must terminate rather than tick forever");
+        }
+        assert!(frames > 1, "easing must span more than one frame, or it is a cut");
+        assert_eq!(chart.rendered_bar_value(0), Some(42.0));
+        assert_eq!(chart.rendered_bar_value(1), Some(-7.0));
+        assert!(!chart.is_animating());
+        assert!(!chart.tick(16), "a settled transition stays settled");
+    }
+
+    /// A count change has no compatible previous frame, so it jumps instead of easing.
+    #[test]
+    fn a_shape_change_jumps_instead_of_easing() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_bars(vec![BarEntry::new("A", 0.0), BarEntry::new("B", 0.0)]);
+        chart.set_animate_value_changes(true);
+        chart.set_bars(vec![BarEntry::new("A", 10.0), BarEntry::new("B", 20.0)]);
+        assert!(chart.is_animating());
+
+        chart.set_bars(vec![
+            BarEntry::new("A", 1.0),
+            BarEntry::new("B", 2.0),
+            BarEntry::new("C", 3.0),
+        ]);
+        assert!(!chart.is_animating(), "a third category must jump, not interpolate");
+        assert_eq!(chart.rendered_bar_value(0), Some(1.0));
+        assert_eq!(chart.rendered_bar_value(2), Some(3.0));
+
+        chart.set_series(
+            vec![BarSeries::new("s", vec![5.0, 6.0])],
+            vec!["x".to_string(), "y".to_string()],
+        );
+        assert!(!chart.is_animating(), "switching models must jump, not interpolate");
+        assert_eq!(chart.rendered_series_value(0, 1), Some(6.0));
+    }
+
+    /// Turning the flag off mid-flight lands on the new values at once.
+    #[test]
+    fn disabling_value_easing_mid_transition_lands_on_the_target() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_bars(vec![BarEntry::new("A", 0.0)]);
+        chart.set_animate_value_changes(true);
+        chart.set_bars(vec![BarEntry::new("A", 50.0)]);
+        assert!(chart.tick(16));
+        let mid = chart.rendered_bar_value(0).expect("bar A exists");
+        assert!(mid > 0.0 && mid < 50.0, "the fixture must be mid-flight: {mid}");
+
+        chart.set_animate_value_changes(false);
+        assert!(!chart.animate_value_changes());
+        assert!(!chart.is_animating());
+        assert_eq!(chart.rendered_bar_value(0), Some(50.0), "the target is drawn at once");
+        assert!(!chart.tick(16), "the dropped transition owes no frames");
+    }
+
+    /// Every series and category eases from its own previous value, and a per-series count
+    /// change is a shape change that jumps.
+    #[test]
+    fn multi_series_value_changes_ease_per_series_and_category() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 400, 260));
+        chart.set_series(
+            vec![
+                BarSeries::new("revenue", vec![0.0, 10.0]),
+                BarSeries::new("cost", vec![5.0, 0.0]),
+            ],
+            vec!["Q1".to_string(), "Q2".to_string()],
+        );
+        chart.set_animate_value_changes(true);
+        chart.set_series(
+            vec![
+                BarSeries::new("revenue", vec![100.0, 50.0]),
+                BarSeries::new("cost", vec![25.0, 40.0]),
+            ],
+            vec!["Q1".to_string(), "Q2".to_string()],
+        );
+        assert!(chart.is_animating());
+        assert_eq!(chart.rendered_series_value(0, 0), Some(0.0));
+        assert_eq!(chart.rendered_series_value(1, 1), Some(0.0));
+
+        assert!(chart.tick(16));
+        let revenue = chart.rendered_series_value(0, 0).expect("revenue Q1 exists");
+        let cost = chart.rendered_series_value(1, 0).expect("cost Q1 exists");
+        let revenue_q2 = chart.rendered_series_value(0, 1).expect("revenue Q2 exists");
+        assert!(revenue > 0.0 && revenue < 100.0, "revenue Q1 eased, got {revenue}");
+        assert!(cost > 5.0 && cost < 25.0, "cost Q1 eased, got {cost}");
+        assert!(revenue_q2 > 10.0 && revenue_q2 < 50.0, "revenue Q2 eased, got {revenue_q2}");
+
+        chart.set_series(
+            vec![BarSeries::new("revenue", vec![1.0]), BarSeries::new("cost", vec![2.0])],
+            vec!["Q1".to_string()],
+        );
+        assert!(!chart.is_animating(), "a per-series count change must jump");
+        assert_eq!(chart.rendered_series_value(0, 0), Some(1.0));
+        assert_eq!(chart.rendered_series_value(1, 0), Some(2.0));
+    }
+
+    /// Re-reporting the same values is not a movement, and negative targets ease through zero.
+    #[test]
+    fn zero_and_negative_value_changes_behave() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        chart.set_bars(vec![BarEntry::new("A", 5.0), BarEntry::new("B", 0.0)]);
+        chart.set_animate_value_changes(true);
+
+        chart.set_bars(vec![BarEntry::new("A", 5.0), BarEntry::new("B", 0.0)]);
+        assert!(!chart.is_animating(), "an unchanged value has nothing to ease");
+        assert_eq!(chart.rendered_bar_value(0), Some(5.0));
+
+        chart.set_bars(vec![BarEntry::new("A", 5.0), BarEntry::new("B", -20.0)]);
+        assert!(chart.is_animating());
+        assert!(chart.tick(16));
+        let value = chart.rendered_bar_value(1).expect("bar B exists");
+        assert!(value < 0.0 && value > -20.0, "the negative value eased, got {value}");
+        assert_eq!(
+            chart.rendered_bar_value(0),
+            Some(5.0),
+            "a bar whose value did not change stays put"
+        );
+
+        while chart.tick(16) {}
+        assert_eq!(chart.rendered_bar_value(1), Some(-20.0));
+        assert!(!chart.is_animating());
     }
 }

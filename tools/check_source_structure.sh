@@ -70,6 +70,16 @@ TOO_LONG_PENDING = {
     "src/designer/generator.rs": "wire-rule emission → `designer/generator/{emit,validate}.rs`",
     "src/print/print_impl.rs": "layout vs drawing → `print_impl/{layout,draw}.rs`",
     "src/platform/wayland/platform_impl.rs": "window vs input vs surface → `wayland/impl/*.rs`",
+    "src/style/animation.rs": "easing curves vs drivers → `style/animation/{curves,drivers}.rs`",
+    "src/wgpu_backend/renderer.rs": "resource caches vs 2D/mesh encoders → `wgpu_backend/renderer/{resources,encode}.rs`",
+    "src/widget/base_widgets/button.rs": "state/API vs drawing → `button/{api,paint}.rs`",
+    "src/widget/capability/access.rs": "per-kind defaults → `capability/access/{input,view,other}.rs`",
+    "src/widget/container_widgets/layout_family.rs": "the six layout wrappers → one module each",
+    "src/widget/container_widgets/tabwidget.rs": "strip vs pages vs drag → `tabwidget/{strip,pages,drag}.rs`",
+    "src/widget/input_widgets/lineedit.rs": "text model vs field chrome → `lineedit/{model,paint}.rs`",
+    "src/widget/input_widgets/textarea.rs": "document model vs viewport paint → `textarea/{model,paint}.rs`",
+    "src/widget/menu_toolbar/menu.rs": "menu model vs popup paint/input → `menu/{model,popup}.rs`",
+    "src/widget/metrics.rs": "dimension tables vs focus/profile metrics → `metrics/{dimensions,profiles}.rs`",
 }
 
 

@@ -599,6 +599,11 @@ impl Widget for EmojiPicker {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "hovered_glyph_changed" => Some(EventSignalRef::mapped(
+                "hovered_glyph_changed",
+                &self.hovered_glyph_changed,
+                |v| crate::widget::capability::CapabilityValue::String(v.clone()),
+            )),
             _ => None,
         }
     }

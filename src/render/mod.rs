@@ -62,6 +62,10 @@ pub mod svg;
 #[cfg(feature = "3d")]
 pub mod math3d;
 
+// Triangle meshes, cameras and the shared projection used by every 3D backend.
+#[cfg(feature = "3d")]
+pub mod mesh3d;
+
 // Text caching
 #[cfg(test)]
 mod tests;
@@ -130,6 +134,10 @@ pub use gpu::{GpuCapability, GpuRenderer};
 // Projection types
 #[cfg(feature = "projection")]
 pub use projection::{PresentationController, ProjectionLayoutHelper, ProjectionRenderConfig};
+
+// 3D mesh and camera types
+#[cfg(feature = "3d")]
+pub use mesh3d::{Camera, Mesh3D, Mesh3DError, ProjectedTriangle, ProjectedVertex, Vec3, Vertex3D};
 
 /// Shared helper accessible to surface.rs and backend
 pub(crate) use pipeline::pixel_bytes_len;

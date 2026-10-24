@@ -14,9 +14,9 @@
 //! The distinction matters because the two have opposite ownership: a page view
 //! owns pages, a pagination bar owns only a number.
 
-use crate::compat::{format, String};
+use crate::compat::{format, String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, mouse_button, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{expect_bool, expect_usize};
@@ -29,6 +29,21 @@ use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Ellipsis glyph used to mark a collapsed run of page numbers.
 const ELLIPSIS: char = '\u{2026}';
+
+/// Suggested width of the trailing page-size selector cell, in pixels.
+const PAGE_SIZE_CELL_WIDTH: u32 = 84;
+
+/// Suggested width of the trailing jump-to-page cell, in pixels.
+const JUMP_CELL_WIDTH: u32 = 64;
+
+/// Height of one row in the page-size popup, in pixels.
+const PAGE_SIZE_ROW_HEIGHT: u32 = 24;
+
+/// Vertical gap between the page-size cell and its popup, in pixels.
+const PAGE_SIZE_POPUP_GAP: i32 = 2;
+
+/// Most digits the jump buffer accepts, enough for any realistic page index.
+const JUMP_INPUT_MAX_DIGITS: usize = 6;
 
 /// One clickable cell in the bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,8 +71,42 @@ pub struct Pagination {
     sibling_count: usize,
     /// When true, the previous/next controls are drawn at the ends.
     show_nav_buttons: bool,
+    /// When true, a trailing jump-to-page cell is shown.
+    show_jump_input: bool,
+    /// When true, the jump cell holds focus and keystrokes build `jump_buffer`.
+    jump_editing: bool,
+    /// Digits typed into the jump cell.
+    jump_buffer: String,
+    /// When true, a trailing page-size selector cell is shown.
+    show_page_size_selector: bool,
+    /// Normalized, ascending options the selector offers.
+    page_size_options: Vec<usize>,
+    /// When true, the page-size popup is visible.
+    page_size_menu_open: bool,
+    /// Index of the option under the pointer while the popup is open.
+    page_size_hover: Option<usize>,
     /// Emitted with the new zero-based page whenever it changes.
     pub page_changed: Signal1<usize>,
+}
+
+/// The bar's resolved geometry: the numbered band plus the optional trailing cells.
+///
+/// `draw`, `cell_at`, `size_hint` and the page-size popup all read this one value, so
+/// the cells that are painted are exactly the cells that answer a click.
+struct BarLayout {
+    /// The band the numbered cells share.
+    numbered_rect: Rect,
+    /// The page-size selector cell, when it is shown and has options.
+    page_size_rect: Option<Rect>,
+    /// The jump-to-page cell, when it is shown.
+    jump_rect: Option<Rect>,
+}
+
+impl BarLayout {
+    /// Width of one numbered cell, at least 1 px so a narrow bar still divides.
+    fn cell_width(&self, cell_count: usize) -> u32 {
+        (self.numbered_rect.width / cell_count.max(1) as u32).max(1)
+    }
 }
 
 impl Pagination {
@@ -70,6 +119,13 @@ impl Pagination {
             page: 0,
             sibling_count: 1,
             show_nav_buttons: true,
+            show_jump_input: false,
+            jump_editing: false,
+            jump_buffer: String::new(),
+            show_page_size_selector: false,
+            page_size_options: Vec::new(),
+            page_size_menu_open: false,
+            page_size_hover: None,
             page_changed: Signal1::new(),
         }
     }
@@ -230,6 +286,85 @@ impl Pagination {
         self.base.request_redraw();
     }
 
+    /// Whether the trailing jump-to-page cell is shown.
+    pub fn show_jump_input(&self) -> bool {
+        self.show_jump_input
+    }
+
+    /// Shows or hides the trailing jump-to-page cell.
+    ///
+    /// Hiding the cell also leaves any in-progress edit, so a later show starts clean.
+    pub fn set_show_jump_input(&mut self, show: bool) {
+        if self.show_jump_input == show {
+            return;
+        }
+        self.show_jump_input = show;
+        if !show {
+            self.jump_editing = false;
+            self.jump_buffer.clear();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether the jump cell currently has focus and accepts digits.
+    pub fn is_jump_editing(&self) -> bool {
+        self.jump_editing
+    }
+
+    /// Whether the trailing page-size selector cell is shown.
+    pub fn show_page_size_selector(&self) -> bool {
+        self.show_page_size_selector
+    }
+
+    /// Shows or hides the trailing page-size selector cell.
+    ///
+    /// Hiding the cell also closes its popup, so a later show starts closed.
+    pub fn set_show_page_size_selector(&mut self, show: bool) {
+        if self.show_page_size_selector == show {
+            return;
+        }
+        self.show_page_size_selector = show;
+        if !show {
+            self.page_size_menu_open = false;
+            self.page_size_hover = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether the page-size popup is currently open.
+    pub fn is_page_size_menu_open(&self) -> bool {
+        self.page_size_menu_open
+    }
+
+    /// The normalized options the page-size selector offers.
+    ///
+    /// Options are deduped and sorted ascending, and a zero option is dropped, so the
+    /// popup's row order cannot depend on how the caller happened to build the list.
+    pub fn page_size_options(&self) -> &[usize] {
+        &self.page_size_options
+    }
+
+    /// Sets the options the page-size selector offers.
+    ///
+    /// Zero is dropped because it is not a valid page size; the current `page_size`
+    /// need not appear in the list.
+    pub fn set_page_size_options(&mut self, options: Vec<usize>) {
+        let mut normalized: Vec<usize> = options.into_iter().filter(|size| *size > 0).collect();
+        normalized.sort_unstable();
+        normalized.dedup();
+        if self.page_size_options == normalized {
+            return;
+        }
+        self.page_size_options = normalized;
+        if self.page_size_options.is_empty() {
+            self.page_size_menu_open = false;
+            self.page_size_hover = None;
+        } else if self.page_size_hover.is_some_and(|index| index >= self.page_size_options.len()) {
+            self.page_size_hover = None;
+        }
+        self.base.request_redraw();
+    }
+
     /// The cells to draw, in order, for the current state.
     ///
     /// Kept separate from drawing so the shortening logic can be tested without a
@@ -282,11 +417,56 @@ impl Pagination {
         plan
     }
 
-    /// Width of one cell, derived from the **drawn bar** so the plan always fits inside the
-    /// band the control actually paints.
+    /// Width of one numbered cell, derived from the **drawn bar** and the one
+    /// [`Self::layout`] derivation so the plan always fits inside the band the control
+    /// actually paints.
     fn cell_width(&self) -> u32 {
-        let cells = self.cell_plan().len().max(1) as u32;
-        (self.bar_rect().width / cells).max(1)
+        self.layout().cell_width(self.cell_plan().len())
+    }
+
+    /// The bar's one geometry derivation: the numbered band plus the optional trailing
+    /// controls.
+    ///
+    /// # Layout order
+    ///
+    /// The numbered cells keep the leading band. The page-size selector takes the
+    /// rightmost trailing cell and the jump cell sits immediately to its left, so the
+    /// ordering left-to-right is `numbers … [Go] [N / page]`. Each trailing cell asks
+    /// for its suggested width but is capped at 40% of the bar (and at whatever is left),
+    /// which keeps the numbers legible on a narrow bar. With both features off the
+    /// numbered band is the whole bar, so every existing measurement is unchanged.
+    fn layout(&self) -> BarLayout {
+        let bar = self.bar_rect();
+        let left = bar.x;
+        let mut right = bar.x.saturating_add(bar.width as i32);
+        // Each trailing cell may claim at most two fifths of the bar.
+        let trailing_cap = bar.width.saturating_mul(2) / 5;
+
+        let mut page_size_rect = None;
+        if self.show_page_size_selector && !self.page_size_options.is_empty() {
+            let available = (right - left).max(0) as u32;
+            let width = PAGE_SIZE_CELL_WIDTH.min(trailing_cap).min(available);
+            if width > 0 {
+                right = right.saturating_sub(width as i32);
+                page_size_rect = Some(Rect::new(right, bar.y, width, bar.height));
+            }
+        }
+
+        let mut jump_rect = None;
+        if self.show_jump_input {
+            let available = (right - left).max(0) as u32;
+            let width = JUMP_CELL_WIDTH.min(trailing_cap).min(available);
+            if width > 0 {
+                right = right.saturating_sub(width as i32);
+                jump_rect = Some(Rect::new(right, bar.y, width, bar.height));
+            }
+        }
+
+        BarLayout {
+            numbered_rect: Rect::new(left, bar.y, (right - left).max(0) as u32, bar.height),
+            page_size_rect,
+            jump_rect,
+        }
     }
 
     /// The single-line bar the control actually paints: a full-width band
@@ -304,20 +484,308 @@ impl Pagination {
         ControlMetrics::full_width_band(self.geometry(), dimensions::PAGINATION_HEIGHT)
     }
 
-    /// The cell under `pos`, or `None` when the point is outside the bar.
+    /// The cell under `pos`, or `None` when the point is outside the numbered band.
     fn cell_at(&self, pos: Point) -> Option<Cell> {
-        // The **painted bar**, so the cells a user can see are the ones that answer. Testing
-        // `geometry()` would let a click tens of pixels below a 32 px bar change the page.
-        let rect = self.bar_rect();
-        if pos.x < rect.x
-            || pos.x >= rect.x + rect.width as i32
-            || pos.y < rect.y
-            || pos.y >= rect.y + rect.height as i32
-        {
+        // The **painted numbered band**, so the cells a user can see are the ones that
+        // answer. Reading the whole bar would let a click on the jump or page-size cell
+        // fall through to a page number.
+        let layout = self.layout();
+        let rect = layout.numbered_rect;
+        if !rect.contains_point(pos) {
             return None;
         }
         let index = ((pos.x - rect.x) as u32 / self.cell_width()) as usize;
         self.cell_plan().get(index).copied()
+    }
+
+    /// Whether `pos` is inside the jump cell, when that cell exists.
+    fn jump_cell_contains(&self, pos: Point) -> bool {
+        self.layout().jump_rect.is_some_and(|rect| rect.contains_point(pos))
+    }
+
+    /// Whether `pos` is inside the page-size selector cell, when that cell exists.
+    fn page_size_cell_contains(&self, pos: Point) -> bool {
+        self.layout().page_size_rect.is_some_and(|rect| rect.contains_point(pos))
+    }
+
+    /// The popup rectangle, anchored to the page-size cell.
+    ///
+    /// It opens **above** the cell when the control's own geometry has room, otherwise
+    /// **below** the bar. The choice is documented because a pager is commonly the last
+    /// row in a table footer: preferring above keeps the menu off the content below, and
+    /// falling back below keeps it attached to the cell when there is no room above.
+    /// Horizontally it keeps the cell's columns, so it can never cover the jump cell.
+    fn page_size_popup_rect(&self) -> Option<Rect> {
+        if !self.page_size_menu_open || self.page_size_options.is_empty() {
+            return None;
+        }
+        let cell = self.layout().page_size_rect?;
+        let height = self.page_size_options.len() as u32 * PAGE_SIZE_ROW_HEIGHT;
+        let geometry = self.geometry();
+        let above = cell.y.saturating_sub(PAGE_SIZE_POPUP_GAP).saturating_sub(height as i32);
+        let y = if above >= geometry.y {
+            above
+        } else {
+            cell.y.saturating_add(cell.height as i32).saturating_add(PAGE_SIZE_POPUP_GAP)
+        };
+        Some(Rect::new(cell.x, y, cell.width.max(1), height.max(1)))
+    }
+
+    /// The option row at `index` inside `popup`.
+    fn page_size_option_rect(&self, popup: Rect, index: usize) -> Rect {
+        Rect::new(
+            popup.x,
+            popup.y + (index as u32 * PAGE_SIZE_ROW_HEIGHT) as i32,
+            popup.width,
+            PAGE_SIZE_ROW_HEIGHT,
+        )
+    }
+
+    /// The option index under `pos`, or `None` when the popup is closed or the point is
+    /// on a gap between/around the rows.
+    fn page_size_option_at(&self, pos: Point) -> Option<usize> {
+        let popup = self.page_size_popup_rect()?;
+        if !popup.contains_point(pos) {
+            return None;
+        }
+        let row = ((pos.y - popup.y) as u32 / PAGE_SIZE_ROW_HEIGHT) as usize;
+        (row < self.page_size_options.len()).then_some(row)
+    }
+
+    /// Opens or closes the page-size popup.
+    fn toggle_page_size_menu(&mut self) {
+        if self.page_size_options.is_empty() {
+            return;
+        }
+        self.page_size_menu_open = !self.page_size_menu_open;
+        self.page_size_hover = None;
+        self.base.request_redraw();
+    }
+
+    /// Closes the page-size popup, if it is open.
+    fn close_page_size_menu(&mut self) {
+        if !self.page_size_menu_open && self.page_size_hover.is_none() {
+            return;
+        }
+        self.page_size_menu_open = false;
+        self.page_size_hover = None;
+        self.base.request_redraw();
+    }
+
+    /// Applies a primary press to the correct cell.
+    fn handle_press(&mut self, pos: Point) {
+        // The popup behaves like a small modal menu while it is open: an option applies,
+        // the selector toggles, and any other press dismisses it before the bar handles
+        // the same press normally.
+        if self.page_size_menu_open {
+            if let Some(index) = self.page_size_option_at(pos) {
+                let option = self.page_size_options[index];
+                self.page_size_menu_open = false;
+                self.page_size_hover = None;
+                self.set_page_size(option);
+                self.base.request_redraw();
+                return;
+            }
+            if self.page_size_cell_contains(pos) {
+                self.close_page_size_menu();
+                return;
+            }
+            self.close_page_size_menu();
+        }
+
+        // A press outside the jump cell ends the edit but still reaches the bar, so
+        // clicking a page number both cancels and navigates.
+        if self.jump_editing && !self.jump_cell_contains(pos) {
+            self.jump_editing = false;
+            self.jump_buffer.clear();
+            self.base.request_redraw();
+        }
+
+        if self.jump_cell_contains(pos) {
+            if !self.jump_editing {
+                self.jump_editing = true;
+                self.jump_buffer.clear();
+                self.base.request_redraw();
+            }
+            return;
+        }
+
+        if self.page_size_cell_contains(pos) {
+            self.toggle_page_size_menu();
+            return;
+        }
+
+        if let Some(cell) = self.cell_at(pos) {
+            self.activate(cell);
+        }
+    }
+
+    /// Handles a key press, including the jump cell's editing keys.
+    fn handle_key(&mut self, key: u32) {
+        if key == key_codes::ESCAPE {
+            let mut handled = false;
+            if self.jump_editing {
+                self.jump_editing = false;
+                self.jump_buffer.clear();
+                handled = true;
+            }
+            if self.page_size_menu_open {
+                self.page_size_menu_open = false;
+                self.page_size_hover = None;
+                handled = true;
+            }
+            if handled {
+                self.base.request_redraw();
+                return;
+            }
+        }
+
+        if self.jump_editing {
+            self.handle_jump_key(key);
+            return;
+        }
+
+        // An open popup owns the keyboard until it is dismissed.
+        if self.page_size_menu_open {
+            return;
+        }
+
+        // Logical keys rather than raw key codes: the numeric codes are QWERTY
+        // positions, so on AZERTY and other layouts the arrows and Home/End landed on
+        // unrelated keys (or nowhere). `Key::from_key_code` is the crate's one mapping
+        // from a platform code to the logical key.
+        use crate::shortcut::Key;
+        match Key::from_key_code(key) {
+            Some(Key::Left) | Some(Key::Up) => {
+                self.previous_page();
+            }
+            Some(Key::Right) | Some(Key::Down) => {
+                self.next_page();
+            }
+            Some(Key::Home) | Some(Key::PageUp) => self.set_page(0),
+            Some(Key::End) | Some(Key::PageDown) => self.set_page(self.last_page()),
+            _ => {}
+        }
+    }
+
+    /// Handles one key while the jump cell is focused.
+    fn handle_jump_key(&mut self, key: u32) {
+        if key == key_codes::ENTER || key == key_codes::LINE_FEED {
+            self.commit_jump();
+            return;
+        }
+        if key == key_codes::BACKSPACE {
+            if self.jump_buffer.pop().is_some() {
+                self.base.request_redraw();
+            }
+            return;
+        }
+        // Digits are looked up through the crate's ASCII mapping instead of a literal
+        // range, so the one key-code convention lives in `key_codes`.
+        if let Some(ch) = ('0'..='9').find(|ch| key_codes::ascii_key_code(*ch) == Some(key)) {
+            if self.jump_buffer.len() < JUMP_INPUT_MAX_DIGITS {
+                self.jump_buffer.push(ch);
+                self.base.request_redraw();
+            }
+        }
+    }
+
+    /// Commits the jump buffer as a 1-based page number.
+    ///
+    /// An empty buffer or zero is ignored and leaves the cell editing; a number past the
+    /// end is clamped by `set_page`, which is the same rule every other page write uses.
+    fn commit_jump(&mut self) {
+        let Ok(value) = self.jump_buffer.parse::<usize>() else {
+            return;
+        };
+        if value == 0 {
+            return;
+        }
+        self.jump_editing = false;
+        self.jump_buffer.clear();
+        self.set_page(value - 1);
+        self.base.request_redraw();
+    }
+
+    /// Draws the jump cell: the typed buffer while editing, otherwise a short hint.
+    fn draw_jump_cell(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        font: &Font,
+        color: Color,
+        outline: Color,
+    ) {
+        context.draw_rect(rect, outline);
+        let mut buffer = String::new();
+        let label = if self.jump_editing {
+            // The caret is a plain underscore, so the cell reads as an input without
+            // needing a second focus indicator in a 32 px row.
+            buffer.push_str(&self.jump_buffer);
+            buffer.push('_');
+            buffer.as_str()
+        } else {
+            "Go"
+        };
+        draw_centered_label(context, rect, label, font, color);
+    }
+
+    /// Draws the page-size selector cell: the current size plus a chevron affordance.
+    fn draw_page_size_cell(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        font: &Font,
+        color: Color,
+        outline: Color,
+    ) {
+        context.draw_rect(rect, outline);
+        let arrow_side = (rect.height / 3).clamp(6, 12);
+        let arrow_box_width = (arrow_side + 4).min(rect.width);
+        let arrow_rect = Rect::new(
+            rect.x + rect.width.saturating_sub(arrow_box_width) as i32,
+            rect.y,
+            arrow_box_width,
+            rect.height,
+        );
+        // A `ChevronDown` **icon outline** rather than the `▾` text glyph: no bundled
+        // face covers U+25BE, so the glyph would draw as a bitmap block.
+        crate::widget::draw_icon_centered(
+            context,
+            arrow_rect,
+            arrow_side,
+            color,
+            IconName::ChevronDown,
+        );
+        let text_rect =
+            Rect::new(rect.x, rect.y, rect.width.saturating_sub(arrow_box_width), rect.height);
+        let label = format!("{} / page", self.page_size);
+        draw_centered_label(context, text_rect, &label, font, color);
+    }
+
+    /// Draws the page-size popup and its option rows.
+    fn draw_page_size_popup(
+        &self,
+        context: &mut RenderContext,
+        popup: Rect,
+        font: &Font,
+        color: Color,
+        background: Color,
+        outline: Color,
+    ) {
+        use core::fmt::Write as _;
+        context.fill_rect(popup, background);
+        let mut label = String::new();
+        for (index, option) in self.page_size_options.iter().enumerate() {
+            let row = self.page_size_option_rect(popup, index);
+            if self.page_size_hover == Some(index) {
+                context.fill_rect(row, background.blend(&color, 0.12));
+            }
+            label.clear();
+            let _ = write!(label, "{option}");
+            draw_centered_label(context, row, &label, font, color);
+        }
+        context.draw_rect(popup, outline);
     }
 
     /// Applies a click on `cell`.
@@ -357,10 +825,12 @@ impl Widget for Pagination {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(
-            self.cell_width() * self.cell_plan().len().max(1) as u32,
-            dimensions::PAGINATION_HEIGHT,
-        )
+        let layout = self.layout();
+        let cell_count = self.cell_plan().len().max(1);
+        let width = layout.cell_width(cell_count) * cell_count as u32
+            + layout.page_size_rect.map_or(0, |rect| rect.width)
+            + layout.jump_rect.map_or(0, |rect| rect.width);
+        Size::new(width, dimensions::PAGINATION_HEIGHT)
     }
 
     impl_draw_bridge!();
@@ -484,28 +954,20 @@ impl EventHandler for Pagination {
         }
 
         match event {
-            Event::MousePress { pos, button: 1, .. } => {
-                if let Some(cell) = self.cell_at(*pos) {
-                    self.activate(cell);
+            Event::MousePress { pos, button, .. } if *button == mouse_button::PRIMARY => {
+                self.handle_press(*pos);
+            }
+            Event::MouseMove { pos } => {
+                if self.page_size_menu_open {
+                    let hover = self.page_size_option_at(*pos);
+                    if self.page_size_hover != hover {
+                        self.page_size_hover = hover;
+                        self.base.request_redraw();
+                    }
                 }
             }
             Event::KeyPress { key, modifiers: _ } => {
-                // Logical keys rather than raw key codes: the numeric codes are QWERTY
-                // positions, so on AZERTY and other layouts the arrows and Home/End landed on
-                // unrelated keys (or nowhere). `Key::from_key_code` is the crate's one mapping
-                // from a platform code to the logical key.
-                use crate::shortcut::Key;
-                match Key::from_key_code(*key) {
-                    Some(Key::Left) | Some(Key::Up) => {
-                        self.previous_page();
-                    }
-                    Some(Key::Right) | Some(Key::Down) => {
-                        self.next_page();
-                    }
-                    Some(Key::Home) | Some(Key::PageUp) => self.set_page(0),
-                    Some(Key::End) | Some(Key::PageDown) => self.set_page(self.last_page()),
-                    _ => {}
-                }
+                self.handle_key(*key);
             }
             _ => {}
         }
@@ -526,6 +988,7 @@ impl Draw for Pagination {
         let background = style.background_color.unwrap_or(Color::WHITE);
         let text_color = style.text_color.unwrap_or(Color::BLACK);
         let selected_background = style.border_color.unwrap_or(Color::rgb(60, 90, 160));
+        let outline = style.border_color.unwrap_or(Color::rgb(210, 210, 210));
         // The glyph size is derived from the **bar's** height, not the control's.
         //
         // The rasteriser paints a glyph **downward** from its origin, so a 48 px font in a
@@ -552,14 +1015,16 @@ impl Draw for Pagination {
             Color::BLACK,
         );
 
-        let cell_w = self.cell_width();
+        let layout = self.layout();
+        let plan = self.cell_plan();
+        let cell_w = layout.cell_width(plan.len());
         // One reused label buffer for the whole bar. The previous per-cell
         // `to_string()`/`String::new()` allocated for every page number on every paint;
         // a pagination bar repaints whenever the table scrolls.
         use core::fmt::Write as _;
         let mut label = String::new();
-        for (index, cell) in self.cell_plan().iter().enumerate() {
-            let x = rect.x + (index as u32 * cell_w) as i32;
+        for (index, cell) in plan.iter().enumerate() {
+            let x = layout.numbered_rect.x + (index as u32 * cell_w) as i32;
             let cell_rect = Rect::new(x, rect.y, cell_w, rect.height);
             let is_current = matches!(cell, Cell::Page(page) if *page == self.page);
             // The active page and the two navigation ends are the only cells that
@@ -631,12 +1096,37 @@ impl Draw for Pagination {
             context.draw_text(origin, label, font, color, HorizontalAlignment::Left);
         }
 
-        context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(210, 210, 210)));
+        if let Some(jump_rect) = layout.jump_rect {
+            self.draw_jump_cell(context, jump_rect, font, text_color, outline);
+        }
+        if let Some(page_size_rect) = layout.page_size_rect {
+            self.draw_page_size_cell(context, page_size_rect, font, text_color, outline);
+        }
+        if let Some(popup) = self.page_size_popup_rect() {
+            self.draw_page_size_popup(context, popup, font, text_color, background, outline);
+        }
+
+        context.draw_rect(rect, outline);
     }
 
     fn uses_custom_drawing(&self) -> bool {
         true
     }
+}
+
+/// Draws `label` horizontally centred in `rect`, using the same line-box rule the
+/// numbered cells use.
+fn draw_centered_label(
+    context: &mut RenderContext,
+    rect: Rect,
+    label: &str,
+    font: &Font,
+    color: Color,
+) {
+    let text_width = context.measure_text(label, font).width as i32;
+    let line = context.text_line(rect, font);
+    let origin = Point::new(rect.x + (rect.width as i32 - text_width) / 2, line.y);
+    context.draw_text(origin, label, font, color, HorizontalAlignment::Left);
 }
 
 #[cfg(test)]
@@ -924,5 +1414,284 @@ mod tests {
         assert_eq!(bar.page(), 9, "Page Down goes to the last page");
         bar.handle_event(&Event::KeyPress { key: 33, modifiers: 0 });
         assert_eq!(bar.page(), 0, "Page Up goes to the first page");
+    }
+
+    // ── Jump input and page-size selector ──
+
+    /// Types one ASCII digit through the crate's key-code mapping.
+    fn press_digit(bar: &mut Pagination, digit: char) {
+        let key = crate::event::key_codes::ascii_key_code(digit).expect("ASCII digit");
+        bar.handle_event(&Event::key_press(key, 0));
+    }
+
+    /// A primary click at a point.
+    fn click(bar: &mut Pagination, pos: Point) {
+        bar.handle_event(&Event::mouse_press(pos.x, pos.y, 1));
+    }
+
+    /// A point comfortably inside `rect`.
+    fn inside(rect: Rect) -> Point {
+        Point::new(rect.x + 2, rect.y + 2)
+    }
+
+    fn configured_bar() -> Pagination {
+        let mut bar = bar();
+        bar.set_total(200);
+        bar.set_page_size(10);
+        bar
+    }
+
+    /// Both features are off by default, so every existing measurement and label list is
+    /// untouched until a caller opts in.
+    #[test]
+    fn the_new_cells_are_off_by_default() {
+        let bar = configured_bar();
+
+        assert!(!bar.show_jump_input());
+        assert!(!bar.show_page_size_selector());
+        assert!(!bar.is_jump_editing());
+        assert!(!bar.is_page_size_menu_open());
+        assert!(bar.page_size_options().is_empty());
+        assert_eq!(
+            bar.cells(),
+            vec!["\u{2039}", "1", "2", "3", "\u{2026}", "20", "\u{203a}"],
+            "cells() must keep its old page/gap/nav label set"
+        );
+
+        let layout = bar.layout();
+        assert_eq!(layout.jump_rect, None);
+        assert_eq!(layout.page_size_rect, None);
+        assert_eq!(layout.numbered_rect, bar.bar_rect());
+        assert_eq!(bar.cell_width(), bar.bar_rect().width / bar.cells().len() as u32);
+        assert_eq!(
+            bar.size_hint(),
+            Size::new(bar.cell_width() * bar.cells().len() as u32, dimensions::PAGINATION_HEIGHT)
+        );
+    }
+
+    /// The jump cell must live in its own trailing band, outside every numbered cell.
+    #[test]
+    fn the_jump_cell_is_outside_the_numbered_cells() {
+        let mut bar = configured_bar();
+        bar.set_show_jump_input(true);
+        let layout = bar.layout();
+        let jump = layout.jump_rect.expect("the jump cell exists when shown");
+        let bar_rect = bar.bar_rect();
+
+        assert!(jump.width > 0);
+        assert!(jump.width <= bar_rect.width * 2 / 5, "clamped to at most 40% of the bar");
+        assert_eq!(jump.x + jump.width as i32, bar_rect.x + bar_rect.width as i32);
+        assert!(layout.numbered_rect.x + layout.numbered_rect.width as i32 <= jump.x);
+
+        // A click on the jump cell focuses it and must never change the page.
+        click(&mut bar, inside(jump));
+        assert!(bar.is_jump_editing());
+        assert_eq!(bar.page(), 0);
+    }
+
+    /// Digits plus Enter are read as a 1-based page and navigate there.
+    #[test]
+    fn typing_digits_and_enter_jumps() {
+        let mut bar = configured_bar();
+        bar.set_show_jump_input(true);
+        let jump = bar.layout().jump_rect.expect("jump cell");
+        click(&mut bar, inside(jump));
+
+        press_digit(&mut bar, '1');
+        press_digit(&mut bar, '2');
+        assert_eq!(bar.jump_buffer, "12");
+        bar.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+
+        assert!(bar.jump_buffer.is_empty(), "a committed buffer starts clean next time");
+        assert!(!bar.is_jump_editing());
+        assert_eq!(bar.page(), 11, "page 12 is index 11");
+    }
+
+    /// An empty buffer or zero stays editing; a number past the end is clamped, never
+    /// allowed out of range.
+    #[test]
+    fn zero_and_empty_jumps_are_ignored_and_out_of_range_clamps() {
+        let mut bar = configured_bar();
+        bar.set_show_jump_input(true);
+        let jump = bar.layout().jump_rect.expect("jump cell");
+        click(&mut bar, inside(jump));
+
+        bar.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert!(bar.is_jump_editing(), "an empty buffer stays editing");
+        assert_eq!(bar.page(), 0);
+
+        press_digit(&mut bar, '0');
+        bar.handle_event(&Event::key_press(crate::event::key_codes::LINE_FEED, 0));
+        assert!(bar.is_jump_editing(), "zero stays editing");
+        assert_eq!(bar.page(), 0);
+
+        press_digit(&mut bar, '9');
+        press_digit(&mut bar, '9');
+        bar.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert!(!bar.is_jump_editing());
+        assert_eq!(bar.page(), bar.last_page(), "a page past the end clamps to the last");
+    }
+
+    /// Escape and a press outside the jump cell both abandon the edit.
+    #[test]
+    fn escape_and_an_outside_press_cancel_jump_editing() {
+        let mut bar = configured_bar();
+        bar.set_show_jump_input(true);
+        let jump = bar.layout().jump_rect.expect("jump cell");
+
+        click(&mut bar, inside(jump));
+        press_digit(&mut bar, '3');
+        bar.handle_event(&Event::key_press(crate::event::key_codes::ESCAPE, 0));
+        assert!(!bar.is_jump_editing());
+        assert!(bar.jump_buffer.is_empty());
+        assert_eq!(bar.page(), 0, "Escape must not jump");
+
+        // A press outside the cell cancels the edit but still reaches the bar.
+        click(&mut bar, inside(jump));
+        press_digit(&mut bar, '3');
+        let layout = bar.layout();
+        let cell_w = layout.cell_width(bar.cell_plan().len());
+        let page_two = Point::new(
+            layout.numbered_rect.x + (2 * cell_w) as i32 + 1,
+            layout.numbered_rect.y + 2,
+        );
+        click(&mut bar, page_two);
+        assert!(!bar.is_jump_editing());
+        assert!(bar.jump_buffer.is_empty());
+        assert_eq!(bar.page(), 1, "the same press also selects page 2");
+    }
+
+    /// Backspace edits the buffer and it is capped so a huge paste cannot overflow the
+    /// cell. (Digits only, so the six-character cap is the whole guard.)
+    #[test]
+    fn the_jump_buffer_accepts_digits_and_backspace() {
+        let mut bar = configured_bar();
+        bar.set_show_jump_input(true);
+        let jump = bar.layout().jump_rect.expect("jump cell");
+        click(&mut bar, inside(jump));
+
+        for digit in ['1', '2', '3', '4', '5', '6', '7'] {
+            press_digit(&mut bar, digit);
+        }
+        assert_eq!(bar.jump_buffer, "123456", "at most six digits");
+        bar.handle_event(&Event::key_press(crate::event::key_codes::BACKSPACE, 0));
+        assert_eq!(bar.jump_buffer, "12345");
+    }
+
+    /// The selector opens, applies the clicked option, and closes in one press.
+    #[test]
+    fn the_page_size_popup_applies_an_option_and_closes() {
+        let mut bar = configured_bar();
+        bar.set_page(2);
+        bar.set_page_size_options(vec![50, 0, 10, 20, 10]);
+        bar.set_show_page_size_selector(true);
+        assert_eq!(bar.page_size_options(), [10, 20, 50].as_slice());
+
+        let cell = bar.layout().page_size_rect.expect("page-size cell");
+        click(&mut bar, inside(cell));
+        assert!(bar.is_page_size_menu_open());
+
+        let popup = bar.page_size_popup_rect().expect("popup is open");
+        let option =
+            bar.page_size_options().iter().position(|size| *size == 50).expect("50 is an option");
+        let row = bar.page_size_option_rect(popup, option);
+        click(&mut bar, inside(row));
+
+        assert_eq!(bar.page_size(), 50);
+        assert!(!bar.is_page_size_menu_open());
+        assert_eq!(bar.page(), 2, "choosing a page size does not jump pages");
+    }
+
+    /// Escape and an outside press dismiss the popup without changing the size.
+    #[test]
+    fn escape_and_an_outside_press_close_the_page_size_popup() {
+        let mut bar = configured_bar();
+        bar.set_page_size_options(vec![10, 20, 50]);
+        bar.set_show_page_size_selector(true);
+        let cell = bar.layout().page_size_rect.expect("page-size cell");
+
+        click(&mut bar, inside(cell));
+        assert!(bar.is_page_size_menu_open());
+        bar.handle_event(&Event::key_press(crate::event::key_codes::ESCAPE, 0));
+        assert!(!bar.is_page_size_menu_open());
+        assert_eq!(bar.page_size(), 10);
+
+        click(&mut bar, inside(cell));
+        assert!(bar.is_page_size_menu_open());
+        let layout = bar.layout();
+        let numbered = Point::new(layout.numbered_rect.x + 2, layout.numbered_rect.y + 2);
+        click(&mut bar, numbered);
+        assert!(!bar.is_page_size_menu_open());
+        assert_eq!(bar.page_size(), 10);
+    }
+
+    /// Options are normalized: zero is dropped, duplicates collapse, order is ascending.
+    #[test]
+    fn page_size_options_are_normalized() {
+        let mut bar = bar();
+        bar.set_page_size_options(vec![0, 50, 10, 50, 0, 20, 10]);
+        assert_eq!(bar.page_size_options(), [10, 20, 50].as_slice());
+    }
+
+    /// The numbered band, the jump cell and the page-size cell answer different presses.
+    #[test]
+    fn hit_testing_never_conflates_the_cells() {
+        let mut bar = configured_bar();
+        bar.set_show_jump_input(true);
+        bar.set_page_size_options(vec![10, 20]);
+        bar.set_show_page_size_selector(true);
+
+        let layout = bar.layout();
+        let jump = layout.jump_rect.expect("jump cell");
+        let selector = layout.page_size_rect.expect("page-size cell");
+        let bar_rect = bar.bar_rect();
+        assert_eq!(jump.x + jump.width as i32, selector.x);
+        assert_eq!(
+            layout.numbered_rect.width + jump.width + selector.width,
+            bar_rect.width,
+            "the three bands tile the bar"
+        );
+
+        // The selector opens its popup but is not a page cell and not the jump cell.
+        click(&mut bar, inside(selector));
+        assert!(bar.is_page_size_menu_open());
+        assert!(!bar.is_jump_editing());
+        assert_eq!(bar.page(), 0);
+
+        // The jump cell focuses the input, closes the popup and does not page.
+        click(&mut bar, inside(jump));
+        assert!(!bar.is_page_size_menu_open());
+        assert!(bar.is_jump_editing());
+        assert_eq!(bar.page(), 0);
+
+        // A numbered cell pages and does neither of the above.
+        let cell_w = layout.cell_width(bar.cell_plan().len());
+        let page_two = Point::new(
+            layout.numbered_rect.x + (2 * cell_w) as i32 + 1,
+            layout.numbered_rect.y + 2,
+        );
+        click(&mut bar, page_two);
+        assert_eq!(bar.page(), 1);
+        assert!(!bar.is_page_size_menu_open());
+        assert!(!bar.is_jump_editing());
+    }
+
+    /// A theme or layout can shrink the bar; each trailing cell then takes only what is
+    /// left instead of overflowing the numbers.
+    #[test]
+    fn trailing_cells_never_overflow_a_narrow_bar() {
+        let mut bar = Pagination::new(Rect::new(0, 0, 100, 32));
+        bar.set_show_jump_input(true);
+        bar.set_page_size_options(vec![10, 20]);
+        bar.set_show_page_size_selector(true);
+
+        let layout = bar.layout();
+        let bar_rect = bar.bar_rect();
+        let jump = layout.jump_rect.expect("jump cell");
+        let selector = layout.page_size_rect.expect("page-size cell");
+        assert_eq!(jump.x, layout.numbered_rect.x + layout.numbered_rect.width as i32);
+        assert_eq!(selector.x + selector.width as i32, bar_rect.x + bar_rect.width as i32);
+        assert!(jump.width <= bar_rect.width * 2 / 5);
+        assert!(selector.width <= bar_rect.width * 2 / 5);
     }
 }

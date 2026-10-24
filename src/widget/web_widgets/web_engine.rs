@@ -1121,6 +1121,19 @@ impl Widget for WebEngineView {
                     crate::widget::capability::CapabilityValue::String(v.clone())
                 }))
             }
+            "channel_message" => {
+                Some(EventSignalRef::mapped("channel_message", &self.channel_message, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::String(v.0.clone()),
+                        crate::widget::capability::CapabilityValue::String(v.1.clone()),
+                    ]))
+                }))
+            }
+            "load_progress_changed" => Some(EventSignalRef::mapped(
+                "load_progress_changed",
+                &self.load_progress_changed,
+                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+            )),
             _ => None,
         }
     }

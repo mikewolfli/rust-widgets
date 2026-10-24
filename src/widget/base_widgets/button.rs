@@ -1143,6 +1143,12 @@ impl Widget for Button {
                     crate::widget::capability::CapabilityValue::String(format!("{state:?}"))
                 }))
             }
+            #[cfg(full_widgets)]
+            "item_triggered" => {
+                Some(EventSignalRef::mapped("item_triggered", &self.item_triggered, |v| {
+                    crate::widget::capability::CapabilityValue::UInt(*v)
+                }))
+            }
             _ => None,
         }
     }

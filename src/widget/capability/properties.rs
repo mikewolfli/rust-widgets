@@ -1602,7 +1602,7 @@ pub(crate) fn mini_chart_capability() -> WidgetCapability {
         canonical_name: "mini_chart",
         aliases: &["mini_chart_widget"],
         properties: MINI_CHART_PROPERTIES,
-        events: &[],
+        events: events_of!("mini_chart"),
         commands: &["set_chart_type", "set_data", "set_range"],
     }
 }
@@ -1914,7 +1914,7 @@ pub(crate) fn masonry_layout_capability() -> WidgetCapability {
         canonical_name: "masonry_layout",
         aliases: &["waterfall_layout"],
         properties: MASONRY_LAYOUT_PROPERTIES,
-        events: &[],
+        events: events_of!("masonry_layout"),
         commands: &["set_column_count"],
     }
 }
@@ -2374,7 +2374,7 @@ pub(crate) fn line_chart_capability() -> WidgetCapability {
         canonical_name: "line_chart",
         aliases: &["line_graph"],
         properties: LINE_CHART_PROPERTIES,
-        events: &[],
+        events: events_of!("line_chart"),
         commands: &["set_stroke_width"],
     }
 }
@@ -2398,7 +2398,7 @@ pub(crate) fn bar_chart_capability() -> WidgetCapability {
         canonical_name: "bar_chart",
         aliases: &["bar_graph"],
         properties: BAR_CHART_PROPERTIES,
-        events: &[],
+        events: events_of!("bar_chart"),
         commands: &["set_bar_spacing"],
     }
 }
@@ -2496,7 +2496,7 @@ pub(crate) fn pie_chart_capability() -> WidgetCapability {
         canonical_name: "pie_chart",
         aliases: &["pie_graph"],
         properties: PIE_CHART_PROPERTIES,
-        events: &[],
+        events: events_of!("pie_chart"),
         commands: &["set_donut"],
     }
 }
@@ -2612,7 +2612,7 @@ pub(crate) fn camera_preview_capability() -> WidgetCapability {
         canonical_name: "camera_preview",
         aliases: &["camera"],
         properties: CAMERA_PREVIEW_PROPERTIES,
-        events: &[],
+        events: events_of!("camera_preview"),
         commands: &["set_is_active"],
     }
 }
@@ -2789,7 +2789,7 @@ pub(crate) fn flex_capability() -> WidgetCapability {
         canonical_name: "flex",
         aliases: &["flex_box"],
         properties: FLEX_PROPERTIES,
-        events: &[],
+        events: events_of!("flex"),
         commands: &[],
     }
 }
@@ -2801,7 +2801,7 @@ pub(crate) fn flow_layout_capability() -> WidgetCapability {
         canonical_name: "flow_layout",
         aliases: &["flow"],
         properties: FLOW_LAYOUT_PROPERTIES,
-        events: &[],
+        events: events_of!("flow_layout"),
         commands: &[],
     }
 }
@@ -2813,7 +2813,7 @@ pub(crate) fn wrap_layout_capability() -> WidgetCapability {
         canonical_name: "wrap_layout",
         aliases: &["wrap"],
         properties: WRAP_LAYOUT_PROPERTIES,
-        events: &[],
+        events: events_of!("wrap_layout"),
         commands: &[],
     }
 }

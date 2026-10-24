@@ -74,6 +74,10 @@ PRODUCER_ELSEWHERE: dict[str, str] = {
     "freeform_shape": "FreeformShapeWidget",
     "fab": "FAB",
     "lcd_number": "LCDNumber",
+    # The three grammar fields are `LineEdit` in a different echo/validator mode.
+    "password_edit": "LineEdit",
+    "phone_input": "LineEdit",
+    "email_input": "LineEdit",
     # The two-pane spelling of the splitter: one control under two names, as
     # `table_widget` / `table` is.
     "split_layout": "Splitter",
@@ -102,7 +106,14 @@ INHERITED_SIGNALS: dict[str, str] = {
 # omit it: leaving the name out would make `events_of!` publish less than the capability says it
 # publishes. This is empty, and it must stay empty — it exists so that the next unresolvable name
 # has an obvious home with the reason attached.
-MANUAL: dict[tuple[str, str], tuple[str, str]] = {}
+MANUAL: dict[tuple[str, str], tuple[str, str]] = {
+    # A row is a record (`field`/`operator`/`operand`/`negated`/`group`), and the signal carries a
+    # list of them, so the wire kind is the record list rather than a scalar the parser could name.
+    ("query_builder", "rows_changed"): ("Some(K::Records)", "Some(S::ListScalar)"),
+    # The status is published as its token spelling, the same way every other enum-valued event
+    # (a state or a mode) travels; there is no numeric spelling a consumer could rely on.
+    ("video_player", "media_status_changed"): ("Some(K::String)", "Some(S::Scalar)"),
+}
 
 # ── Rust payload type -> declared kind ──────────────────────────────────────────────
 # The tokens are Rust path segments: `K::Int` is `PropertyValueKind::Int` and `S::Tuple2` is
@@ -503,6 +514,8 @@ def main() -> int:
         fallback = pascal_case(capability)
         struct = resolve_owner(capability, aliases)
         for event in events:
+            if (capability, event) in MANUAL:
+                continue
             declaration = resolve_declaration(struct, event, fields, accessors, fallback)
             if declaration is None:
                 unresolved.append((capability, event, f"no signal named `{event}` on `{struct}`"))
@@ -566,9 +579,9 @@ HEADER = '''// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei
 // # Why this is generated and not hand-written
 //
 // BLUE19 rule #95 makes the event side of a capability carry a type, the way the property side
-// carries `PropertyValueKind`. There are 326 `(control, event)` pairs; a hand-written table that
-// size would be a second source of truth for 186 names, and would drift from the signals on the
-// first rename. This table is derived from the real signal declarations by
+// carries `PropertyValueKind`. The table has hundreds of `(control, event)` pairs; a hand-written
+// table that size would be a second source of truth for the names, and would drift from the
+// signals on the first rename. This table is derived from the real signal declarations by
 // `tools/derive_event_payloads.py` and re-derived, independently, by
 // `tools/check_event_payload_types.py` — so an edit that disagrees with the signal fails a gate
 // instead of quietly misinforming a designer.
@@ -696,7 +709,20 @@ def render(rows: list[tuple[str, str, str, str]]) -> str:
         control_rows = by_control[capability]
         starts.append(f'    ("{capability}", {len(events)}, {len(control_rows)}),\n')
         for event, kind, shape in control_rows:
-            events.append(f'    EventSchema {{ name: "{event}", payload: {kind}, shape: {shape} }},\n')
+            one_line = f'    EventSchema {{ name: "{event}", payload: {kind}, shape: {shape} }},\n'
+            # Keep the generated file byte-identical to what `rustfmt` produces, so the
+            # formatter and this generator do not disagree about a row that crosses the
+            # 100-column budget.
+            if len(one_line.rstrip("\n")) <= 100:
+                events.append(one_line)
+            else:
+                events.append(
+                    "    EventSchema {\n"
+                    f'        name: "{event}",\n'
+                    f"        payload: {kind},\n"
+                    f"        shape: {shape},\n"
+                    "    },\n"
+                )
 
     return HEADER + "".join(events) + FOOTER + "".join(starts) + MIDDLE
 

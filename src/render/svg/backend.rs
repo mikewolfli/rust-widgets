@@ -341,6 +341,7 @@ impl SvgPaintBackend {
         origin_y: i32,
         glyph_width: u32,
         glyph_height: u32,
+        weight: u16,
     ) -> OutlineOutcome {
         // The buffers live here rather than in the cluster loop so one allocation of each covers a
         // whole line, and they are the same order as the rasteriser's own scratch (`MAX_POINTS` is
@@ -354,9 +355,13 @@ impl SvgPaintBackend {
         // outside the column its own advance reserves, which is why a dozen widget tests saw ink in
         // the wrong column.
         let cell = crate::render::text::Cell::new(glyph_width, glyph_height);
-        let Some(count) =
-            crate::render::text::outline_by_coverage(ch, cell, &mut points, &mut contours)
-        else {
+        let Some(count) = crate::render::text::outline_by_coverage_at_weight(
+            ch,
+            cell,
+            weight,
+            &mut points,
+            &mut contours,
+        ) else {
             return OutlineOutcome::Uncovered;
         };
         // # Clipping to the cell, and why it is a real clip now
@@ -769,8 +774,17 @@ impl SvgPaintBackend {
                     feature = "fonts-complex",
                     cjk_outline_face
                 ))]
-                let outcome =
-                    self.append_outline(&mut path, ch, pen_x, origin.y, glyph_width, glyph_height);
+                let outcome = self.append_outline(
+                    &mut path,
+                    ch,
+                    pen_x,
+                    origin.y,
+                    glyph_width,
+                    glyph_height,
+                    // The cluster advances came from a line measured at this weight, and a
+                    // variable face draws a different shape at each one.
+                    font.weight(),
+                );
                 // Without an outline face there is no ink to emit, so every glyph takes the
                 // 1-bit path exactly as it always did.
                 #[cfg(not(any(
@@ -904,6 +918,49 @@ impl SvgPaintBackend {
         }
         self.clip_depth += 1;
     }
+
+    /// Emits a projected mesh as a far-to-near sequence of flat-shaded triangles.
+    ///
+    /// SVG has no depth buffer, so the mesh is painted with the painter's algorithm: the triangles
+    /// are sorted by their mean projected depth, farthest first, and the nearer ones are written
+    /// over them. The projection is [`crate::render::mesh3d::project_mesh`], the same routine the
+    /// software rasteriser calls, so a triangle lands on the same pixels in a snapshot as it does in
+    /// a frame.
+    ///
+    /// Painter's order is exact for a closed, non-intersecting mesh — a cube's near faces cover its
+    /// far ones — and it is an approximation for triangles that interpenetrate, which is the one
+    /// respect in which the vector snapshot is easier to fool than the depth-buffered rasteriser.
+    /// The software path is the reference in that case.
+    #[cfg(feature = "3d")]
+    fn emit_mesh_3d(
+        &mut self,
+        mesh: &crate::render::mesh3d::Mesh3D,
+        model: &crate::render::math3d::Mat4,
+        camera: &crate::render::mesh3d::Camera,
+        viewport: Rect,
+    ) {
+        let mut triangles =
+            crate::render::mesh3d::project_mesh(mesh, model, camera, viewport, self.size);
+        if triangles.is_empty() {
+            return;
+        }
+        triangles.sort_by(|left, right| {
+            right.depth().partial_cmp(&left.depth()).unwrap_or(core::cmp::Ordering::Equal)
+        });
+        for triangle in &triangles {
+            let [a, b, c] = triangle.vertices;
+            self.push_element(format!(
+                r##"<path d="M {:.2} {:.2} L {:.2} {:.2} L {:.2} {:.2} Z" fill="{}" stroke="none" />"##,
+                a.x,
+                a.y,
+                b.x,
+                b.y,
+                c.x,
+                c.y,
+                color_to_rgba(&triangle.color)
+            ));
+        }
+    }
 }
 
 impl PaintBackend for SvgPaintBackend {
@@ -972,6 +1029,11 @@ impl PaintBackend for SvgPaintBackend {
                     corners[3].y,
                     color_to_rgba(color)
                 ));
+            }
+
+            #[cfg(feature = "3d")]
+            RenderCommand::DrawMesh3D { mesh, model, camera, viewport } => {
+                self.emit_mesh_3d(mesh, model, camera, *viewport);
             }
 
             RenderCommand::FillRoundedRect { rect, radius, color }
@@ -1594,6 +1656,39 @@ mod tests {
         assert!(result.contains("fill=\"rgba(0,128,255,1.00)\""));
     }
 
+    /// A mesh is projected and painted far-to-near, so a headless snapshot shows a real object.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn svg_backend_paints_a_depth_sorted_cube() {
+        use crate::render::mesh3d::{Camera, Mesh3D, Vec3};
+
+        let red = Color::rgb(255, 0, 0);
+        let green = Color::rgb(0, 255, 0);
+        let blue = Color::rgb(0, 0, 255);
+        let yellow = Color::rgb(200, 200, 0);
+        let cyan = Color::rgb(0, 200, 200);
+        let magenta = Color::rgb(200, 0, 200);
+        let mesh = Mesh3D::cube(Vec3::ZERO, 2.0, [red, green, blue, yellow, cyan, magenta]);
+        let camera = Camera::new(Vec3::new(3.0, 2.0, 6.0), Vec3::ZERO, Vec3::new(0.0, 1.0, 0.0));
+
+        let mut svg = SvgPaintBackend::new(Size::new(200, 200));
+        svg.begin_frame(Color::WHITE);
+        svg.execute_command(&RenderCommand::DrawMesh3D {
+            mesh,
+            model: crate::render::math3d::Mat4::IDENTITY,
+            camera,
+            viewport: Rect::new(0, 0, 200, 200),
+        });
+        svg.end_frame();
+        let result = svg.finish();
+
+        assert_eq!(result.matches("<path").count(), 12, "one path per triangle:\n{result}");
+        assert!(result.contains("rgba(0,200,200,1.00)"), "the near +Z face is painted");
+        let far = result.find("rgba(200,0,200,1.00)").expect("the -Z face is painted too");
+        let near = result.find("rgba(0,200,200,1.00)").expect("the +Z face is painted");
+        assert!(far < near, "painter order writes the far face before the near one");
+    }
+
     #[test]
     fn svg_backend_text_is_glyph_geometry_not_a_text_element() {
         // The string is emitted as the set bits of its `font8x8` bitmaps, so there is nothing
@@ -2166,6 +2261,8 @@ mod tests {
                 RenderCommand::StrokeQuad { .. } => "StrokeQuad",
                 #[cfg(feature = "3d")]
                 RenderCommand::DrawImageQuad { .. } => "DrawImageQuad",
+                #[cfg(feature = "3d")]
+                RenderCommand::DrawMesh3D { .. } => "DrawMesh3D",
             }
         }
 
@@ -2344,6 +2441,33 @@ mod tests {
                 ],
                 color: Color::BLUE,
             });
+            commands.push(RenderCommand::DrawMesh3D {
+                mesh: crate::render::mesh3d::Mesh3D::new(
+                    vec![
+                        crate::render::mesh3d::Vertex3D::new(
+                            crate::render::mesh3d::Vec3::new(-1.0, -1.0, -3.0),
+                            Color::RED,
+                        ),
+                        crate::render::mesh3d::Vertex3D::new(
+                            crate::render::mesh3d::Vec3::new(1.0, -1.0, -3.0),
+                            Color::GREEN,
+                        ),
+                        crate::render::mesh3d::Vertex3D::new(
+                            crate::render::mesh3d::Vec3::new(0.0, 1.0, -3.0),
+                            Color::BLUE,
+                        ),
+                    ],
+                    vec![0, 1, 2],
+                )
+                .expect("the mesh fixture is valid"),
+                model: crate::render::math3d::Mat4::IDENTITY,
+                camera: crate::render::mesh3d::Camera::new(
+                    crate::render::mesh3d::Vec3::ZERO,
+                    crate::render::mesh3d::Vec3::new(0.0, 0.0, -1.0),
+                    crate::render::mesh3d::Vec3::new(0.0, 1.0, 0.0),
+                ),
+                viewport: Rect::new(0, 0, 120, 120),
+            });
             commands
         };
 
@@ -2451,6 +2575,7 @@ mod tests {
             let mut names = expected_names;
             names.push("FillQuad");
             names.push("FillQuadAA");
+            names.push("DrawMesh3D");
             names
         };
         let expected: std::collections::BTreeSet<&'static str> =

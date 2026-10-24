@@ -606,6 +606,17 @@ impl Widget for TabView {
             "tab_changed" => Some(EventSignalRef::mapped("tab_changed", &self.tab_changed, |v| {
                 CapabilityValue::UInt(*v as u64)
             })),
+            "tab_close_requested" => Some(EventSignalRef::mapped(
+                "tab_close_requested",
+                &self.tab_close_requested,
+                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+            )),
+            "tab_moved" => Some(EventSignalRef::mapped("tab_moved", &self.tab_moved, |v| {
+                crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                    crate::widget::capability::CapabilityValue::Int(v.0 as i64),
+                    crate::widget::capability::CapabilityValue::Int(v.1 as i64),
+                ]))
+            })),
             _ => None,
         }
     }

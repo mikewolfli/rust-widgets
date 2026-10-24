@@ -1062,6 +1062,11 @@ impl Widget for ListBox {
                     CapabilityValue::String(v.as_str().to_string())
                 }))
             }
+            "rename_requested" => {
+                Some(EventSignalRef::mapped("rename_requested", &self.rename_requested, |v| {
+                    crate::widget::capability::CapabilityValue::UInt(*v as u64)
+                }))
+            }
             _ => None,
         }
     }

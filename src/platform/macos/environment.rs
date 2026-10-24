@@ -260,7 +260,9 @@ extern "C" fn system_colors_did_change(_this: &Object, _cmd: Sel, _notification:
 /// This is a **label the caller names**, not a claim that a static family of that name is
 /// installed. On a stock macOS the system UI face is the variable font at
 /// `/System/Library/Fonts/SFNS.ttf`; the OS does not install static text/display weight files, so
-/// one registered face serves every text token and the shaper uses its default instance.
+/// one registered face serves every text token: the renderer instantiates its `wght` axis at each
+/// [`crate::core::Font::weight`] (`crate::render::text::variable`), and a host face with no such
+/// axis keeps its default instance.
 #[cfg(feature = "runtime-fonts")]
 pub(crate) const SYSTEM_UI_FAMILY: &str = "SF Pro";
 

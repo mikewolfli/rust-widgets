@@ -1342,6 +1342,14 @@ impl Widget for TabBar {
                     CapabilityValue::UInt(v.1 as u64),
                 ]))
             })),
+            "tab_bar_clicked" => Some(EventSignalRef::mapped(
+                "tab_bar_clicked",
+                &self.tab_bar_clicked,
+                |v| match v {
+                    Some(value) => crate::widget::capability::CapabilityValue::UInt(*value as u64),
+                    None => crate::widget::capability::CapabilityValue::Null,
+                },
+            )),
             _ => None,
         }
     }

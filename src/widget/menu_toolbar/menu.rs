@@ -25,6 +25,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
+pub use crate::widget::menu_toolbar::MAX_SUBMENU_DEPTH;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -266,9 +267,10 @@ impl MenuEntry {
 
     /// Attaches nested entries, making this row a branch this menu can open itself.
     ///
-    /// The panel is painted one level deep and to the right of the parent row. Deeply
-    /// recursive trees are left to a host that builds its own child menus; the flag
-    /// and the [`Menu::submenu_requested`] signal remain the contract for those.
+    /// The panel is painted to the right of the parent row, and rows inside it may be branches
+    /// of their own: a cascade opens up to [`MAX_SUBMENU_DEPTH`] panels. A branch on the deepest
+    /// level is still reported through [`Menu::submenu_requested`] but cannot open another
+    /// panel, which is the stated depth contract.
     pub fn set_submenu(&mut self, children: Option<Vec<MenuEntry>>) {
         self.submenu = children;
         self.has_submenu = self.submenu.as_deref().is_some_and(|c| !c.is_empty());
@@ -303,6 +305,20 @@ impl MenuEntry {
     pub fn mnemonic(&self) -> Option<char> {
         menu_mnemonic(&self.text)
     }
+}
+
+/// One open nested panel of a [`Menu`].
+///
+/// Only the row that opened the panel and that panel's own highlight are stored: the rows
+/// themselves stay in the entry tree, so a check mark changed while the panel is open is
+/// visible without a second copy to keep in sync. The path is a stack because four open
+/// levels are one control state, not four mutually exclusive `Option` fields.
+#[derive(Clone, Copy, Debug)]
+struct SubmenuLevel {
+    /// The row in the parent level that opened this panel.
+    row: usize,
+    /// The highlighted row inside this panel.
+    hovered: Option<usize>,
 }
 /// Menu widget.
 ///
@@ -345,14 +361,14 @@ pub struct Menu {
     /// # Why this is separate from `triggered` (BLUE22 · G-3)
     ///
     /// An entry drawn with a submenu indicator is a **branch**: choosing it means "show me the
-    /// next level", not "run this command". This crate has no nested `Menu` model, so the menu
-    /// cannot open the child itself — but it must still not *misreport* the gesture. Before this
-    /// signal existed, both pointer paths emitted `triggered` and hid the popup for a submenu
-    /// parent, so a click on `Cut >` fired a `Cut` action and closed the popup. A host that wants
-    /// submenus connects this signal and opens its own child menu; a host that ignores it gets
-    /// nothing it could mistake for a committed choice, which is the honest failure.
+    /// next level", not "run this command". This menu paints the child panel itself, up to
+    /// [`MAX_SUBMENU_DEPTH`] levels, and still reports every opened branch through this signal,
+    /// so a host can mirror or extend the tree without mistaking the gesture for a committed
+    /// choice. Before this signal existed, both pointer paths emitted `triggered` and hid the
+    /// popup for a submenu parent, so a click on `Cut >` fired a `Cut` action and closed the
+    /// popup; a host that ignores the signal now gets nothing it could mistake for a commit.
     ///
-    /// The pointer paths use this exactly as the arrow-key path will: it is the one way this
+    /// The pointer paths use this exactly as the arrow-key path does: it is the one way this
     /// control says "a branch was opened".
     pub submenu_requested: Signal1<String>,
     /// Emitted just before the menu is hidden, from [`Self::hide`].
@@ -403,11 +419,9 @@ pub struct Menu {
     /// shaped measurement per frame; a menu that is open while an animation runs paid it
     /// on every frame of the reveal.
     heading_line_cache: core::cell::Cell<Option<(u32, u32)>>,
-    /// The entry whose nested panel is open, when the children were attached through
-    /// [`MenuEntry::set_submenu`].
-    submenu_open: Option<usize>,
-    /// The highlighted row inside the open nested panel.
-    submenu_hovered: Option<usize>,
+    /// The open nested panels, deepest last. One step per level, up to
+    /// [`MAX_SUBMENU_DEPTH`]; level 0 is the menu's own list.
+    submenu_path: Vec<SubmenuLevel>,
     /// Whether the popup paints a tear-off strip above its rows.
     tearoff: bool,
     /// Emitted when the tear-off strip is pressed.
@@ -447,8 +461,7 @@ impl Menu {
             show_heading: true,
             scroll_offset: 0,
             heading_line_cache: core::cell::Cell::new(None),
-            submenu_open: None,
-            submenu_hovered: None,
+            submenu_path: Vec::new(),
             tearoff: false,
             tearoff_requested: GenericSignal::new(),
             show_mnemonics: false,
@@ -504,6 +517,9 @@ impl Menu {
         // left it scrolled.
         self.scroll_offset = 0;
         self.clamp_scroll();
+        // A new open starts at the top level: a cascade left over from the previous open
+        // would describe a branch of a menu the user is no longer looking at.
+        self.submenu_path.clear();
         // Pre-select the first actionable entry so keyboard navigation has a
         // starting point; a menu opened with no selection cannot be driven by
         // arrow keys without a first press that has no visible effect.
@@ -535,20 +551,31 @@ impl Menu {
         self.invoker_position
     }
 
-    /// Whether `point` lies inside the popup's drawn area.
+    /// Whether `point` lies inside the popup's drawn area or one of its open panels.
     ///
     /// The drawn height follows the item list, not `geometry().height`, because a
     /// menu is as tall as its entries — using the widget's stored height would make
-    /// the "outside" test disagree with what the user sees.
+    /// the "outside" test disagree with what the user sees. A nested panel hangs to the
+    /// right of the popup, outside that rectangle, so it is part of the accepted area too:
+    /// a press on a child row must reach this control rather than the widget behind it.
     pub fn contains_point(&self, point: Point) -> bool {
         let rect = self.geometry();
         // The drawn extent is the heading **plus** the body. Testing only `popup_height`
         // from `rect.y` both accepted clicks on the heading and rejected clicks on the
         // body's lower rows once the popup was taller than the heading.
-        point.x >= rect.x
+        let inside_popup = point.x >= rect.x
             && point.x < rect.x + rect.width as i32
             && point.y >= rect.y
-            && point.y < self.body_top() + self.popup_height() as i32
+            && point.y < self.body_top() + self.popup_height() as i32;
+        inside_popup
+            || (1..=self.submenu_path.len())
+                .filter_map(|level| self.submenu_panel_rect_at(level))
+                .any(|panel| {
+                    point.x >= panel.x
+                        && point.x < panel.x + panel.width as i32
+                        && point.y >= panel.y
+                        && point.y < panel.y + panel.height as i32
+                })
     }
     /// The menu's title, drawn as its heading.
     pub fn title(&self) -> &str {
@@ -635,28 +662,32 @@ impl Menu {
 
     /// Triggers the entry the highlight is on, if it can still be chosen.
     fn activate_hovered(&mut self) -> bool {
-        let Some(index) = self.hovered_index else {
+        self.activate_level_hovered(0)
+    }
+
+    /// Triggers the highlighted row of `level`, if it can still be chosen.
+    ///
+    /// An entry that owns a submenu is a **branch, not a leaf**: activating it means "open
+    /// the next level", never "choose this". The old code emitted `triggered` and hid the
+    /// menu, so a click on `Cut >` fired the `Cut` action and closed the popup — the submenu
+    /// was unreachable by pointer at all, and the user got a command they did not ask for.
+    ///
+    /// The branch is reported through `submenu_requested` — the same signal the arrow keys
+    /// use — so a host has one thing to listen for and still receives nothing it could
+    /// mistake for a committed choice.
+    fn activate_level_hovered(&mut self, level: usize) -> bool {
+        let Some(index) = self.level_hovered(level) else {
             return false;
         };
-        let Some(item) = self.items.get(index) else {
+        let Some(entry) = self.level_entries(level).and_then(|entries| entries.get(index)) else {
             return false;
         };
-        if !item.is_selectable() {
+        if !entry.is_selectable() {
             return false;
         }
-        // An entry that owns a submenu is a **branch, not a leaf**: activating it means "open
-        // the next level", never "choose this". The old code emitted `triggered` and hid the
-        // menu, so a click on `Cut >` fired the `Cut` action and closed the popup — the submenu
-        // was unreachable by pointer at all, and the user got a command they did not ask for.
-        //
-        // The branch is reported the same way the arrow keys report it — through the same
-        // signal — so a host has one thing to listen for and still receives nothing it could
-        // mistake for a committed choice. When the row owns children this menu also paints the
-        // child panel itself, which is what makes `submenu_requested` a notification rather
-        // than the only way to reach the next level.
-        let text = item.text().to_string();
-        if item.has_submenu() {
-            self.open_submenu(index);
+        let text = entry.text().to_string();
+        if entry.has_submenu() {
+            self.open_submenu_at(level, index);
             self.submenu_requested.emit(text);
             self.base.request_redraw();
             return true;
@@ -765,6 +796,7 @@ impl Menu {
     pub fn clear(&mut self) {
         self.items.clear();
         self.scroll_offset = 0;
+        self.submenu_path.clear();
     }
     fn item_height() -> f32 {
         22.0
@@ -962,122 +994,223 @@ impl Menu {
         self.activate_hovered()
     }
 
-    /// The entry whose nested panel is open, if any.
+    /// The entry of the menu's own list whose cascading panel is open, if any.
+    ///
+    /// With several levels open this still names the top-level branch; [`Self::submenu_depth`]
+    /// reports how far the cascade reaches.
     pub fn open_submenu_index(&self) -> Option<usize> {
-        self.submenu_open
+        self.submenu_path.first().map(|level| level.row)
     }
 
-    /// Opens the nested panel of `index`, when that entry owns children.
+    /// Opens the nested panel of `index` in the menu's own list, when that entry owns children.
     ///
     /// Returns `false` for a leaf, an out-of-range index, or a disabled entry, and
     /// leaves any panel that is already open untouched in that case.
     pub fn open_submenu(&mut self, index: usize) -> bool {
-        let Some(item) = self.items.get(index) else {
-            return false;
-        };
-        if !item.is_selectable() || item.submenu().is_none_or(<[MenuEntry]>::is_empty) {
-            return false;
-        }
-        self.submenu_open = Some(index);
-        self.submenu_hovered =
-            item.submenu().and_then(|children| children.iter().position(MenuEntry::is_selectable));
-        self.base.request_redraw();
-        true
+        self.open_submenu_at(0, index)
     }
 
-    /// Closes the nested panel, if one is open. Returns whether anything changed.
-    pub fn close_submenu(&mut self) -> bool {
-        if self.submenu_open.is_none() {
-            return false;
-        }
-        self.submenu_open = None;
-        self.submenu_hovered = None;
-        self.base.request_redraw();
-        true
+    /// The number of open nested panels, `0` to [`MAX_SUBMENU_DEPTH`].
+    pub fn submenu_depth(&self) -> usize {
+        self.submenu_path.len()
     }
 
-    /// The children of the open nested panel.
-    fn open_submenu_children(&self) -> Option<&[MenuEntry]> {
-        let index = self.submenu_open?;
-        self.items.get(index)?.submenu()
-    }
-
-    /// The highlighted row inside the open nested panel.
-    pub fn submenu_hovered_index(&self) -> Option<usize> {
-        self.submenu_hovered
-    }
-
-    /// The nested panel's rectangle, in the menu's own coordinate space.
+    /// Closes the deepest nested panel, if one is open. Returns whether anything changed.
     ///
-    /// It hangs from the parent row's top edge and its right edge, one level deep. The
+    /// This unwinds **one** level, which is what makes Escape feel like "back": the panel
+    /// whose parent is still open closes first, and the menu itself only on the next press.
+    pub fn close_submenu(&mut self) -> bool {
+        if self.submenu_path.pop().is_none() {
+            return false;
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// The rows shown at `level`: the menu's own list at level 0, a panel's children below it.
+    ///
+    /// The rows are read from the entry tree rather than copied, so a check mark or an
+    /// enabled flag changed while the panel is open is exactly what the panel shows.
+    fn level_entries(&self, level: usize) -> Option<&[MenuEntry]> {
+        if level == 0 {
+            return Some(&self.items);
+        }
+        let step = self.submenu_path.get(level - 1)?;
+        self.level_entries(level - 1)?.get(step.row)?.submenu()
+    }
+
+    /// The highlighted row of `level`.
+    fn level_hovered(&self, level: usize) -> Option<usize> {
+        if level == 0 {
+            self.hovered_index
+        } else {
+            self.submenu_path.get(level - 1).and_then(|level| level.hovered)
+        }
+    }
+
+    /// Sets the highlighted row of `level`.
+    fn set_level_hovered(&mut self, level: usize, index: Option<usize>) {
+        if level == 0 {
+            self.hovered_index = index;
+        } else if let Some(step) = self.submenu_path.get_mut(level - 1) {
+            step.hovered = index;
+        }
+    }
+
+    /// The level that owns the keyboard: the deepest open panel, or the menu's own list.
+    fn focus_level(&self) -> usize {
+        self.submenu_path.len()
+    }
+
+    /// The highlighted row inside the deepest open panel.
+    pub fn submenu_hovered_index(&self) -> Option<usize> {
+        self.submenu_path.last().and_then(|level| level.hovered)
+    }
+
+    /// The deepest nested panel's rectangle, in the menu's own coordinate space.
+    ///
+    /// It hangs from the parent row's top edge and the parent level's trailing edge. The
     /// panel width is fixed at [`Self::submenu_panel_width`] so the panel cannot shrink
     /// around a short child label.
     pub fn submenu_panel_rect(&self) -> Option<Rect> {
-        let index = self.submenu_open?;
-        let children = self.open_submenu_children()?;
-        let row = *self.item_bands().get(index)?;
-        let rect = self.geometry();
-        let x = rect.x + rect.width as i32 - 6;
-        let y = self.body_top() + row.y;
-        Some(Rect::new(x, y, Self::submenu_panel_width(), Self::submenu_panel_height(children)))
+        self.submenu_panel_rect_at(self.submenu_depth())
     }
 
-    /// The width the nested panel paints at.
+    /// The width the nested panels paint at.
     pub fn submenu_panel_width() -> u32 {
         180
     }
 
     /// The height a nested panel needs for `children`.
     fn submenu_panel_height(children: &[MenuEntry]) -> u32 {
-        children
-            .iter()
-            .map(|child| {
-                if child.is_separator() || child.is_section() {
-                    Self::separator_height() as u32
-                } else {
-                    Self::item_height() as u32
-                }
-            })
-            .sum::<u32>()
-            + 4
+        children.iter().map(Self::entry_height).sum::<u32>() + 4
     }
 
-    /// The child row at `pos`, when the nested panel is open and the point is inside it.
-    pub fn submenu_index_at(&self, pos: Point) -> Option<usize> {
-        let panel = self.submenu_panel_rect()?;
-        if pos.x < panel.x
-            || pos.x >= panel.x + panel.width as i32
-            || pos.y < panel.y
-            || pos.y >= panel.y + panel.height as i32
-        {
+    /// The height one panel row occupies.
+    fn entry_height(entry: &MenuEntry) -> u32 {
+        if entry.is_separator() || entry.is_section() {
+            Self::separator_height() as u32
+        } else {
+            Self::item_height() as u32
+        }
+    }
+
+    /// The panel rectangle of `level`, which is `1`-based, in the menu's coordinate space.
+    fn submenu_panel_rect_at(&self, level: usize) -> Option<Rect> {
+        if level == 0 {
             return None;
         }
-        let children = self.open_submenu_children()?;
+        let step = self.submenu_path.get(level - 1)?;
+        let anchor = self.row_rect_at(level - 1, step.row)?;
+        let width = Self::submenu_panel_width();
+        // Every panel hangs 6 px over its parent's trailing edge, the same overlap the first
+        // level has always used. Keeping the relation for each level is what makes a
+        // four-deep cascade one shape rather than four hardcoded offsets.
+        let x = self.geometry().x + self.geometry().width as i32 - 6
+            + (level as i32 - 1) * (width as i32 - 6);
+        let height = Self::submenu_panel_height(self.level_entries(level)?);
+        Some(Rect::new(x, anchor.y, width, height))
+    }
+
+    /// Row `row` of `level` in the menu's coordinate space.
+    fn row_rect_at(&self, level: usize, row: usize) -> Option<Rect> {
+        if level == 0 {
+            let band = *self.item_bands().get(row)?;
+            return Some(Rect::new(
+                self.geometry().x + band.x,
+                self.body_top() + band.y,
+                band.width,
+                band.height,
+            ));
+        }
+        let panel = self.submenu_panel_rect_at(level)?;
+        let entries = self.level_entries(level)?;
         let mut y = panel.y + 2;
-        for (index, child) in children.iter().enumerate() {
-            let height = if child.is_separator() || child.is_section() {
-                Self::separator_height() as i32
-            } else {
-                Self::item_height() as i32
-            };
-            if pos.y >= y && pos.y < y + height {
-                return Some(index);
+        for (index, entry) in entries.iter().enumerate() {
+            let height = Self::entry_height(entry);
+            if index == row {
+                return Some(Rect::new(panel.x + 2, y, panel.width.saturating_sub(4), height));
             }
-            y += height;
+            y += height as i32;
         }
         None
     }
 
-    /// Moves the nested panel's highlight by `delta`, skipping unselectable rows.
-    fn move_submenu_hovered(&mut self, delta: i32) -> bool {
-        let Some(children) = self.open_submenu_children() else {
+    /// The child row at `pos` across every open panel, deepest first.
+    ///
+    /// Returns `(level, index)`, where `level` is `1` for the panel attached to the menu's own
+    /// list. Panels are laid out side by side, so only one can contain the point; asking
+    /// deepest-first keeps the answer honest if that ever changes.
+    fn hit_test_submenu(&self, pos: Point) -> Option<(usize, usize)> {
+        for level in (1..=self.submenu_path.len()).rev() {
+            let Some(panel) = self.submenu_panel_rect_at(level) else {
+                continue;
+            };
+            if pos.x < panel.x
+                || pos.x >= panel.x + panel.width as i32
+                || pos.y < panel.y
+                || pos.y >= panel.y + panel.height as i32
+            {
+                continue;
+            }
+            let Some(entries) = self.level_entries(level) else {
+                continue;
+            };
+            let mut y = panel.y + 2;
+            for (index, entry) in entries.iter().enumerate() {
+                let height = Self::entry_height(entry) as i32;
+                if pos.y >= y && pos.y < y + height {
+                    return Some((level, index));
+                }
+                y += height;
+            }
+        }
+        None
+    }
+
+    /// The child row at `pos`, when an open panel contains it.
+    pub fn submenu_index_at(&self, pos: Point) -> Option<usize> {
+        self.hit_test_submenu(pos).map(|(_, index)| index)
+    }
+
+    /// Opens the nested panel of the row at `index` in `level`.
+    ///
+    /// Opening replaces `level` and every deeper level, so pointing at a sibling branch
+    /// discards the branch that was open beside it. A `level` at or beyond
+    /// [`MAX_SUBMENU_DEPTH`] is refused, which is the depth contract shared by the menu
+    /// family; the activation path still emits `submenu_requested` for such a row.
+    fn open_submenu_at(&mut self, level: usize, index: usize) -> bool {
+        if level >= MAX_SUBMENU_DEPTH {
+            return false;
+        }
+        let Some(entry) = self.level_entries(level).and_then(|entries| entries.get(index)) else {
             return false;
         };
-        let count = children.len();
+        if !entry.is_selectable() {
+            return false;
+        }
+        let Some(children) = entry.submenu().filter(|children| !children.is_empty()) else {
+            return false;
+        };
+        let hovered = children.iter().position(MenuEntry::is_selectable);
+        self.submenu_path.truncate(level);
+        self.submenu_path.push(SubmenuLevel { row: index, hovered });
+        self.base.request_redraw();
+        true
+    }
+
+    /// Moves the highlight of `level` by `delta`, skipping unselectable rows.
+    fn move_level_hovered(&mut self, level: usize, delta: i32) -> bool {
+        if level == 0 {
+            return self.move_hovered_vertically(delta);
+        }
+        let Some(count) = self.level_entries(level).map(<[MenuEntry]>::len) else {
+            return false;
+        };
         if count == 0 || delta == 0 {
             return false;
         }
-        let start = match self.submenu_hovered {
+        let start = match self.level_hovered(level) {
             Some(index) => index as i32,
             None if delta > 0 => -1,
             None => count as i32,
@@ -1090,8 +1223,12 @@ impl Menu {
             } else if index >= count as i32 {
                 index = 0;
             }
-            if children[index as usize].is_selectable() {
-                self.submenu_hovered = Some(index as usize);
+            let selectable = self
+                .level_entries(level)
+                .and_then(|entries| entries.get(index as usize))
+                .is_some_and(MenuEntry::is_selectable);
+            if selectable {
+                self.set_level_hovered(level, Some(index as usize));
                 self.base.request_redraw();
                 return true;
             }
@@ -1099,37 +1236,11 @@ impl Menu {
         false
     }
 
-    /// Commits the highlighted child row, or reports a nested branch it cannot open.
-    fn activate_submenu_hovered(&mut self) -> bool {
-        let Some(children) = self.open_submenu_children() else {
-            return false;
-        };
-        let Some(index) = self.submenu_hovered else {
-            return false;
-        };
-        let Some(child) = children.get(index) else {
-            return false;
-        };
-        if !child.is_selectable() {
-            return false;
-        }
-        if child.has_submenu() {
-            let text = child.text().to_string();
-            self.submenu_requested.emit(text);
-            return true;
-        }
-        let text = child.text().to_string();
-        self.triggered.emit(text);
-        self.triggered_index.emit(index);
-        self.hide();
-        true
-    }
-
-    /// Paints the open nested panel.
+    /// Paints every open nested panel.
     ///
-    /// One level deep, hung from the parent row's right edge. The rows use the same
-    /// indicator/label/trailing derivations as the parent, so a child row aligns with a
-    /// parent row even though the panel is narrower.
+    /// One panel per open level, hung from its parent row's right edge, deepest last. The rows
+    /// use the same indicator/label/trailing derivations as the parent, so a child row aligns
+    /// with a parent row even though the panel is narrower.
     #[allow(clippy::too_many_arguments)]
     fn draw_submenu_panel(
         &self,
@@ -1141,99 +1252,105 @@ impl Menu {
         border: Color,
         face: Color,
     ) {
-        let Some(panel) = self.submenu_panel_rect() else {
-            return;
-        };
-        let Some(children) = self.open_submenu_children() else {
-            return;
-        };
-        context.fill_rect(panel, face.blend(&ink, 0.16));
-        context.draw_rect(panel, border);
-        let mut y = panel.y + 2;
-        for (index, child) in children.iter().enumerate() {
-            let height = if child.is_separator() || child.is_section() {
-                Self::separator_height() as u32
-            } else {
-                Self::item_height() as u32
-            };
-            let row = Rect::new(panel.x + 2, y, panel.width.saturating_sub(4), height);
-            if child.is_separator() {
-                context.draw_line(
-                    Point::new(row.x + 2, y + height as i32 / 2),
-                    Point::new(row.x + row.width as i32 - 2, y + height as i32 / 2),
-                    border,
-                );
-                y += height as i32;
+        // Every open level paints its own panel, left to right. A panel is laid out from the
+        // rows it actually holds, so a section or a separator keeps its own height and the
+        // next level anchors to the row the user sees.
+        for level in 1..=self.submenu_path.len() {
+            let Some(panel) = self.submenu_panel_rect_at(level) else {
                 continue;
-            }
-            if child.is_section() {
-                let band = Rect::new(row.x + 8, row.y, row.width.saturating_sub(8), row.height);
+            };
+            let Some(children) = self.level_entries(level) else {
+                continue;
+            };
+            context.fill_rect(panel, face.blend(&ink, 0.16));
+            context.draw_rect(panel, border);
+            let mut y = panel.y + 2;
+            for (index, child) in children.iter().enumerate() {
+                let height = if child.is_separator() || child.is_section() {
+                    Self::separator_height() as u32
+                } else {
+                    Self::item_height() as u32
+                };
+                let row = Rect::new(panel.x + 2, y, panel.width.saturating_sub(4), height);
+                if child.is_separator() {
+                    context.draw_line(
+                        Point::new(row.x + 2, y + height as i32 / 2),
+                        Point::new(row.x + row.width as i32 - 2, y + height as i32 / 2),
+                        border,
+                    );
+                    y += height as i32;
+                    continue;
+                }
+                if child.is_section() {
+                    let band = Rect::new(row.x + 8, row.y, row.width.saturating_sub(8), row.height);
+                    context.draw_text_fitted_cow(
+                        context.text_line(band, font),
+                        child.text(),
+                        font,
+                        secondary,
+                        HorizontalAlignment::Left,
+                    );
+                    y += height as i32;
+                    continue;
+                }
+                let hovered = self.level_hovered(level) == Some(index);
+                if hovered {
+                    context.fill_rect(row, primary);
+                }
+                let fg = if !child.is_enabled() {
+                    self.base.disabled_ink_on(ink, face)
+                } else if hovered {
+                    primary.contrast_color()
+                } else {
+                    ink
+                };
+                let indicator = self.indicator_box(row);
+                let label = self.label_box(row, indicator);
+                if let Some(source) = child.icon() {
+                    let line = context.text_line(indicator, font);
+                    let side = line.height.max(1).min(indicator.width.max(1));
+                    let icon_rect = Rect::new(
+                        indicator.x + (indicator.width as i32 - side as i32) / 2,
+                        line.y,
+                        side,
+                        side,
+                    );
+                    if let Err(error) =
+                        crate::widget::paint_icon(context, source.into(), icon_rect, fg)
+                    {
+                        log::warn!("submenu entry icon could not be painted: {error:?}");
+                    }
+                } else if child.is_checkable() && child.is_checked() {
+                    let line = context.text_line(indicator, font);
+                    let side = line.height.max(1);
+                    let tick = Rect::new(
+                        indicator.x + (indicator.width as i32 - side as i32) / 2,
+                        line.y,
+                        side,
+                        side,
+                    );
+                    crate::widget::draw_icon_at(context, tick, fg, IconName::Check);
+                }
                 context.draw_text_fitted_cow(
-                    context.text_line(band, font),
+                    context.text_line(label, font),
                     child.text(),
                     font,
-                    secondary,
+                    fg,
                     HorizontalAlignment::Left,
                 );
-                y += height as i32;
-                continue;
-            }
-            let hovered = self.submenu_hovered == Some(index);
-            if hovered {
-                context.fill_rect(row, primary);
-            }
-            let fg = if !child.is_enabled() {
-                self.base.disabled_ink_on(ink, face)
-            } else if hovered {
-                primary.contrast_color()
-            } else {
-                ink
-            };
-            let indicator = self.indicator_box(row);
-            let label = self.label_box(row, indicator);
-            if let Some(source) = child.icon() {
-                let line = context.text_line(indicator, font);
-                let side = line.height.max(1).min(indicator.width.max(1));
-                let icon_rect = Rect::new(
-                    indicator.x + (indicator.width as i32 - side as i32) / 2,
-                    line.y,
-                    side,
-                    side,
-                );
-                if let Err(error) = crate::widget::paint_icon(context, source.into(), icon_rect, fg)
-                {
-                    log::warn!("submenu entry icon could not be painted: {error:?}");
+                if child.has_submenu() && level < MAX_SUBMENU_DEPTH {
+                    let arrow_box = self.submenu_arrow_box(row, label);
+                    let side = arrow_box.width.min(arrow_box.height).min(16);
+                    crate::widget::draw_icon_centered(
+                        context,
+                        arrow_box,
+                        side,
+                        fg,
+                        IconName::ChevronRight,
+                    );
                 }
-            } else if child.is_checkable() && child.is_checked() {
-                let line = context.text_line(indicator, font);
-                let side = line.height.max(1);
-                let tick = Rect::new(
-                    indicator.x + (indicator.width as i32 - side as i32) / 2,
-                    line.y,
-                    side,
-                    side,
-                );
-                crate::widget::draw_icon_at(context, tick, fg, IconName::Check);
+                y += height as i32;
             }
-            context.draw_text_fitted_cow(
-                context.text_line(label, font),
-                child.text(),
-                font,
-                fg,
-                HorizontalAlignment::Left,
-            );
-            if child.has_submenu() {
-                let arrow_box = self.submenu_arrow_box(row, label);
-                let side = arrow_box.width.min(arrow_box.height).min(16);
-                crate::widget::draw_icon_centered(
-                    context,
-                    arrow_box,
-                    side,
-                    fg,
-                    IconName::ChevronRight,
-                );
-            }
-            y += height as i32;
         }
     }
     fn separator_height() -> f32 {
@@ -1406,6 +1523,15 @@ impl Widget for Menu {
         self.is_visible()
     }
 
+    /// The popup and every open nested panel accept the pointer.
+    ///
+    /// The panels hang to the right of the popup, outside its geometry; the default
+    /// implementation tests only the widget rectangle, so the runtime's hit test rejected
+    /// every press on a child row before the control could see it.
+    fn contains_point(&self, point: Point) -> bool {
+        Self::contains_point(self, point)
+    }
+
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 200)
     }
@@ -1430,8 +1556,7 @@ impl Widget for Menu {
         // leaving it set would make a reopened menu report a stale origin.
         self.invoker_position = None;
         self.hovered_index = None;
-        self.submenu_open = None;
-        self.submenu_hovered = None;
+        self.submenu_path.clear();
         self.about_to_hide.emit();
     }
 
@@ -1477,6 +1602,9 @@ impl Widget for Menu {
                 }))
             }
             "about_to_hide" => Some(EventSignalRef::unit("about_to_hide", &self.about_to_hide)),
+            "tearoff_requested" => {
+                Some(EventSignalRef::unit("tearoff_requested", &self.tearoff_requested))
+            }
             _ => None,
         }
     }
@@ -1567,12 +1695,14 @@ impl EventHandler for Menu {
         }
         match event {
             Event::MouseMove { pos } => {
-                if let Some(index) = self.submenu_index_at(*pos) {
-                    if let Some(children) = self.open_submenu_children() {
-                        if children.get(index).is_some_and(MenuEntry::is_selectable) {
-                            self.submenu_hovered = Some(index);
-                            self.base.request_redraw();
-                        }
+                if let Some((level, index)) = self.hit_test_submenu(*pos) {
+                    if self
+                        .level_entries(level)
+                        .and_then(|entries| entries.get(index))
+                        .is_some_and(MenuEntry::is_selectable)
+                    {
+                        self.set_level_hovered(level, Some(index));
+                        self.base.request_redraw();
                     }
                 } else if let Some(index) = self.item_index_at(*pos) {
                     if self.items[index].is_selectable() {
@@ -1581,11 +1711,18 @@ impl EventHandler for Menu {
                 }
             }
             Event::MousePress { pos, button: 1, .. } => {
-                // The nested panel is outside the parent's own rectangle, so it is hit
-                // tested first: otherwise a click on a child row would read as "outside
-                // the popup" and dismiss the whole menu.
-                if self.submenu_index_at(*pos).is_some() {
-                    self.activate_submenu_hovered();
+                // The nested panels are outside the parent's own rectangle, so they are
+                // hit tested first: otherwise a click on a child row would read as
+                // "outside the popup" and dismiss the whole menu.
+                if let Some((level, index)) = self.hit_test_submenu(*pos) {
+                    if self
+                        .level_entries(level)
+                        .and_then(|entries| entries.get(index))
+                        .is_some_and(MenuEntry::is_selectable)
+                    {
+                        self.set_level_hovered(level, Some(index));
+                        self.activate_level_hovered(level);
+                    }
                     return;
                 }
                 let tearoff_band = self.tearoff_band_height();
@@ -1621,12 +1758,14 @@ impl EventHandler for Menu {
             }
             #[cfg(feature = "touch")]
             Event::Tap { pos } => {
-                if let Some(index) = self.submenu_index_at(*pos) {
-                    if let Some(children) = self.open_submenu_children() {
-                        if children.get(index).is_some_and(MenuEntry::is_selectable) {
-                            self.submenu_hovered = Some(index);
-                            self.activate_submenu_hovered();
-                        }
+                if let Some((level, index)) = self.hit_test_submenu(*pos) {
+                    if self
+                        .level_entries(level)
+                        .and_then(|entries| entries.get(index))
+                        .is_some_and(MenuEntry::is_selectable)
+                    {
+                        self.set_level_hovered(level, Some(index));
+                        self.activate_level_hovered(level);
                     }
                 } else if let Some(index) = self.item_index_at(*pos) {
                     if self.items[index].is_selectable() {
@@ -1674,40 +1813,32 @@ impl EventHandler for Menu {
                         // Enter chooses the highlighted entry. An empty highlight (or one that
                         // cannot be chosen) leaves the menu open, which is what makes a stray Enter
                         // harmless rather than a dismissal with no selection.
-                        if self.submenu_open.is_some() {
-                            self.activate_submenu_hovered();
-                        } else {
-                            self.activate_hovered();
-                        }
+                        self.activate_level_hovered(self.focus_level());
                     }
                     38 => {
-                        if self.submenu_open.is_some() {
-                            self.move_submenu_hovered(-1);
-                        } else {
-                            self.move_hovered_vertically(-1);
-                        }
+                        self.move_level_hovered(self.focus_level(), -1);
                     }
                     40 => {
-                        if self.submenu_open.is_some() {
-                            self.move_submenu_hovered(1);
-                        } else {
-                            self.move_hovered_vertically(1);
-                        }
+                        self.move_level_hovered(self.focus_level(), 1);
                     }
                     // The horizontal pair is the only part of the navigation that follows the
                     // writing direction; see the `direction` field.
                     39 => {
-                        // Right opens a branch (or moves inside an open panel). It only
-                        // falls back to stepping the parent list when there is no branch, so
-                        // a menu of leaves keeps its original behaviour.
-                        if self.submenu_open.is_some() {
-                            self.move_submenu_hovered(1);
-                        } else if self.hovered_index.is_some_and(|index| {
-                            self.items.get(index).is_some_and(MenuEntry::has_submenu)
-                        }) {
-                            self.activate_hovered();
-                        } else {
+                        // Right opens a branch. It only falls back to stepping the current
+                        // level when the highlighted row is not a branch, so a menu of leaves
+                        // keeps its original behaviour.
+                        let level = self.focus_level();
+                        let is_branch = self.level_hovered(level).is_some_and(|index| {
+                            self.level_entries(level)
+                                .and_then(|entries| entries.get(index))
+                                .is_some_and(MenuEntry::has_submenu)
+                        });
+                        if is_branch {
+                            self.activate_level_hovered(level);
+                        } else if level == 0 {
                             self.move_hovered_horizontally(true);
+                        } else {
+                            self.move_level_hovered(level, 1);
                         }
                     }
                     37 => {
@@ -1716,12 +1847,16 @@ impl EventHandler for Menu {
                         }
                     }
                     36 => {
-                        // Home/End jump to the ends of the *list*, which is a vertical walk, so they
-                        // are not mirrored either.
-                        self.move_hovered_vertically(-(self.items.len() as i32));
+                        // Home/End jump to the ends of the *current* level, which is a
+                        // vertical walk, so they are not mirrored either.
+                        let level = self.focus_level();
+                        let count = self.level_entries(level).map_or(0, |entries| entries.len());
+                        self.move_level_hovered(level, -(count as i32));
                     }
                     35 => {
-                        self.move_hovered_vertically(self.items.len() as i32);
+                        let level = self.focus_level();
+                        let count = self.level_entries(level).map_or(0, |entries| entries.len());
+                        self.move_level_hovered(level, count as i32);
                     }
                     // Any other key belongs to whoever opened the menu; swallowing it here would
                     // make a menu absorb an application shortcut.
@@ -2918,6 +3053,158 @@ mod tests {
         assert!(menu.is_visible(), "the menu itself stays open after one Escape");
         menu.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
         assert!(!menu.is_visible(), "the second Escape dismisses the menu");
+    }
+
+    /// A menu whose branch chain is deeper than the control may open.
+    ///
+    /// Every level carries a branch named after the level below it plus a leaf named after its
+    /// own level, and a second top-level branch exercises sibling replacement. The deepest
+    /// branch ("Level 5") sits on level [`MAX_SUBMENU_DEPTH`], where opening is refused.
+    fn menu_with_deep_chain() -> Menu {
+        let level5 = MenuEntry::new("Level 5").with_submenu(vec![MenuEntry::new("Leaf 5")]);
+        let level4 = MenuEntry::new("Level 4").with_submenu(vec![level5, MenuEntry::new("Leaf 4")]);
+        let level3 = MenuEntry::new("Level 3").with_submenu(vec![level4, MenuEntry::new("Leaf 3")]);
+        let level2 = MenuEntry::new("Level 2").with_submenu(vec![level3, MenuEntry::new("Leaf 2")]);
+        let level1 = MenuEntry::new("Level 1").with_submenu(vec![level2, MenuEntry::new("Leaf 1")]);
+        let mut menu = Menu::new("File", Rect::new(0, 0, 180, 120));
+        menu.add_item(level1);
+        menu.add_item(MenuEntry::new("Other").with_submenu(vec![MenuEntry::new("Other 1")]));
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 4000, 4000));
+        menu
+    }
+
+    /// Presses row `index` of `level` through the control's pointer path.
+    fn press_row(menu: &mut Menu, level: usize, index: usize) {
+        let row = menu.row_rect_at(level, index).expect("the row exists");
+        menu.handle_event(&Event::MousePress {
+            pos: Point::new(row.x + 10, row.y + row.height as i32 / 2),
+            button: 1,
+            modifiers: 0,
+        });
+    }
+
+    /// Four Rights open four panels, each to the right of the level that opened it.
+    #[test]
+    fn a_menu_opens_four_nested_panels() {
+        let mut menu = menu_with_deep_chain();
+        for _ in 0..MAX_SUBMENU_DEPTH {
+            menu.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        }
+
+        assert_eq!(menu.submenu_depth(), MAX_SUBMENU_DEPTH);
+        assert!(menu.is_visible(), "opening panels must never dismiss the menu");
+        assert_eq!(menu.open_submenu_index(), Some(0), "the first step names the top branch");
+        let mut previous = menu.geometry();
+        for level in 1..=MAX_SUBMENU_DEPTH {
+            let panel = menu.submenu_panel_rect_at(level).expect("each level has a panel");
+            assert_eq!(
+                panel.x,
+                previous.x + previous.width as i32 - 6,
+                "level {level} hangs off the level above it"
+            );
+            assert!(panel.width > 0 && panel.height > 0);
+            previous = panel;
+        }
+    }
+
+    /// The depth contract: a branch on the deepest level announces itself but opens nothing.
+    #[test]
+    fn a_menu_refuses_a_fifth_panel_but_announces_the_branch() {
+        let mut menu = menu_with_deep_chain();
+        let requested = Arc::new(Mutex::new(Vec::new()));
+        let captured = requested.clone();
+        menu.submenu_requested.connect(move |text| {
+            captured.lock().unwrap().push(text.to_string());
+        });
+        let triggered = Arc::new(AtomicUsize::new(0));
+        let captured_triggered = triggered.clone();
+        menu.triggered.connect(move |_| {
+            captured_triggered.fetch_add(1, Ordering::SeqCst);
+        });
+        for _ in 0..MAX_SUBMENU_DEPTH {
+            menu.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        }
+        assert_eq!(menu.submenu_depth(), MAX_SUBMENU_DEPTH);
+
+        // "Level 5" is a branch on the deepest allowed level.
+        menu.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+
+        assert_eq!(menu.submenu_depth(), MAX_SUBMENU_DEPTH, "no fifth panel may open");
+        assert!(menu.is_visible());
+        assert_eq!(triggered.load(Ordering::SeqCst), 0, "a branch is not a committed choice");
+        let after = requested.lock().unwrap().clone();
+        assert_eq!(after.last().map(String::as_str), Some("Level 5"));
+    }
+
+    /// Escape unwinds one panel per press, deepest first, then the menu itself.
+    #[test]
+    fn escape_unwinds_every_nested_panel() {
+        let mut menu = menu_with_deep_chain();
+        for _ in 0..MAX_SUBMENU_DEPTH {
+            menu.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        }
+        for expected in (0..MAX_SUBMENU_DEPTH).rev() {
+            menu.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+            assert_eq!(menu.submenu_depth(), expected);
+            assert!(menu.is_visible(), "Escape leaves the menu open until the last press");
+        }
+        menu.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert!(!menu.is_visible());
+    }
+
+    /// A leaf in the deepest panel commits and dismisses through the pointer path.
+    #[test]
+    fn a_deep_leaf_commits_and_dismisses_the_menu() {
+        let mut menu = menu_with_deep_chain();
+        let chosen = Arc::new(Mutex::new(String::new()));
+        let captured = chosen.clone();
+        menu.triggered.connect(move |text| {
+            *captured.lock().unwrap() = text.to_string();
+        });
+        for level in 0..MAX_SUBMENU_DEPTH {
+            press_row(&mut menu, level, 0);
+        }
+        assert_eq!(menu.submenu_depth(), MAX_SUBMENU_DEPTH);
+
+        press_row(&mut menu, MAX_SUBMENU_DEPTH, 1);
+
+        assert_eq!(*chosen.lock().unwrap(), "Leaf 4");
+        assert!(!menu.is_visible(), "a leaf selection dismisses the whole popup");
+        assert_eq!(menu.submenu_depth(), 0);
+    }
+
+    /// Choosing a sibling branch replaces the deeper panels instead of stacking them.
+    #[test]
+    fn switching_a_parent_branch_discards_the_deeper_panels() {
+        let mut menu = menu_with_deep_chain();
+        press_row(&mut menu, 0, 0);
+        press_row(&mut menu, 1, 0);
+        assert_eq!(menu.submenu_depth(), 2);
+
+        press_row(&mut menu, 0, 1);
+
+        assert_eq!(menu.submenu_depth(), 1);
+        let entries = menu.level_entries(1).expect("the sibling panel is open");
+        assert_eq!(entries.first().map(MenuEntry::text), Some("Other 1"));
+    }
+
+    /// The hit rule must accept a press on any open panel, not just the popup rectangle.
+    ///
+    /// The panels hang to the right of the popup; the runtime asks `Widget::contains_point`
+    /// before it delivers an event, so a control that only answered for its own rectangle
+    /// made every child row unreachable at runtime even though the direct-event tests passed.
+    #[test]
+    fn contains_point_covers_every_open_panel() {
+        let mut menu = menu_with_deep_chain();
+        press_row(&mut menu, 0, 0);
+        press_row(&mut menu, 1, 0);
+        let panel = menu.submenu_panel_rect().expect("the deepest panel is open");
+        let child = Point::new(panel.x + 2, panel.y + 2);
+        assert!(
+            !menu.geometry().contains_point(child),
+            "the panel must lie outside the popup rectangle for this test to mean anything"
+        );
+        assert!(Widget::contains_point(&menu, child), "the runtime hit rule must accept the panel");
     }
 
     /// `&` markers parse to a mnemonic, strip from the drawn label, and answer Alt+letter.

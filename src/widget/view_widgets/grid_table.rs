@@ -1008,6 +1008,19 @@ impl Widget for GridTableWidget {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| crate::widget::capability::CapabilityValue::String(format!("{},{}", v.x, v.y)),
+            )),
+            "edit_requested" => {
+                Some(EventSignalRef::mapped("edit_requested", &self.edit_requested, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Int(v.0 as i64),
+                        crate::widget::capability::CapabilityValue::Int(v.1 as i64),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }

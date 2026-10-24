@@ -18,6 +18,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
+pub use crate::widget::menu_toolbar::MAX_SUBMENU_DEPTH;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -182,6 +183,15 @@ pub(crate) fn menu_submenu_panel_rect(parent: Rect, anchor_row: Rect, item_count
     Rect::new(parent.x + parent.width as i32, anchor_row.y, width, height)
 }
 
+/// One open child panel: the rows it shows and the rectangle it occupies.
+///
+/// The stack keeps one of these per open level, which is what makes a four-deep cascade one
+/// control state instead of a chain of mutually exclusive `Option` fields.
+struct SubmenuPanel {
+    items: Vec<MenuItem>,
+    rect: Rect,
+}
+
 /// Paints one menu list and the panel it sits in.
 ///
 /// This is the single painter for `MenuButton`'s menu, its child panels and `ToolButton`'s
@@ -194,6 +204,23 @@ pub(crate) fn draw_menu_panel(
     icon_sources: &[(u64, IconSource)],
     style: &crate::style::WidgetStyle,
     accent: Color,
+) {
+    draw_menu_panel_with_branches(context, panel, items, icon_sources, style, accent, true);
+}
+
+/// The shared menu painter, with the disclosure arrow made conditional.
+///
+/// `branches_open` says whether a row with children may open another panel. A one-level menu
+/// passes `true`; the deepest level of a cascade passes `false`, because an arrow that cannot
+/// open anything would promise a level the control refuses to build.
+pub(crate) fn draw_menu_panel_with_branches(
+    context: &mut RenderContext,
+    panel: Rect,
+    items: &[MenuItem],
+    icon_sources: &[(u64, IconSource)],
+    style: &crate::style::WidgetStyle,
+    accent: Color,
+    branches_open: bool,
 ) {
     // The popup panel is chrome: a popup that stayed white in a dark theme would be the
     // brightest object on screen. It reads the resolved surface, and the literal it used to be
@@ -299,7 +326,7 @@ pub(crate) fn draw_menu_panel(
         }
 
         // Submenu indicator
-        if item.submenu.is_some() && item.enabled {
+        if branches_open && item.submenu.is_some() && item.enabled {
             let sub_x = item_rect.x + item_rect.width as i32 - PADDING - 8;
             let sub_y = item_rect.y + item_rect.height as i32 / 2 - 4;
             context.execute_command(RenderCommand::DrawPath {
@@ -376,11 +403,8 @@ pub struct MenuButton {
     menu_open: bool,
     /// The menu's open/close reveal; see `menu::Menu` for why it is separate from `menu_open`.
     reveal: PopupReveal,
-    /// The open child panel's rows. One level is opened at a time: opening another branch
-    /// replaces whatever child panel was showing.
-    submenu_open: Option<Vec<MenuItem>>,
-    /// The rectangle the open child panel occupies, computed when the branch opens.
-    submenu_panel: Option<Rect>,
+    /// The open child panels, deepest last. One panel per level, up to [`MAX_SUBMENU_DEPTH`].
+    submenus: Vec<SubmenuPanel>,
     /// The top-level row the pointer last addressed, so Right can open its submenu.
     active_index: Option<usize>,
     /// How the button's face and arrow divide the press.
@@ -415,8 +439,7 @@ impl MenuButton {
             icon_source: None,
             menu_open: false,
             reveal: PopupReveal::new(false),
-            submenu_open: None,
-            submenu_panel: None,
+            submenus: Vec::new(),
             active_index: None,
             popup_mode: MenuButtonPopup::InstantPopup,
             arrow_type: MenuArrowType::Down,
@@ -525,9 +548,9 @@ impl MenuButton {
         let removed = self.menu_items.len() < len_before;
         if removed {
             self.item_icon_sources.retain(|(item_id, _)| *item_id != id);
-            // The child panel holds a snapshot of the removed row's subtree, so it can no
-            // longer be trusted to describe the menu that is still there.
-            self.close_submenu();
+            // Every open panel holds a snapshot of the removed row's subtree, so none of
+            // them can be trusted to describe the menu that is still there.
+            self.close_all_submenus();
             self.base.request_redraw();
         }
         removed
@@ -537,7 +560,7 @@ impl MenuButton {
     pub fn clear_items(&mut self) {
         self.menu_items.clear();
         self.item_icon_sources.clear();
-        self.close_submenu();
+        self.close_all_submenus();
         self.base.request_redraw();
     }
 
@@ -554,13 +577,26 @@ impl MenuButton {
     /// Returns a mutable reference to the menu items.
     pub fn items_mut(&mut self) -> &mut Vec<MenuItem> {
         self.item_icon_sources.clear();
-        self.close_submenu();
+        self.close_all_submenus();
         &mut self.menu_items
     }
 
     /// Returns whether the dropdown menu is currently open.
     pub fn is_menu_open(&self) -> bool {
         self.menu_open
+    }
+
+    /// Whether a branch's child panel is currently showing.
+    pub fn is_submenu_open(&self) -> bool {
+        !self.submenus.is_empty()
+    }
+
+    /// How many nested panels are open below the menu's own list.
+    ///
+    /// `0` when nothing is open and at most [`MAX_SUBMENU_DEPTH`], because a branch on the
+    /// deepest level cannot open another panel.
+    pub fn submenu_depth(&self) -> usize {
+        self.submenus.len()
     }
 
     /// How the face and the disclosure arrow divide a press.
@@ -645,15 +681,14 @@ impl MenuButton {
         self.base.request_redraw();
     }
 
-    /// Closes the dropdown menu and any open child panel.
+    /// Closes the dropdown menu and every open child panel.
     pub fn close_menu(&mut self) {
-        if !self.menu_open && self.submenu_open.is_none() && self.submenu_panel.is_none() {
+        if !self.menu_open && self.submenus.is_empty() {
             return;
         }
         self.menu_open = false;
         self.reveal.set_open(false);
-        self.submenu_open = None;
-        self.submenu_panel = None;
+        self.submenus.clear();
         self.active_index = None;
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::clear_popup_grab_for(self.id());
@@ -661,15 +696,13 @@ impl MenuButton {
         self.about_to_hide.emit();
     }
 
-    /// Collapses the open child panel, leaving the parent menu open.
+    /// Collapses the deepest open child panel, leaving its parent level open.
     fn close_submenu(&mut self) {
-        if self.submenu_open.is_none() && self.submenu_panel.is_none() {
+        if self.submenus.pop().is_none() {
             return;
         }
-        self.submenu_open = None;
-        self.submenu_panel = None;
         // The outside press that collapsed the child also cleared the runtime grab. The
-        // parent menu is still open, so re-arm it; otherwise the next outside press would
+        // parent level is still open, so re-arm it; otherwise the next outside press would
         // be delivered to whatever is behind this control.
         #[cfg(not(alloc_frugal))]
         if self.menu_open {
@@ -678,60 +711,92 @@ impl MenuButton {
         self.base.request_redraw();
     }
 
-    /// Opens the submenu of the top-level row at `index` to the right of the parent panel.
+    /// Drops every open child panel, leaving the menu itself open.
+    fn close_all_submenus(&mut self) {
+        if self.submenus.is_empty() {
+            return;
+        }
+        self.submenus.clear();
+        #[cfg(not(alloc_frugal))]
+        if self.menu_open {
+            crate::widget::runtime::set_popup_grab(self.id());
+        }
+        self.base.request_redraw();
+    }
+
+    /// The rows shown at `level`: the menu's own list at level 0, a panel's rows below it.
+    fn items_at(&self, level: usize) -> Option<&[MenuItem]> {
+        if level == 0 {
+            Some(&self.menu_items)
+        } else {
+            self.submenus.get(level - 1).map(|panel| panel.items.as_slice())
+        }
+    }
+
+    /// The panel rectangle at `level`: level 0 is the menu's own list.
+    fn panel_rect_at(&self, level: usize) -> Option<Rect> {
+        if level == 0 {
+            Some(self.menu_rect())
+        } else {
+            self.submenus.get(level - 1).map(|panel| panel.rect)
+        }
+    }
+
+    /// Row `index` of `level`.
+    fn row_rect_at(&self, level: usize, index: usize) -> Option<Rect> {
+        let panel = self.panel_rect_at(level)?;
+        let len = self.items_at(level)?.len();
+        (index < len).then(|| menu_item_rect(panel, index))
+    }
+
+    /// Opens the child panel of the row at `index` in `level` to the right of that level.
     ///
     /// Activating a branch is not an activation of the branch's own action: no
     /// [`Self::item_triggered`] fires and the parent menu stays open, which is the difference
     /// between a row that leads somewhere and a row that does something.
-    fn open_submenu(&mut self, index: usize) {
-        let Some(item) = self.menu_items.get(index) else {
+    ///
+    /// Opening replaces `level` and every deeper level, so picking a sibling branch closes
+    /// the branch that was open beside it. A `level` at or beyond [`MAX_SUBMENU_DEPTH`] is
+    /// refused, which is the depth contract this control shares with the rest of the family.
+    fn open_submenu_at(&mut self, level: usize, index: usize) {
+        if level >= MAX_SUBMENU_DEPTH {
+            return;
+        }
+        let Some(item) = self.items_at(level).and_then(|items| items.get(index)) else {
             return;
         };
         if !item.enabled {
             return;
         }
-        let Some(children) = item.submenu.clone() else {
+        let Some(children) = item.submenu.clone().filter(|children| !children.is_empty()) else {
             return;
         };
-        if children.is_empty() {
+        let Some(parent) = self.panel_rect_at(level) else {
             return;
-        }
+        };
+        let Some(anchor_row) = self.row_rect_at(level, index) else {
+            return;
+        };
         let text = item.text.clone();
+        let count = children.len();
         self.submenu_requested.emit(text);
-        let parent = self.menu_rect();
-        let anchor_row = menu_item_rect(parent, index);
-        self.submenu_panel = Some(menu_submenu_panel_rect(parent, anchor_row, children.len()));
-        self.submenu_open = Some(children);
-        self.active_index = Some(index);
+        self.submenus.truncate(level);
+        self.submenus.push(SubmenuPanel {
+            items: children,
+            rect: menu_submenu_panel_rect(parent, anchor_row, count),
+        });
+        if level == 0 {
+            self.active_index = Some(index);
+        }
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::set_popup_grab(self.id());
         self.base.request_redraw();
     }
 
-    /// Activates a top-level row: a branch opens its child panel, a leaf emits and closes.
-    fn activate_top_level(&mut self, index: usize) {
-        let Some(item) = self.menu_items.get(index) else {
-            return;
-        };
-        if !item.enabled {
-            return;
-        }
-        let id = item.id;
-        let is_branch = item.submenu.as_ref().is_some_and(|children| !children.is_empty());
-        if is_branch {
-            self.open_submenu(index);
-        } else {
-            self.item_triggered.emit(id);
-            self.close_menu();
-        }
-    }
-
-    /// Activates a row inside the open child panel.
-    fn activate_submenu_row(&mut self, index: usize) {
-        let Some(panel) = self.submenu_panel else {
-            return;
-        };
-        let Some(item) = self.submenu_open.as_ref().and_then(|items| items.get(index)) else {
+    /// Activates the row at `index` in `level`: a branch opens the next panel, a leaf emits
+    /// and closes the whole popup.
+    fn activate_row_at(&mut self, level: usize, index: usize) {
+        let Some(item) = self.items_at(level).and_then(|items| items.get(index)) else {
             return;
         };
         if !item.enabled {
@@ -739,49 +804,55 @@ impl MenuButton {
         }
         let id = item.id;
         let text = item.text.clone();
-        let nested = item.submenu.clone();
-        match nested {
-            Some(children) if !children.is_empty() => {
+        let is_branch = item.submenu.as_ref().is_some_and(|children| !children.is_empty());
+        if is_branch {
+            if level >= MAX_SUBMENU_DEPTH {
+                // Depth contract: announce the branch, but a fifth panel is refused.
                 self.submenu_requested.emit(text);
-                let anchor_row = menu_item_rect(panel, index);
-                self.submenu_panel =
-                    Some(menu_submenu_panel_rect(panel, anchor_row, children.len()));
-                self.submenu_open = Some(children);
-                self.base.request_redraw();
+            } else {
+                self.open_submenu_at(level, index);
             }
-            _ => {
-                self.item_triggered.emit(id);
-                self.close_menu();
-            }
+            return;
         }
+        self.item_triggered.emit(id);
+        self.close_menu();
     }
 
-    /// The index of the enabled top-level row a Right key should open.
-    fn keyboard_branch_index(&self) -> Option<usize> {
-        self.active_index
-            .filter(|index| {
-                self.menu_items.get(*index).is_some_and(|item| {
-                    item.enabled && item.submenu.as_ref().is_some_and(|c| !c.is_empty())
-                })
-            })
-            .or_else(|| {
-                self.menu_items.iter().position(|item| {
-                    item.enabled && item.submenu.as_ref().is_some_and(|c| !c.is_empty())
-                })
-            })
+    /// Activates a top-level row: a branch opens its child panel, a leaf emits and closes.
+    fn activate_top_level(&mut self, index: usize) {
+        self.activate_row_at(0, index);
     }
 
-    /// The child-panel row at `pos`, when one is enabled.
-    fn hit_test_submenu_item(&self, pos: Point) -> Option<usize> {
-        let panel = self.submenu_panel?;
-        let items = self.submenu_open.as_ref()?;
-        if !panel.contains_point(pos) {
-            return None;
+    /// The index of the enabled row in `level` that a Right key should open.
+    fn keyboard_branch_index_at(&self, level: usize) -> Option<usize> {
+        let is_branch = |index: usize| {
+            self.items_at(level).and_then(|items| items.get(index)).is_some_and(|item| {
+                item.enabled && item.submenu.as_ref().is_some_and(|c| !c.is_empty())
+            })
+        };
+        if level == 0 {
+            if let Some(index) = self.active_index.filter(|index| is_branch(*index)) {
+                return Some(index);
+            }
         }
-        items.iter().enumerate().find_map(|(index, item)| {
-            let row = menu_item_rect(panel, index);
-            (item.enabled && row.contains_point(pos)).then_some(index)
-        })
+        (0..self.items_at(level)?.len()).find(|index| is_branch(*index))
+    }
+
+    /// The deepest enabled submenu row at `pos`, as `(level, index)`.
+    fn hit_test_submenu(&self, pos: Point) -> Option<(usize, usize)> {
+        for (offset, panel) in self.submenus.iter().enumerate().rev() {
+            if !panel.rect.contains_point(pos) {
+                continue;
+            }
+            let level = offset + 1;
+            for (index, item) in panel.items.iter().enumerate() {
+                let row = menu_item_rect(panel.rect, index);
+                if item.enabled && row.contains_point(pos) {
+                    return Some((level, index));
+                }
+            }
+        }
+        None
     }
 
     /// Computes the menu rectangle positioned below the button.
@@ -825,15 +896,15 @@ impl Widget for MenuButton {
         &mut self.base
     }
 
-    /// The button, its open menu, and a child panel all accept the pointer.
+    /// The button, its open menu, and every child panel accept the pointer.
     ///
-    /// The menu is painted below the button's rectangle and a child panel to its right;
-    /// without this override every click on either was rejected before `hit_test_item` could
-    /// see it.
+    /// The menu is painted below the button's rectangle and each panel sits to the right of
+    /// the one that opened it; without this override every click on any of them was rejected
+    /// before `hit_test_item` could see it.
     fn contains_point(&self, point: crate::core::Point) -> bool {
         self.base().contains_point_with_touch_expansion(point)
             || (self.menu_open && self.menu_rect().contains_point(point))
-            || self.submenu_panel.is_some_and(|panel| panel.contains_point(point))
+            || self.submenus.iter().any(|panel| panel.rect.contains_point(point))
     }
 
     fn has_open_popup(&self) -> bool {
@@ -888,6 +959,9 @@ impl Widget for MenuButton {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "about_to_hide" => Some(EventSignalRef::unit("about_to_hide", &self.about_to_hide)),
+            "about_to_show" => Some(EventSignalRef::unit("about_to_show", &self.about_to_show)),
+            "clicked" => Some(EventSignalRef::unit("clicked", &self.clicked)),
             _ => None,
         }
     }
@@ -1160,11 +1234,21 @@ impl Draw for MenuButton {
             }
         }
 
-        // The child panel hangs to the right of the parent menu, outside the parent's reveal
-        // clip, so it is painted after the clip is popped. It is a single level: opening another
-        // branch replaces what is shown rather than stacking a third column.
-        if let (Some(children), Some(panel)) = (self.submenu_open.as_ref(), self.submenu_panel) {
-            draw_menu_panel(context, panel, children, &self.item_icon_sources, style, accent);
+        // The child panels hang to the right of the menu, outside the menu's reveal clip, so
+        // they are painted after the clip is popped. One panel per open level, deepest last:
+        // opening another branch replaces that level and everything below it.
+        for (offset, panel) in self.submenus.iter().enumerate() {
+            draw_menu_panel_with_branches(
+                context,
+                panel.rect,
+                &panel.items,
+                &self.item_icon_sources,
+                style,
+                accent,
+                // `offset + 1` is the level these rows sit on; the deepest panel cannot
+                // open another, so it paints no arrow.
+                offset + 1 < MAX_SUBMENU_DEPTH,
+            );
         }
     }
 }
@@ -1207,14 +1291,14 @@ impl EventHandler for MenuButton {
                         }
                     }
                 } else if self.menu_open {
-                    if let Some(index) = self.hit_test_submenu_item(*pos) {
-                        self.activate_submenu_row(index);
+                    if let Some((level, index)) = self.hit_test_submenu(*pos) {
+                        self.activate_row_at(level, index);
                     } else if let Some(index) = self.hit_test_item(*pos) {
                         self.active_index = Some(index);
                         self.activate_top_level(index);
-                    } else if self.submenu_open.is_some() {
-                        // An outside click collapses one level: the child panel first, the
-                        // menu itself on the next click.
+                    } else if !self.submenus.is_empty() {
+                        // An outside click collapses one level: the deepest panel first, the
+                        // menu itself on the click after the last panel is gone.
                         self.close_submenu();
                     } else {
                         self.close_menu();
@@ -1227,14 +1311,17 @@ impl EventHandler for MenuButton {
                 self.press_elapsed = None;
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
-                key_codes::ESCAPE if self.submenu_open.is_some() => self.close_submenu(),
+                key_codes::ESCAPE if !self.submenus.is_empty() => self.close_submenu(),
                 key_codes::ESCAPE if self.menu_open => self.close_menu(),
-                key_codes::RIGHT if self.menu_open && self.submenu_open.is_none() => {
-                    if let Some(index) = self.keyboard_branch_index() {
-                        self.open_submenu(index);
+                key_codes::RIGHT if self.menu_open => {
+                    // The deepest open panel owns the focus; the depth gate lives in
+                    // `open_submenu_at`, so Right on the deepest level opens nothing.
+                    let level = self.submenus.len();
+                    if let Some(index) = self.keyboard_branch_index_at(level) {
+                        self.open_submenu_at(level, index);
                     }
                 }
-                key_codes::LEFT if self.submenu_open.is_some() => self.close_submenu(),
+                key_codes::LEFT if !self.submenus.is_empty() => self.close_submenu(),
                 key_codes::SPACE | key_codes::ENTER => self.toggle_menu(),
                 _ => { /* Other keys are not relevant */ }
             },
@@ -1416,8 +1503,8 @@ mod tests {
 
         assert!(mb.is_menu_open(), "a branch activation must not close the parent menu");
         assert_eq!(triggered.load(Ordering::SeqCst), 0, "a branch is not a leaf activation");
-        assert_eq!(mb.submenu_open.as_ref().map(|items| items.len()), Some(2));
-        let panel = mb.submenu_panel.expect("the child panel has a rectangle");
+        assert_eq!(mb.submenus[0].items.len(), 2);
+        let panel = mb.submenus[0].rect;
         assert!(panel.x >= mb.menu_rect().x + mb.menu_rect().width as i32);
         assert!(mb.contains_point(Point::new(panel.x + 5, panel.y + 5)));
     }
@@ -1445,11 +1532,11 @@ mod tests {
         mb.open_menu();
         let row = mb.item_rect(0);
         mb.handle_event(&Event::mouse_press(row.x + 5, row.y + 5, 1));
-        assert!(mb.submenu_open.is_some());
+        assert!(mb.is_submenu_open());
 
         mb.handle_event(&Event::key_press(27, 0));
         assert!(mb.is_menu_open(), "the first Escape returns to the parent menu");
-        assert!(mb.submenu_open.is_none());
+        assert!(!mb.is_submenu_open());
 
         mb.handle_event(&Event::key_press(27, 0));
         assert!(!mb.is_menu_open());
@@ -1468,12 +1555,12 @@ mod tests {
         mb.open_menu();
         let branch = mb.item_rect(0);
         mb.handle_event(&Event::mouse_press(branch.x + 5, branch.y + 5, 1));
-        let panel = mb.submenu_panel.expect("the child panel has a rectangle");
+        let panel = mb.submenus[0].rect;
         mb.handle_event(&Event::mouse_press(panel.x + 5, panel.y + 5, 1));
 
         assert_eq!(*chosen.lock().unwrap(), 2);
         assert!(!mb.is_menu_open(), "a leaf selection closes the whole popup");
-        assert!(mb.submenu_open.is_none());
+        assert!(!mb.is_submenu_open());
     }
 
     /// Right opens the branch, Left returns to the parent menu.
@@ -1483,10 +1570,148 @@ mod tests {
         mb.open_menu();
 
         mb.handle_event(&Event::key_press(39, 0));
-        assert!(mb.submenu_open.is_some());
+        assert!(mb.is_submenu_open());
         mb.handle_event(&Event::key_press(37, 0));
-        assert!(mb.submenu_open.is_none());
+        assert!(!mb.is_submenu_open());
         assert!(mb.is_menu_open());
+    }
+
+    /// A button whose branch chain is deeper than the control may open.
+    ///
+    /// Every level carries a branch named after the level below it plus a leaf named after
+    /// its own level, and a second top-level branch exercises sibling replacement. The
+    /// deepest branch ("Level 5") sits on level [`MAX_SUBMENU_DEPTH`], where opening is
+    /// refused.
+    fn button_with_deep_chain() -> MenuButton {
+        let l5 = MenuItem::new(50, "Level 5").with_submenu(vec![MenuItem::new(51, "Leaf 5")]);
+        let l4 = MenuItem::new(40, "Level 4").with_submenu(vec![l5, MenuItem::new(41, "Leaf 4")]);
+        let l3 = MenuItem::new(30, "Level 3").with_submenu(vec![l4, MenuItem::new(31, "Leaf 3")]);
+        let l2 = MenuItem::new(20, "Level 2").with_submenu(vec![l3, MenuItem::new(21, "Leaf 2")]);
+        let l1 = MenuItem::new(10, "Level 1").with_submenu(vec![l2, MenuItem::new(11, "Leaf 1")]);
+        let mut mb = MenuButton::new("File", Rect::new(0, 0, 100, 30));
+        mb.add_item(l1);
+        mb.add_item(MenuItem::new(60, "Other").with_submenu(vec![MenuItem::new(61, "Other 1")]));
+        mb
+    }
+
+    /// Clicks row `index` of `level` (0 is the menu's own list).
+    fn click_row(mb: &mut MenuButton, level: usize, index: usize) {
+        let row = if level == 0 {
+            mb.item_rect(index)
+        } else {
+            menu_item_rect(mb.submenus[level - 1].rect, index)
+        };
+        mb.handle_event(&Event::mouse_press(row.x + 5, row.y + 5, 1));
+    }
+
+    /// Four Rights open four panels, each to the right of the level that opened it.
+    #[test]
+    fn menu_button_opens_four_nested_child_panels() {
+        let mut mb = button_with_deep_chain();
+        mb.open_menu();
+        for _ in 0..MAX_SUBMENU_DEPTH {
+            mb.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        }
+
+        assert_eq!(mb.submenu_depth(), MAX_SUBMENU_DEPTH);
+        assert!(mb.is_menu_open(), "opening panels must never close the menu");
+        let mut parent = mb.menu_rect();
+        for panel in &mb.submenus {
+            assert_eq!(panel.rect.x, parent.x + parent.width as i32);
+            assert!(
+                mb.contains_point(Point::new(panel.rect.x + 2, panel.rect.y + 2)),
+                "every open panel accepts the pointer"
+            );
+            parent = panel.rect;
+        }
+        assert_eq!(mb.submenus[3].items[0].id, 50, "the fourth panel holds the deepest branch");
+    }
+
+    /// The depth contract: a branch on the deepest level announces itself but opens nothing.
+    #[test]
+    fn menu_button_refuses_a_fifth_panel_but_announces_the_branch() {
+        let mut mb = button_with_deep_chain();
+        let requested = Arc::new(Mutex::new(Vec::new()));
+        let captured = requested.clone();
+        mb.submenu_requested.connect(move |text| {
+            captured.lock().unwrap().push(text.to_string());
+        });
+        let triggered = Arc::new(AtomicUsize::new(0));
+        let count = triggered.clone();
+        mb.item_triggered.connect(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+        mb.open_menu();
+        for _ in 0..MAX_SUBMENU_DEPTH {
+            mb.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        }
+        let before = requested.lock().unwrap().len();
+
+        // "Level 5" is a branch, but it sits on the deepest allowed level.
+        click_row(&mut mb, MAX_SUBMENU_DEPTH, 0);
+
+        assert_eq!(mb.submenu_depth(), MAX_SUBMENU_DEPTH, "no fifth panel may open");
+        assert!(mb.is_menu_open());
+        assert_eq!(triggered.load(Ordering::SeqCst), 0, "a branch is not a leaf activation");
+        let after = requested.lock().unwrap().clone();
+        assert_eq!(after.len(), before + 1);
+        assert_eq!(after.last().map(String::as_str), Some("Level 5"));
+    }
+
+    /// Escape closes one panel per press, deepest first, then the menu itself.
+    #[test]
+    fn menu_button_escape_unwinds_one_panel_per_press() {
+        let mut mb = button_with_deep_chain();
+        mb.open_menu();
+        for _ in 0..MAX_SUBMENU_DEPTH {
+            mb.handle_event(&Event::key_press(key_codes::RIGHT, 0));
+        }
+        assert_eq!(mb.submenu_depth(), MAX_SUBMENU_DEPTH);
+
+        for expected in (0..MAX_SUBMENU_DEPTH).rev() {
+            mb.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+            assert_eq!(mb.submenu_depth(), expected);
+            assert!(mb.is_menu_open(), "Escape leaves the menu open until it is last");
+        }
+        mb.handle_event(&Event::key_press(key_codes::ESCAPE, 0));
+        assert!(!mb.is_menu_open());
+    }
+
+    /// A leaf in the deepest panel triggers and closes the whole popup.
+    #[test]
+    fn menu_button_deep_leaf_selection_emits_item_triggered() {
+        let mut mb = button_with_deep_chain();
+        let chosen = Arc::new(Mutex::new(0u64));
+        let captured = chosen.clone();
+        mb.item_triggered.connect(move |id| {
+            *captured.lock().unwrap() = *id;
+        });
+        mb.open_menu();
+        for level in 0..MAX_SUBMENU_DEPTH {
+            click_row(&mut mb, level, 0);
+        }
+        assert_eq!(mb.submenu_depth(), MAX_SUBMENU_DEPTH);
+
+        click_row(&mut mb, MAX_SUBMENU_DEPTH, 1);
+
+        assert_eq!(*chosen.lock().unwrap(), 41, "Leaf 4 sits on the deepest level");
+        assert!(!mb.is_menu_open(), "a leaf selection closes the whole popup");
+        assert_eq!(mb.submenu_depth(), 0);
+    }
+
+    /// Choosing a sibling branch replaces the deeper panels instead of stacking them.
+    #[test]
+    fn menu_button_opening_a_sibling_branch_discards_the_deeper_panels() {
+        let mut mb = button_with_deep_chain();
+        mb.open_menu();
+        click_row(&mut mb, 0, 0);
+        click_row(&mut mb, 1, 0);
+        assert_eq!(mb.submenu_depth(), 2);
+
+        click_row(&mut mb, 0, 1);
+
+        assert_eq!(mb.submenu_depth(), 1);
+        assert_eq!(mb.submenus[0].items[0].id, 61);
     }
 
     #[test]

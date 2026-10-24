@@ -3,6 +3,8 @@
 
 //! Menu and toolbar widgets.
 pub mod action;
+/// The cascade depth shared by the submenu-painting controls.
+pub mod depth;
 pub mod dropdown_menu;
 /// Effect-policy boundary shared by the menu family.
 pub(crate) mod effects;
@@ -16,6 +18,7 @@ pub mod tool_bar;
 pub mod tool_button;
 // Re-export menu and toolbar types
 pub use action::Action;
+pub use depth::MAX_SUBMENU_DEPTH;
 pub use dropdown_menu::{DropdownItem, DropdownMenu};
 pub use menu::Menu;
 pub use menu_bar::MenuBar;

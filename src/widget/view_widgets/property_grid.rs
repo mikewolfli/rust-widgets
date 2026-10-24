@@ -268,6 +268,19 @@ impl Widget for PropertyGrid {
             "selected" => Some(EventSignalRef::mapped("selected", &self.selected, |v| {
                 CapabilityValue::UInt(*v as u64)
             })),
+            "cell_changed" => {
+                Some(EventSignalRef::mapped("cell_changed", &self.cell_changed, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
+                        crate::widget::capability::CapabilityValue::String(v.1.clone()),
+                    ]))
+                }))
+            }
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| crate::widget::capability::CapabilityValue::String(format!("{},{}", v.x, v.y)),
+            )),
             _ => None,
         }
     }

@@ -1527,6 +1527,24 @@ impl Widget for RibbonBar {
                     ]))
                 }))
             }
+            "application_clicked" => {
+                Some(EventSignalRef::unit("application_clicked", &self.application_clicked))
+            }
+            "group_overflow_clicked" => Some(EventSignalRef::mapped(
+                "group_overflow_clicked",
+                &self.group_overflow_clicked,
+                |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Int(v.0 as i64),
+                        crate::widget::capability::CapabilityValue::Int(v.1 as i64),
+                    ]))
+                },
+            )),
+            "quick_access_clicked" => Some(EventSignalRef::mapped(
+                "quick_access_clicked",
+                &self.quick_access_clicked,
+                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+            )),
             _ => None,
         }
     }

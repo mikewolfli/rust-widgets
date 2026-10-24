@@ -83,6 +83,50 @@ struct TransformedUniform {
     bind_group: wgpu::BindGroup,
 }
 
+/// The colour-and-depth pair the `3d` mesh pipeline renders into.
+///
+/// The view owns its texture, so the texture handle itself does not need to be stored. Cached per
+/// `(width, height)` like the other targets (REND-02) and rebuilt when the size changes.
+#[cfg(feature = "3d")]
+struct DepthTarget {
+    width: u32,
+    height: u32,
+    view: wgpu::TextureView,
+}
+
+/// Creates a 64-byte matrix uniform and the bind group that exposes it at group 0, binding 0.
+///
+/// Both `3d` pipelines use one matrix per call rather than a dynamic-offset arena, so this is the
+/// one shape their resources share. The 64-byte size is `mat4x4f`'s uniform footprint.
+#[cfg(feature = "3d")]
+fn create_matrix_uniform(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    label: &str,
+) -> TransformedUniform {
+    let buffer_label = format!("{label}_ubo");
+    let bind_group_label = format!("{label}_bind_group");
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(buffer_label.as_str()),
+        size: 64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(bind_group_label.as_str()),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &buffer,
+                offset: 0,
+                size: wgpu::BufferSize::new(64),
+            }),
+        }],
+    });
+    TransformedUniform { buffer, bind_group }
+}
+
 /// Device resources a renderer keeps across calls.
 ///
 /// # Why this exists (REND-02)
@@ -111,6 +155,15 @@ struct RenderCache {
     /// Mvp uniform and bind group for the `3d` transform pipeline.
     #[cfg(feature = "3d")]
     transformed_uniform: Option<TransformedUniform>,
+    /// The `Depth32Float` attachment for mesh draws.
+    #[cfg(feature = "3d")]
+    depth_target: Option<DepthTarget>,
+    /// Mvp uniform and bind group for the mesh pipeline.
+    #[cfg(feature = "3d")]
+    mesh_uniform: Option<TransformedUniform>,
+    /// Grow-only index buffer for mesh draws.
+    #[cfg(feature = "3d")]
+    mesh_indices: Option<VertexCache>,
 }
 
 impl RenderCache {
@@ -332,25 +385,64 @@ impl RenderCache {
         if self.transformed_uniform.is_some() {
             return;
         }
+        self.transformed_uniform = Some(create_matrix_uniform(device, layout, "transformed_mvp"));
+    }
+
+    /// Ensures the mesh mvp uniform and its bind group exist.
+    ///
+    /// Separate from [`Self::ensure_transformed_uniform`] so a 2D transformed draw and a mesh draw
+    /// never race for the same 64-byte buffer within one frame.
+    #[cfg(feature = "3d")]
+    fn ensure_mesh_uniform(&mut self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) {
+        if self.mesh_uniform.is_some() {
+            return;
+        }
+        self.mesh_uniform = Some(create_matrix_uniform(device, layout, "mesh_mvp"));
+    }
+
+    /// Ensures the `Depth32Float` attachment matches `(width, height)`.
+    #[cfg(feature = "3d")]
+    fn ensure_depth_target(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        let matches = self
+            .depth_target
+            .as_ref()
+            .map(|target| target.width == width && target.height == height)
+            .unwrap_or(false);
+        if matches {
+            return;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mesh_depth_texture"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.depth_target = Some(DepthTarget { width, height, view });
+    }
+
+    /// Ensures the mesh index buffer holds at least `bytes`.
+    #[cfg(feature = "3d")]
+    fn ensure_mesh_indices(&mut self, device: &wgpu::Device, bytes: u64) {
+        if self.mesh_indices.as_ref().map(|cache| cache.capacity >= bytes).unwrap_or(false) {
+            return;
+        }
+        let capacity = bytes.max(256).next_power_of_two();
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("transformed_mvp_ubo"),
-            size: 64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            label: Some("mesh_indices"),
+            size: capacity,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("transformed_mvp_bind_group"),
-            layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &buffer,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(64),
-                }),
-            }],
-        });
-        self.transformed_uniform = Some(TransformedUniform { buffer, bind_group });
+        self.mesh_indices = Some(VertexCache { buffer, capacity });
     }
 }
 
@@ -486,6 +578,36 @@ fn instanced_quad_bytes(quads: &[([crate::core::Point; 4], [f64; 4])]) -> Result
     }
     Ok(bytes)
 }
+
+/// Packs a mesh's vertices into the 32-byte interleaved layout [`super::shaders::MESH3D_VS`] reads.
+///
+/// Each record is the position as `(x, y, z, 1)` followed by straight RGBA, all little-endian
+/// `f32`. The stride, the shader's attribute offsets and this writer must agree exactly; a
+/// mismatch is a pipeline validation error rather than a silent misread.
+#[cfg(feature = "3d")]
+fn mesh_vertex_bytes(mesh: &crate::render::mesh3d::Mesh3D) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(mesh.vertices().len() * 32);
+    for vertex in mesh.vertices() {
+        for value in [vertex.position.x, vertex.position.y, vertex.position.z, 1.0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for channel in [vertex.color.r, vertex.color.g, vertex.color.b, vertex.color.a] {
+            bytes.extend_from_slice(&((channel as f32) / 255.0).to_le_bytes());
+        }
+    }
+    bytes
+}
+
+/// Packs a mesh's indices as little-endian `u32`, matching `IndexFormat::Uint32`.
+#[cfg(feature = "3d")]
+fn mesh_index_bytes(mesh: &crate::render::mesh3d::Mesh3D) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(mesh.indices().len() * 4);
+    for index in mesh.indices() {
+        bytes.extend_from_slice(&index.to_le_bytes());
+    }
+    bytes
+}
+
 /// Lightweight GPU renderer context backed by `wgpu`.
 pub struct WgpuRenderer {
     device: wgpu::Device,
@@ -509,6 +631,9 @@ pub struct WgpuRenderer {
     /// The vertex-stage layout that carries the mvp matrix (group 0 of the instanced pipeline).
     #[cfg(feature = "3d")]
     transformed_bind_group_layout: wgpu::BindGroupLayout,
+    /// Depth-tested triangle pipeline for mesh draws (`3d` only).
+    #[cfg(feature = "3d")]
+    mesh_pipeline: wgpu::RenderPipeline,
     /// Cached shader module pipeline references (BLUE11 R5.2).
     shader_cache: HashMap<String, wgpu::ShaderModule>,
     /// Device resources reused across calls (REND-02).
@@ -610,6 +735,16 @@ impl WgpuRenderer {
         let instanced_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rect_fs_instanced"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::FILL_RECT_INSTANCED_FS.into()),
+        });
+        #[cfg(feature = "3d")]
+        let mesh_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("mesh3d_vs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::MESH3D_VS.into()),
+        });
+        #[cfg(feature = "3d")]
+        let mesh_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("mesh3d_fs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::MESH3D_FS.into()),
         });
         let blur_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("blur_vs"),
@@ -906,6 +1041,83 @@ impl WgpuRenderer {
             })
         };
 
+        // ── Create the depth-tested `3d` mesh pipeline ──
+        //
+        // One vertex buffer, one index buffer, one mvp uniform. Culling is disabled to match the
+        // software rasteriser's documented policy: the depth test, not the winding order, decides
+        // what is visible. Depth is `Depth32Float`, cleared to `1.0` per pass and compared with
+        // `Less`, because every matrix this pipeline receives has already been remapped to the
+        // `0..=1` range WebGPU expects.
+        #[cfg(feature = "3d")]
+        let mesh_pipeline = {
+            let mesh_pipeline_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("mesh_pipeline_layout"),
+                    bind_group_layouts: &[Some(&transformed_bind_group_layout)],
+                    immediate_size: 0,
+                });
+            // 32-byte stride: position `(x, y, z, 1)` then colour.
+            let vertex_buffer_layout = wgpu::VertexBufferLayout {
+                array_stride: 32,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 0,
+                        shader_location: 0,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 16,
+                        shader_location: 1,
+                    },
+                ],
+            };
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("mesh_pipeline"),
+                layout: Some(&mesh_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &mesh_vs_module,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Some(vertex_buffer_layout)],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &mesh_fs_module,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+
         let mut shader_cache = HashMap::new();
         shader_cache.insert("clear_vs".to_string(), clear_vs_module);
         shader_cache.insert("clear_fs".to_string(), clear_fs_module);
@@ -917,6 +1129,10 @@ impl WgpuRenderer {
         shader_cache.insert("rect_vs_transformed".to_string(), transformed_vs_module);
         #[cfg(feature = "3d")]
         shader_cache.insert("rect_fs_instanced".to_string(), instanced_fs_module);
+        #[cfg(feature = "3d")]
+        shader_cache.insert("mesh3d_vs".to_string(), mesh_vs_module);
+        #[cfg(feature = "3d")]
+        shader_cache.insert("mesh3d_fs".to_string(), mesh_fs_module);
 
         Ok(Self {
             device,
@@ -930,6 +1146,8 @@ impl WgpuRenderer {
             transformed_pipeline,
             #[cfg(feature = "3d")]
             transformed_bind_group_layout,
+            #[cfg(feature = "3d")]
+            mesh_pipeline,
             shader_cache,
             cache: RefCell::new(RenderCache::default()),
         })
@@ -1389,6 +1607,156 @@ impl WgpuRenderer {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gpu_quads_readback"),
         });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(Some(encoder.finish()));
+        self.read_back(&readback.buffer, width, height, expected_len)
+    }
+
+    /// Renders an indexed triangle mesh through the depth-tested `3d` pipeline.
+    ///
+    /// `model` places the mesh, `camera` supplies the projection and `viewport` selects the part of
+    /// the `width × height` target the camera looks through. The composition is
+    /// `model × view-projection × viewport-matrix`, the same one
+    /// [`crate::render::mesh3d::project_mesh`] uses, so the GPU and software pictures describe the
+    /// same geometry.
+    ///
+    /// The pass clears colour to transparent and depth to `1.0`, then runs one indexed draw with a
+    /// `Depth32Float` attachment compared by `Less`. No triangle is culled: the depth test decides
+    /// visibility, matching the documented software policy. The target is read back and returned as
+    /// tightly packed RGBA8.
+    ///
+    /// An empty mesh or an empty viewport returns a transparent frame rather than an error, so a
+    /// caller may drop a mesh without special-casing the render call.
+    #[cfg(feature = "3d")]
+    pub fn render_mesh_3d_gpu(
+        &self,
+        width: u32,
+        height: u32,
+        mesh: &crate::render::mesh3d::Mesh3D,
+        model: &crate::render::math3d::Mat4,
+        camera: &crate::render::mesh3d::Camera,
+        viewport: crate::core::Rect,
+    ) -> Result<Vec<u8>, String> {
+        let expected_len = rgba_buffer_len(width, height)?;
+        if mesh.triangle_count() == 0 || viewport.width == 0 || viewport.height == 0 {
+            return Ok(vec![0u8; expected_len]);
+        }
+
+        let aspect = viewport.width as f32 / viewport.height as f32;
+        let mvp = model.then(&camera.view_projection(aspect)).then(
+            &crate::render::mesh3d::viewport_matrix(
+                viewport,
+                crate::core::Size::new(width, height),
+            ),
+        );
+        let mvp_bytes = mvp_column_major_bytes(&mvp);
+        let vertex_bytes = mesh_vertex_bytes(mesh);
+        let index_bytes = mesh_index_bytes(mesh);
+        let index_count = mesh.indices().len() as u32;
+        if index_count == 0 {
+            return Ok(vec![0u8; expected_len]);
+        }
+
+        let mut cache = self.cache.borrow_mut();
+        cache.ensure_target(&self.device, width, height);
+        cache.ensure_depth_target(&self.device, width, height);
+        cache.ensure_vertices(&self.device, vertex_bytes.len() as u64);
+        cache.ensure_mesh_indices(&self.device, index_bytes.len() as u64);
+        cache.ensure_mesh_uniform(&self.device, &self.transformed_bind_group_layout);
+        let target = cache.target.as_ref().ok_or_else(|| "render target missing".to_string())?;
+        let depth =
+            cache.depth_target.as_ref().ok_or_else(|| "depth target missing".to_string())?;
+        let vertices =
+            cache.vertices.as_ref().ok_or_else(|| "vertex buffer missing".to_string())?;
+        let indices =
+            cache.mesh_indices.as_ref().ok_or_else(|| "index buffer missing".to_string())?;
+        let uniform =
+            cache.mesh_uniform.as_ref().ok_or_else(|| "mvp uniform missing".to_string())?;
+
+        self.queue.write_buffer(&uniform.buffer, 0, &mvp_bytes);
+        self.queue.write_buffer(&vertices.buffer, 0, &vertex_bytes);
+        self.queue.write_buffer(&indices.buffer, 0, &index_bytes);
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gpu_mesh_encoder"),
+        });
+        {
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("gpu_mesh_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            rp.set_pipeline(&self.mesh_pipeline);
+            rp.set_bind_group(0, &uniform.bind_group, &[]);
+            rp.set_vertex_buffer(0, vertices.buffer.slice(..vertex_bytes.len() as u64));
+            rp.set_index_buffer(
+                indices.buffer.slice(..index_bytes.len() as u64),
+                wgpu::IndexFormat::Uint32,
+            );
+            rp.draw_indexed(0..index_count, 0, 0..1);
+        }
+        drop(cache);
+        self.queue.submit(Some(encoder.finish()));
+        self.read_target(width, height, expected_len, "gpu_mesh_readback")
+    }
+
+    /// Copies the cached render target into a tight RGBA8 buffer.
+    ///
+    /// The target must already hold the picture; this helper only arranges the copy and the blocking
+    /// read. Kept separate so an entry point that renders through a new pipeline does not repeat the
+    /// row-padding arithmetic.
+    #[cfg(feature = "3d")]
+    fn read_target(
+        &self,
+        width: u32,
+        height: u32,
+        expected_len: usize,
+        label: &str,
+    ) -> Result<Vec<u8>, String> {
+        let frame_bytes = readback_frame_bytes(width, height)?;
+        let padded_bytes_per_row = padded_row_bytes(width)?;
+        let mut cache = self.cache.borrow_mut();
+        cache.ensure_readback(&self.device, frame_bytes);
+        let target = cache.target.as_ref().ok_or_else(|| "render target missing".to_string())?;
+        let readback =
+            cache.readback.as_ref().ok_or_else(|| "readback buffer missing".to_string())?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &target.texture,
@@ -2289,5 +2657,33 @@ mod tests {
             left[0].abs_diff(right[2]) <= 2 && left[2].abs_diff(right[0]) <= 2,
             "the two sides of a symmetric edge must mirror: {left:?} vs {right:?}"
         );
+    }
+
+    /// The depth-tested mesh path draws the near face of a cube and leaves the background clear.
+    ///
+    /// This runs only on a host with an adapter; on a headless host it compiles and skips, which is
+    /// what keeps the pipeline type-checked without making the suite GPU-dependent.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn the_gpu_mesh_pipeline_draws_a_cube_through_a_depth_attachment() {
+        use crate::render::math3d::Mat4;
+        use crate::render::mesh3d::{Camera, Mesh3D, Vec3};
+
+        let Some(renderer) = renderer() else { return };
+        let mesh = Mesh3D::cube(Vec3::ZERO, 2.0, [crate::core::Color::RED; 6]);
+        let camera = Camera::new(Vec3::new(3.0, 2.0, 6.0), Vec3::ZERO, Vec3::new(0.0, 1.0, 0.0));
+        let pixels = renderer
+            .render_mesh_3d_gpu(
+                64,
+                64,
+                &mesh,
+                &Mat4::IDENTITY,
+                &camera,
+                crate::core::Rect::new(0, 0, 64, 64),
+            )
+            .expect("the mesh pipeline runs");
+        assert_eq!(pixels.len(), 64 * 64 * 4);
+        let painted = pixels.chunks_exact(4).filter(|pixel| pixel[3] > 0).count();
+        assert!(painted > 100, "the cube must cover part of the target, got {painted} pixels");
     }
 }

@@ -942,6 +942,14 @@ impl Widget for FreeformShapeWidget {
                     CapabilityValue::Bool(*v)
                 }))
             }
+            "geometry_changed" => {
+                Some(EventSignalRef::mapped("geometry_changed", &self.geometry_changed, |v| {
+                    crate::widget::capability::CapabilityValue::String(format!(
+                        "{},{},{},{}",
+                        v.x, v.y, v.width, v.height
+                    ))
+                }))
+            }
             _ => None,
         }
     }
