@@ -144,9 +144,10 @@ mod tests {
     #[test]
     fn test_render_dirty_regions_too_many() {
         // Twenty tiny regions covering 1.25% of the frame must each get their own
-        // pass. The rule used to be "more than 16 regions falls back", which made
-        // this input collapse to a single full-frame clip — repainting 40,000 pixels
-        // to show 500.
+        // clip, but the tree is walked once. The rule used to be "more than 16
+        // regions falls back", which made this input collapse to a single
+        // full-frame clip — repainting 40,000 pixels to show 500; and until G-04 the
+        // per-region answer also re-walked the tree twenty times.
         let mut tracker = DirtyRegionTracker::new();
         for i in 0..20 {
             tracker.add(Rect::new(i * 10, 0, 5, 5));
@@ -159,8 +160,10 @@ mod tests {
         render_dirty_regions(&mut tracker, &mut ctx, |_ctx| {
             call_count += 1;
         });
+        assert_eq!(call_count, 1, "the widget tree is traversed exactly once");
         assert_eq!(
-            call_count, 20,
+            ctx.region_bucket_passes(),
+            20,
             "many small regions stay separate; only covered area decides the fallback"
         );
         assert!(tracker.is_empty());

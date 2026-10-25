@@ -771,7 +771,7 @@ mod tests {
             .commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                RenderCommand::DrawText { text, .. } => Some(text.as_ref()),
                 _ => None,
             })
             .collect();
@@ -859,7 +859,7 @@ mod tests {
             .commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                RenderCommand::DrawText { text, .. } => Some(text.as_ref()),
                 _ => None,
             })
             .collect();

@@ -12,7 +12,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
-use crate::render::RenderContext;
+use crate::render::{MatteMode, RenderContext};
 use crate::signal::GenericSignal;
 use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -339,6 +339,8 @@ pub struct LottieTextLayer {
     pub transform: LottieTransform,
     /// Layer index, used for stacking.
     pub index: i32,
+    /// Track-matte mode (`tt`), when this layer is the *source* of a matte.
+    pub track_matte: Option<u8>,
 }
 
 /// An image layer parsed from a composition.
@@ -350,6 +352,8 @@ pub struct LottieImageLayer {
     pub transform: LottieTransform,
     /// Layer index, used for stacking.
     pub index: i32,
+    /// Track-matte mode (`tt`), when this layer is the *source* of a matte.
+    pub track_matte: Option<u8>,
 }
 
 /// A rectangle shape ("rc").
@@ -594,10 +598,19 @@ pub struct LottieLayer {
     pub transform: LottieTransform,
     /// Layer opacity (derived from transform opacity or ef).
     pub _opacity: f64,
+    /// The Lottie track-matte mode (`tt`), when this layer is matted by the layer below it in
+    /// paint order. `1`/`2` are alpha and inverted alpha, `3`/`4` luma and inverted luma.
+    pub track_matte: Option<u8>,
 }
 
 impl LottieLayer {
     fn from_json(layer_val: &serde_json::Value) -> Option<Self> {
+        // Only `ty: 4` (and a missing `ty`, whose default is 4) is a shape layer. Text and image
+        // layers are parsed by their own types; keeping them here as well made every text/image
+        // layer appear twice in the paint order.
+        if layer_val.get("ty").and_then(|v| v.as_i64()).unwrap_or(4) != 4 {
+            return None;
+        }
         let index = layer_val.get("ind").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
         let _parent = layer_val.get("parent").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
 
@@ -617,8 +630,13 @@ impl LottieLayer {
         };
 
         let _opacity = transform.opacity.at_frame_scalar(0.0) / 100.0;
+        let track_matte = layer_val
+            .get("tt")
+            .and_then(|v| v.as_u64())
+            .and_then(|matte| u8::try_from(matte).ok())
+            .filter(|matte| *matte != 0);
 
-        Some(Self { index, _parent, shapes, transform, _opacity })
+        Some(Self { index, _parent, shapes, transform, _opacity, track_matte })
     }
 
     fn parse_transform(val: &serde_json::Value) -> LottieTransform {
@@ -792,7 +810,12 @@ impl LottieTextLayer {
                 a: 1.0,
             })
             .unwrap_or(LottieColor { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
-        Some(Self { text, family, size, color, transform, index })
+        let track_matte = layer_val
+            .get("tt")
+            .and_then(|v| v.as_u64())
+            .and_then(|matte| u8::try_from(matte).ok())
+            .filter(|matte| *matte != 0);
+        Some(Self { text, family, size, color, transform, index, track_matte })
     }
 }
 
@@ -802,8 +825,21 @@ impl LottieImageLayer {
         let index = layer_val.get("ind").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
         let asset_id = layer_val.get("refId").and_then(|v| v.as_str())?.to_string();
         let transform = layer_val.get("ks").map(LottieLayer::parse_transform).unwrap_or_default();
-        Some(Self { asset_id, transform, index })
+        let track_matte = layer_val
+            .get("tt")
+            .and_then(|v| v.as_u64())
+            .and_then(|matte| u8::try_from(matte).ok())
+            .filter(|matte| *matte != 0);
+        Some(Self { asset_id, transform, index, track_matte })
     }
+}
+
+/// One painted layer, of any kind, in document paint order.
+#[derive(Debug, Clone, Copy)]
+enum LayerEntry {
+    Shape(usize),
+    Text(usize),
+    Image(usize),
 }
 
 /// LottieWidget — a Lottie JSON animation player widget.
@@ -838,7 +874,7 @@ pub struct LottieWidget {
     /// Resolved once at load. `render_layers` used to collect every layer into a fresh `Vec` and
     /// sort it on **every frame**, for an order that cannot change after parsing (WDGT-04). Keeping
     /// the order separate from `layers` means the accessors still report the document's own order.
-    layer_order: Vec<usize>,
+    layer_order: Vec<LayerEntry>,
     /// Composition width from Lottie JSON.
     comp_width: f64,
     /// Composition height from Lottie JSON.
@@ -1022,9 +1058,9 @@ impl LottieWidget {
                         Self::push_unique(&mut unsupported, &tag);
                     }
                 }
-                if layer.get("tt").and_then(|v| v.as_i64()).is_some_and(|matte| matte != 0) {
-                    Self::push_unique(&mut unsupported, "matte");
-                }
+                // Track mattes are rendered through the render layer's offscreen primitive
+                // (`push_matte` / `pop_matte` / `end_matte`), so a matted layer is not a
+                // capability gap and is deliberately not reported as unsupported.
                 let has_mask = layer.get("hasMask").and_then(|v| v.as_bool()).unwrap_or(false)
                     || layer
                         .get("masksProperties")
@@ -1040,8 +1076,17 @@ impl LottieWidget {
         self.image_cache.borrow_mut().clear();
         // The paint order is fixed by the document, so it is resolved here rather than per frame.
         // Lower `index` is lower in the stack, which is the order `render_layers` draws in.
-        self.layer_order = (0..self.layers.len()).collect();
-        self.layer_order.sort_by_key(|&slot| self.layers[slot].index);
+        // One paint order across every layer kind: Lottie interleaves text and image layers with
+        // shape layers by `ind`, so drawing all shapes and then all text/images would put every
+        // text/image above every shape regardless of the document.
+        let mut order = Vec::with_capacity(
+            self.layers.len() + self.text_layers.len() + self.image_layers.len(),
+        );
+        order.extend((0..self.layers.len()).map(LayerEntry::Shape));
+        order.extend((0..self.text_layers.len()).map(LayerEntry::Text));
+        order.extend((0..self.image_layers.len()).map(LayerEntry::Image));
+        order.sort_by_key(|entry| self.entry_index(*entry));
+        self.layer_order = order;
 
         // Record every shape type the renderer cannot draw. This is the queryable
         // diagnostic that replaces the old silent skip: a caller can now tell that
@@ -1375,6 +1420,71 @@ impl LottieWidget {
         }
     }
 
+    /// The document index of one painted entry.
+    fn entry_index(&self, entry: LayerEntry) -> i32 {
+        match entry {
+            LayerEntry::Shape(index) => self.layers.get(index).map_or(0, |layer| layer.index),
+            LayerEntry::Text(index) => self.text_layers.get(index).map_or(0, |layer| layer.index),
+            LayerEntry::Image(index) => self.image_layers.get(index).map_or(0, |layer| layer.index),
+        }
+    }
+
+    /// The track-matte mode an entry declares, if any.
+    fn entry_matte(&self, entry: LayerEntry) -> Option<u8> {
+        match entry {
+            LayerEntry::Shape(index) => self.layers.get(index).and_then(|layer| layer.track_matte),
+            LayerEntry::Text(index) => {
+                self.text_layers.get(index).and_then(|layer| layer.track_matte)
+            }
+            LayerEntry::Image(index) => {
+                self.image_layers.get(index).and_then(|layer| layer.track_matte)
+            }
+        }
+    }
+
+    /// Paints one entry, whatever its kind.
+    fn draw_entry(
+        &self,
+        context: &mut RenderContext,
+        frame: f64,
+        entry: LayerEntry,
+        offset_x: f64,
+        offset_y: f64,
+        scale: f64,
+    ) {
+        match entry {
+            LayerEntry::Shape(index) => {
+                if let Some(layer) = self.layers.get(index) {
+                    self.draw_layer(context, frame, layer, offset_x, offset_y, scale);
+                }
+            }
+            LayerEntry::Text(index) => {
+                if let Some(layer) = self.text_layers.get(index) {
+                    self.draw_text_layers_of(
+                        context,
+                        frame,
+                        core::slice::from_ref(layer),
+                        offset_x,
+                        offset_y,
+                        scale,
+                    );
+                }
+            }
+            LayerEntry::Image(index) => {
+                if let Some(layer) = self.image_layers.get(index) {
+                    self.draw_image_layers_of(
+                        context,
+                        frame,
+                        core::slice::from_ref(layer),
+                        offset_x,
+                        offset_y,
+                        scale,
+                    );
+                }
+            }
+        }
+    }
+
     /// Render all layers for a given frame.
     fn render_layers(&self, context: &mut RenderContext, frame: f64, widget_rect: Rect) {
         let scale_x = widget_rect.width as f64 / self.comp_width.max(1.0);
@@ -1390,50 +1500,96 @@ impl LottieWidget {
         // Render layers in the order parsed at load (lower index = lower in the stack). The sort
         // used to run per frame over a freshly collected `Vec`; the order is a property of the
         // document, so it is resolved once in `load_json`.
-        for layer in self.layer_order.iter().filter_map(|&slot| self.layers.get(slot)) {
-            let t = &layer.transform;
-            let pos = t.position.at_frame(frame);
-            let s = t.scale.at_frame(frame);
-            let rot = t.rotation.at_frame_scalar(frame);
-            let layer_opacity = t.opacity.at_frame_scalar(frame) / 100.0;
-
-            // The layer transform is the root placement: the fit `scale` maps
-            // composition units to device pixels, the layer's own scale is folded
-            // into the size multipliers, and rotation is reported so primitives can
-            // approximate it. Positions use the uniform `scale`, exactly as the
-            // original renderer did, so existing output is unchanged.
-            let placement = ShapePlacement {
-                tx: offset_x + pos.0.unwrap_or(0.0) * scale,
-                ty: offset_y + pos.1.unwrap_or(0.0) * scale,
-                scale_x: scale,
-                scale_y: scale,
-                size_x: s.0.unwrap_or(100.0) / 100.0,
-                size_y: s.1.unwrap_or(100.0) / 100.0,
-                opacity: layer_opacity,
-                has_rotation: rot.abs() > 0.5,
-            };
-
-            self.draw_shapes(context, frame, &layer.shapes, placement);
+        //
+        // A track-matted layer names the layer immediately below it in paint order as its matte
+        // source. The two are rendered as one unit through the render layer's offscreen primitive:
+        // the source is captured as coverage, then the matted layer is composited through it.
+        let matte_bounds = Rect::new(
+            offset_x.round() as i32,
+            offset_y.round() as i32,
+            comp_draw_w.round().max(0.0) as u32,
+            comp_draw_h.round().max(0.0) as u32,
+        );
+        let mut slot = 0usize;
+        while slot < self.layer_order.len() {
+            let source = self.layer_order[slot];
+            if let Some(tt) = self.entry_matte(source) {
+                let Some(&target) = self.layer_order.get(slot + 1) else {
+                    break;
+                };
+                let mode = match tt {
+                    2 => MatteMode::AlphaInverted,
+                    3 => MatteMode::Luma,
+                    4 => MatteMode::LumaInverted,
+                    // 1, and any mode this decoder does not know, use the source's alpha. The
+                    // render primitive still needs a defined behaviour rather than a skip.
+                    _ => MatteMode::Alpha,
+                };
+                // The source may be any layer kind: a text or image layer used as a matte is
+                // captured by the same offscreen primitive as a shape layer.
+                context.push_matte(matte_bounds, mode);
+                self.draw_entry(context, frame, source, offset_x, offset_y, scale);
+                context.pop_matte();
+                self.draw_entry(context, frame, target, offset_x, offset_y, scale);
+                context.end_matte();
+                slot += 2;
+                continue;
+            }
+            self.draw_entry(context, frame, source, offset_x, offset_y, scale);
+            slot += 1;
         }
-
-        self.draw_text_layers(context, frame, offset_x, offset_y, scale);
-        self.draw_image_layers(context, frame, offset_x, offset_y, scale);
     }
 
-    /// Paints the parsed text layers.
-    ///
-    /// The family is resolved through the installed [`LottieFontProvider`]; without one the
-    /// document's own family and size are used, which draws the text in whatever face the
-    /// renderer can supply rather than skipping the layer.
-    fn draw_text_layers(
+    /// Draws one shape layer under its own transform and opacity.
+    fn draw_layer(
         &self,
         context: &mut RenderContext,
         frame: f64,
+        layer: &LottieLayer,
         offset_x: f64,
         offset_y: f64,
         scale: f64,
     ) {
-        for layer in &self.text_layers {
+        let t = &layer.transform;
+        let pos = t.position.at_frame(frame);
+        let s = t.scale.at_frame(frame);
+        let rot = t.rotation.at_frame_scalar(frame);
+        let layer_opacity = t.opacity.at_frame_scalar(frame) / 100.0;
+
+        // The layer transform is the root placement: the fit `scale` maps
+        // composition units to device pixels, the layer's own scale is folded
+        // into the size multipliers, and rotation is reported so primitives can
+        // approximate it. Positions use the uniform `scale`, exactly as the
+        // original renderer did, so existing output is unchanged.
+        let placement = ShapePlacement {
+            tx: offset_x + pos.0.unwrap_or(0.0) * scale,
+            ty: offset_y + pos.1.unwrap_or(0.0) * scale,
+            scale_x: scale,
+            scale_y: scale,
+            size_x: s.0.unwrap_or(100.0) / 100.0,
+            size_y: s.1.unwrap_or(100.0) / 100.0,
+            opacity: layer_opacity,
+            has_rotation: rot.abs() > 0.5,
+        };
+
+        self.draw_shapes(context, frame, &layer.shapes, placement);
+    }
+
+    /// Paints a set of text layers (the dispatcher passes one in document order).
+    ///
+    /// The family is resolved through the installed [`LottieFontProvider`]; without one the
+    /// document's own family and size are used, which draws the text in whatever face the
+    /// renderer can supply rather than skipping the layer.
+    fn draw_text_layers_of(
+        &self,
+        context: &mut RenderContext,
+        frame: f64,
+        layers: &[LottieTextLayer],
+        offset_x: f64,
+        offset_y: f64,
+        scale: f64,
+    ) {
+        for layer in layers {
             if layer.text.is_empty() {
                 continue;
             }
@@ -1459,11 +1615,12 @@ impl LottieWidget {
         }
     }
 
-    /// Paints the parsed image layers when the host's provider resolves their asset.
-    fn draw_image_layers(
+    /// Paints a set of image layers when the host's provider resolves their asset.
+    fn draw_image_layers_of(
         &self,
         context: &mut RenderContext,
         frame: f64,
+        layers: &[LottieImageLayer],
         offset_x: f64,
         offset_y: f64,
         scale: f64,
@@ -1471,7 +1628,7 @@ impl LottieWidget {
         let Some(provider) = self.image_provider.as_ref() else {
             return;
         };
-        for layer in &self.image_layers {
+        for layer in layers {
             let image = {
                 let mut cache = self.image_cache.borrow_mut();
                 if let Some(position) = cache.iter().position(|(id, _)| id == &layer.asset_id) {
@@ -2791,9 +2948,72 @@ mod tests {
             "the accessor reports the document's own order"
         );
         let painted: Vec<i32> =
-            lottie.layer_order.iter().map(|&slot| lottie.layers[slot].index).collect();
+            lottie.layer_order.iter().map(|&entry| lottie.entry_index(entry)).collect();
         assert_eq!(painted, vec![0, 1, 2], "the paint order is sorted by `ind`");
-        assert_eq!(lottie.layer_order.len(), lottie.layers.len(), "and it addresses every layer");
+        assert_eq!(
+            lottie.layer_order.len(),
+            lottie.layers.len() + lottie.text_layers.len() + lottie.image_layers.len(),
+            "and it addresses every layer of every kind"
+        );
+    }
+
+    /// Text layers are interleaved with shape layers by `ind`, not painted above all of them.
+    #[test]
+    fn text_and_shape_layers_share_one_paint_order() {
+        let shape = |ind: u32| {
+            format!(
+                r#"{{"ind":{ind},"ty":4,"ks":{{"a":{{"k":[0,0]}},"p":{{"k":[0,0]}},"s":{{"k":[100,100]}},"r":{{"k":[0]}},"o":{{"k":[100]}}}},"shapes":[]}}"#
+            )
+        };
+        let text = |ind: u32, tt: Option<u32>| {
+            let matte = tt.map(|v| format!(r#","tt":{v}"#)).unwrap_or_default();
+            format!(
+                r#"{{"ind":{ind},"ty":5,"ks":{{"a":{{"k":[0,0]}},"p":{{"k":[0,0]}},"s":{{"k":[100,100]}},"r":{{"k":[0]}},"o":{{"k":[100]}}}}{matte},"t":{{"d":{{"k":{{"t":"hi","f":"Arial","s":12,"fc":[0,0,0]}}}}}}}}"#
+            )
+        };
+        // Document order: shape 2, text 1, shape 0. Paint order must be shape 0, text 1, shape 2.
+        let json = format!(
+            r#"{{"op":10,"ip":0,"fr":30,"w":100,"h":100,"layers":[{},{},{}]}}"#,
+            shape(2),
+            text(1, Some(1)),
+            shape(0)
+        );
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 100, 100));
+        lottie.load_json(&json).unwrap();
+        let order: Vec<(&str, i32)> = lottie
+            .layer_order
+            .iter()
+            .map(|&entry| {
+                let kind = match entry {
+                    LayerEntry::Shape(_) => "shape",
+                    LayerEntry::Text(_) => "text",
+                    LayerEntry::Image(_) => "image",
+                };
+                (kind, lottie.entry_index(entry))
+            })
+            .collect();
+        assert_eq!(
+            order,
+            vec![("shape", 0), ("text", 1), ("shape", 2)],
+            "every layer kind participates in the same `ind` order"
+        );
+    }
+
+    /// A text layer can be the matte source for a shape layer.
+    #[test]
+    fn a_text_layer_can_mask_the_layer_above_it() {
+        let text = r#"{"ind":1,"ty":5,"tt":1,"ks":{"a":{"k":[0,0]},"p":{"k":[50,50]},"s":{"k":[100,100]},"r":{"k":[0]},"o":{"k":[100]}},"t":{"d":{"k":{"t":"MASK","f":"Arial","s":12,"fc":[0,0,0]}}}}"#;
+        let target = r#"{"ind":2,"ty":4,"ks":{"a":{"k":[0,0]},"p":{"k":[50,50]},"s":{"k":[100,100]},"r":{"k":[0]},"o":{"k":[100]}},"shapes":[{"ty":"rc","p":{"k":[0,0]},"s":{"k":[80,80]},"r":{"k":[0]}},{"ty":"fl","c":{"k":[1,0,0,1]},"o":{"k":100},"r":1}]}"#;
+        let json =
+            format!(r#"{{"op":10,"ip":0,"fr":30,"w":100,"h":100,"layers":[{},{}]}}"#, text, target);
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 100, 100));
+        lottie.load_json(&json).unwrap();
+        let svg = crate::widget::svg::render_to_svg(&mut lottie);
+        assert!(svg.starts_with("<svg"), "a text-matted composition renders");
+        assert!(
+            !lottie.unsupported_shapes().iter().any(|tag| tag == "matte"),
+            "a supported text matte is not reported as unsupported"
+        );
     }
 
     #[test]
@@ -3103,13 +3323,40 @@ mod tests {
     }
 
     #[test]
-    fn a_mat_and_a_mask_are_reported_rather_than_ignored() {
+    fn a_mask_is_reported_but_a_track_matte_is_rendered() {
         let json = r#"{"op":10,"ip":0,"fr":30,"w":100,"h":100,
             "layers":[{"ind":0,"ty":4,"tt":1,"hasMask":true,"ks":{},"shapes":[]}]}"#;
         let mut lottie = LottieWidget::new(Rect::new(0, 0, 100, 100));
         lottie.load_json(json).unwrap();
-        assert!(lottie.unsupported_shapes().contains(&"matte".to_string()));
+        assert!(
+            !lottie.unsupported_shapes().contains(&"matte".to_string()),
+            "a track matte has a render primitive; it must not be reported as unsupported: {:?}",
+            lottie.unsupported_shapes()
+        );
         assert!(lottie.unsupported_shapes().contains(&"mask".to_string()));
+    }
+
+    /// A two-layer matte composition paints through the offscreen primitive: the source layer is
+    /// the matte and the `tt` layer is the content composited through it.
+    #[test]
+    fn a_track_matte_composites_the_layer_below_it() {
+        let json = r#"{"op":10,"ip":0,"fr":30,"w":100,"h":100,
+            "layers":[
+                {"ind":0,"ty":4,"ks":{},"shapes":[
+                    {"ty":"rc","p":{"k":[50,50]},"s":{"k":[40,40]},"r":{"k":[0]}},
+                    {"ty":"fl","c":{"k":[1,0,0,1]},"o":{"k":[100]},"r":1}
+                ]},
+                {"ind":1,"ty":4,"tt":1,"ks":{},"shapes":[
+                    {"ty":"rc","p":{"k":[50,50]},"s":{"k":[100,100]},"r":{"k":[0]}},
+                    {"ty":"fl","c":{"k":[1,0,0,1]},"o":{"k":[100]},"r":1}
+                ]}
+            ]}"#;
+        let (red, _) = render_and_count(json);
+        assert!(
+            (2_000..20_000).contains(&red),
+            "the matted content must be clipped to the source's coverage (a 40x40 source under a \
+             100x100 target), got {red} red pixels"
+        );
     }
 
     #[test]

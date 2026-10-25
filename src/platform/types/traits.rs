@@ -327,6 +327,23 @@ pub trait Platform: Send + Sync {
         0
     }
 
+    /// Tells the platform that a host notification says the environment facts changed.
+    ///
+    /// # What an implementation does
+    ///
+    /// Bumps [`crate::platform::environment_notify`]'s revision (the default) and, when the backend
+    /// caches the facts, drops that cache so the next read goes to the host. A backend that has a
+    /// native notification source calls this from its observer callback; a host that learns about
+    /// a settings change some other way can call it directly. The call is a *statement* that the
+    /// facts may have changed, not a request to re-read them now — the style layer reads them on
+    /// its next frame, which is the only thread-safe moment for many of these APIs.
+    ///
+    /// The default is deliberately a real implementation rather than a no-op: the revision is
+    /// process-wide, and a backend that inherits it still gives the watcher the signal it needs.
+    fn notify_environment_changed(&self) {
+        crate::platform::environment_notify::bump();
+    }
+
     /// Applies a cursor shape to a window.
     ///
     /// The runtime calls this once when the hovered control changes, not per motion event. A

@@ -164,6 +164,12 @@ MANUAL: dict[tuple[str, str], tuple[str, str]] = {
     ("key_sequence_editor", "editing_finished"): ("None", "None"),
     # A sort column is an enum token plus the ascending flag.
     ("file_dialog", "sort_changed"): ("Some(K::String)", "Some(S::Mixed)"),
+    # `pan_changed` carries a `Point`, which the property side has no kind for. The arm delivers
+    # the `[x, y]` pair, so the wire is two signed numbers rather than a re-parsed string.
+    ("zoom_pan_controller", "pan_changed"): ("Some(K::Int)", "Some(S::Tuple2)"),
+    # The filter row's arm serialises the condition list as one text value; a later revision can
+    # move the arm to a structured tuple without changing the name a subscriber uses.
+    ("filter_row", "filter_changed"): ("Some(K::String)", "Some(S::Scalar)"),
 }
 
 # Compatibility spellings published alongside their canonical name (kept in step with the
@@ -227,6 +233,9 @@ DOMAIN_AS_STRING: frozenset[str] = frozenset(
         "DateRange",
         "CardPosition",
         "PropertyValue",
+        # `PropertiesPanel::editor_opened` carries a typed handle; its arm publishes the
+        # property name, which is the wire value this table can type.
+        "PropertyEditorHandle",
         # A finance enum with a handful of variants and no data. Its name is the whole value, which
         # is the same contract `PropertyValueKind::Enum` gives the property side.
         "BookSide",
@@ -239,6 +248,20 @@ DOMAIN_AS_STRING: frozenset[str] = frozenset(
         "SearchOptions",
     }
 )
+
+# Domain payloads with more than one component: `(kind, shape)` the wire has to use so a
+# subscriber can read the parts rather than re-parse a debug dump. These are the shapes the
+# controls' `event_signal_dyn` arms actually deliver.
+STRUCTURED_PAYLOADS: dict[str, tuple[str, str]] = {
+    # A Gantt dependency is a predecessor id and a successor id; the arm delivers both strings.
+    "Dependency": ("K::String", "Tuple2"),
+    # A tile address is (zoom, x, y).
+    "TileKey": ("K::Int", "Tuple3"),
+    # A replacement request is the range list plus the replacement text.
+    "ReplaceRequest": ("K::String", "Mixed"),
+    # A map tile request is `(zoom, x, y, url)` at the wire.
+    "TileRequest": ("K::String", "Mixed"),
+}
 
 # ── Capability constructors in `properties.rs` ──────────────────────────────────────
 CAPABILITY_RE = re.compile(r"pub\(crate\) fn \w+\(\) -> WidgetCapability \{(.*?)\n\}", re.S)
@@ -411,6 +434,8 @@ def classify(payload: str) -> tuple[str, str]:
         return "K::String", "Mixed"
     if payload in DOMAIN_AS_STRING:
         return "K::String", "Scalar"
+    if payload in STRUCTURED_PAYLOADS:
+        return STRUCTURED_PAYLOADS[payload]
     raise Unsupported(f"no representation agreed for `{payload}`")
 
 

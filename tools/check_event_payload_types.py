@@ -45,6 +45,19 @@ import derive_event_payloads as derive  # noqa: E402  (path set up above)
 
 TABLE = REPO / "src/widget/capability/event_payloads.rs"
 
+# Shared conversion helpers whose return carrier is fixed. `event_signal_dyn` arms use them so
+# the same point/colour/rect encoding is not restated per control; the delivery check reads the
+# helper name when the closure body itself does not name a `CapabilityValue` variant.
+HELPER_CARRIERS = {
+    "dependency_value": "Tuple",
+    "tile_key_value": "Tuple",
+    "point_value": "Tuple",
+    "optional_rect_value": "Rect",
+    "colors_value": "Tuple",
+    "legend_entry_value": "Tuple",
+    "condition_value": "Tuple",
+}
+
 # One generated row: `EventSchema { name: "x", payload: Some(K::Int), shape: Some(S::Scalar) },`
 ROW_RE = re.compile(
     r"EventSchema \{\s*name: \"([a-z0-9_]+)\",\s*payload: (None|Some\(K::(\w+)\)),\s*"
@@ -198,6 +211,12 @@ def delivery_failures(inject: str | None = None) -> list[str]:
                 produced = "Bool" if produced != "Bool" else "String"
                 injected = True
             acceptable = {want} if kind == "-" or want_alt == want else {want, want_alt}
+            # A `Rect`-kind payload may travel as the structured `CapabilityValue::Rect` or as
+            # its `"x,y,w,h"` spelling. Both carry the same four numbers, and the structured
+            # carrier is the one a control with a real rectangle already delivers (a debug
+            # string would force the subscriber to re-parse it).
+            if kind == "Rect":
+                acceptable = {"String", "Rect"}
             if produced not in acceptable:
                 failures.append(
                     f"{control}.{name}: declares payload={kind}/shape={shape}, so a subscriber "
@@ -258,6 +277,13 @@ def _closure_carrier(region: str, from_index: int) -> str:
         if index != -1 and (best_index is None or index < best_index):
             best_index = index
             best_variant = variant
+    if best_variant == "?":
+        # A shared conversion helper is still a carrier decision, made once instead of repeated
+        # in every arm. Reading the helper's name here is what keeps `|v| point_value(*v)` from
+        # looking like an arm that delivers nothing.
+        for helper, carrier in HELPER_CARRIERS.items():
+            if re.search(rf"\b{re.escape(helper)}\b", body):
+                return carrier
     return best_variant
 
 

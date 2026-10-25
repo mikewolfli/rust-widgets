@@ -7,6 +7,7 @@ use super::Layout;
 use crate::compat::{Any, Box, Vec};
 use crate::core::{ObjectId, Rect, Size, TextDirection};
 use crate::widget::Widget;
+use core::cell::RefCell;
 use core::fmt;
 
 /// Internal child entry that holds a widget ID and optionally the widget object.
@@ -92,6 +93,19 @@ pub struct FlowLayout {
     /// Reading direction. [`TextDirection::LeftToRight`] (the default) keeps the historical
     /// geometry; right-to-left mirrors the arrangement horizontally inside the content box.
     text_direction: TextDirection,
+    /// Bumped by every mutation that can change what the children measure as.
+    ///
+    /// [`Self::child_sizes`] is asked for by `preferred_size`, `minimum_size`, `arrange` and
+    /// the two update paths, and a `size_hint` may contain text measurement. Without a
+    /// cross-pass cache one measurement pass re-asked every child two or three times (C-26).
+    size_revision: u64,
+    /// The last measured `Vec<Size>`, paired with the revision it was measured at.
+    ///
+    /// `RefCell` because every reader takes `&self` (`Layout`'s measure methods are
+    /// immutable); the cache is a pure memo of an immutable-for-this-revision answer.
+    /// [`Self::invalidate_size_cache`] is the hook for a live child whose own hint changed
+    /// without a structural mutation.
+    size_cache: RefCell<Option<(u64, Vec<Size>)>>,
 }
 impl fmt::Debug for FlowLayout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -109,6 +123,8 @@ impl FlowLayout {
             config: FlowLayoutConfig::default(),
             children: Vec::new(),
             text_direction: TextDirection::default(),
+            size_revision: 0,
+            size_cache: RefCell::new(None),
         }
     }
     /// Creates an empty layout with the supplied configuration.
@@ -123,7 +139,23 @@ impl FlowLayout {
             );
             config.padding = 0;
         }
-        Self { config, children: Vec::new(), text_direction: TextDirection::default() }
+        Self {
+            config,
+            children: Vec::new(),
+            text_direction: TextDirection::default(),
+            size_revision: 0,
+            size_cache: RefCell::new(None),
+        }
+    }
+
+    /// Drops the cached child measurements and advances the revision.
+    ///
+    /// Every structural mutation calls this. A caller that mutates a live child in place (so
+    /// its [`Widget::size_hint`] changed without this layout seeing the mutation) must call it
+    /// too; otherwise the previous pass's sizes are reused, which is the cache contract.
+    pub fn invalidate_size_cache(&mut self) {
+        self.size_revision = self.size_revision.wrapping_add(1);
+        *self.size_cache.get_mut() = None;
     }
 
     /// The reading direction used when placing children.
@@ -149,6 +181,7 @@ impl FlowLayout {
         let widget_id = child.id();
         let default_size = child.size_hint();
         self.children.push(FlowChild { widget_id, widget: Some(child), default_size });
+        self.invalidate_size_cache();
     }
     /// Removes the child at `index` and returns it, or returns `None` when the
     /// index is out of range.
@@ -158,7 +191,9 @@ impl FlowLayout {
     /// The entry is removed from the layout either way.
     pub fn remove_child(&mut self, index: usize) -> Option<Box<dyn Widget>> {
         if index < self.children.len() {
-            self.children.remove(index).widget
+            let removed = self.children.remove(index).widget;
+            self.invalidate_size_cache();
+            removed
         } else {
             None
         }
@@ -171,26 +206,45 @@ impl FlowLayout {
     /// child has the given id.
     pub fn set_child_size(&mut self, widget_id: ObjectId, size: Size) {
         if let Some(child) = self.children.iter_mut().find(|c| c.widget_id == widget_id) {
-            child.default_size = size;
+            if child.default_size != size {
+                child.default_size = size;
+                self.invalidate_size_cache();
+            }
         }
     }
 
     /// Removes every child, returning no ownership (owned widgets are dropped).
     pub fn clear_children(&mut self) {
-        self.children.clear();
+        if !self.children.is_empty() {
+            self.children.clear();
+            self.invalidate_size_cache();
+        }
     }
     /// Returns the number of children currently registered.
     pub fn child_count(&self) -> usize {
         self.children.len()
     }
 
-    /// Reads every child's size hint once, in child order.
+    /// Provides the measured child sizes to `read`, measuring at most once per revision.
     ///
-    /// Every size consumer in this file goes through here, so one layout pass measures a
-    /// child's hint once instead of once per consumer (`preferred_size` used to ask twice per
-    /// child, and `minimum_size`/`update` asked again).
-    fn child_sizes(&self) -> Vec<Size> {
-        self.children.iter().map(|child| child.size_hint()).collect()
+    /// Every size consumer in this file goes through here. The first consumer after a
+    /// mutation measures every child's hint once and stores the result; `preferred_size`,
+    /// `minimum_size`, `layout`, `arrange` and both update paths then reuse that same
+    /// `Vec<Size>` until the next mutation (C-26).
+    fn child_sizes<R>(&self, read: impl FnOnce(&[Size]) -> R) -> R {
+        {
+            let cache = self.size_cache.borrow();
+            if let Some((revision, sizes)) = cache.as_ref() {
+                if *revision == self.size_revision {
+                    return read(sizes);
+                }
+            }
+        }
+        let sizes: Vec<Size> = self.children.iter().map(|child| child.size_hint()).collect();
+        *self.size_cache.borrow_mut() = Some((self.size_revision, sizes));
+        let cache = self.size_cache.borrow();
+        let (_, sizes) = cache.as_ref().expect("the cache was filled immediately above");
+        read(sizes)
     }
 
     /// Computes a rectangle for each child, in the order the children were
@@ -202,8 +256,7 @@ impl FlowLayout {
     /// the remaining space is still placed at the next slot and is allowed to
     /// overflow when `wrap` is off.
     pub fn layout(&self, available_rect: Rect) -> Vec<Rect> {
-        let sizes = self.child_sizes();
-        self.layout_sized(available_rect, &sizes)
+        self.child_sizes(|sizes| self.layout_sized(available_rect, sizes))
     }
     /// Lays `sizes` out, one entry per child, in flow order.
     ///
@@ -297,7 +350,6 @@ impl FlowLayout {
         // signed quantity. The old body cast it to `u32` first, which overflowed (debug panic)
         // or wrapped (release) for `spacing = -1`. Accumulate in `i64`, then clamp to zero.
         let count = self.children.len() as i32;
-        let sizes = self.child_sizes();
         let gap_total: i64 =
             if count > 1 { (count - 1) as i64 * self.config.spacing as i64 } else { 0 };
         // S-47: a negative padding is rejected at construction, and clamped here as a second
@@ -306,7 +358,7 @@ impl FlowLayout {
         // Clamp the accumulated extent into the representable range so a huge positive
         // padding saturates instead of wrapping around to a bogus small size (S-47).
         let clamp_extent = |v: i64| -> u32 { v.clamp(0, u32::MAX as i64) as u32 };
-        match self.config.direction {
+        self.child_sizes(|sizes| match self.config.direction {
             FlowDirection::Horizontal => {
                 let width: i64 =
                     sizes.iter().map(|size| size.width as i64).sum::<i64>() + gap_total;
@@ -319,7 +371,7 @@ impl FlowLayout {
                 let width: i64 = sizes.iter().map(|size| size.width as i64).max().unwrap_or(0);
                 Size::new(clamp_extent(width + 2 * padding), clamp_extent(height + 2 * padding))
             }
-        }
+        })
     }
 }
 crate::impl_default_via_new!(FlowLayout);
@@ -342,29 +394,30 @@ impl Layout for FlowLayout {
     /// wrapping is allowed) or the whole run on the main axis.
     fn minimum_size(&self) -> Size {
         let padding = (self.config.padding.max(0) as u32).saturating_mul(2);
-        let sizes = self.child_sizes();
-        let mut main = 0u32;
-        let mut cross = 0u32;
-        for size in &sizes {
-            let (child_main, child_cross) = match self.config.direction {
-                FlowDirection::Horizontal => (size.width, size.height),
-                FlowDirection::Vertical => (size.height, size.width),
-            };
-            main = if self.config.wrap {
-                main.max(child_main)
-            } else {
-                main.saturating_add(child_main)
-            };
-            cross = cross.max(child_cross);
-        }
-        match self.config.direction {
-            FlowDirection::Horizontal => {
-                Size::new(main.saturating_add(padding), cross.saturating_add(padding))
+        self.child_sizes(|sizes| {
+            let mut main = 0u32;
+            let mut cross = 0u32;
+            for size in sizes {
+                let (child_main, child_cross) = match self.config.direction {
+                    FlowDirection::Horizontal => (size.width, size.height),
+                    FlowDirection::Vertical => (size.height, size.width),
+                };
+                main = if self.config.wrap {
+                    main.max(child_main)
+                } else {
+                    main.saturating_add(child_main)
+                };
+                cross = cross.max(child_cross);
             }
-            FlowDirection::Vertical => {
-                Size::new(cross.saturating_add(padding), main.saturating_add(padding))
+            match self.config.direction {
+                FlowDirection::Horizontal => {
+                    Size::new(main.saturating_add(padding), cross.saturating_add(padding))
+                }
+                FlowDirection::Vertical => {
+                    Size::new(cross.saturating_add(padding), main.saturating_add(padding))
+                }
             }
-        }
+        })
     }
 
     /// The wrapped height at a given width, which is the question a height-for-width parent
@@ -378,20 +431,21 @@ impl Layout for FlowLayout {
         if inner == 0 || self.children.is_empty() {
             return height;
         }
-        let sizes = self.child_sizes();
-        let lines = crate::layout::wrap::break_lines(
-            &sizes,
-            crate::layout::WrapDirection::Horizontal,
-            self.config.spacing,
-            inner as i32,
-            self.config.wrap,
-        );
-        let row_heights: i32 = lines
-            .iter()
-            .map(|line| line.iter().map(|index| sizes[*index].height as i32).max().unwrap_or(0))
-            .sum();
-        let gaps = (lines.len() as i32 - 1).max(0) * self.config.spacing;
-        (row_heights + gaps + 2 * padding).max(0) as u32
+        self.child_sizes(|sizes| {
+            let lines = crate::layout::wrap::break_lines(
+                sizes,
+                crate::layout::WrapDirection::Horizontal,
+                self.config.spacing,
+                inner as i32,
+                self.config.wrap,
+            );
+            let row_heights: i32 = lines
+                .iter()
+                .map(|line| line.iter().map(|index| sizes[*index].height as i32).max().unwrap_or(0))
+                .sum();
+            let gaps = (lines.len() as i32 - 1).max(0) * self.config.spacing;
+            (row_heights + gaps + 2 * padding).max(0) as u32
+        })
     }
 
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
@@ -405,11 +459,16 @@ impl Layout for FlowLayout {
                 widget: None,
                 default_size: Size::new(100, 100),
             });
+            self.invalidate_size_cache();
         }
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
+        let before = self.children.len();
         self.children.retain(|c| c.widget_id != widget_id);
+        if self.children.len() != before {
+            self.invalidate_size_cache();
+        }
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
@@ -429,21 +488,23 @@ impl Layout for FlowLayout {
     /// unconstrained. A declarative flow (whose children were added by id and therefore have no
     /// widget to ask) keeps its `100x100` default in both paths.
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
-        let sizes: Vec<Size> = self
-            .children
-            .iter()
-            .enumerate()
-            .map(|(index, child)| {
-                let fallback = child.size_hint();
-                ChildInfo::find_at(children, index, child.widget_id)
-                    .map_or(fallback, |info| info.resolved_size(fallback))
-            })
-            .collect();
-        for (index, child_rect) in self.layout_sized(rect, &sizes).into_iter().enumerate() {
-            if let Some(child) = self.children.get(index) {
-                out(child.widget_id, child_rect);
+        self.child_sizes(|fallback| {
+            let sizes: Vec<Size> = self
+                .children
+                .iter()
+                .enumerate()
+                .map(|(index, child)| {
+                    let hint = fallback.get(index).copied().unwrap_or_else(|| child.size_hint());
+                    ChildInfo::find_at(children, index, child.widget_id)
+                        .map_or(hint, |info| info.resolved_size(hint))
+                })
+                .collect();
+            for (index, child_rect) in self.layout_sized(rect, &sizes).into_iter().enumerate() {
+                if let Some(child) = self.children.get(index) {
+                    out(child.widget_id, child_rect);
+                }
             }
-        }
+        })
     }
 
     /// The device-aware path (BLUE22 §B.6 rule 7 for this layout).
@@ -462,14 +523,15 @@ impl Layout for FlowLayout {
         let scale = context.layout_scale.max(context.font_scale);
         let spacing = (self.config.spacing as f32 * scale).round() as i32;
         let padding = (self.config.padding.max(0) as f32 * scale).round() as i32;
-        let sizes = self.child_sizes();
-        for (index, child_rect) in
-            self.layout_sized_with(rect, &sizes, spacing, padding).into_iter().enumerate()
-        {
-            if let Some(child) = self.children.get(index) {
-                widgets(child.widget_id, child_rect);
+        self.child_sizes(|sizes| {
+            for (index, child_rect) in
+                self.layout_sized_with(rect, sizes, spacing, padding).into_iter().enumerate()
+            {
+                if let Some(child) = self.children.get(index) {
+                    widgets(child.widget_id, child_rect);
+                }
             }
-        }
+        })
     }
 
     fn child_ids(&self) -> Vec<ObjectId> {
@@ -514,6 +576,35 @@ mod tests {
             self.id
         }
         fn size_hint(&self) -> Size {
+            self.size
+        }
+    }
+
+    /// A widget that counts how often its hint is asked for, for the cross-pass cache (C-26).
+    struct CountingWidget {
+        id: ObjectId,
+        size: Size,
+        hints: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl CountingWidget {
+        fn new(
+            id: ObjectId,
+            width: u32,
+            height: u32,
+            hints: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        ) -> Self {
+            Self { id, size: Size::new(width, height), hints }
+        }
+    }
+    impl crate::event::EventHandler for CountingWidget {
+        fn handle_event(&mut self, _event: &crate::event::Event) {}
+    }
+    impl Widget for CountingWidget {
+        fn id(&self) -> ObjectId {
+            self.id
+        }
+        fn size_hint(&self) -> Size {
+            self.hints.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.size
         }
     }
@@ -1163,5 +1254,38 @@ mod tests {
 
         layout.config.wrap = false;
         assert_eq!(layout.minimum_size(), Size::new(120, 20), "no wrap means the run is the floor");
+    }
+
+    /// C-26: one revision asks every child once, no matter how many consumers read the sizes.
+    #[test]
+    fn child_hints_are_measured_once_per_revision() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let hints = Arc::new(AtomicUsize::new(0));
+        let mut layout = FlowLayout::new();
+        layout.add_child(Box::new(CountingWidget::new(1, 40, 20, Arc::clone(&hints))));
+        layout.add_child(Box::new(CountingWidget::new(2, 60, 30, Arc::clone(&hints))));
+        // `add_child` itself reads the hint once to seed `default_size`; measure from here.
+        hints.store(0, Ordering::Relaxed);
+
+        let rect = Rect::new(0, 0, 400, 300);
+        let _ = layout.preferred_size();
+        let _ = layout.minimum_size();
+        let _ = layout.layout(rect);
+        layout.arrange(rect, &[], &mut |_, _| {});
+        assert_eq!(
+            hints.load(Ordering::Relaxed),
+            2,
+            "two children are measured once each across preferred/minimum/layout/arrange"
+        );
+
+        layout.invalidate_size_cache();
+        let _ = layout.preferred_size();
+        assert_eq!(
+            hints.load(Ordering::Relaxed),
+            4,
+            "a structural invalidation makes the next consumer measure again"
+        );
     }
 }

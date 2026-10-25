@@ -200,7 +200,7 @@ pub struct CupertinoAlertDialog {
     /// Emitted with no payload when the user cancels. A dialog constructed with
     /// an empty `cancel_text` still declares this signal but has no cancel
     /// affordance to emit it.
-    pub cancelled: GenericSignal,
+    pub canceled: GenericSignal,
 }
 
 impl CupertinoAlertDialog {
@@ -215,7 +215,7 @@ impl CupertinoAlertDialog {
             confirm_text: "OK".to_string(),
             cancel_text: "Cancel".to_string(),
             confirmed: GenericSignal::new(),
-            cancelled: GenericSignal::new(),
+            canceled: GenericSignal::new(),
         }
     }
 
@@ -231,6 +231,11 @@ impl CupertinoAlertDialog {
     /// Returns the title text.
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// Compatibility spelling of [`Self::canceled`] (W-19): the same emitted signal.
+    pub fn cancelled(&self) -> &GenericSignal {
+        &self.canceled
     }
 
     /// Sets the message text.
@@ -303,7 +308,7 @@ impl Widget for CupertinoAlertDialog {
         use crate::signal::EventSignalRef;
         match name {
             "confirmed" => Some(EventSignalRef::unit("confirmed", &self.confirmed)),
-            "cancelled" => Some(EventSignalRef::unit("cancelled", &self.cancelled)),
+            "canceled" => Some(EventSignalRef::unit("canceled", &self.canceled)),
             // W-19 compatibility spelling.
             _ => None,
         }
@@ -589,7 +594,7 @@ impl EventHandler for CupertinoAlertDialog {
                     if pos.x < mid_x {
                         // Cancel clicked
                         if let Event::MouseRelease { .. } = event {
-                            self.cancelled.emit();
+                            self.canceled.emit();
                         }
                     } else {
                         // Confirm clicked
@@ -1233,7 +1238,7 @@ mod tests {
         let mut dlg = CupertinoAlertDialog::new(Rect::new(0, 0, 400, 300));
         let fired = Arc::new(AtomicBool::new(false));
         let f = fired.clone();
-        dlg.cancelled.connect(move || {
+        dlg.canceled.connect(move || {
             f.store(true, Ordering::SeqCst);
         });
 

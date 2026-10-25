@@ -44,7 +44,7 @@ impl TooltipLine {
 /// A free-floating tooltip that a chart positions at a data point.
 ///
 /// The hover source is the chart: it calls [`Self::show_at`] from its own
-/// `hovered_point_changed`/`point_hovered` handler, supplying the anchor and the complete
+/// `point_hover_changed`/`point_hovered` handler, supplying the anchor and the complete
 /// series/value/time text. With [`Self::set_follow_pointer`] enabled the bubble also follows
 /// pointer motion between hovers, which is what a dense line chart needs.
 pub struct ChartTooltip {
@@ -64,7 +64,7 @@ impl ChartTooltip {
     /// Creates a hidden tooltip.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Tooltip, geometry, "ChartTooltip"),
+            base: BaseWidget::new(WidgetKind::ChartTooltip, geometry, "ChartTooltip"),
             anchor: Point::new(0, 0),
             offset: Point::new(12, 18),
             follow_pointer: true,
@@ -194,6 +194,13 @@ impl EventHandler for ChartTooltip {
 impl Draw for ChartTooltip {
     fn draw(&mut self, context: &mut RenderContext) {
         if !self.visible || self.content.is_empty() {
+            // A fresh tooltip paints its resting chip, so the rendering census can see the
+            // control and its theme response before anything is shown.
+            let rect = self.geometry();
+            let style = self.style();
+            let (surface, ink) = surface_ink(style);
+            context.fill_rect(rect, surface.with_alpha(40));
+            context.draw_rect(rect, surface.blend(&ink, 0.20));
             return;
         }
         let style = self.style();

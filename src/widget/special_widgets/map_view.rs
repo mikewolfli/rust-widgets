@@ -184,6 +184,25 @@ pub struct MapView {
     pub marker_clicked: Signal1<String>,
     /// Emitted when a multi-marker cluster badge is clicked. Payload is the cluster's world centre.
     pub cluster_clicked: Signal1<(f32, f32)>,
+    /// Emitted with each tile the map asks the host to fetch.
+    ///
+    /// The map never performs I/O: it computes the addresses the visible viewport needs and
+    /// reports them, and the host answers through [`Self::deliver_tile`] once it holds the bytes.
+    pub tile_requested: Signal1<TileRequest>,
+    /// The tile source. It owns addresses and the delivered-pixel cache, not a network client.
+    tile_loader: TileLoader,
+    /// The `-`/`1:1`/`+` strip painted over the map.
+    zoom_control: ZoomControl,
+    /// The distance legend painted in the corner.
+    scale_bar: ScaleBar,
+    /// The north needle painted under the zoom strip.
+    compass: Compass,
+    /// Whether the three overlay controls are painted and hit-tested.
+    show_map_controls: bool,
+    /// Whether a paint asks the host for the tiles the viewport touches.
+    prefetch_on_paint: bool,
+    /// The viewport the last automatic prefetch was computed for.
+    last_tile_viewport: Option<TileViewport>,
 }
 
 impl MapView {
@@ -207,7 +226,175 @@ impl MapView {
             marker_selected: Signal1::new(),
             marker_clicked: Signal1::new(),
             cluster_clicked: Signal1::new(),
+            tile_requested: Signal1::new(),
+            tile_loader: TileLoader::new(Rect::new(0, 0, 0, 0)),
+            zoom_control: ZoomControl::new(Rect::new(0, 0, 0, 0)),
+            scale_bar: ScaleBar::new(Rect::new(0, 0, 0, 0)),
+            compass: Compass::new(Rect::new(0, 0, 0, 0)),
+            show_map_controls: true,
+            prefetch_on_paint: true,
+            last_tile_viewport: None,
         }
+    }
+
+    /// The tile source: its template, zoom range and delivered-tile cache.
+    pub fn tile_loader(&self) -> &TileLoader {
+        &self.tile_loader
+    }
+
+    /// The tile source, for a host that delivers pixels or changes the template.
+    pub fn tile_loader_mut(&mut self) -> &mut TileLoader {
+        &mut self.tile_loader
+    }
+
+    /// The zoom strip painted over the map.
+    pub fn zoom_control(&self) -> &ZoomControl {
+        &self.zoom_control
+    }
+
+    /// The zoom strip, for a host that wants its own range or signal.
+    pub fn zoom_control_mut(&mut self) -> &mut ZoomControl {
+        &mut self.zoom_control
+    }
+
+    /// The distance legend painted over the map.
+    pub fn scale_bar(&self) -> &ScaleBar {
+        &self.scale_bar
+    }
+
+    /// The distance legend, for a host that changes units or style.
+    pub fn scale_bar_mut(&mut self) -> &mut ScaleBar {
+        &mut self.scale_bar
+    }
+
+    /// The north needle painted over the map.
+    pub fn compass(&self) -> &Compass {
+        &self.compass
+    }
+
+    /// The north needle, for a host that listens for its reset request.
+    pub fn compass_mut(&mut self) -> &mut Compass {
+        &mut self.compass
+    }
+
+    /// Whether the zoom strip, compass and scale bar are painted.
+    pub fn map_controls_visible(&self) -> bool {
+        self.show_map_controls
+    }
+
+    /// Shows or hides the three overlay controls.
+    pub fn set_map_controls_visible(&mut self, visible: bool) {
+        if self.show_map_controls == visible {
+            return;
+        }
+        self.show_map_controls = visible;
+        self.base.request_redraw();
+    }
+
+    /// Whether a paint asks the host for the tiles the viewport touches.
+    pub fn prefetch_on_paint(&self) -> bool {
+        self.prefetch_on_paint
+    }
+
+    /// Enables or disables the automatic prefetch a paint performs.
+    pub fn set_prefetch_on_paint(&mut self, enabled: bool) {
+        self.prefetch_on_paint = enabled;
+    }
+
+    /// Records pixels a host fetched for `key`.
+    pub fn deliver_tile(&mut self, key: TileKey, payload: Vec<u8>) -> bool {
+        let delivered = self.tile_loader.deliver_tile(key, payload);
+        if delivered {
+            self.base.request_redraw();
+        }
+        delivered
+    }
+
+    /// Reports that the host could not fetch `key`.
+    pub fn reject_tile(&mut self, key: TileKey) -> bool {
+        let rejected = self.tile_loader.reject_tile(key);
+        if rejected {
+            self.base.request_redraw();
+        }
+        rejected
+    }
+
+    /// The tile window the current camera and pane cover.
+    ///
+    /// The map's world unit is one logical pixel at zoom 1, and a tile is `tile_size` world units
+    /// at tile zoom 0. The tile zoom follows the painted zoom's `log2`, so a fractional pinch does
+    /// not ask for a new level on every intermediate frame.
+    pub fn tile_viewport(&self) -> TileViewport {
+        let rect = self.geometry();
+        let painted = self.painted_zoom().max(0.0001);
+        let raw_zoom = (painted.log2().round() as i32)
+            .clamp(self.tile_loader.min_zoom() as i32, self.tile_loader.max_zoom() as i32);
+        let zoom = raw_zoom as u8;
+        let scale = 2f64.powi(zoom as i32);
+        let tile_world = (self.tile_loader.tile_size().max(1) as f64 / scale).max(1.0);
+        let world_w = rect.width as f64 / painted as f64;
+        let world_h = rect.height as f64 / painted as f64;
+        let x = (self.center_x as f64 - world_w / 2.0) / tile_world;
+        let y = (self.project_world_y(self.center_y) as f64 - world_h / 2.0) / tile_world;
+        TileViewport::new(zoom, x, y, rect.width, rect.height)
+    }
+
+    /// Asks the tile source for every tile the visible viewport touches.
+    ///
+    /// A request the loader already remembers reports `cached: true`; only a first request is
+    /// re-emitted through [`Self::tile_requested`], so a host can fetch exactly once per address.
+    pub fn prefetch_tiles(&mut self) -> Vec<TileRequest> {
+        let viewport = self.tile_viewport();
+        self.last_tile_viewport = Some(viewport);
+        let requests = self.tile_loader.prefetch(viewport);
+        for request in &requests {
+            if !request.cached {
+                self.tile_requested.emit(request.clone());
+            }
+        }
+        requests
+    }
+
+    /// Places the three overlay controls inside the map's rectangle and syncs their state.
+    fn layout_map_controls(&mut self) {
+        let rect = self.geometry();
+        let zoom_size = self.zoom_control.size_hint();
+        let compass_size = self.compass.size_hint();
+        let scale_size = self.scale_bar.size_hint();
+        let zoom_rect = Rect::new(
+            rect.x + rect.width as i32 - zoom_size.width as i32 - 8,
+            rect.y + 8,
+            zoom_size.width,
+            zoom_size.height,
+        );
+        let compass_rect = Rect::new(
+            zoom_rect.x + (zoom_rect.width as i32 - compass_size.width as i32) / 2,
+            zoom_rect.y + zoom_rect.height as i32 + 6,
+            compass_size.width,
+            compass_size.height,
+        );
+        let scale_rect = Rect::new(
+            rect.x + 8,
+            rect.y + rect.height as i32 - scale_size.height as i32 - 8,
+            scale_size.width,
+            scale_size.height,
+        );
+        if self.zoom_control.base().geometry() != zoom_rect {
+            self.zoom_control.base_mut().set_geometry(zoom_rect);
+        }
+        if self.compass.base().geometry() != compass_rect {
+            self.compass.base_mut().set_geometry(compass_rect);
+        }
+        if self.scale_bar.base().geometry() != scale_rect {
+            self.scale_bar.base_mut().set_geometry(scale_rect);
+        }
+        // The strip is a view of the map's zoom, not a second source of truth: a wheel or a key
+        // that changed the map is reflected here, and a press here changes the map.
+        if (self.zoom_control.zoom_level() - self.zoom).abs() > f32::EPSILON {
+            self.zoom_control.set_zoom(self.zoom);
+        }
+        let meters_per_pixel = 1.0 / self.painted_zoom().max(0.0001) as f64;
+        self.scale_bar.set_scale(meters_per_pixel);
     }
 
     /// Returns map center.
@@ -737,6 +924,16 @@ impl Widget for MapView {
                     ])
                 }))
             }
+            "tile_requested" => {
+                Some(EventSignalRef::mapped("tile_requested", &self.tile_requested, |request| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(request.key.zoom as u64),
+                        CapabilityValue::UInt(request.key.x as u64),
+                        CapabilityValue::UInt(request.key.y as u64),
+                        CapabilityValue::String(request.url.clone()),
+                    ])
+                }))
+            }
             _ => None,
         }
     }
@@ -836,6 +1033,10 @@ impl EventHandler for MapView {
             return;
         }
 
+        // The overlay controls sit on top of the map: their own boxes are resolved before the map
+        // considers a pan, a cluster or a marker, so a press on `+` never also starts a drag.
+        self.layout_map_controls();
+
         match event {
             Event::Wheel { delta, .. } => {
                 // Zoom around the pointer rather than the centre: the place under the cursor is
@@ -878,6 +1079,24 @@ impl EventHandler for MapView {
                 _ => { /* Other keys are not relevant */ }
             },
             Event::MousePress { pos, button: 1, .. } => {
+                if self.show_map_controls {
+                    if self.zoom_control.base().geometry().contains_point(*pos) {
+                        let before = self.zoom_control.zoom_level();
+                        self.zoom_control.handle_event(event);
+                        let after = self.zoom_control.zoom_level();
+                        if (after - before).abs() > f32::EPSILON {
+                            self.set_zoom(after);
+                        }
+                        return;
+                    }
+                    if self.compass.base().geometry().contains_point(*pos) {
+                        self.compass.handle_event(event);
+                        // The compass's reset request means north-up; the map has no rotation of
+                        // its own, so the needle returning to 0 is the whole effect here.
+                        self.compass.set_bearing(0.0);
+                        return;
+                    }
+                }
                 // A cluster badge is a target of its own: pressing one reports the group it stands
                 // for instead of selecting whichever member happens to be nearest.
                 if let Some(cluster) = self.cluster_at(*pos) {
@@ -1018,6 +1237,26 @@ impl Draw for MapView {
             ink,
             HorizontalAlignment::Left,
         );
+
+        // The controls are chrome over the geographic content, so they are painted last and read
+        // the same resolved appearance the pane does.
+        self.layout_map_controls();
+        if self.show_map_controls {
+            self.zoom_control.draw(context);
+            self.compass.draw(context);
+            self.scale_bar.draw(context);
+        }
+
+        // Ask the host for the tiles the viewport now covers. Only a changed viewport re-runs the
+        // sweep; `TileLoader` remembers every address it has already requested, so the signal fires
+        // once per tile rather than once per frame.
+        if self.prefetch_on_paint {
+            let viewport = self.tile_viewport();
+            if self.last_tile_viewport != Some(viewport) {
+                self.last_tile_viewport = Some(viewport);
+                let _ = self.prefetch_tiles();
+            }
+        }
     }
 }
 
@@ -1613,5 +1852,48 @@ mod tests {
         assert!((compass.bearing_deg() - 90.0).abs() < 0.001);
         compass.set("bearing_deg", CapabilityValue::Float(180.0)).expect("bearing property");
         assert!((compass.bearing_deg() - 180.0).abs() < 0.001);
+    }
+
+    /// The map mounts the zoom strip, compass and scale bar: a press on the strip's `+` cell zooms
+    /// the map itself, and the compass' reset request returns the needle to north.
+    #[test]
+    fn map_controls_are_mounted_and_drive_the_map() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 300));
+        assert!(map.map_controls_visible());
+
+        // First event places the companions; the strip is 96 px wide at the top-right, so the `+`
+        // cell is the third of three 30 px buttons.
+        let before = map.zoom();
+        map.handle_event(&Event::mouse_press(370, 12, 1));
+        assert!(map.zoom() > before, "the + cell zooms the map");
+        assert!((map.zoom_control().zoom_level() - map.zoom()).abs() < 0.0001);
+
+        map.compass_mut().set_bearing(90.0);
+        let dial = map.compass().base().geometry();
+        map.handle_event(&Event::mouse_press(
+            dial.x + dial.width as i32 / 2,
+            dial.y + dial.height as i32 / 2,
+            1,
+        ));
+        assert_eq!(map.compass().bearing_deg(), 0.0, "the needle returns to north");
+        assert!(map.scale_bar().meters_per_pixel() > 0.0);
+    }
+
+    /// Prefetch reports the viewport's tiles without any network activity, and the host's delivery
+    /// answer lands in the same loader the map asked through.
+    #[test]
+    fn map_prefetches_tiles_and_accepts_host_delivery() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 300));
+        let requests = map.prefetch_tiles();
+        assert!(!requests.is_empty(), "the viewport covers at least one tile");
+        assert!(requests.iter().all(|request| !request.url.is_empty()));
+
+        let first = requests[0].clone();
+        assert!(map.deliver_tile(first.key, vec![1, 2, 3]));
+        assert!(map.tile_loader().is_cached(first.key));
+        assert!(!map.reject_tile(TileKey::new(19, 0, 0)), "an unrequested tile is refused");
+
+        map.set_map_controls_visible(false);
+        assert!(!map.map_controls_visible());
     }
 }

@@ -736,6 +736,14 @@ impl Button {
         self.canceled.emit();
     }
 
+    /// Compatibility spelling of [`Self::canceled`] (W-19).
+    ///
+    /// The emitted field is the US spelling; this accessor returns the **same**
+    /// signal, so a subscriber that used the double-l name hears the emitted event.
+    pub fn cancelled(&self) -> &GenericSignal {
+        &self.canceled
+    }
+
     /// Whether this control currently owns the pointer gesture.
     pub fn is_grabbed(&self) -> bool {
         self.base.is_grabbed()

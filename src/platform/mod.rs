@@ -104,6 +104,8 @@ pub mod accessibility;
 /// relying on source inspection.
 #[cfg(not(alloc_frugal))]
 pub mod diagnostics;
+/// The OS change-notification revision shared by every backend (G-23).
+pub(crate) mod environment_notify;
 
 /// System-font enumeration snapshot shared by the C ABI and the font dialog (B28.39).
 pub mod fonts;

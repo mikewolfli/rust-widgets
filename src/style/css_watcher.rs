@@ -3,7 +3,18 @@
 
 //! CSS file watcher — hot-reload a stylesheet into the global `StyleSheetManager`.
 //!
-//! # Why polling rather than an OS notification backend
+//! # OS notification first, bounded poll as the fallback
+//!
+//! The watcher consumes the platform's environment revision
+//! ([`crate::platform::Platform::notify_environment_changed`] →
+//! [`crate::platform::profile::environment_generation`]): a host that receives a native settings
+//! notification bumps it, and the next [`CssWatcher::poll`] reloads immediately instead of waiting
+//! for the interval. The bounded poll is retained for the two cases a notification cannot cover:
+//! a backend with no notification source, and a stylesheet edited in place (a file change is not an
+//! environment change). In that fallback the poll still checks the modification time before
+//! reading or parsing the file.
+//!
+//! # Why polling rather than a filesystem notification backend
 //!
 //! The i18n watcher uses `notify`, which needs a per-platform backend and hands
 //! events to a callback on a background thread. A stylesheet reload has two extra
@@ -76,6 +87,11 @@ pub struct CssWatcher {
     /// The file's modification time at the last successful reload. `None` means
     /// nothing has been loaded yet.
     last_modified: Option<SystemTime>,
+    /// The environment revision observed at the last poll.
+    ///
+    /// A change means the host received an OS settings notification, which is a reason to reload
+    /// now even inside the poll interval and even when the file's mtime has not moved (G-23).
+    last_generation: u64,
     /// Priority the sheet is registered with.
     priority: u8,
 }
@@ -93,6 +109,7 @@ impl CssWatcher {
             poll_interval: Duration::from_millis(500),
             last_check: None,
             last_modified: None,
+            last_generation: 0,
             priority: 0,
         }
     }
@@ -135,14 +152,24 @@ impl CssWatcher {
     /// The modification time is recorded *before* the read, so a write that lands
     /// during the read is detected by the next poll rather than being missed.
     pub fn poll(&mut self) -> Result<bool, String> {
+        // 1. The notification path. A host that received a native environment notification bumped
+        //    the shared revision; that is authoritative and bypasses the bounded poll. `0` means
+        //    no notification source has reported anything, so the interval path below applies.
+        let generation = crate::platform::profile::environment_generation();
+        let notified =
+            self.last_generation != 0 && generation != 0 && generation != self.last_generation;
+        self.last_generation = generation;
+
         let now = SystemTime::now();
-        if let Some(last) = self.last_check {
-            match now.duration_since(last) {
-                Ok(elapsed) if elapsed < self.poll_interval => return Ok(false),
-                // A clock that went backwards (an NTP correction, a suspend/resume)
-                // makes `duration_since` fail. Checking anyway is the safe reading:
-                // a redundant read is cheaper than a missed change.
-                _ => {}
+        if !notified {
+            if let Some(last) = self.last_check {
+                match now.duration_since(last) {
+                    Ok(elapsed) if elapsed < self.poll_interval => return Ok(false),
+                    // A clock that went backwards (an NTP correction, a suspend/resume)
+                    // makes `duration_since` fail. Checking anyway is the safe reading:
+                    // a redundant read is cheaper than a missed change.
+                    _ => {}
+                }
             }
         }
         self.last_check = Some(now);
@@ -165,7 +192,10 @@ impl CssWatcher {
         let modified = metadata.modified().map_err(|error| {
             format!("cannot read the modification time of '{}': {error}", self.path.display())
         })?;
-        if self.last_modified == Some(modified) {
+        // A notification reloads even when the mtime is unchanged: the caller still needs the
+        // `Ok(true)` so it can repaint for the new appearance. The fallback poll keeps the mtime
+        // guard, which is what makes an idle frame loop a `stat` and not a parse.
+        if !notified && self.last_modified == Some(modified) {
             return Ok(false);
         }
 
@@ -358,6 +388,32 @@ mod tests {
 
         std::fs::write(&path, "Button { color: #333333; }").expect("rewrite fixture");
         assert_eq!(watcher.poll(), Ok(false), "a change inside the interval is deferred, not lost");
+
+        global_stylesheet_manager().unregister(&name);
+        cleanup(&path);
+    }
+
+    /// A host notification reloads immediately, even inside the poll interval and even when the
+    /// file's mtime has not moved (G-23). The `Ok(true)` is what tells the frame loop to repaint
+    /// for the new appearance; returning `false` would apply the change silently.
+    #[test]
+    fn an_environment_notification_bypasses_the_poll_interval() {
+        let _guard = guard();
+        let path = temp_path("notify");
+        std::fs::write(&path, "Button { color: #445566; }").expect("write fixture");
+
+        let name = format!("watcher-notify-{}", std::process::id());
+        let mut watcher = CssWatcher::new(&path, &name);
+        watcher.set_poll_interval(60_000);
+        assert_eq!(watcher.poll(), Ok(true), "the first poll loads and records the revision");
+
+        // No file change at all: the notification itself is the reason to reload.
+        crate::platform::profile::notify_environment_changed();
+        assert_eq!(
+            watcher.poll(),
+            Ok(true),
+            "an OS notification must not wait for the bounded poll"
+        );
 
         global_stylesheet_manager().unregister(&name);
         cleanup(&path);

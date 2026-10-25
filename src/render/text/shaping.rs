@@ -39,7 +39,7 @@
 // see `compat::MiniToString`'s comment.
 #[cfg(alloc_frugal)]
 use crate::compat::MiniToString;
-use crate::compat::{lock, HashMap, Mutex, String, Vec};
+use crate::compat::{HashMap, RefCell, String, Vec};
 use crate::core::Font;
 use crate::render::text::font_assets::{active_faces, FaceBytes};
 use crate::render::{ShapedGlyphRun, TextShaper};
@@ -167,6 +167,13 @@ pub(crate) fn cluster_advances(
     scale: f32,
 ) -> Option<Vec<f32>> {
     let face = face_for_metrics(text, font)?;
+    // The same memo every other shaping entry point uses. `text_line` measures before it draws and
+    // a layout measures again on the next frame, so this request repeats far more often than it
+    // changes; the cache turns the repeat into a lookup (G-19).
+    let key = ShapeKey::new(face.name, text, font.size(), scale, Some(font.weight()), false);
+    if let Some(advances) = cached_advances(&key) {
+        return Some(advances);
+    }
     // The cached shaper parse: this runs for every measured and every drawn label, and
     // `text_line` measures before `draw_text` shapes, so a single text control parsed the font
     // twice a frame. Measured, one `measure_text("M")` cost ~18us, which multiplied out to the
@@ -180,10 +187,16 @@ pub(crate) fn cluster_advances(
     // the same clamp-and-cache rule, so a line cannot be measured with one instance and drawn with
     // another. A static face has no axis and takes the original cached parse untouched, which is why
     // every face this crate ships is unaffected.
-    super::variable::with_shaper_face_at_weight(face, font.weight(), |parsed| {
+    let advances = super::variable::with_shaper_face_at_weight(face, font.weight(), |parsed| {
         cluster_advances_in_face(text, ranges, font, scale, parsed)
     })
-    .flatten()
+    .flatten();
+    if let Some(advances) = advances {
+        store_advances(key, advances.clone());
+        Some(advances)
+    } else {
+        None
+    }
 }
 
 /// Computes the per-cluster advances using an already-parsed shaper `face`.
@@ -198,12 +211,15 @@ fn cluster_advances_in_face(
     if units_per_em <= 0.0 {
         return None;
     }
-    let mut buffer = rustybuzz::UnicodeBuffer::new();
+    let mut buffer = take_shaping_buffer();
+    buffer.clear();
     buffer.push_str(text);
     // The direction is guessed from the text, for the same reason the face is named by its
     // family: a label's base direction is a property of its content, and the reorder itself is
     // `bidi`'s job and happens later — shaping works in logical order.
     buffer.guess_segment_properties();
+    #[cfg(test)]
+    note_shaping_pass();
     let output = rustybuzz::shape(parsed, ligature_free_features(), buffer);
 
     // The pixel size of one font unit. An `em` is the font size, so a unit is
@@ -220,6 +236,9 @@ fn cluster_advances_in_face(
             *slot += position.x_advance as f32 * unit_px;
         }
     }
+    // Hand the input storage back for the next shaping pass (G-19). `clear` is the consuming form
+    // that reuses the allocation; it is called only after every borrow of `output` has ended.
+    recycle_shaping_buffer(output.clear());
     Some(advances)
 }
 
@@ -255,6 +274,140 @@ fn ligature_free_features() -> &'static [rustybuzz::Feature] {
     &FEATURES
 }
 
+/// A shaping request identity: everything that changes the glyphs a face produces.
+///
+/// `font_size` and `scale` are compared by their bit patterns, for the same reason the text
+/// layer's measurement caches do: the question is "is this the same request", not "are these
+/// floats approximately equal". `weight: None` is the face's own instance, which is not the same
+/// request as any explicit weight. `ligatures` selects between the cluster renderer's
+/// ligature-free feature set and the glyph-level one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ShapeKey {
+    face: &'static str,
+    text: String,
+    font_size_bits: u32,
+    scale_bits: u32,
+    weight: Option<u16>,
+    ligatures: bool,
+}
+
+impl ShapeKey {
+    fn new(
+        face: &'static str,
+        text: &str,
+        font_size: f32,
+        scale: f32,
+        weight: Option<u16>,
+        ligatures: bool,
+    ) -> Self {
+        Self {
+            face,
+            text: String::from(text),
+            font_size_bits: font_size.to_bits(),
+            scale_bits: scale.to_bits(),
+            weight,
+            ligatures,
+        }
+    }
+}
+
+/// How many shaped results one thread keeps.
+///
+/// A UI shapes a bounded set of labels: captions, titles, a handful of numbers. 512 is the same
+/// bound the trait path already used, and the whole point of the cache is that the second call for
+/// the same caption is a lookup instead of a `GSUB`/`GPOS` pass. A cache larger than this is not a
+/// better cache — it is a leak nobody measured.
+const SHAPE_CACHE_LIMIT: usize = 512;
+
+thread_local! {
+    /// Shaped runs, keyed by request. The value is the whole result, including `None`: a face that
+    /// cannot shape a request must not be re-parsed on every call just to learn that again.
+    static SHAPED_RUNS: RefCell<HashMap<ShapeKey, Option<ShapedGlyphRun>>> =
+        RefCell::new(HashMap::new());
+    /// Per-cluster advances, keyed the same way. Kept separately because this result carries the
+    /// cluster partition, which a glyph run does not: one shape pass can answer both, but the two
+    /// answers are different projections and reconstituting one from the other would lose data.
+    static CLUSTER_ADVANCES: RefCell<HashMap<ShapeKey, Vec<f32>>> = RefCell::new(HashMap::new());
+    /// One reusable input buffer per thread (G-19).
+    ///
+    /// `rustybuzz::shape` consumes a `UnicodeBuffer`, so the buffer cannot simply be reset in
+    /// place after use. `GlyphBuffer::clear` hands back an empty `UnicodeBuffer` that reuses the
+    /// shaped buffer's allocation, which is what makes a pool possible despite the consuming API:
+    /// the shaping pass recycles its input storage through this slot, and a thread that shapes a
+    /// stream of labels does not allocate the codepoint/glyph arrays from scratch each time. The
+    /// shaped-result cache above still short-circuits repeated requests entirely.
+    static SHAPING_BUFFER: RefCell<Option<rustybuzz::UnicodeBuffer>> = const { RefCell::new(None) };
+}
+
+/// Takes the thread's reusable shaping buffer, or creates one on first use.
+fn take_shaping_buffer() -> rustybuzz::UnicodeBuffer {
+    SHAPING_BUFFER.with(|slot| slot.borrow_mut().take()).unwrap_or_default()
+}
+
+/// Returns a cleared shaping buffer to the thread-local slot.
+///
+/// `try_with` because a shaping call can run during thread teardown, when the slot has already
+/// been destroyed; losing the recycled allocation is harmless.
+fn recycle_shaping_buffer(buffer: rustybuzz::UnicodeBuffer) {
+    let _ = SHAPING_BUFFER.try_with(|slot| {
+        *slot.borrow_mut() = Some(buffer);
+    });
+}
+
+// Test-only count of real rustybuzz shaping passes, so the cache is observable (G-19).
+//
+// Per-thread rather than process-wide: the shaped-result cache is thread-local, so counting
+// globally made one test's shaping passes appear in another test's delta when the suite ran in
+// parallel. The counter now measures exactly the cache under test.
+#[cfg(test)]
+thread_local! {
+    static SHAPING_PASSES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_shaping_pass() {
+    SHAPING_PASSES.with(|passes| passes.set(passes.get() + 1));
+}
+
+#[cfg(test)]
+fn shaping_pass_count() -> usize {
+    SHAPING_PASSES.with(core::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn clear_shape_caches() {
+    let _ = SHAPED_RUNS.try_with(|cache| cache.borrow_mut().clear());
+    let _ = CLUSTER_ADVANCES.try_with(|cache| cache.borrow_mut().clear());
+}
+
+fn cached_run(key: &ShapeKey) -> Option<Option<ShapedGlyphRun>> {
+    SHAPED_RUNS.try_with(|cache| cache.borrow().get(key).cloned()).ok().flatten()
+}
+
+fn store_run(key: ShapeKey, run: Option<ShapedGlyphRun>) {
+    let _ = SHAPED_RUNS.try_with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= SHAPE_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, run);
+    });
+}
+
+fn cached_advances(key: &ShapeKey) -> Option<Vec<f32>> {
+    CLUSTER_ADVANCES.try_with(|cache| cache.borrow().get(key).cloned()).ok().flatten()
+}
+
+fn store_advances(key: ShapeKey, advances: Vec<f32>) {
+    let _ = CLUSTER_ADVANCES.try_with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= SHAPE_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, advances);
+    });
+}
+
 /// A shaper backed by a real font's layout tables.
 ///
 /// # What it adds over [`crate::render::SimpleTextShaper`]
@@ -271,14 +424,7 @@ fn ligature_free_features() -> &'static [rustybuzz::Feature] {
 /// method falls back to the model — this type never guesses a glyph.
 pub struct RustybuzzShaper {
     face: FaceBytes,
-    /// Memo for the trait entry points, which do not go through the renderer's per-thread cache:
-    /// a caller that holds `&dyn TextShaper` asked the font to shape the same caption repeatedly.
-    /// Keyed by `(text, font_size bits)`; the face is fixed for this shaper (G-19).
-    trait_cache: Mutex<HashMap<(String, u32), Option<ShapedGlyphRun>>>,
 }
-
-/// How many shaped runs one [`RustybuzzShaper`] memoises.
-const TRAIT_SHAPE_CACHE_LIMIT: usize = 256;
 
 impl RustybuzzShaper {
     /// A shaper over `face`, or `None` when its bytes are not a font this crate can read.
@@ -287,7 +433,7 @@ impl RustybuzzShaper {
         // face it intends to shape with, so warming the same cache `shape_face` reads means the
         // first call does not walk the table directory again.
         super::font_assets::with_shaper_face(face, |_| ())?;
-        Some(Self { face, trait_cache: Mutex::new(HashMap::new()) })
+        Some(Self { face })
     }
 
     /// A shaper over the first of this build's opt-in faces that covers `text`, if any.
@@ -307,19 +453,12 @@ impl RustybuzzShaper {
         self.face.name
     }
 
-    /// The trait-entry-point cache: shaping is deterministic for a fixed face, text and size.
+    /// The trait-entry-point cache: shaping is deterministic for a fixed face, text, size and
+    /// feature set, so the trait call takes the same memo as every other shaping entry point
+    /// (G-19). Before this, a caller holding `&dyn TextShaper` paid a full `GSUB`/`GPOS` pass on
+    /// every call while the renderer's path was cached — the same font, the same bytes, two costs.
     fn trait_shape(&self, text: &str, font_size: f32) -> Option<ShapedGlyphRun> {
-        let key = (String::from(text), font_size.to_bits());
-        if let Some(hit) = lock(&self.trait_cache).get(&key).cloned() {
-            return hit;
-        }
-        let shaped = self.shape_face(text, font_size, 1.0);
-        let mut cache = lock(&self.trait_cache);
-        if cache.len() >= TRAIT_SHAPE_CACHE_LIMIT {
-            cache.clear();
-        }
-        cache.insert(key, shaped.clone());
-        shaped
+        self.shape_face(text, font_size, 1.0)
     }
 
     /// Shape `text` into one run of positioned glyphs, in logical order.
@@ -390,6 +529,14 @@ impl RustybuzzShaper {
         features: &[rustybuzz::Feature],
         weight: Option<u16>,
     ) -> Option<ShapedGlyphRun> {
+        // The cache is checked before the face is parsed: a repeated caption must not walk the
+        // table directory, build a `UnicodeBuffer` or run `GSUB`/`GPOS` at all (G-19). The key
+        // names the face, so two shapers over different faces cannot alias each other.
+        let key =
+            ShapeKey::new(self.face.name, text, font_size, scale, weight, features.is_empty());
+        if let Some(hit) = cached_run(&key) {
+            return hit;
+        }
         // The name-keyed shaper cache: a label is measured and then drawn, and the same face is
         // shaped again across frames, so this must not re-read the table directory per call. The
         // instance cache is keyed by weight as well, so two weights are two parses of one face.
@@ -398,9 +545,12 @@ impl RustybuzzShaper {
             if units_per_em <= 0.0 {
                 return None;
             }
-            let mut buffer = rustybuzz::UnicodeBuffer::new();
+            let mut buffer = take_shaping_buffer();
+            buffer.clear();
             buffer.push_str(text);
             buffer.guess_segment_properties();
+            #[cfg(test)]
+            note_shaping_pass();
             let output = rustybuzz::shape(parsed, features, buffer);
 
             let unit_px = font_size * scale / units_per_em;
@@ -413,19 +563,25 @@ impl RustybuzzShaper {
                 positions.push((pen_x, position.y_offset as f32 * unit_px));
                 pen_x += position.x_advance as f32 * unit_px;
             }
-            Some(ShapedGlyphRun {
+            let run = ShapedGlyphRun {
                 width: pen_x,
                 height: font_size * 1.2,
                 glyph_ids,
                 positions,
                 font_size,
-            })
+            };
+            // Recycle the input storage (G-19). Called after the loop so no borrow of `output`
+            // outlives it; `clear` is the consuming form that keeps the allocation.
+            recycle_shaping_buffer(output.clear());
+            Some(run)
         };
-        match weight {
+        let shaped = match weight {
             Some(weight) => super::variable::with_shaper_face_at_weight(self.face, weight, shape),
             None => super::font_assets::with_shaper_face(self.face, shape),
         }
-        .flatten()
+        .flatten();
+        store_run(key, shaped.clone());
+        shaped
     }
 }
 
@@ -575,6 +731,52 @@ mod tests {
         let thin = shaper.char_advance('i', 16.0);
         let thick = shaper.char_advance('W', 16.0);
         assert!(thick > thin, "W ({thick}) must be wider than i ({thin}) in a proportional face");
+    }
+
+    #[test]
+    fn the_trait_path_reuses_the_cached_shape_result() {
+        // The measurement G-19 asked for: the trait entry point, which used to bypass the
+        // renderer's cache entirely, must run rustybuzz once for a repeated request. The counter
+        // is inside the only place `rustybuzz::shape` is called, so this cannot pass by accident.
+        let shaper = RustybuzzShaper::from_active_faces("cache-probe").expect("a face is enabled");
+        clear_shape_caches();
+        let before = shaping_pass_count();
+        let first = shaper.shape("cache-probe", 13.0);
+        let after_first = shaping_pass_count();
+        let second = shaper.shape("cache-probe", 13.0);
+        let after_second = shaping_pass_count();
+
+        assert_eq!(after_first - before, 1, "the first call shapes once");
+        assert_eq!(after_second, after_first, "the second call is a cache hit");
+        assert_eq!(first.len(), second.len());
+        assert_eq!(first[0].glyph_ids, second[0].glyph_ids);
+
+        // The direct path takes the same memo: measuring and then drawing a label is one shape,
+        // not two.
+        let _measured = shaper.measure_width("cache-probe", 13.0);
+        assert_eq!(shaping_pass_count(), after_second, "measurement reuses the shaped run");
+    }
+
+    #[test]
+    fn recycled_shaping_buffers_do_not_leak_glyphs_between_texts() {
+        // The thread-local pool reuses the input allocation across shaping calls. Clearing the
+        // buffer and the shaped-result cache first means both strings take the real shaping path,
+        // so this fails if the recycled buffer kept the previous text (the second run would be
+        // longer than its own characters).
+        let shaper = RustybuzzShaper::from_active_faces("WWW").expect("a face is enabled");
+        clear_shape_caches();
+        let long = shaper.shape_face("WWW", 16.0, 1.0).expect("the long run shapes");
+        let short = shaper.shape_face("i", 16.0, 1.0).expect("the short run shapes");
+
+        assert_eq!(long.glyph_ids.len(), long.positions.len());
+        assert_eq!(short.glyph_ids.len(), short.positions.len());
+        assert!(
+            short.glyph_ids.len() < long.glyph_ids.len(),
+            "a recycled buffer must start empty: {:?} vs {:?}",
+            short.glyph_ids,
+            long.glyph_ids
+        );
+        assert!(short.width < long.width, "the shorter text stays shorter");
     }
 
     #[test]

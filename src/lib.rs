@@ -504,6 +504,8 @@ pub use widget::CommandLink;
 #[cfg(full_widgets)]
 pub use widget::CommandPalette;
 #[cfg(full_widgets)]
+pub use widget::Compass;
+#[cfg(full_widgets)]
 pub use widget::CompletedMention;
 #[cfg(full_widgets)]
 pub use widget::ContextMenu;
@@ -526,6 +528,8 @@ pub use widget::DataView;
 #[cfg(full_widgets)]
 pub use widget::DateEdit;
 #[cfg(full_widgets)]
+pub use widget::DateFormat;
+#[cfg(full_widgets)]
 pub use widget::DatePicker;
 #[cfg(full_widgets)]
 pub use widget::DateRangePicker;
@@ -534,11 +538,17 @@ pub use widget::DateTimeEdit;
 #[cfg(full_widgets)]
 pub use widget::DateTimePicker;
 #[cfg(full_widgets)]
+pub use widget::Dependency;
+#[cfg(full_widgets)]
+pub use widget::DependencyEditor;
+#[cfg(full_widgets)]
 pub use widget::DiagnosticMarker;
 #[cfg(full_widgets)]
 pub use widget::Dial;
 #[cfg(full_widgets)]
 pub use widget::Dialog;
+#[cfg(full_widgets)]
+pub use widget::DiffFileList;
 #[cfg(full_widgets)]
 pub use widget::DiffKind;
 #[cfg(full_widgets)]
@@ -585,6 +595,8 @@ pub use widget::FilterField;
 #[cfg(full_widgets)]
 pub use widget::FilterOperator;
 #[cfg(full_widgets)]
+pub use widget::FindBar;
+#[cfg(full_widgets)]
 pub use widget::FindReplaceDialog;
 #[cfg(widgets_unstripped)]
 pub use widget::FloatingLabel;
@@ -611,6 +623,8 @@ pub use widget::Grid;
 pub use widget::GridTable;
 #[cfg(full_widgets)]
 pub use widget::GridTableWidget;
+#[cfg(full_widgets)]
+pub use widget::GridViewHeader;
 #[cfg(full_widgets)]
 pub use widget::GridWidget;
 pub use widget::GroupBox;
@@ -655,7 +669,11 @@ pub use widget::KanbanBoard;
 #[cfg(full_widgets)]
 pub use widget::KanbanCard;
 #[cfg(full_widgets)]
+pub use widget::KanbanCardView;
+#[cfg(full_widgets)]
 pub use widget::KanbanColumn;
+#[cfg(full_widgets)]
+pub use widget::KanbanColumnHeader;
 #[cfg(full_widgets)]
 pub use widget::KeySequenceEdit;
 pub use widget::Keyboard;
@@ -680,6 +698,8 @@ pub use widget::MapMarker;
 pub use widget::MapView;
 #[cfg(full_widgets)]
 pub use widget::MarkdownEditor;
+#[cfg(full_widgets)]
+pub use widget::MarkdownOutlinePanel;
 #[cfg(full_widgets)]
 pub use widget::MarkerSeverity;
 #[cfg(widgets_unstripped)]
@@ -784,6 +804,8 @@ pub use widget::RadarChart;
 pub use widget::RadioButton;
 #[cfg(full_widgets)]
 pub use widget::RailItem;
+#[cfg(full_widgets)]
+pub use widget::RangePresetBar;
 #[cfg(widgets_unstripped)]
 pub use widget::RangeSlider;
 #[cfg(widgets_unstripped)]
@@ -813,6 +835,12 @@ pub use widget::Roller;
 pub use widget::SafeArea;
 #[cfg(widgets_unstripped)]
 pub use widget::SafeAreaInsets;
+#[cfg(full_widgets)]
+pub use widget::ScaleBar;
+#[cfg(full_widgets)]
+pub use widget::ScaleBarStyle;
+#[cfg(full_widgets)]
+pub use widget::ScaleUnits;
 pub use widget::ScrollArea;
 pub use widget::ScrollBar;
 #[cfg(widgets_unstripped)]
@@ -828,6 +856,8 @@ pub use widget::SegmentedButton;
 #[cfg(full_widgets)]
 pub use widget::SegmentedControl;
 pub use widget::SelectionMode;
+#[cfg(full_widgets)]
+pub use widget::ShapeCanvas;
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 pub use widget::SharedIconPixels;
 #[cfg(widgets_unstripped)]
@@ -892,9 +922,21 @@ pub use widget::TextArea;
 #[cfg(widgets_unstripped)]
 pub use widget::TextEdit;
 #[cfg(full_widgets)]
+pub use widget::TileKey;
+#[cfg(full_widgets)]
+pub use widget::TileLoadError;
+#[cfg(full_widgets)]
+pub use widget::TileLoader;
+#[cfg(full_widgets)]
+pub use widget::TileRequest;
+#[cfg(full_widgets)]
+pub use widget::TileViewport;
+#[cfg(full_widgets)]
 pub use widget::TimeEdit;
 #[cfg(full_widgets)]
 pub use widget::TimePicker;
+#[cfg(full_widgets)]
+pub use widget::TimelineAxis;
 #[cfg(full_widgets)]
 pub use widget::TimelineItem;
 #[cfg(full_widgets)]
@@ -978,6 +1020,10 @@ pub use widget::Wizard;
 pub use widget::WizardDialog;
 #[cfg(full_widgets)]
 pub use widget::WizardStep;
+#[cfg(full_widgets)]
+pub use widget::ZoomButton;
+#[cfg(full_widgets)]
+pub use widget::ZoomControl;
 pub use widget::BASE_PROPERTY_NAMES;
 #[cfg(full_widgets)]
 pub use widget::FAB;

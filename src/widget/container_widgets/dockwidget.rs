@@ -18,6 +18,7 @@ use crate::widget::text_utils::elide_end;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 /// Dock widget.
 pub struct DockWidget {
@@ -1350,6 +1351,30 @@ struct DockEntry {
     split_orientation: Orientation,
 }
 
+/// The lookup tables one arrangement pass is built from.
+///
+/// # Why one pass builds them
+///
+/// The previous arrangement asked `self.docks` for the same facts inside loops: group floors
+/// filtered the whole vector per group, `place_dock` found each widget with `iter().find`, and
+/// every nested child scanned the vector again for its orientation and floor. That made one
+/// arrangement quadratic in the dock count. Every one of those questions is answered here in a
+/// single walk and then read in constant time (C-28).
+struct DockTables {
+    /// Widget → position in [`DockArea::docks`].
+    index_by_widget: HashMap<ObjectId, usize>,
+    /// First-level groups belonging to each edge, in first-appearance order.
+    groups_by_edge: [Vec<usize>; 4],
+    /// The visible-band members of each group, in registration order.
+    members_by_group: HashMap<usize, Vec<ObjectId>>,
+    /// The strictest floor any member of a group states.
+    floor_by_group: HashMap<usize, u32>,
+    /// The docks that subdivide each dock's rectangle, in registration order.
+    children_by_parent: HashMap<ObjectId, Vec<ObjectId>>,
+    /// Edges that own at least one top-level dock.
+    occupied_edges: [bool; 4],
+}
+
 /// The gap at the inner boundary of an edge band that a resize gesture can grab.
 const EDGE_HANDLE_EXTENT: u32 = 4;
 
@@ -1698,49 +1723,24 @@ impl DockArea {
     /// arrangement. Both tables are built once here from one walk, and the visibility answer is
     /// read off the entry that produced the rectangle.
     fn layout_entries(&self) -> Vec<(ObjectId, Rect, bool)> {
+        let tables = self.build_tables();
         let mut out = Vec::new();
-        // Groups per edge, in first-appearance order, and the top-level members of every group.
-        // `split_of.is_none()` is what separates a dock that owns a slot in a band from one that
-        // subdivides another dock's rectangle.
-        let mut groups_by_edge: [Vec<usize>; 4] = core::array::from_fn(|_| Vec::new());
-        let mut members: Vec<(usize, Vec<ObjectId>)> = Vec::new();
-        for dock in &self.docks {
-            if dock.split_of.is_some() {
-                continue;
-            }
-            if let Some(edge) = edge_index(dock.area) {
-                if !groups_by_edge[edge].contains(&dock.group) {
-                    groups_by_edge[edge].push(dock.group);
-                }
-            }
-            match members.iter_mut().find(|(group, _)| *group == dock.group) {
-                Some((_, widgets)) => widgets.push(dock.widget),
-                None => members.push((dock.group, vec![dock.widget])),
-            }
-        }
 
-        let (bands, centre) = self.carve();
-        for (edge, band) in bands {
+        let (bands, centre) = self.carve_occupied(&tables.occupied_edges);
+        for (area, band) in bands {
             let horizontal = matches!(
-                edge,
+                area,
                 DockWidgetArea::TopDockWidgetArea | DockWidgetArea::BottomDockWidgetArea
             );
-            let Some(edge) = edge_index(edge) else {
+            let Some(edge) = edge_index(area) else {
                 continue;
             };
-            let groups = &groups_by_edge[edge];
+            let groups = &tables.groups_by_edge[edge];
             // A group's floor is the largest floor its members state: the tabbed members share one
             // rectangle, so the strictest one is the one that holds.
             let floors: Vec<u32> = groups
                 .iter()
-                .map(|group| {
-                    self.docks
-                        .iter()
-                        .filter(|dock| dock.group == *group)
-                        .map(|dock| dock.min_size)
-                        .max()
-                        .unwrap_or(0)
-                })
+                .map(|group| tables.floor_by_group.get(group).copied().unwrap_or(0))
                 .collect();
             let total = if horizontal { band.width } else { band.height };
             for (group, (offset, extent)) in groups.iter().zip(distribute(total, &floors)) {
@@ -1749,11 +1749,11 @@ impl DockArea {
                 } else {
                     Rect::new(band.x, band.y + offset as i32, band.width, extent)
                 };
-                let Some((_, widgets)) = members.iter().find(|(other, _)| other == group) else {
+                let Some(widgets) = tables.members_by_group.get(group) else {
                     continue;
                 };
                 for widget in widgets {
-                    self.place_dock(*widget, rect, &mut out, 0);
+                    self.place_dock(*widget, rect, &mut out, 0, &tables);
                 }
             }
         }
@@ -1761,6 +1761,38 @@ impl DockArea {
             out.push((central, centre, true));
         }
         out
+    }
+
+    /// Builds every lookup an arrangement pass needs, in one walk over `docks`.
+    fn build_tables(&self) -> DockTables {
+        let mut tables = DockTables {
+            index_by_widget: HashMap::with_capacity(self.docks.len()),
+            groups_by_edge: core::array::from_fn(|_| Vec::new()),
+            members_by_group: HashMap::new(),
+            floor_by_group: HashMap::new(),
+            children_by_parent: HashMap::new(),
+            occupied_edges: [false; 4],
+        };
+        // Per-edge group membership is checked with a set, so a repeated group does not rescan the
+        // edge's growing list.
+        let mut seen_groups: [HashSet<usize>; 4] = core::array::from_fn(|_| HashSet::new());
+        for (index, dock) in self.docks.iter().enumerate() {
+            tables.index_by_widget.insert(dock.widget, index);
+            if let Some(parent) = dock.split_of {
+                tables.children_by_parent.entry(parent).or_default().push(dock.widget);
+                continue;
+            }
+            if let Some(edge) = edge_index(dock.area) {
+                tables.occupied_edges[edge] = true;
+                if seen_groups[edge].insert(dock.group) {
+                    tables.groups_by_edge[edge].push(dock.group);
+                }
+            }
+            tables.members_by_group.entry(dock.group).or_default().push(dock.widget);
+            let floor = tables.floor_by_group.entry(dock.group).or_insert(0);
+            *floor = (*floor).max(dock.min_size);
+        }
+        tables
     }
 
     /// Places `widget` in `rect` and, recursively, the docks that were split inside it.
@@ -1773,38 +1805,36 @@ impl DockArea {
         rect: Rect,
         out: &mut Vec<(ObjectId, Rect, bool)>,
         depth: u32,
+        tables: &DockTables,
     ) {
-        let Some(entry) = self.docks.iter().find(|dock| dock.widget == widget) else {
+        let Some(&index) = tables.index_by_widget.get(&widget) else {
             return;
         };
+        let entry = &self.docks[index];
         out.push((widget, rect, entry.active));
         if depth >= 16 {
             return;
         }
-        let children: Vec<ObjectId> = self
-            .docks
-            .iter()
-            .filter(|dock| dock.split_of == Some(widget))
-            .map(|dock| dock.widget)
-            .collect();
+        let Some(children) = tables.children_by_parent.get(&widget) else {
+            return;
+        };
         if children.is_empty() {
             return;
         }
         // The siblings were all created by `split_dock`, which stores the axis on each child; the
-        // first one states it for the set.
-        let orientation = self
-            .docks
-            .iter()
-            .find(|dock| dock.widget == children[0])
-            .map(|dock| dock.split_orientation)
+        // first one states it for the set. Every lookup below is O(1) through the widget table.
+        let orientation = children
+            .first()
+            .and_then(|child| tables.index_by_widget.get(child))
+            .map(|&child| self.docks[child].split_orientation)
             .unwrap_or(Orientation::Vertical);
         let floors: Vec<u32> = children
             .iter()
             .map(|child| {
-                self.docks
-                    .iter()
-                    .find(|dock| dock.widget == *child)
-                    .map(|d| d.min_size)
+                tables
+                    .index_by_widget
+                    .get(child)
+                    .map(|&child| self.docks[child].min_size)
                     .unwrap_or(0)
             })
             .collect();
@@ -1821,7 +1851,7 @@ impl DockArea {
                     Rect::new(rect.x + offset as i32, rect.y, extent, rect.height)
                 }
             };
-            self.place_dock(*child, child_rect, out, depth + 1);
+            self.place_dock(*child, child_rect, out, depth + 1, tables);
         }
     }
 
@@ -1835,10 +1865,27 @@ impl DockArea {
 
     /// Carves the occupied bands out of the surface and returns them with what is left.
     fn carve(&self) -> (Vec<(DockWidgetArea, Rect)>, Rect) {
+        // One walk builds the occupancy bitset; the edge loop below then never rescans `docks`.
+        let mut occupied = [false; 4];
+        for dock in &self.docks {
+            if dock.split_of.is_none() {
+                if let Some(index) = edge_index(dock.area) {
+                    occupied[index] = true;
+                }
+            }
+        }
+        self.carve_occupied(&occupied)
+    }
+
+    /// [`Self::carve`] with the occupancy bitset supplied by the caller's table build.
+    fn carve_occupied(&self, occupied: &[bool; 4]) -> (Vec<(DockWidgetArea, Rect)>, Rect) {
         let mut bands = Vec::with_capacity(ALL_DOCK_AREAS.len());
         let mut remaining = self.area;
         for edge in ALL_DOCK_AREAS {
-            if !self.docks.iter().any(|dock| dock.area == edge && dock.split_of.is_none()) {
+            let Some(index) = edge_index(edge) else {
+                continue;
+            };
+            if !occupied[index] {
                 continue;
             }
             let extent = self.edge_extent_for(edge);
@@ -3067,5 +3114,55 @@ mod tests {
         assert!(host.remove_dock(4));
         assert!(!host.remove_dock(4));
         assert_eq!(host.dock_area_of(4), None);
+    }
+
+    /// C-28: visibility and nested placement come from the per-pass lookup tables, so every dock
+    /// is reported exactly once with the active flag of its own entry.
+    #[test]
+    fn the_arrangement_tables_report_each_dock_once_with_its_visibility() {
+        let mut host = DockArea::new(Rect::new(0, 0, 300, 200));
+        for id in 1..=4 {
+            assert!(host.add_dock(id, DockWidgetArea::LeftDockWidgetArea));
+        }
+        host.set_edge_extent(60);
+        assert!(host.tabify(2, 1));
+        assert!(host.tabify(4, 3));
+        // `tabify` makes the dock being tabbed the active member; select one per group explicitly.
+        assert!(host.activate_dock(1));
+        assert!(host.activate_dock(3));
+
+        let entries = host.layout_entries();
+        let by_widget: std::collections::HashMap<ObjectId, (Rect, bool)> =
+            entries.iter().map(|(widget, rect, visible)| (*widget, (*rect, *visible))).collect();
+        assert_eq!(entries.len(), 4, "one entry per dock");
+        assert!(by_widget[&1].1, "the active member of the first tab group is visible");
+        assert!(!by_widget[&2].1, "the inactive tab is not");
+        assert!(by_widget[&3].1);
+        assert!(!by_widget[&4].1);
+        assert_eq!(by_widget[&1].0, by_widget[&2].0, "tabbed docks share one rectangle");
+
+        // Split children live inside their parent's rectangle: two of them divide its height.
+        assert!(host.add_dock(5, DockWidgetArea::LeftDockWidgetArea));
+        assert!(host.add_dock(6, DockWidgetArea::LeftDockWidgetArea));
+        assert!(host.split_dock(5, 1, Orientation::Vertical));
+        assert!(host.split_dock(6, 1, Orientation::Vertical));
+        let entries = host.layout_entries();
+        assert_eq!(entries.len(), 6, "both split children are placed through the children table");
+        let by_widget: std::collections::HashMap<ObjectId, (Rect, bool)> =
+            entries.iter().map(|(widget, rect, visible)| (*widget, (*rect, *visible))).collect();
+        let parent = by_widget[&1].0;
+        let first = by_widget[&5].0;
+        let second = by_widget[&6].0;
+        assert_eq!(first.x, parent.x);
+        assert_eq!(first.width, parent.width);
+        let (upper, lower) = if first.y <= second.y { (first, second) } else { (second, first) };
+        assert_eq!(upper.y, parent.y, "the first split child starts at the parent's top edge");
+        assert_eq!(lower.y, upper.y + upper.height as i32, "the children stack vertically");
+        assert_eq!(
+            first.height + second.height,
+            parent.height,
+            "the split children divide their parent's box between them"
+        );
+        assert!(by_widget[&5].1 && by_widget[&6].1, "a split child is active on creation");
     }
 }

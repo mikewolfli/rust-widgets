@@ -508,7 +508,7 @@ mod tests {
             matches!(command, RenderCommand::FillRoundedRect { radius: 4, .. })
         });
         let label_at = recorder.commands.iter().position(|command| {
-            matches!(command, RenderCommand::DrawText { text, .. } if text.as_str() == "Day")
+            matches!(command, RenderCommand::DrawText { text, .. } if text.as_ref() == "Day")
         });
         assert!(fill_at.is_some(), "the selected segment is filled by the accent");
         assert!(label_at.is_some(), "every segment paints its caption");

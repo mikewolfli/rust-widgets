@@ -29,16 +29,23 @@ use crate::performance::DirtyRegionTracker;
 /// the trade is unambiguous.
 pub const FULL_REPAINT_AREA_RATIO: f32 = 0.5;
 
-/// Render only the dirty regions by setting clip rects.
-/// Uses existing DirtyRegionTracker + RenderContext push_clip/pop_clip.
-/// This avoids redrawing the entire frame when only parts changed.
+/// Render only the dirty regions by bucketing one traversal into control-level clips.
+///
+/// # What changed, and why
+///
+/// The previous implementation called `render_all` **once per region**, so N damaged regions
+/// meant N complete widget-tree traversals and N command streams — the dominant cost of a partial
+/// repaint was the part the clip was supposed to save (G-04). This version walks the tree exactly
+/// once: [`RenderContext::begin_region_buckets`] records every command against the bounds of the
+/// control that emitted it, and the end call replays each control only into the regions it
+/// touches. A control outside all damage emits no pixels; a control covering several regions is
+/// replayed into each, which is what the clip is for.
 ///
 /// # What "fall back" means here
 ///
-/// When the damage is too large to be worth regioning, the damage is still painted —
-/// but as one clip over its bounding rectangle rather than as one clip per region,
-/// because a single clip covers the same pixels with one push/pop instead of N. That
-/// is the cheapest correct answer, not a give-up.
+/// When the damage is too large or too scattered to be worth regioning, the damage is still
+/// painted — as one clip over its bounding rectangle rather than as one clip per region. That is
+/// the cheapest correct answer, and it is still a single traversal.
 pub fn render_dirty_regions(
     tracker: &mut DirtyRegionTracker,
     ctx: &mut crate::render::RenderContext,
@@ -47,13 +54,12 @@ pub fn render_dirty_regions(
     // 1. Bound the work *before* merging (D09-RENDER-01).
     //
     // `merge` restarts its scan after each union, so its cost grows with the square of the
-    // region count, and the per-region loop below would issue up to one full widget-tree
-    // traversal per region. A tracker holding more regions than its `max_regions` is precisely
-    // the high-cardinality case both of those are worst at, so it is answered with a single
-    // repaint over the bounding rectangle of **all** the damage — one traversal, and every
-    // damaged pixel still covered, because a bounding rectangle by construction contains every
-    // region. This is deliberately *not* `optimize()`: that would truncate the region list and
-    // leave the dropped areas stale (see `DirtyRegionTracker::over_capacity`).
+    // region count. A tracker holding more regions than its `max_regions` is precisely the
+    // high-cardinality case that is worst at, so it is answered with a single repaint over the
+    // bounding rectangle of **all** the damage — one traversal, and every damaged pixel still
+    // covered, because a bounding rectangle by construction contains every region. This is
+    // deliberately *not* `optimize()`: that would truncate the region list and leave the dropped
+    // areas stale (see `DirtyRegionTracker::over_capacity`).
     if tracker.over_capacity() {
         paint_bounding_rect(tracker, ctx, &mut render_all);
         return;
@@ -88,16 +94,12 @@ pub fn render_dirty_regions(
         return;
     }
 
-    // 5. Otherwise, redraw each dirty region separately
-    //
-    // Iterated straight from the tracker: the copy into a `Vec` was there to keep the borrow out of
-    // the loop, and the loop only reads the rects — the `&mut` call comes after it (CORE-20).
-    for region in tracker.regions() {
-        let rect = region.rect;
-        ctx.push_clip(rect.x, rect.y, rect.width, rect.height);
-        render_all(ctx);
-        ctx.pop_clip();
-    }
+    // 5. One traversal, bucketed into the merged region set.
+    let regions: crate::compat::Vec<crate::core::Rect> =
+        tracker.regions().iter().map(|region| region.rect).collect();
+    ctx.begin_region_buckets(&regions);
+    render_all(ctx);
+    ctx.end_region_buckets();
     tracker.clear();
 }
 
@@ -113,9 +115,10 @@ fn paint_bounding_rect(
     render_all: &mut impl FnMut(&mut crate::render::RenderContext),
 ) {
     if let Some(bounding) = tracker.get_bounding_rect() {
-        ctx.push_clip(bounding.x, bounding.y, bounding.width, bounding.height);
+        let regions = [bounding];
+        ctx.begin_region_buckets(&regions);
         render_all(ctx);
-        ctx.pop_clip();
+        ctx.end_region_buckets();
     }
     tracker.clear();
 }
@@ -129,26 +132,33 @@ mod tests {
     // `begin_frame` is a `PaintBackend` method, so the trait must be in scope.
     use crate::render::PaintBackend as _;
 
-    /// Counts how many times the paint closure ran, which is one per clip region.
+    /// How a dirty-region pass behaved, as observable facts rather than a return value.
     ///
-    /// Asserting on the *number of paints* is what makes these tests describe the
-    /// decision rather than the return value: `render_dirty_regions` returns nothing,
-    /// so "did it fall back?" is only observable through how many passes it made.
-    fn paints_for(regions: &[Rect], frame: Size) -> usize {
+    /// `traversals` is how many times the widget tree was walked — the number this change is
+    /// about (G-04). `region_clips` is how many clips the pass issued, which is what distinguishes
+    /// the per-region answer from the one-pass bounding fallback.
+    struct Passes {
+        traversals: usize,
+        region_clips: usize,
+    }
+
+    fn passes_for(regions: &[Rect], frame: Size) -> Passes {
         let mut tracker = DirtyRegionTracker::new();
         for rect in regions {
             tracker.add(*rect);
         }
         let mut backend = SoftwarePaintBackend::new(frame, 1.0);
         backend.begin_frame(Color::rgb(0, 0, 0));
-        let mut paints = 0usize;
+        let mut traversals = 0usize;
+        let region_clips;
         {
             let mut ctx = RenderContext::new(&mut backend);
             render_dirty_regions(&mut tracker, &mut ctx, |_| {
-                paints += 1;
+                traversals += 1;
             });
+            region_clips = ctx.region_bucket_passes();
         }
-        paints
+        Passes { traversals, region_clips }
     }
 
     #[test]
@@ -165,7 +175,9 @@ mod tests {
     /// No damage means no paint at all: the loop must not run once "just in case".
     #[test]
     fn no_damage_paints_nothing() {
-        assert_eq!(paints_for(&[], Size::new(800, 600)), 0);
+        let pass = passes_for(&[], Size::new(800, 600));
+        assert_eq!(pass.traversals, 0, "no damage means no traversal");
+        assert_eq!(pass.region_clips, 0);
     }
 
     /// A few small regions over a large frame are painted as separate regions, one
@@ -175,7 +187,9 @@ mod tests {
     fn small_regions_in_a_large_frame_are_painted_separately() {
         let regions =
             [Rect::new(0, 0, 16, 16), Rect::new(100, 100, 16, 16), Rect::new(200, 200, 16, 16)];
-        assert_eq!(paints_for(&regions, Size::new(2000, 2000)), 3);
+        let pass = passes_for(&regions, Size::new(2000, 2000));
+        assert_eq!(pass.traversals, 1, "three regions must still mean one tree traversal");
+        assert_eq!(pass.region_clips, 3, "but each region keeps its own clip");
     }
 
     /// Damage covering most of the frame collapses to a single pass, even when it
@@ -187,9 +201,10 @@ mod tests {
     #[test]
     fn damage_covering_the_frame_collapses_to_one_pass() {
         let regions = [Rect::new(0, 0, 800, 400), Rect::new(0, 400, 800, 300)];
+        let pass = passes_for(&regions, Size::new(800, 700));
+        assert_eq!(pass.traversals, 1, "the covering repaint is still a single traversal");
         assert_eq!(
-            paints_for(&regions, Size::new(800, 700)),
-            1,
+            pass.region_clips, 1,
             "two non-overlapping regions that together fill the frame must merge into one pass"
         );
     }
@@ -221,9 +236,10 @@ mod tests {
         // Exactly half the frame: two 1/4 regions. `>= 0.5` must take the
         // bounding-rect branch, painting once.
         let exactly_half = [Rect::new(0, 0, 500, 500), Rect::new(500, 500, 500, 500)];
+        let pass = passes_for(&exactly_half, frame);
+        assert_eq!(pass.traversals, 1);
         assert_eq!(
-            paints_for(&exactly_half, frame),
-            1,
+            pass.region_clips, 1,
             "two disjoint regions covering exactly half the frame must collapse to the one-pass bounding fallback"
         );
 
@@ -231,9 +247,10 @@ mod tests {
         // false here *and* at the value above, so a count of 2 here is what
         // proves the comparison is `>=`, not `>`.
         let just_under = [Rect::new(0, 0, 499, 500), Rect::new(500, 500, 500, 500)];
+        let pass = passes_for(&just_under, frame);
+        assert_eq!(pass.traversals, 1);
         assert_eq!(
-            paints_for(&just_under, frame),
-            2,
+            pass.region_clips, 2,
             "one pixel of area below the ratio must keep the two regions separate (one pass each)"
         );
     }
@@ -243,8 +260,10 @@ mod tests {
     #[test]
     fn many_small_regions_do_not_trigger_the_fallback() {
         let regions: Vec<Rect> = (0..40).map(|i| Rect::new(i * 10, 0, 5, 5)).collect();
+        let pass = passes_for(&regions, Size::new(1000, 1000));
+        assert_eq!(pass.traversals, 1);
         assert_eq!(
-            paints_for(&regions, Size::new(1000, 1000)),
+            pass.region_clips,
             regions.len(),
             "forty regions covering 1000 px of a 1_000_000 px frame must not fall back"
         );
@@ -263,9 +282,10 @@ mod tests {
     fn high_cardinality_damage_collapses_to_a_bounded_number_of_passes() {
         // Well over the default `max_regions` (100).
         let regions: Vec<Rect> = (0..500).map(|i| Rect::new(i, 0, 2, 2)).collect();
-        let paints = paints_for(&regions, Size::new(4000, 4000));
+        let pass = passes_for(&regions, Size::new(4000, 4000));
+        assert_eq!(pass.traversals, 1, "the bound is one traversal, not one per region");
         assert_eq!(
-            paints, 1,
+            pass.region_clips, 1,
             "more regions than the tracker's capacity must paint once, not once per region"
         );
     }
@@ -277,7 +297,9 @@ mod tests {
         // Exactly the default capacity: `over_capacity` is `>`, so this stays on the per-region
         // path and the count is preserved.
         let regions: Vec<Rect> = (0..100).map(|i| Rect::new(i * 10, 0, 2, 2)).collect();
-        assert_eq!(paints_for(&regions, Size::new(4000, 4000)), 100);
+        let pass = passes_for(&regions, Size::new(4000, 4000));
+        assert_eq!(pass.traversals, 1);
+        assert_eq!(pass.region_clips, 100);
     }
 
     /// High-cardinality damage must paint every damaged pixel — the bounded path covers all the

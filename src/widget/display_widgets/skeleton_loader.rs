@@ -12,9 +12,11 @@
 //! - `Circle(r)` — circular avatar/image placeholder
 //! - `TextLine(w)` — three stacked text line placeholders
 
-use crate::core::{Color, Point, Rect};
+use crate::compat::{vec, Vec};
+use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::render::RenderContext;
+use crate::render::{RenderCommand, RenderContext};
+use crate::style::Gradient;
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -75,12 +77,12 @@ const DEFAULT_PULSE_PERIOD_MS: u32 = 1200;
 /// How many `slow` tokens one shimmer pulse is worth.
 const PULSE_SLOW_MULTIPLE: u32 = 4;
 
-/// The number of vertical strips the shimmer band is built from.
-///
-/// The strips carry a triangle-shaped alpha profile, so the band fades in and
-/// out across its width instead of being a hard-edged rectangle. Six is enough
-/// for the fade to read at the sizes a skeleton is used at.
-const SHIMMER_STRIPS: u32 = 6;
+/// The number of straight edges used to approximate one rounded corner of a
+/// clip outline. Eight is enough for the 3–4 px radii a skeleton uses.
+const SHIMMER_CORNER_STEPS: u32 = 8;
+
+/// The number of straight edges used to approximate a circular clip outline.
+const SHIMMER_CIRCLE_STEPS: u32 = 32;
 
 /// The peak alpha of the shimmer band, out of 255.
 const SHIMMER_PEAK_ALPHA: f32 = 140.0;
@@ -434,10 +436,18 @@ impl SkeletonLoader {
     ///
     /// The band's position is read from the same [`SkeletonLoader::phase`] the
     /// pulse uses, so enabling it adds no clock. One period moves the band from
-    /// just before the control's left edge to just past its right edge, and the
-    /// strips it is made of fade in and out so the leading and trailing edges
-    /// are soft. Only what was painted by [`Self::paint_shape`] lights up,
-    /// because the band repaints that same geometry inside its own clip.
+    /// just before the control's left edge to just past its right edge.
+    ///
+    /// # One gradient pass, not one strip per shape
+    ///
+    /// The band used to be six vertical strips, and every strip replayed the
+    /// whole [`Self::paint_shape`] geometry inside its own clip: the shape was
+    /// rasterised six times per frame and each strip had a hard step at its
+    /// boundary. It is now a single linear-gradient paint (transparent → peak →
+    /// transparent across the band) clipped to the shape's own outline once, so
+    /// a frame costs one gradient fill per painted shape part instead of six
+    /// shape replays. The outline clip is what keeps the highlight inside a disc
+    /// or a rounded row rather than lighting the bounding box.
     fn paint_shimmer(&self, context: &mut RenderContext, rect: Rect) {
         if rect.width == 0 || rect.height == 0 {
             return;
@@ -445,29 +455,107 @@ impl SkeletonLoader {
         let band_width = (rect.width / 3).max(1);
         let travel = rect.width as f32 + band_width as f32;
         let band_left = rect.x as f32 - band_width as f32 + self.phase * travel;
-        let strip = band_width as f32 / SHIMMER_STRIPS as f32;
 
-        for index in 0..SHIMMER_STRIPS {
-            let x0 = (band_left + (strip * index as f32).round()) as i32;
-            let x1 = (band_left + (strip * (index + 1) as f32).round()) as i32;
-            let width = (x1 - x0).max(1) as u32;
-            // A strip nobody can see is not worth a clip and a shape repaint.
-            if x1 <= rect.x || x0 >= rect.x + rect.width as i32 {
+        // The gradient is defined in the parent's pixel coordinates. A path clip
+        // executed directly on the context bypasses the translation offset, so the
+        // offset is applied to both the ramp and the outline here rather than
+        // letting one of the two drift inside a translated container.
+        let (dx, dy) = context.offset();
+        let gradient = Gradient::linear(
+            Point::new(band_left as i32 + dx, rect.y + dy),
+            Point::new((band_left + band_width as f32) as i32 + dx, rect.y + dy),
+        )
+        .add_stop(0.0, Color::rgba(255, 255, 255, 0))
+        .add_stop(0.5, Color::rgba(255, 255, 255, SHIMMER_PEAK_ALPHA.round() as u8))
+        .add_stop(1.0, Color::rgba(255, 255, 255, 0));
+
+        for (fill, outline) in self.shimmer_regions(rect) {
+            if fill.x >= rect.x + rect.width as i32 || fill.x + fill.width as i32 <= rect.x {
                 continue;
             }
-            // Triangle profile across the band: dim at both ends, brightest in
-            // the middle, which is what makes the band read as a gradient.
-            let position = (index as f32 + 0.5) / SHIMMER_STRIPS as f32;
-            let intensity = 1.0 - (2.0 * position - 1.0).abs();
-            let alpha = (intensity * SHIMMER_PEAK_ALPHA).round() as u8;
-            if alpha == 0 {
-                continue;
-            }
-            context.push_clip(x0, rect.y, width, rect.height);
-            self.paint_shape(context, Color::rgba(255, 255, 255, alpha));
+            let points: Vec<Point> =
+                outline.into_iter().map(|point| Point::new(point.x + dx, point.y + dy)).collect();
+            context.execute_command(RenderCommand::ClipPath { points });
+            context.fill_gradient(fill, &gradient);
             context.pop_clip();
         }
     }
+
+    /// The geometry the highlight lights up, as `(fill box, outline)` pairs.
+    ///
+    /// One pair for a rectangle or a disc and one per row for a text line, so the
+    /// gaps between stacked rows stay dark. The outline is in local coordinates;
+    /// [`Self::paint_shimmer`] translates it by the context offset before use.
+    fn shimmer_regions(&self, rect: Rect) -> Vec<(Rect, Vec<Point>)> {
+        let cx = rect.x + rect.width as i32 / 2;
+        let cy = rect.y + rect.height as i32 / 2;
+        match self.shape {
+            SkeletonShape::Rect(w, h) => {
+                let w = w.min(rect.width).max(1);
+                let h = h.min(rect.height).max(1);
+                let shape = ControlMetrics::center_in(rect, Size::new(w, h));
+                vec![(shape, rounded_rect_outline(shape, 4))]
+            }
+            SkeletonShape::Circle(r) => {
+                let r = r.min(rect.width.min(rect.height) / 2).max(1);
+                let box_rect = Rect::new(
+                    cx - r as i32,
+                    cy - r as i32,
+                    r.saturating_mul(2),
+                    r.saturating_mul(2),
+                );
+                vec![(box_rect, circle_outline(Point::new(cx, cy), r))]
+            }
+            SkeletonShape::TextLine(w) => {
+                let line_h = dimensions::SKELETON_ROW_HEIGHT;
+                let gap = dimensions::SKELETON_ROW_GAP;
+                let total_h = 3 * line_h + 2 * gap;
+                let start_y = cy - total_h as i32 / 2;
+                let row_w = w.clamp(1, rect.width.max(1));
+                (0..3)
+                    .map(|i| {
+                        let y = start_y + i * (line_h + gap) as i32;
+                        let row = Rect::new(cx - row_w as i32 / 2, y, row_w, line_h);
+                        (row, rounded_rect_outline(row, 3))
+                    })
+                    .collect()
+            }
+        }
+    }
+}
+
+/// Builds a closed polygon approximating a rounded rectangle.
+fn rounded_rect_outline(rect: Rect, radius: u32) -> Vec<Point> {
+    let r = radius.min(rect.width / 2).min(rect.height / 2) as f32;
+    let x0 = rect.x as f32;
+    let y0 = rect.y as f32;
+    let x1 = (rect.x + rect.width as i32) as f32;
+    let y1 = (rect.y + rect.height as i32) as f32;
+    let corners = [
+        (x1 - r, y0 + r, -core::f32::consts::FRAC_PI_2, 0.0),
+        (x1 - r, y1 - r, 0.0, core::f32::consts::FRAC_PI_2),
+        (x0 + r, y1 - r, core::f32::consts::FRAC_PI_2, core::f32::consts::PI),
+        (x0 + r, y0 + r, core::f32::consts::PI, 3.0 * core::f32::consts::FRAC_PI_2),
+    ];
+    let mut points = Vec::with_capacity(corners.len() * (SHIMMER_CORNER_STEPS as usize + 1));
+    for (cx, cy, start, end) in corners {
+        for step in 0..=SHIMMER_CORNER_STEPS {
+            let angle = start + (end - start) * step as f32 / SHIMMER_CORNER_STEPS as f32;
+            points.push(Point::new((cx + r * angle.cos()) as i32, (cy + r * angle.sin()) as i32));
+        }
+    }
+    points
+}
+
+/// Builds a closed polygon approximating a circle.
+fn circle_outline(center: Point, radius: u32) -> Vec<Point> {
+    let r = radius as f32;
+    (0..SHIMMER_CIRCLE_STEPS)
+        .map(|step| {
+            let angle = core::f32::consts::TAU * step as f32 / SHIMMER_CIRCLE_STEPS as f32;
+            Point::new(center.x + (r * angle.cos()) as i32, center.y + (r * angle.sin()) as i32)
+        })
+        .collect()
 }
 
 impl EventHandler for SkeletonLoader {
@@ -703,8 +791,8 @@ mod tests {
         assert_ne!(without, with, "enabling the band changes the picture");
         assert_eq!(
             with.matches("clip-path").count(),
-            SHIMMER_STRIPS as usize,
-            "every fading strip is clipped to the shape"
+            1,
+            "the whole band is one gradient paint clipped to the shape"
         );
 
         // A further quarter turn moves the band, and the only clock involved

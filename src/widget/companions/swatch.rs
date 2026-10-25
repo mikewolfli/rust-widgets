@@ -47,7 +47,7 @@ impl Swatch {
     /// Creates a swatch grid with the library's default palette.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::ColorHistory, geometry, "Swatch"),
+            base: BaseWidget::new(WidgetKind::Swatch, geometry, "Swatch"),
             colors: vec![
                 Color::ERROR,
                 Color::WARNING,

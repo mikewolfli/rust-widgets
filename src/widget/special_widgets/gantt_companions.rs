@@ -110,7 +110,7 @@ impl TimelineAxis {
     /// Creates an axis over `0 ..= 100` with six ticks.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Chart, geometry, "TimelineAxis"),
+            base: BaseWidget::new(WidgetKind::TimelineAxis, geometry, "TimelineAxis"),
             tick_density: 6,
             date_format: DateFormat::Numeric,
             range: (0, 100),
@@ -404,8 +404,11 @@ impl Draw for TimelineAxis {
             context.draw_line(Point::new(x, baseline - AXIS_TICK), Point::new(x, baseline), border);
             let label = self.format_tick(value);
             if !label.is_empty() {
+                let label_width = context.measure_text(&label, font).width as i32;
+                let text_x =
+                    (x + 2).clamp(rect.x, (rect.x + rect.width as i32 - label_width).max(rect.x));
                 context.draw_text(
-                    Point::new(x + 2, rect.y + 2),
+                    Point::new(text_x, rect.y + 2),
                     &label,
                     font,
                     ink,
@@ -462,7 +465,7 @@ impl DependencyEditor {
     /// Creates an empty, editable editor.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Chart, geometry, "DependencyEditor"),
+            base: BaseWidget::new(WidgetKind::DependencyEditor, geometry, "DependencyEditor"),
             dependencies: Vec::new(),
             editable: true,
             selected: None,

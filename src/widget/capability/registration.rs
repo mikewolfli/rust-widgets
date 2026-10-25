@@ -285,6 +285,33 @@ impl WidgetFactory {
             self.register(tool_button_capability(), create_tool_button);
             self.register(status_bar_capability(), create_status_bar);
             self.register(property_grid_capability(), create_property_grid);
+
+            // ── Companion controls (COMP-01/05/07/08/09/10/12/13/14/15/16/17/18/19/20) ──
+            //
+            // The companion controls are first-class controls with their own kind and
+            // capability, so a document can place the partner directly instead of the
+            // primary control re-implementing it.
+            self.register(swatch_capability(), create_swatch);
+            self.register(filter_row_capability(), create_filter_row);
+            self.register(legend_capability(), create_legend);
+            self.register(chart_tooltip_capability(), create_chart_tooltip);
+            self.register(tooltip_manager_capability(), create_tooltip_manager);
+            self.register(zoom_pan_controller_capability(), create_zoom_pan_controller);
+            self.register(toast_host_capability(), create_toast_host);
+            self.register(tile_loader_capability(), create_tile_loader);
+            self.register(zoom_control_capability(), create_zoom_control);
+            self.register(scale_bar_capability(), create_scale_bar);
+            self.register(compass_capability(), create_compass);
+            self.register(timeline_axis_capability(), create_timeline_axis);
+            self.register(dependency_editor_capability(), create_dependency_editor);
+            self.register(diff_file_list_capability(), create_diff_file_list);
+            self.register(markdown_outline_panel_capability(), create_markdown_outline_panel);
+            self.register(find_bar_capability(), create_find_bar);
+            self.register(shape_canvas_capability(), create_shape_canvas);
+            self.register(kanban_card_view_capability(), create_kanban_card_view);
+            self.register(kanban_column_header_capability(), create_kanban_column_header);
+            self.register(range_preset_bar_capability(), create_range_preset_bar);
+            self.register(grid_view_header_capability(), create_grid_view_header);
         }
     }
 }

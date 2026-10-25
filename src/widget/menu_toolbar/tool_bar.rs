@@ -13,7 +13,7 @@
 //! directly: `item_bands` is one pass of integer additions, and nothing is mounted to measure it.
 
 use crate::compat::{lock, Arc, Mutex, String, ToString, Vec};
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionHandle, GenericSignal, Signal1};
@@ -22,6 +22,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_toolba
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::TooltipManager;
 use crate::widget::menu_toolbar::action::Action;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -59,6 +60,38 @@ pub enum ToolBarArea {
 /// Every docking area, in the order a toolbar usually offers them.
 pub const ALL_TOOL_BAR_AREAS: [ToolBarArea; 4] =
     [ToolBarArea::Top, ToolBarArea::Bottom, ToolBarArea::Left, ToolBarArea::Right];
+
+/// Derives a stable tooltip source id for the `index`-th child of `owner`.
+///
+/// The children of a toolbar or menu are presentation records, not widgets, so they have no
+/// `ObjectId` of their own. Mixing the owner id with the index gives the tooltip pipeline a
+/// stable key for "the thing under the pointer" without inventing a global registry.
+pub(crate) fn child_hover_id(owner: ObjectId, index: usize) -> ObjectId {
+    owner.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (index as u64 + 1)
+}
+
+/// A hover source adapter over a toolbar item.
+///
+/// The tooltip pipeline takes its text from `WidgetProperties::tooltip`; a `ToolBarItem` is not a
+/// widget, so this exposes the one property the pipeline reads and nothing else.
+struct ItemTooltipSource<'a> {
+    item: &'a ToolBarItem,
+}
+
+impl WidgetProperties for ItemTooltipSource<'_> {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "tooltip" => Ok(CapabilityValue::String(self.item.tooltip().to_string())),
+            _ => Err(CapabilityAccessError::UnknownProperty),
+        }
+    }
+    fn set(&mut self, _name: &str, _value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        Err(CapabilityAccessError::UnknownProperty)
+    }
+    fn property_names(&self) -> &'static [&'static str] {
+        &["tooltip"]
+    }
+}
 
 /// How an item's label and icon are arranged inside its button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -390,6 +423,12 @@ pub struct ToolBar {
     /// command". `action_links` carries the widget-level connection; this carries the registry
     /// state that a second host of the same command also observes.
     live_actions: Vec<(String, Arc<Mutex<crate::action::ActionLiveState>>)>,
+    /// The host-side hover/delay/show pipeline for item tooltips.
+    tooltips: TooltipManager,
+    /// The derived id currently registered as hovered, if any.
+    tooltip_source: Option<ObjectId>,
+    /// Monotonic clock fed to the tooltip pipeline from [`Widget::tick`].
+    tooltip_now_ms: u64,
 }
 impl ToolBar {
     /// Creates a horizontal toolbar with a default icon size of 24 pixels, and
@@ -421,6 +460,9 @@ impl ToolBar {
             visibility_changed: Signal1::new(),
             float_changed: Signal1::new(),
             live_actions: Vec::new(),
+            tooltips: TooltipManager::new(geometry),
+            tooltip_source: None,
+            tooltip_now_ms: 0,
         }
     }
     /// The direction items are laid out in.
@@ -448,6 +490,48 @@ impl ToolBar {
     /// The current items, in draw order.
     pub fn items(&self) -> &[ToolBarItem] {
         &self.items
+    }
+
+    /// Registers the item under the pointer with the tooltip pipeline.
+    ///
+    /// The text is read through [`WidgetProperties::get`] on an item adapter, which is the one
+    /// text source the issue names; an item with an empty hint leaves the pipeline instead of
+    /// registering an empty bubble.
+    fn sync_hover_tooltip(&mut self) {
+        let Some(index) = self.hovered_index else {
+            if self.tooltip_source.take().is_some() {
+                self.tooltips.note_leave();
+            }
+            return;
+        };
+        let Some(item) = self.items.get(index) else {
+            if self.tooltip_source.take().is_some() {
+                self.tooltips.note_leave();
+            }
+            return;
+        };
+        let text = ItemTooltipSource { item }.get("tooltip").ok().and_then(|value| match value {
+            CapabilityValue::String(text) if !text.is_empty() => Some(text),
+            _ => None,
+        });
+        match text {
+            Some(text) => {
+                let id = child_hover_id(self.base.id(), index);
+                self.tooltips.register(id, text);
+                self.tooltips.note_hover(id);
+                self.tooltip_source = Some(id);
+            }
+            None => {
+                if self.tooltip_source.take().is_some() {
+                    self.tooltips.note_leave();
+                }
+            }
+        }
+    }
+
+    /// Whether a tooltip is still waiting for its delay (or is visible).
+    fn tooltip_owes_frames(&self) -> bool {
+        self.tooltip_source.is_some() || self.tooltips.tooltip().is_some()
     }
     /// Sets the layout direction and repaints.
     ///
@@ -1337,6 +1421,19 @@ impl Widget for ToolBar {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, dimensions::TOOLBAR_HEIGHT)
     }
+
+    /// Advances the tooltip delay/duration clocks.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.tooltip_now_ms = self.tooltip_now_ms.saturating_add(u64::from(delta_ms));
+        let changed = self.tooltips.tick(u64::from(delta_ms), self.tooltip_now_ms);
+        changed || self.tooltip_owes_frames()
+    }
+
+    /// Only a pending or visible tooltip owes frames.
+    fn is_animating(&self) -> bool {
+        self.tooltip_owes_frames()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -1477,6 +1574,8 @@ impl EventHandler for ToolBar {
                 // the affordance the pointer is actually over.
                 let over_grip = self.movable && self.drag_band().contains_point(*pos);
                 self.hovered_index = if over_grip { None } else { self.hit_item(*pos) };
+                self.tooltips.note_pointer(*pos);
+                self.sync_hover_tooltip();
                 if !self.movable {
                     return;
                 }
@@ -1551,6 +1650,12 @@ impl EventHandler for ToolBar {
             }
             Event::MouseRelease { pos, button: 1 } => {
                 self.finish_drag(*pos);
+            }
+            Event::MouseLeave { .. } => {
+                self.hovered_index = None;
+                self.tooltip_source = None;
+                self.tooltips.note_leave();
+                self.base.request_redraw();
             }
             Event::Wheel { delta, .. } if self.is_overflowing() => {
                 // The wheel walks the overflow window rather than doing nothing: once a
@@ -1810,6 +1915,12 @@ impl Draw for ToolBar {
                 }
             }
         }
+
+        // The tooltip pipeline owns the bubble; keeping it in the same control means a host does
+        // not need a second mounted widget to get hover hints from a toolbar.
+        let geometry = self.geometry();
+        self.tooltips.set_geometry(geometry);
+        self.tooltips.draw(context);
     }
 }
 

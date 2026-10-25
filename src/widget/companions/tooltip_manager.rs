@@ -57,7 +57,7 @@ impl TooltipManager {
     /// Creates a manager with a 500 ms delay and a 3 s duration.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Tooltip, geometry, "TooltipManager"),
+            base: BaseWidget::new(WidgetKind::TooltipManager, geometry, "TooltipManager"),
             registrations: Vec::new(),
             hovered: None,
             hover_elapsed_ms: 0,
@@ -271,6 +271,11 @@ impl EventHandler for TooltipManager {
 impl Draw for TooltipManager {
     fn draw(&mut self, context: &mut RenderContext) {
         let Some(text) = self.tooltip() else {
+            let rect = self.geometry();
+            let style = self.style();
+            let (surface, ink) = surface_ink(style);
+            context.fill_rect(rect, surface.with_alpha(32));
+            context.draw_rect(rect, surface.blend(&ink, 0.18));
             return;
         };
         let style = self.style();

@@ -19,6 +19,17 @@
 //! So this is a genuine gap rather than a `ListView` variant (rule #78's test:
 //! could an existing control's data model carry it? No).
 //!
+//! # Swimlanes
+//!
+//! A lane is a second coordinate beside the column. [`KanbanLane`]s are board-level
+//! values, and [`KanbanBoard::set_card_lane`] assigns a card (by its board-wide id) to
+//! one lane; [`KanbanBoard::lane_mode`] decides whether lanes affect layout at all.
+//! With lanes on, each lane is a horizontal band whose height is set by the fullest
+//! column in that lane, lane labels are painted in a left strip, and a card's
+//! `CardPosition` still refers to its column and index while its y is derived from its
+//! lane. A card with no assignment renders in the first lane. Drag releases inside a
+//! band reassign the card to that lane, so the displayed band and the model agree.
+//!
 //! # This is the first consumer of `event::dnd`
 //!
 //! The drag state machine is [`DragSession`], not a hand-written press/move/release
@@ -37,6 +48,7 @@
 
 use core::fmt::Write as _;
 
+use crate::compat::HashMap;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::dnd::{DragPayload, DragSession, DropEffect, DropTarget};
 use crate::event::{Event, EventHandler};
@@ -84,6 +96,63 @@ const CARD_GAP: i32 = 8;
 /// One value for two labels that share a leading edge, so a column's header title and the card
 /// titles below it line up rather than each deriving its own inset.
 const CARD_PADDING: i32 = 10;
+
+/// Width of the lane-label strip on the left of a swimlane board.
+const LANE_HEADER_WIDTH: u32 = 96;
+/// Height of a lane's own caption row, inside its band.
+const LANE_HEADER_HEIGHT: i32 = 24;
+/// Vertical gap between two lane bands.
+const LANE_GAP: i32 = 6;
+
+/// A swimlane: a horizontal band that groups cards across every column.
+///
+/// Lanes are board-level data, not column data: a card's lane is a second coordinate beside its
+/// column, which is why the assignment lives in [`KanbanBoard::set_card_lane`] keyed by the card's
+/// board-wide id rather than inside [`KanbanColumn`]. A lane has no effect until
+/// [`KanbanBoard::set_lane_mode`] turns lanes on; the default is the flat board.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KanbanLane {
+    /// Stable identifier used by [`KanbanBoard::set_card_lane`].
+    pub id: String,
+    /// Header text drawn in the lane's left strip.
+    pub title: String,
+}
+
+impl KanbanLane {
+    /// Creates a lane with `id` and `title`.
+    pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
+        Self { id: id.into(), title: title.into() }
+    }
+}
+
+/// Whether the board groups cards into swimlanes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KanbanLaneMode {
+    /// Every card is laid out in one flat column, in column order.
+    #[default]
+    None,
+    /// Cards are grouped by [`KanbanBoard::card_lane`] into vertically stacked bands.
+    Lanes,
+}
+
+impl KanbanLaneMode {
+    /// The token this mode is published under.
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Lanes => "lanes",
+        }
+    }
+
+    /// Parses a published token; `None` for an unknown spelling.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "none" => Some(Self::None),
+            "lanes" => Some(Self::Lanes),
+            _ => None,
+        }
+    }
+}
 
 /// A card on the board.
 #[derive(Debug, Clone, PartialEq)]
@@ -196,6 +265,12 @@ pub struct KanbanBoard {
     column_width: u32,
     /// How far the columns are scrolled left, in pixels.
     horizontal_scroll: i32,
+    /// The swimlanes, in display order.
+    lanes: Vec<KanbanLane>,
+    /// Card id to lane id. Cards without an entry render in the first lane.
+    card_lanes: HashMap<String, String>,
+    /// Whether cards are grouped into lanes.
+    lane_mode: KanbanLaneMode,
     /// Emitted after a card moves, with the card's id and its new position.
     pub card_moved: Signal1<(String, CardPosition)>,
     /// Emitted when a card is activated (clicked without dragging), with its id.
@@ -221,6 +296,9 @@ impl KanbanBoard {
             column_scroll: Vec::new(),
             column_width: DEFAULT_COLUMN_WIDTH,
             horizontal_scroll: 0,
+            lanes: Vec::new(),
+            card_lanes: HashMap::new(),
+            lane_mode: KanbanLaneMode::None,
             card_moved: Signal1::new(),
             card_activated: Signal1::new(),
         }
@@ -240,6 +318,10 @@ impl KanbanBoard {
             return None;
         }
         let removed = self.columns.remove(index);
+        // A lane assignment names a card; a card that left the board must not keep one.
+        for card in &removed.cards {
+            self.card_lanes.remove(&card.id);
+        }
         // A drag whose origin no longer exists is abandoned, so the release does
         // not try to remove a card from a column that is gone.
         if self.drag_origin.is_some_and(|origin| origin.column >= self.columns.len()) {
@@ -268,6 +350,175 @@ impl KanbanBoard {
     /// Returns a mutable reference to the column at `index`.
     pub fn column_mut(&mut self, index: usize) -> Option<&mut KanbanColumn> {
         self.columns.get_mut(index)
+    }
+
+    // ── Swimlanes ───────────────────────────────────────────────────────────
+
+    /// Adds a lane, returning its index.
+    pub fn add_lane(&mut self, lane: KanbanLane) -> usize {
+        let index = self.lanes.len();
+        self.lanes.push(lane);
+        self.base.request_redraw();
+        index
+    }
+
+    /// Removes the lane with `id`, clearing every card assigned to it.
+    ///
+    /// A removed lane's cards fall back to the first lane rather than disappearing: an assignment
+    /// is display state, and removing the band must not delete the card.
+    pub fn remove_lane(&mut self, id: &str) -> Option<KanbanLane> {
+        let index = self.lanes.iter().position(|lane| lane.id == id)?;
+        let removed = self.lanes.remove(index);
+        self.card_lanes.retain(|_, lane| lane != &removed.id);
+        self.base.request_redraw();
+        Some(removed)
+    }
+
+    /// The lanes, in display order.
+    pub fn lanes(&self) -> &[KanbanLane] {
+        &self.lanes
+    }
+
+    /// The lane with `id`.
+    pub fn lane(&self, id: &str) -> Option<&KanbanLane> {
+        self.lanes.iter().find(|lane| lane.id == id)
+    }
+
+    /// How many lanes the board has.
+    pub fn lane_count(&self) -> usize {
+        self.lanes.len()
+    }
+
+    /// Whether cards are grouped into lanes.
+    pub fn lane_mode(&self) -> KanbanLaneMode {
+        self.lane_mode
+    }
+
+    /// Turns swimlanes on or off. Lanes still need at least one [`KanbanLane`] to lay out.
+    pub fn set_lane_mode(&mut self, mode: KanbanLaneMode) {
+        if self.lane_mode == mode {
+            return;
+        }
+        self.lane_mode = mode;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Assigns a card to a lane, returning whether both ids resolved.
+    ///
+    /// A card with no assignment is painted in the first lane, which keeps a board usable while
+    /// the caller is still filling in assignments.
+    pub fn set_card_lane(&mut self, card_id: &str, lane_id: &str) -> bool {
+        if self.position_of(card_id).is_none() || self.lane(lane_id).is_none() {
+            return false;
+        }
+        let next = lane_id.to_string();
+        if self.card_lanes.get(card_id) == Some(&next) {
+            return true;
+        }
+        self.card_lanes.insert(card_id.to_string(), next);
+        self.base.request_redraw();
+        true
+    }
+
+    /// The lane a card is assigned to, if any.
+    ///
+    /// This is the documented `lane_of` spelling of [`Self::card_lane`]; a card with no assignment
+    /// returns `None` and is painted in the first lane.
+    pub fn lane_of(&self, card_id: &str) -> Option<&str> {
+        self.card_lanes.get(card_id).map(String::as_str)
+    }
+
+    /// Assigns `card_id` to `lane_id`, returning whether both resolved.
+    ///
+    /// The `set_lane` spelling of [`Self::set_card_lane`]; it refuses an unknown card or lane
+    /// rather than storing an assignment that can never paint.
+    pub fn set_lane(&mut self, card_id: &str, lane_id: &str) -> bool {
+        self.set_card_lane(card_id, lane_id)
+    }
+
+    /// The lane a card is assigned to, if any.
+    pub fn card_lane(&self, card_id: &str) -> Option<&str> {
+        self.card_lanes.get(card_id).map(String::as_str)
+    }
+
+    /// The index of the lane a card is painted in: its assignment, or the first lane.
+    fn card_lane_index(&self, card_id: &str) -> Option<usize> {
+        if self.lanes.is_empty() {
+            return None;
+        }
+        match self.card_lanes.get(card_id) {
+            Some(lane_id) => self.lanes.iter().position(|lane| &lane.id == lane_id).or(Some(0)),
+            None => Some(0),
+        }
+    }
+
+    /// Whether lanes affect layout at all.
+    fn lanes_active(&self) -> bool {
+        self.lane_mode == KanbanLaneMode::Lanes && !self.lanes.is_empty()
+    }
+
+    /// The top of lane `index`'s band in board coordinates.
+    fn lane_top(&self, index: usize) -> i32 {
+        let mut y = self.geometry().y + HEADER_HEIGHT as i32;
+        for lane in 0..index.min(self.lanes.len()) {
+            y += self.lane_height(lane) + LANE_GAP;
+        }
+        y
+    }
+
+    /// The height of lane `index`'s band: its caption plus as many card rows as the fullest
+    /// column holds in that lane.
+    fn lane_height(&self, index: usize) -> i32 {
+        let mut rows = 0usize;
+        for column in &self.columns {
+            let count = column
+                .cards
+                .iter()
+                .filter(|card| self.card_lane_index(&card.id) == Some(index))
+                .count();
+            rows = rows.max(count);
+        }
+        LANE_HEADER_HEIGHT + rows as i32 * (CARD_HEIGHT as i32 + CARD_GAP) + LANE_GAP
+    }
+
+    /// The band of lane `index`, spanning every column.
+    pub fn lane_band_rect(&self, index: usize) -> Option<Rect> {
+        if index >= self.lanes.len() {
+            return None;
+        }
+        let rect = self.geometry();
+        Some(Rect::new(
+            rect.x + LANE_HEADER_WIDTH as i32,
+            self.lane_top(index),
+            rect.width.saturating_sub(LANE_HEADER_WIDTH),
+            self.lane_height(index).max(1) as u32,
+        ))
+    }
+
+    /// The label strip of lane `index`, on the left edge of the board.
+    pub fn lane_header_rect(&self, index: usize) -> Option<Rect> {
+        if index >= self.lanes.len() {
+            return None;
+        }
+        let rect = self.geometry();
+        Some(Rect::new(
+            rect.x,
+            self.lane_top(index),
+            LANE_HEADER_WIDTH,
+            (self.lane_height(index) - LANE_GAP).max(1) as u32,
+        ))
+    }
+
+    /// The lane whose band contains `pos`.
+    fn lane_at(&self, pos: Point) -> Option<usize> {
+        if !self.lanes_active() || !self.geometry().contains_point(pos) {
+            return None;
+        }
+        (0..self.lanes.len()).find(|index| {
+            let top = self.lane_top(*index);
+            pos.y >= top && pos.y < top + self.lane_height(*index)
+        })
     }
 
     /// Appends `card` to the column at `index`, returning its position.
@@ -310,6 +561,7 @@ impl KanbanBoard {
         let position = self.position_of(card_id)?;
         let column = self.columns.get_mut(position.column)?;
         let card = column.cards.remove(position.card);
+        self.card_lanes.remove(card_id);
         self.base.request_redraw();
         Some((card, position))
     }
@@ -379,7 +631,9 @@ impl KanbanBoard {
         // Clamped on read as well as on write: a board that shrank after its offset was set would
         // otherwise paint past its content and show empty space.
         let scroll = self.horizontal_scroll.min(self.max_horizontal_scroll());
-        let x = rect.x - scroll + (index as i32) * stride;
+        // In lane mode the left strip names the lanes, so the columns begin after it.
+        let origin = rect.x + if self.lanes_active() { LANE_HEADER_WIDTH as i32 } else { 0 };
+        let x = origin - scroll + (index as i32) * stride;
         Some(Rect::new(x, rect.y, self.column_width, rect.height))
     }
 
@@ -427,7 +681,9 @@ impl KanbanBoard {
         }
         let content =
             self.columns.len() as i32 * (self.column_width as i32 + COLUMN_GAP) - COLUMN_GAP;
-        (content - self.geometry().width as i32).max(0)
+        let lane_strip = if self.lanes_active() { LANE_HEADER_WIDTH as i32 } else { 0 };
+        let viewport = (self.geometry().width as i32 - lane_strip).max(0);
+        (content - viewport).max(0)
     }
 
     /// Re-clamps the scroll after the content or viewport width changed.
@@ -445,6 +701,19 @@ impl KanbanBoard {
             return None;
         }
         let column_rect = self.column_rect(position.column)?;
+        // In lane mode the band owns the row: the same card index inside a column can sit at a
+        // different y in every lane, so the ordinal is counted among the cards of that lane.
+        if self.lanes_active() {
+            let card_id = column.cards.get(position.card)?.id.as_str();
+            let lane = self.card_lane_index(card_id)?;
+            let band = self.lane_band_rect(lane)?;
+            let ordinal = column.cards[..position.card]
+                .iter()
+                .filter(|card| self.card_lane_index(&card.id) == Some(lane))
+                .count();
+            let y = band.y + LANE_HEADER_HEIGHT + ordinal as i32 * (CARD_HEIGHT as i32 + CARD_GAP);
+            return Some(Rect::new(column_rect.x, y, column_rect.width, CARD_HEIGHT));
+        }
         let scroll = self.column_scroll.get(position.column).copied().unwrap_or(0);
         let y = column_rect.y
             + HEADER_HEIGHT as i32
@@ -461,6 +730,10 @@ impl KanbanBoard {
         // otherwise answer for a point outside it, which is a press on whatever the layout put
         // beside the board.
         if !self.geometry().contains_point(pos) {
+            return None;
+        }
+        // The lane strip is not a column: a press there names a lane, not a destination card slot.
+        if self.lanes_active() && pos.x < self.geometry().x + LANE_HEADER_WIDTH as i32 {
             return None;
         }
         (0..self.columns.len())
@@ -492,6 +765,34 @@ impl KanbanBoard {
         let Some(column_rect) = self.column_rect(column) else {
             return 0;
         };
+        if self.lanes_active() {
+            let lane = self.lane_at(pos).unwrap_or(0);
+            let lane_indices: Vec<usize> = entries
+                .cards
+                .iter()
+                .enumerate()
+                .filter(|(_, card)| self.card_lane_index(&card.id) == Some(lane))
+                .map(|(index, _)| index)
+                .collect();
+            if lane_indices.is_empty() {
+                // The lane has no card in this column, so appending keeps the other lanes' order
+                // intact and puts the new card at the end of its own band.
+                return entries.cards.len();
+            }
+            let first_card_y = self
+                .lane_band_rect(lane)
+                .map(|band| band.y + LANE_HEADER_HEIGHT)
+                .unwrap_or(column_rect.y + HEADER_HEIGHT as i32);
+            let stride = CARD_HEIGHT as i32 + CARD_GAP;
+            let offset = (pos.y - first_card_y).max(0);
+            let slot = ((offset + stride / 2) / stride) as usize;
+            let slot = slot.min(lane_indices.len());
+            return if slot < lane_indices.len() {
+                lane_indices[slot]
+            } else {
+                lane_indices.last().copied().unwrap_or(0) + 1
+            };
+        }
         // Cards start below the header; a drop in the header goes to the top.
         let first_card_y = column_rect.y + HEADER_HEIGHT as i32;
         if pos.y <= first_card_y {
@@ -538,6 +839,10 @@ impl KanbanBoard {
 
     /// Scrolls the focused card's column so the card's lane is visible.
     fn ensure_focused_visible(&mut self) {
+        // Lanes lay out every card in its band; there is no per-column window to scroll.
+        if self.lanes_active() {
+            return;
+        }
         let Some(position) = self.focused_card else {
             return;
         };
@@ -562,6 +867,11 @@ impl KanbanBoard {
 
     /// Scrolls `column` by `delta` cards.
     pub fn scroll_column(&mut self, column: usize, delta: isize) {
+        // Lane mode gives each band all the height its busiest column needs, so a column is never
+        // clipped and has nothing to scroll.
+        if self.lanes_active() {
+            return;
+        }
         let Some(entry) = self.columns.get(column) else {
             return;
         };
@@ -714,13 +1024,29 @@ impl KanbanBoard {
             return false;
         };
         let target = CardPosition { column, card: target_index };
-        if current == target {
+        // The lane is the second destination coordinate: it is resolved from the release point once
+        // the column is known, so a drop into another band changes both at once.
+        let target_lane = if self.lanes_active() {
+            self.lane_at(pos).and_then(|lane| self.lanes.get(lane)).map(|lane| lane.id.clone())
+        } else {
+            None
+        };
+        let current_lane = self
+            .card_lane(&card_id)
+            .map(str::to_string)
+            .or_else(|| self.lanes.first().map(|lane| lane.id.clone()));
+        let lane_changed = target_lane.is_some() && target_lane != current_lane;
+        if current == target && !lane_changed {
             // A drop that changes nothing is accepted (the user did place the card)
             // but moves nothing, so no signal is emitted for a no-op.
             self.base.request_redraw();
             return false;
         }
-        self.move_card(current, target).is_some()
+        let moved = self.move_card(current, target).is_some();
+        if let Some(lane) = target_lane {
+            self.set_card_lane(&card_id, &lane);
+        }
+        moved || lane_changed
     }
 }
 
@@ -791,7 +1117,18 @@ impl DropTarget for KanbanBoard {
             return None;
         }
         let column = self.column_at(pos)?;
-        self.column_rect(column)
+        let mut rect = self.column_rect(column)?;
+        // In lane mode the landing place is a cell, not the whole column: the preview must show
+        // the band the release would put the card in.
+        if self.lanes_active() {
+            if let Some(lane) = self.lane_at(pos) {
+                if let Some(band) = self.lane_band_rect(lane) {
+                    rect.y = band.y;
+                    rect.height = band.height;
+                }
+            }
+        }
+        Some(rect)
     }
 }
 
@@ -873,6 +1210,9 @@ impl WidgetProperties for KanbanBoard {
             "horizontal_scroll_offset" => {
                 Ok(CapabilityValue::UInt(self.horizontal_scroll().max(0) as u64))
             }
+            "lane_mode" => Ok(CapabilityValue::String(self.lane_mode.token().to_string())),
+            "swimlanes" => Ok(CapabilityValue::Bool(self.lane_mode == KanbanLaneMode::Lanes)),
+            "lane_count" => Ok(CapabilityValue::UInt(self.lane_count() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -906,6 +1246,26 @@ impl WidgetProperties for KanbanBoard {
                 self.set_horizontal_scroll(offset);
                 Ok(())
             }
+            "lane_mode" => {
+                let token = expect_string(value)?;
+                let mode = KanbanLaneMode::from_token(&token)
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_lane_mode(mode);
+                Ok(())
+            }
+            // Boolean alias for the same switch: `true` groups cards into the configured lanes,
+            // `false` is the flat board. `lane_mode` remains the explicit spelling.
+            "swimlanes" => {
+                let enabled = expect_bool(value)?;
+                self.set_lane_mode(if enabled {
+                    KanbanLaneMode::Lanes
+                } else {
+                    KanbanLaneMode::None
+                });
+                Ok(())
+            }
+            // Lanes are identities; a count cannot say which band a card belongs to.
+            "lane_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -919,6 +1279,9 @@ impl WidgetProperties for KanbanBoard {
             "hovered_column",
             "column_width",
             "horizontal_scroll_offset",
+            "lane_mode",
+            "swimlanes",
+            "lane_count",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1152,6 +1515,9 @@ impl Draw for KanbanBoard {
             }
             self.draw_column(context, index, &chrome, &fonts);
         }
+        if self.lanes_active() {
+            self.draw_lane_headers(context, &chrome, &fonts);
+        }
         context.pop_clip();
         // The drag overlay is painted last so the card follows the pointer over
         // every column rather than being clipped to the one it started in. It is clamped to the
@@ -1235,6 +1601,13 @@ impl BoardChrome {
     /// reads as raised above its column.
     fn card(&self) -> Color {
         self.background.blend(&self.text_color, 0.1)
+    }
+
+    /// One lane band, alternating by parity so two adjacent lanes read as separate bands even
+    /// when no card happens to sit in one of them.
+    fn lane_band(&self, index: usize) -> Color {
+        let step = if index.is_multiple_of(2) { 0.18 } else { 0.13 };
+        self.background.blend(&self.text_color, step)
     }
 
     /// A card that has been marked done: title text muted, like the count badge.
@@ -1349,6 +1722,24 @@ impl KanbanBoard {
             return;
         }
 
+        // In lane mode the band is the column's row grid: painting it here (rather than in the
+        // board loop) keeps each band clipped to the column it belongs to, so a card cannot appear
+        // to float in a neighbouring column.
+        if self.lanes_active() {
+            for lane in 0..self.lanes.len() {
+                let Some(band) = self.lane_band_rect(lane) else {
+                    continue;
+                };
+                let cell = Rect::new(column_rect.x, band.y, column_rect.width, band.height);
+                context.fill_rect(cell, chrome.lane_band(lane));
+                context.draw_line(
+                    Point::new(cell.x, cell.y + cell.height as i32),
+                    Point::new(cell.x + cell.width as i32, cell.y + cell.height as i32),
+                    chrome.border,
+                );
+            }
+        }
+
         for (card_index, card) in cards.iter().enumerate() {
             let position = CardPosition { column: index, card: card_index };
             let Some(card_rect) = self.card_rect(position) else {
@@ -1360,6 +1751,55 @@ impl KanbanBoard {
             self.draw_card(context, card, card_rect, position, chrome, title_font, desc_font);
             context.pop_clip();
         }
+    }
+
+    /// Draws the lane labels down the left edge and the divider that separates them from the
+    /// columns. The bands themselves are painted per column by `draw_column`.
+    fn draw_lane_headers(
+        &self,
+        context: &mut RenderContext,
+        chrome: &BoardChrome,
+        fonts: &ColumnFonts,
+    ) {
+        let rect = self.geometry();
+        let caption = Rect::new(rect.x, rect.y, LANE_HEADER_WIDTH, HEADER_HEIGHT);
+        context.fill_rounded_rect(caption, 8, chrome.header());
+        context.draw_text_line_cow(
+            Rect::new(
+                caption.x + CARD_PADDING,
+                caption.y,
+                caption.width.saturating_sub(2 * CARD_PADDING as u32),
+                caption.height,
+            ),
+            "Lanes",
+            &fonts.header,
+            chrome.muted_text(),
+            HorizontalAlignment::Left,
+        );
+        for index in 0..self.lanes.len() {
+            let Some(header) = self.lane_header_rect(index) else {
+                continue;
+            };
+            context.fill_rounded_rect(header, 6, chrome.lane_band(index));
+            context.draw_text_line_cow(
+                Rect::new(
+                    header.x + CARD_PADDING,
+                    header.y,
+                    header.width.saturating_sub(2 * CARD_PADDING as u32),
+                    LANE_HEADER_HEIGHT as u32,
+                ),
+                &self.lanes[index].title,
+                &fonts.header,
+                chrome.text(),
+                HorizontalAlignment::Left,
+            );
+        }
+        let divider_x = rect.x + LANE_HEADER_WIDTH as i32;
+        context.draw_line(
+            Point::new(divider_x, rect.y + HEADER_HEIGHT as i32),
+            Point::new(divider_x, rect.y + rect.height as i32),
+            chrome.border,
+        );
     }
 
     /// Draws one card, marking it when it is the one being dragged.
@@ -1547,7 +1987,7 @@ impl KanbanCardView {
     /// Creates a card with `title` and no other content.
     pub fn new(geometry: Rect, title: impl Into<String>) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Panel, geometry, "KanbanCardView"),
+            base: BaseWidget::new(WidgetKind::KanbanCardView, geometry, "KanbanCardView"),
             title: title.into(),
             description: String::new(),
             done: false,
@@ -1971,7 +2411,7 @@ impl KanbanColumnHeader {
     /// Creates a header showing `title`.
     pub fn new(geometry: Rect, title: impl Into<String>) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Panel, geometry, "KanbanColumnHeader"),
+            base: BaseWidget::new(WidgetKind::KanbanColumnHeader, geometry, "KanbanColumnHeader"),
             title: title.into(),
             count: 0,
             wip_limit: None,
@@ -3048,5 +3488,99 @@ mod tests {
         board.set("horizontal_scroll_offset", CapabilityValue::UInt(64)).expect("writable");
         assert_eq!(board.horizontal_scroll(), 64);
         assert_eq!(board.get("horizontal_scroll_offset").unwrap(), CapabilityValue::UInt(64));
+    }
+
+    fn lane_board() -> KanbanBoard {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 600, 400));
+        board.add_column(KanbanColumn::new("todo", "To Do"));
+        board.add_card(0, KanbanCard::new("a", "First"));
+        board.add_card(0, KanbanCard::new("b", "Second"));
+        board.add_lane(KanbanLane::new("fast", "Fast"));
+        board.add_lane(KanbanLane::new("slow", "Slow"));
+        board.set_lane_mode(KanbanLaneMode::Lanes);
+        board
+    }
+
+    /// The lane model: a board-wide card id maps to a lane id, and an unassigned card renders in
+    /// the first lane rather than disappearing.
+    #[test]
+    fn lanes_assign_cards_and_drive_layout() {
+        let mut board = lane_board();
+        assert_eq!(board.lane_count(), 2);
+        assert_eq!(board.lane("slow").map(|lane| lane.title.as_str()), Some("Slow"));
+        assert!(board.set_card_lane("b", "slow"));
+        assert_eq!(board.card_lane("b"), Some("slow"));
+        assert_eq!(board.lane_of("b"), Some("slow"), "lane_of is the read alias");
+        assert_eq!(board.card_lane("a"), None, "unassigned cards fall into lane 0");
+        assert!(!board.set_card_lane("missing", "slow"));
+        assert!(!board.set_card_lane("a", "missing"));
+        assert!(board.set_lane("a", "slow"), "set_lane is the write alias");
+        assert_eq!(board.lane_of("a"), Some("slow"));
+        assert!(!board.set_lane("missing", "slow"));
+        // Restore the fixture's layout expectation: `a` again renders in the first lane.
+        assert!(board.set_lane("a", "fast"));
+
+        let lane0 = board.lane_band_rect(0).expect("lane 0");
+        let lane1 = board.lane_band_rect(1).expect("lane 1");
+        assert_eq!(lane1.x, LANE_HEADER_WIDTH as i32, "bands start after the labels");
+        assert!(lane1.y >= lane0.y + lane0.height as i32);
+        assert_eq!(board.lane_header_rect(1).expect("header").x, 0);
+
+        let a = board.card_rect(CardPosition { column: 0, card: 0 }).expect("a laid out");
+        let b = board.card_rect(CardPosition { column: 0, card: 1 }).expect("b laid out");
+        assert!(a.y >= lane0.y && a.y < lane1.y, "a sits in the first band");
+        assert!(b.y >= lane1.y, "b sits in the second band");
+    }
+
+    /// Paint and hit agree about the lane: a card hit-tests inside its band, and a painted lane
+    /// board produces a frame.
+    #[test]
+    fn lane_mode_paints_and_hit_tests_inside_the_band() {
+        let mut board = lane_board();
+        assert!(board.set_card_lane("b", "slow"));
+        let frame = render(&mut board, Size::new(600, 400));
+        assert!(!frame.is_empty());
+
+        let b = board.card_rect(CardPosition { column: 0, card: 1 }).expect("b laid out");
+        board.handle_event(&Event::mouse_move(b.x + 10, b.y + 10));
+        assert_eq!(board.hovered_card(), Some(CardPosition { column: 0, card: 1 }));
+
+        // The lane strip itself is not a card slot.
+        board.handle_event(&Event::mouse_move(10, b.y + 10));
+        assert_eq!(board.hovered_card(), None);
+    }
+
+    /// A release inside another band reassigns the card, so the model follows the drop.
+    #[test]
+    fn dropping_a_card_in_another_lane_reassigns_it() {
+        let mut board = lane_board();
+        assert!(board.set_card_lane("b", "slow"));
+        let a = board.card_rect(CardPosition { column: 0, card: 0 }).expect("a laid out");
+        let slow = board.lane_band_rect(1).expect("slow lane");
+        let target_y = slow.y + LANE_HEADER_HEIGHT + 10;
+
+        board.handle_event(&Event::mouse_press(a.x + 10, a.y + 10, 1));
+        board.handle_event(&Event::mouse_move(a.x + 10, target_y));
+        board.handle_event(&Event::mouse_release(a.x + 10, target_y, 1));
+        assert_eq!(board.card_lane("a"), Some("slow"));
+    }
+
+    #[test]
+    fn lane_mode_is_a_property() {
+        let mut board = lane_board();
+        assert_eq!(board.get("lane_mode").unwrap(), CapabilityValue::String("lanes".to_string()));
+        assert_eq!(board.get("swimlanes").unwrap(), CapabilityValue::Bool(true));
+        board.set("swimlanes", CapabilityValue::Bool(false)).expect("writable");
+        assert_eq!(board.lane_mode(), KanbanLaneMode::None);
+        board.set("swimlanes", CapabilityValue::Bool(true)).expect("writable");
+        assert_eq!(board.lane_mode(), KanbanLaneMode::Lanes);
+        board.set("lane_mode", CapabilityValue::String("none".to_string())).expect("writable");
+        assert_eq!(board.lane_mode(), KanbanLaneMode::None);
+        assert!(board.set("lane_mode", CapabilityValue::String("diagonal".to_string())).is_err());
+        assert!(board.set("swimlanes", CapabilityValue::UInt(1)).is_err());
+        assert_eq!(
+            board.set("lane_count", CapabilityValue::UInt(0)),
+            Err(CapabilityAccessError::ReadOnlyProperty)
+        );
     }
 }

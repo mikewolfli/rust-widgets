@@ -148,7 +148,7 @@ impl TileLoader {
     /// Creates a loader with the default template and a `0 ..= 19` zoom range.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Canvas, geometry, "TileLoader"),
+            base: BaseWidget::new(WidgetKind::TileLoader, geometry, "TileLoader"),
             url_template: "tiles/{z}/{x}/{y}.png".to_string(),
             min_zoom: 0,
             max_zoom: 19,
@@ -532,7 +532,7 @@ impl ZoomControl {
     /// Creates a control at 1:1 with a `0.25 ..= 8.0` range.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Canvas, geometry, "ZoomControl"),
+            base: BaseWidget::new(WidgetKind::ZoomControl, geometry, "ZoomControl"),
             zoom_level: 1.0,
             min: 0.25,
             max: 8.0,
@@ -855,7 +855,7 @@ impl ScaleBar {
     /// Creates a metric, plain-styled bar at 1 metre per pixel.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Canvas, geometry, "ScaleBar"),
+            base: BaseWidget::new(WidgetKind::ScaleBar, geometry, "ScaleBar"),
             meters_per_pixel: 1.0,
             units: ScaleUnits::Metric,
             style: ScaleBarStyle::Plain,
@@ -1103,7 +1103,7 @@ impl Compass {
     /// Creates a clickable compass pointing north.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Canvas, geometry, "Compass"),
+            base: BaseWidget::new(WidgetKind::Compass, geometry, "Compass"),
             bearing_deg: 0.0,
             clickable: true,
             reset_north_requested: GenericSignal::new(),

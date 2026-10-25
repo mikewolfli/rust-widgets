@@ -5,5 +5,7 @@
 pub(crate) mod command;
 pub(crate) mod types;
 
-pub use command::{BlendMode, CompoundPath, CompoundPathError, LayerEffect, RenderCommand};
+pub use command::{
+    BlendMode, CompoundPath, CompoundPathError, LayerEffect, MatteMode, RenderCommand,
+};
 pub use types::{ShapedText, TextCluster, TextMetrics};

@@ -89,7 +89,7 @@ pub mod grapheme;
 
 // Core
 pub use core::{
-    BlendMode, CompoundPath, CompoundPathError, LayerEffect, RenderCommand, ShapedText,
+    BlendMode, CompoundPath, CompoundPathError, LayerEffect, MatteMode, RenderCommand, ShapedText,
     TextCluster, TextMetrics,
 };
 

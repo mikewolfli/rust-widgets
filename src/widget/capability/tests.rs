@@ -1625,3 +1625,230 @@ fn the_validated_input_variants_publish_their_grammar() {
     // The derived pair is not writable: the text already determines both.
     assert!(factory.write_property(email.as_mut(), "valid", CapabilityValue::Bool(false)).is_err());
 }
+
+/// Every alias spelling a control publishes resolves to that control's one published schema.
+///
+/// # What this pins
+///
+/// `EVENT_ALIASES` is a promise that `connect_event(alias, ..)` is equivalent to the canonical
+/// spelling. Both directions are checked against every capability that publishes *either* side,
+/// and the resolution must land on a row that really exists in `events`. A spelling that no
+/// control publishes is caught by `every_event_alias_reaches_the_signal_its_control_emits`
+/// below, which drives the real emission path.
+#[test]
+fn every_event_alias_resolves_to_one_published_schema_per_control() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut checked = 0usize;
+
+    for capability in factory.capabilities() {
+        for row in EVENT_ALIASES {
+            let publishes_alias = capability.events.iter().any(|event| event.name == row.alias);
+            let publishes_canonical =
+                capability.events.iter().any(|event| event.name == row.canonical);
+            if !publishes_alias && !publishes_canonical {
+                continue;
+            }
+            checked += 1;
+
+            let via_alias = find_event_schema(capability, row.alias).unwrap_or_else(|| {
+                panic!(
+                    "{}: the alias `{}` resolved to nothing even though the control publishes \
+                     `{}` or `{}`",
+                    capability.canonical_name, row.alias, row.alias, row.canonical
+                )
+            });
+            let via_canonical = find_event_schema(capability, row.canonical).unwrap_or_else(|| {
+                panic!(
+                    "{}: the canonical `{}` resolved to nothing even though the control publishes \
+                     `{}` or `{}`",
+                    capability.canonical_name, row.canonical, row.alias, row.canonical
+                )
+            });
+            assert_eq!(
+                via_alias.name, via_canonical.name,
+                "{}: `{}` and `{}` must reach the same published row",
+                capability.canonical_name, row.alias, row.canonical
+            );
+            assert!(
+                capability.events.iter().any(|event| event.name == via_alias.name),
+                "{}: `{}` resolved to `{}`, which is not a published event",
+                capability.canonical_name,
+                row.alias,
+                via_alias.name
+            );
+        }
+    }
+
+    assert!(
+        checked >= 8,
+        "the alias table must be backed by several controls; only {checked} control/alias pairs \
+         resolved"
+    );
+}
+
+/// Every alias reaches the signal its control actually emits.
+///
+/// # Why end-to-end rather than a name check
+///
+/// `connect_event` returning `Ok` proves only that the name is valid. This drives the full path
+/// the runtime uses: `connect_event(alias, ..)` subscribes on a hub, `EventSignalBinder::forward_all`
+/// wires every published name through `event_signal_dyn`, and a real control action triggers the
+/// signal. If the alias resolved to a name the control does not emit under, the slot never runs and
+/// the assertion fails with the control/alias pair named.
+#[test]
+fn every_event_alias_reaches_the_signal_its_control_emits() {
+    use crate::event::{key_codes, Event, EventHandler};
+    use crate::signal::{CustomSignalHub, EventSignalBinder};
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    fn check<W, F>(control: &str, alias: &str, widget: &mut W, trigger: F)
+    where
+        W: crate::widget::Widget,
+        F: FnOnce(&mut W),
+    {
+        let hub = Arc::new(CustomSignalHub::new());
+        let fired = Arc::new(AtomicUsize::new(0));
+        let slot = Arc::clone(&fired);
+        WidgetFactory::new_with_defaults()
+            .connect_event(control, alias, &hub, move || {
+                slot.fetch_add(1, Ordering::SeqCst);
+            })
+            .unwrap_or_else(|error| panic!("`{control}` must publish `{alias}`: {error:?}"));
+
+        let mut binder = EventSignalBinder::new(Arc::clone(&hub));
+        assert!(
+            binder.forward_all(&*widget) > 0,
+            "{control}: `forward_all` wired nothing, so the alias cannot fire"
+        );
+
+        trigger(widget);
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "`{control}` accepted `{alias}` but no signal fired under its resolved name"
+        );
+    }
+
+    let rect = Rect::new(0, 0, 240, 120);
+
+    // W-19: cancelled -> canceled.
+    let mut button = crate::widget::base_widgets::button::Button::new("b".to_string(), rect);
+    check("button", "cancelled", &mut button, |button| {
+        button.press();
+        button.cancel_gesture();
+    });
+
+    let mut dialog = crate::widget::dialog::progress_dialog::ProgressDialog::new(rect);
+    check("progress_dialog", "cancelled", &mut dialog, |dialog| dialog.cancel());
+
+    let mut search = crate::widget::input_widgets::search_bar::SearchBar::new(rect);
+    search.set_focused(true);
+    check("search_bar", "cancelled", &mut search, |search| {
+        search.handle_event(&Event::KeyPress { key: key_codes::ESCAPE, modifiers: 0 });
+    });
+
+    let mut otp = crate::widget::input_widgets::otp_input::OtpInput::new(rect);
+    check("otp_input", "cancelled", &mut otp, |otp| {
+        otp.handle_event(&Event::KeyPress { key: key_codes::ESCAPE, modifiers: 0 });
+    });
+
+    let mut wizard = crate::widget::dialog::wizard::WizardDialog::new(rect);
+    check("wizard_dialog", "cancelled", &mut wizard, |wizard| {
+        wizard.handle_event(&Event::KeyPress { key: key_codes::ESCAPE, modifiers: 0 });
+    });
+
+    let mut alert =
+        crate::widget::cupertino::core::CupertinoAlertDialog::new(Rect::new(0, 0, 400, 300));
+    check("cupertino_alert_dialog", "cancelled", &mut alert, |alert| {
+        alert.handle_event(&Event::MouseRelease {
+            pos: crate::core::Point::new(100, 225),
+            button: 1,
+        });
+    });
+
+    let mut editor = crate::widget::input_widgets::inplace_editor::InplaceEditor::new("text", rect);
+    check("inplace_editor", "edit_cancelled", &mut editor, |editor| {
+        editor.start_edit();
+        editor.finish_edit(false);
+    });
+
+    // W-20: selected_changed / current_index_changed -> current_changed.
+    let mut bar = crate::widget::nav_widgets::bottom_navigation_bar::BottomNavigationBar::new(rect);
+    bar.add_item("A", "one");
+    bar.add_item("B", "two");
+    check("bottom_navigation_bar", "selected_changed", &mut bar, |bar| {
+        bar.set_selected_index(1);
+    });
+
+    let mut segmented = crate::widget::misc_widgets::segmented_button::SegmentedButton::new(rect);
+    segmented.add_segment(crate::widget::misc_widgets::segmented_button::Segment::new("A"));
+    segmented.add_segment(crate::widget::misc_widgets::segmented_button::Segment::new("B"));
+    check("segmented_button", "selected_changed", &mut segmented, |segmented| {
+        segmented.set_selected_index(Some(1));
+    });
+
+    let mut rail = crate::widget::cupertino::material::MaterialNavigationRail::new(rect);
+    rail.add_item("A", "one");
+    rail.add_item("B", "two");
+    check("material_navigation_rail", "selected_changed", &mut rail, |rail| {
+        rail.set_selected(1);
+    });
+
+    let mut combo = crate::widget::input_widgets::combobox::ComboBox::new(rect);
+    combo.add_item("one".to_string());
+    combo.add_item("two".to_string());
+    check("combo_box", "current_changed", &mut combo, |combo| {
+        combo.set_current_index(Some(1));
+    });
+
+    let mut fonts = crate::widget::input_widgets::font_combo_box::FontComboBox::new(rect);
+    fonts.add_font("Arial".to_string());
+    fonts.add_font("Courier".to_string());
+    check("font_combo_box", "current_changed", &mut fonts, |fonts| {
+        fonts.set_current_index(1);
+    });
+
+    let mut tag = crate::widget::display_widgets::tag::Tag::new("tag", rect);
+    check("tag", "current_changed", &mut tag, |tag| tag.set_selected(true));
+
+    // W-21: subject-last hover spellings -> subject-first emitted fields.
+    let mut chart = crate::widget::display_widgets::mini_chart::MiniChart::new(rect);
+    chart.set_data(vec![
+        crate::widget::display_widgets::mini_chart::DataPoint::new(0u32, 10),
+        crate::widget::display_widgets::mini_chart::DataPoint::new(1u32, 40),
+    ]);
+    check("mini_chart", "hovered_point_changed", &mut chart, |chart| {
+        chart.handle_event(&Event::MouseMove { pos: crate::core::Point::new(115, 50) });
+    });
+
+    let mut picker = crate::widget::display_widgets::emoji_picker::EmojiPicker::new(rect);
+    picker.set_categories(vec!["faces".to_string()]);
+    picker.set_glyphs(vec![crate::widget::display_widgets::emoji_picker::EmojiGlyph::new(
+        "grin", "😀", "faces",
+    )]);
+    check("emoji_picker", "hovered_glyph_changed", &mut picker, |picker| {
+        // The grid starts below the 30 px search row and 26 px tab strip; the first
+        // 34 px cell is (0, 56)..(34, 90).
+        picker.handle_event(&Event::MouseMove { pos: crate::core::Point::new(10, 70) });
+    });
+
+    let mut menu = crate::widget::menu_toolbar::menu_bar::MenuBar::new(rect);
+    menu.add_menu("File");
+    menu.set_hovered(true);
+    check("menu_bar", "hovered_entry", &mut menu, |menu| {
+        menu.handle_event(&Event::MouseMove { pos: crate::core::Point::new(5, 10) });
+    });
+
+    let mut shape = crate::widget::special_widgets::freeform_shape::FreeformShapeWidget::new(
+        Rect::new(0, 0, 100, 100),
+        crate::widget::special_widgets::freeform_shape::ShapePath::Polygon(vec![
+            crate::core::Point::new(0, 0),
+            crate::core::Point::new(100, 0),
+            crate::core::Point::new(50, 100),
+        ]),
+    );
+    check("freeform_shape", "hovered_changed", &mut shape, |shape| {
+        shape.handle_event(&Event::MouseMove { pos: crate::core::Point::new(50, 20) });
+    });
+}

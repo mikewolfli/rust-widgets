@@ -36,14 +36,21 @@ pub use chip::{Chip, ChipItem};
 pub use code_editor::{CodeEditor, DiagnosticMarker, MarkerSeverity, MultiCursor};
 pub use color_picker::ColorPicker;
 pub use command_palette::{CommandEntry, CommandPalette};
-pub use diff_viewer::{DiffKind, DiffLine, DiffViewer};
-pub use freeform_shape::FreeformShapeWidget;
-pub use gantt_widget::{GanttTask, GanttWidget};
+pub use diff_viewer::{DiffFileList, DiffKind, DiffLine, DiffViewer};
+pub use freeform_shape::{FreeformShapeWidget, ShapeCanvas};
+pub use gantt_widget::{
+    DateFormat, Dependency, DependencyEditor, GanttTask, GanttWidget, TimelineAxis,
+};
 pub use grid::GridWidget;
 pub use heatmap::{Heatmap, HeatmapCell};
-pub use kanban_board::{CardPosition, KanbanBoard, KanbanCard, KanbanColumn};
-pub use map_view::{MapMarker, MapView};
-pub use markdown_editor::MarkdownEditor;
+pub use kanban_board::{
+    CardPosition, KanbanBoard, KanbanCard, KanbanCardView, KanbanColumn, KanbanColumnHeader,
+};
+pub use map_view::{
+    Compass, MapMarker, MapView, ScaleBar, ScaleBarStyle, ScaleUnits, TileKey, TileLoadError,
+    TileLoader, TileRequest, TileViewport, ZoomButton, ZoomControl,
+};
+pub use markdown_editor::{FindBar, MarkdownEditor, MarkdownOutlinePanel};
 pub use media_player::MediaPlayer;
 pub use notification_center::{NotificationCenter, NotificationItem, NotificationLevel};
 pub use radar_chart::RadarChart;

@@ -48,8 +48,8 @@ pub struct ColorPicker {
     pub color_committed: Signal1<Color>,
     /// Emitted for every live HSVA edit (palette sweep, rail drag, keyboard nudge).
     pub color_previewed: Signal1<Color>,
-    /// Emitted when the panel session is cancelled with [`ColorPicker::cancel`].
-    pub cancelled: GenericSignal,
+    /// Emitted when the panel session is canceled with [`ColorPicker::cancel`].
+    pub canceled: GenericSignal,
 }
 
 /// The rail a colour-picker drag is currently editing.
@@ -89,7 +89,7 @@ impl ColorPicker {
             hex_changed: Signal1::new(),
             color_committed: Signal1::new(),
             color_previewed: Signal1::new(),
-            cancelled: GenericSignal::new(),
+            canceled: GenericSignal::new(),
         };
         picker.sync_color_from_hsva();
         picker
@@ -126,13 +126,22 @@ impl ColorPicker {
         self.apply_color_quietly(color);
     }
 
-    /// Cancels the panel session, resetting transient edit state and emitting `cancelled`.
+    /// Cancels the panel session, resetting transient edit state and emitting `canceled`.
+    ///
+    /// The event layer still accepts the historical `cancelled` spelling through
+    /// `EVENT_ALIASES`; the signal field is the US spelling so the emitted name and the
+    /// declared name are the same string (W-19).
     pub fn cancel(&mut self) {
         self.hex_editing = false;
         self.hex_buffer.clear();
         self.drag_target = None;
         self.base.request_redraw();
-        self.cancelled.emit();
+        self.canceled.emit();
+    }
+
+    /// Compatibility spelling of [`Self::canceled`] (W-19): the same emitted signal.
+    pub fn cancelled(&self) -> &GenericSignal {
+        &self.canceled
     }
 
     /// Updates the colour and HSV cache without emitting any signal.
@@ -472,7 +481,7 @@ impl Widget for ColorPicker {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
             }
-            "cancelled" => Some(EventSignalRef::unit("cancelled", &self.cancelled)),
+            "canceled" => Some(EventSignalRef::unit("canceled", &self.canceled)),
             _ => None,
         }
     }
@@ -1084,7 +1093,7 @@ mod tests {
         picker.set_hex_editing(true);
         let cancelled = Arc::new(AtomicUsize::new(0));
         let sink = Arc::clone(&cancelled);
-        picker.cancelled.connect(move || {
+        picker.canceled.connect(move || {
             sink.fetch_add(1, Ordering::SeqCst);
         });
         picker.cancel();

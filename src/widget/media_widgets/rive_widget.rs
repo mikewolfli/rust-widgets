@@ -1,21 +1,22 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! RiveWidget — a Rive-inspired animation runtime widget.
+//! RiveWidget — a Rive animation runtime widget.
 //!
 //! # Capability boundary
 //!
-//! **This control does not decode the binary `.riv` format.**
-//! [`RiveWidget::load_animation`] can only record a name, so it returns an explicit error and
-//! leaves the widget in the honest "not loaded" state instead of fabricating an animation. A host
-//! that owns a `.riv` decoder can flatten the artboard to the Rive-inspired JSON this widget
-//! renders and call [`RiveWidget::load_animation_from_json`]. There is no `riv` cargo feature: a
-//! decoder is a separate dependency, not a compile switch on this file.
+//! **This control decodes a documented subset of the binary `.riv` format** and renders a
+//! host-provided shape document. [`RiveWidget::load_animation`] reads a `.riv` file path (or use
+//! [`RiveWidget::load_animation_from_riv`] with bytes already in memory); the decoder parses the
+//! Rive file header, property table and object stream, and exposes the artboard names, animation
+//! names/durations and state-machine names. It does not build a full Rive scene graph: artboard
+//! drawables are host-provided, so a host that wants pixels flattens the artboard to the
+//! Rive-inspired JSON this widget renders through [`RiveWidget::load_animation_from_json`].
 //!
-//! The widget consumes a **Rive-inspired JSON** document through
-//! [`RiveWidget::load_animation_from_json`]. It provides play/pause/stop controls, loop counts,
-//! state machine inputs, and emits a signal when the animation finishes. Animated shapes are
-//! rendered from the parsed JSON at the current playhead position.
+//! The decoder is hand-rolled (no `riv` dependency and no Cargo feature): it validates the magic,
+//! version, property table and each object chunk, and reports a specific error for a malformed or
+//! truncated file instead of silently fabricating an animation.
+
 //!
 //! # State machine input contract
 //!
@@ -32,6 +33,7 @@
 //!
 //! Other names are stored and reported but do not affect playback.
 
+use crate::compat::HashMap;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -285,6 +287,994 @@ impl RiveAnimationData {
     }
 }
 
+// ──────────────────────────────────────────────
+// Binary `.riv` decoder (hand-rolled subset)
+// ──────────────────────────────────────────────
+
+/// One animation decoded from a Rive file's object stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RiveAnimationInfo {
+    /// Animation name as the file declares it.
+    pub name: String,
+    /// Duration in animation frames.
+    pub duration_frames: u32,
+    /// Authoring frame rate. Falls back to 60 when the file omits it.
+    pub frame_rate: f32,
+}
+
+/// The names and durations decoded from a `.riv` file header and objects.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RiveFileInfo {
+    /// Major format version from the file header.
+    pub major_version: u32,
+    /// Minor format version from the file header.
+    pub minor_version: u32,
+    /// Artboard names, in file order.
+    pub artboards: Vec<String>,
+    /// Animations with their declared duration and frame rate.
+    pub animations: Vec<RiveAnimationInfo>,
+    /// State-machine names, in file order.
+    pub state_machines: Vec<String>,
+}
+
+/// A bounds-checked reader over a `.riv` byte slice.
+struct RivReader<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> RivReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, position: 0 }
+    }
+
+    fn eof(&self) -> bool {
+        self.position >= self.bytes.len()
+    }
+
+    fn error(&self, message: impl core::fmt::Display) -> String {
+        format!("malformed Rive file at byte {}: {message}", self.position)
+    }
+
+    fn take(&mut self, length: usize) -> Result<&'a [u8], String> {
+        let end = self.position.checked_add(length).ok_or_else(|| self.error("length overflow"))?;
+        if end > self.bytes.len() {
+            return Err(self.error(format!(
+                "wanted {length} byte(s), only {} remain",
+                self.bytes.len() - self.position
+            )));
+        }
+        let slice = &self.bytes[self.position..end];
+        self.position = end;
+        Ok(slice)
+    }
+
+    fn byte(&mut self) -> Result<u8, String> {
+        Ok(self.take(1)?[0])
+    }
+
+    /// Unsigned LEB128, the encoding every Rive integer uses.
+    fn var_uint(&mut self) -> Result<u64, String> {
+        let mut value = 0u64;
+        let mut shift = 0u32;
+        loop {
+            let byte = self.byte()?;
+            if shift >= 64 || (shift == 63 && (byte & 0x7e) != 0) {
+                return Err(self.error("integer varint exceeds 64 bits"));
+            }
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return Ok(value);
+            }
+            shift += 7;
+        }
+    }
+
+    fn var_u32(&mut self) -> Result<u32, String> {
+        let value = self.var_uint()?;
+        u32::try_from(value).map_err(|_| self.error(format!("value {value} exceeds u32")))
+    }
+
+    fn u32_le(&mut self) -> Result<u32, String> {
+        let bytes = self.take(4)?;
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    /// A length-prefixed byte run. String and bytes properties share this framing, so the decoder
+    /// reads the bytes and defers the UTF-8 decision to the caller that actually wants text.
+    fn bytes(&mut self) -> Result<&'a [u8], String> {
+        let length = usize::try_from(self.var_uint()?)
+            .map_err(|_| self.error("byte length does not fit in usize"))?;
+        self.take(length)
+    }
+}
+
+/// The value of one object property, kept only as far as the name extraction needs it.
+///
+/// `Float` and `Color` are read and skipped so the stream stays aligned; this subset extracts no
+/// value of those kinds, hence the allow.
+#[allow(dead_code)]
+enum RivPropertyValue {
+    Uint(u64),
+    Bytes(Vec<u8>),
+    Float(f32),
+    Color(u32),
+}
+
+impl RivPropertyValue {
+    fn as_string(&self) -> Option<&str> {
+        match self {
+            Self::Bytes(bytes) => core::str::from_utf8(bytes).ok(),
+            _ => None,
+        }
+    }
+
+    fn as_u32(&self) -> Option<u32> {
+        match self {
+            Self::Uint(value) => u32::try_from(*value).ok(),
+            _ => None,
+        }
+    }
+}
+
+const RIV_MAGIC: &[u8; 4] = b"RIVE";
+/// The newest format version this decoder understands. Rive 7.x is the current runtime format;
+/// older files are accepted because the object/property framing is the same.
+const RIV_MAX_MAJOR: u32 = 7;
+
+// Object and property keys used to extract names and durations. These are the stable generated
+// keys from the Rive runtime (Artboard = 1, Animation = 27, LinearAnimation = 31, StateMachine =
+// 53; name = 4/55/138, fps = 56, duration = 57).
+const RIV_ARTBOARD_TYPE: u32 = 1;
+const RIV_ANIMATION_TYPE: u32 = 27;
+const RIV_LINEAR_ANIMATION_TYPE: u32 = 31;
+const RIV_STATE_MACHINE_TYPE: u32 = 53;
+const RIV_COMPONENT_NAME_KEY: u32 = 4;
+const RIV_ANIMATION_NAME_KEY: u32 = 55;
+const RIV_ANIMATION_FPS_KEY: u32 = 56;
+const RIV_ANIMATION_DURATION_KEY: u32 = 57;
+const RIV_STATE_MACHINE_NAME_KEY: u32 = 138;
+
+/// Physical encoding of every property key in the Rive runtime's generated core registry.
+///
+/// `0` = unsigned LEB128, `1` = length-prefixed bytes, `2` = little-endian `f32`, `3` =
+/// little-endian packed colour, `4` = one bool byte. The file header's ToC covers property keys the
+/// writing runtime considered non-core; the keys below are the ones the runtime resolves through
+/// its own registry, which a file commonly omits from the ToC. Both are consulted, so skipping a
+/// property never desynchronises the stream.
+///
+/// Generated from `rive-app/rive-cpp`'s `include/rive/generated/**/*_base.hpp` property keys and
+/// `core_registry.hpp`'s `propertyFieldId` grouping.
+const RIV_PROPERTY_KINDS: &[(u32, u8)] = &[
+    (4, 1),
+    (5, 0),
+    (7, 2),
+    (8, 2),
+    (9, 2),
+    (10, 2),
+    (11, 2),
+    (12, 2),
+    (13, 2),
+    (14, 2),
+    (15, 2),
+    (16, 2),
+    (17, 2),
+    (18, 2),
+    (20, 2),
+    (21, 2),
+    (23, 0),
+    (24, 2),
+    (25, 2),
+    (26, 2),
+    (31, 2),
+    (32, 4),
+    (33, 2),
+    (34, 2),
+    (35, 2),
+    (37, 3),
+    (38, 3),
+    (39, 2),
+    (40, 0),
+    (41, 4),
+    (42, 2),
+    (46, 2),
+    (47, 2),
+    (48, 0),
+    (49, 0),
+    (50, 4),
+    (51, 0),
+    (53, 0),
+    (55, 1),
+    (56, 0),
+    (57, 0),
+    (58, 2),
+    (59, 0),
+    (60, 0),
+    (61, 0),
+    (62, 4),
+    (63, 2),
+    (64, 2),
+    (65, 2),
+    (66, 2),
+    (67, 0),
+    (68, 0),
+    (69, 0),
+    (70, 2),
+    (79, 2),
+    (80, 2),
+    (81, 2),
+    (82, 2),
+    (83, 2),
+    (84, 2),
+    (85, 2),
+    (86, 2),
+    (87, 2),
+    (88, 3),
+    (89, 2),
+    (90, 2),
+    (91, 2),
+    (92, 0),
+    (93, 0),
+    (94, 4),
+    (95, 0),
+    (96, 2),
+    (97, 2),
+    (98, 2),
+    (99, 2),
+    (100, 2),
+    (101, 2),
+    (102, 0),
+    (103, 0),
+    (104, 2),
+    (105, 2),
+    (106, 2),
+    (107, 2),
+    (108, 2),
+    (109, 2),
+    (110, 0),
+    (111, 0),
+    (112, 0),
+    (113, 0),
+    (114, 2),
+    (115, 2),
+    (116, 2),
+    (117, 0),
+    (118, 0),
+    (119, 0),
+    (120, 0),
+    (121, 0),
+    (122, 0),
+    (123, 2),
+    (124, 2),
+    (125, 0),
+    (126, 2),
+    (127, 2),
+    (128, 0),
+    (129, 0),
+    (136, 0),
+    (138, 1),
+    (140, 2),
+    (141, 4),
+    (149, 0),
+    (151, 0),
+    (152, 0),
+    (155, 0),
+    (156, 0),
+    (157, 2),
+    (158, 0),
+    (160, 0),
+    (161, 2),
+    (162, 2),
+    (163, 2),
+    (164, 4),
+    (165, 0),
+    (166, 2),
+    (167, 0),
+    (168, 0),
+    (171, 0),
+    (172, 2),
+    (173, 0),
+    (174, 4),
+    (175, 0),
+    (177, 2),
+    (178, 0),
+    (179, 0),
+    (180, 0),
+    (181, 4),
+    (182, 2),
+    (183, 2),
+    (184, 2),
+    (185, 2),
+    (186, 2),
+    (187, 2),
+    (188, 4),
+    (189, 4),
+    (190, 4),
+    (191, 4),
+    (192, 4),
+    (193, 4),
+    (194, 4),
+    (195, 0),
+    (196, 4),
+    (197, 0),
+    (198, 0),
+    (199, 2),
+    (200, 2),
+    (201, 4),
+    (202, 2),
+    (203, 1),
+    (204, 0),
+    (206, 0),
+    (207, 2),
+    (208, 2),
+    (210, 0),
+    (212, 1),
+    (215, 2),
+    (216, 2),
+    (218, 0),
+    (221, 0),
+    (222, 0),
+    (223, 1),
+    (224, 0),
+    (225, 0),
+    (227, 0),
+    (228, 0),
+    (229, 2),
+    (236, 0),
+    (237, 0),
+    (238, 4),
+    (239, 2),
+    (240, 0),
+    (243, 2),
+    (245, 4),
+    (246, 1),
+    (248, 1),
+    (249, 0),
+    (268, 1),
+    (269, 0),
+    (270, 0),
+    (271, 0),
+    (272, 0),
+    (273, 0),
+    (274, 2),
+    (279, 0),
+    (280, 1),
+    (281, 0),
+    (284, 0),
+    (285, 2),
+    (286, 2),
+    (287, 0),
+    (288, 2),
+    (289, 0),
+    (292, 2),
+    (296, 0),
+    (297, 2),
+    (298, 0),
+    (299, 2),
+    (300, 2),
+    (301, 0),
+    (302, 0),
+    (303, 2),
+    (304, 2),
+    (305, 2),
+    (306, 2),
+    (307, 2),
+    (308, 2),
+    (312, 0),
+    (313, 0),
+    (315, 4),
+    (316, 0),
+    (317, 2),
+    (318, 2),
+    (319, 2),
+    (320, 0),
+    (321, 2),
+    (322, 2),
+    (323, 2),
+    (324, 2),
+    (325, 0),
+    (326, 0),
+    (327, 2),
+    (328, 2),
+    (329, 2),
+    (330, 2),
+    (331, 2),
+    (332, 2),
+    (333, 4),
+    (334, 2),
+    (335, 0),
+    (336, 2),
+    (337, 2),
+    (338, 2),
+    (339, 2),
+    (340, 2),
+    (349, 0),
+    (350, 0),
+    (356, 0),
+    (357, 0),
+    (359, 1),
+    (362, 1),
+    (363, 2),
+    (364, 4),
+    (365, 4),
+    (366, 2),
+    (367, 2),
+    (368, 2),
+    (369, 2),
+    (370, 2),
+    (371, 2),
+    (372, 2),
+    (373, 2),
+    (376, 4),
+    (377, 0),
+    (378, 0),
+    (380, 2),
+    (381, 2),
+    (389, 0),
+    (390, 2),
+    (392, 0),
+    (393, 0),
+    (399, 0),
+    (400, 0),
+    (405, 0),
+    (406, 2),
+    (407, 2),
+    (408, 0),
+    (410, 2),
+    (411, 2),
+    (412, 0),
+    (414, 0),
+    (415, 0),
+    (416, 2),
+    (417, 2),
+    (418, 0),
+    (419, 4),
+    (420, 4),
+    (446, 0),
+    (447, 3),
+    (448, 2),
+    (449, 0),
+    (450, 0),
+    (451, 4),
+    (452, 0),
+    (453, 0),
+    (454, 0),
+    (455, 0),
+    (456, 4),
+    (457, 4),
+    (458, 2),
+    (459, 0),
+    (460, 0),
+    (461, 4),
+    (462, 2),
+    (463, 2),
+    (464, 2),
+    (465, 2),
+    (466, 0),
+    (467, 4),
+    (468, 0),
+    (470, 0),
+    (481, 1),
+    (482, 1),
+    (483, 2),
+    (485, 1),
+    (486, 1),
+    (487, 0),
+    (489, 0),
+    (490, 0),
+    (493, 0),
+    (494, 0),
+    (498, 2),
+    (499, 2),
+    (500, 2),
+    (501, 2),
+    (502, 2),
+    (503, 2),
+    (504, 2),
+    (505, 2),
+    (506, 2),
+    (507, 2),
+    (508, 2),
+    (509, 2),
+    (510, 2),
+    (511, 2),
+    (512, 2),
+    (513, 2),
+    (514, 2),
+    (515, 2),
+    (516, 2),
+    (517, 2),
+    (518, 2),
+    (519, 2),
+    (523, 2),
+    (524, 2),
+    (530, 2),
+    (536, 0),
+    (537, 0),
+    (538, 0),
+    (541, 4),
+    (549, 0),
+    (550, 0),
+    (554, 0),
+    (555, 3),
+    (557, 1),
+    (560, 0),
+    (561, 1),
+    (565, 0),
+    (566, 0),
+    (572, 1),
+    (574, 0),
+    (575, 2),
+    (577, 0),
+    (578, 1),
+    (579, 1),
+    (582, 1),
+    (583, 0),
+    (586, 0),
+    (587, 0),
+    (588, 1),
+    (589, 0),
+    (590, 0),
+    (591, 0),
+    (592, 2),
+    (593, 4),
+    (596, 0),
+    (597, 0),
+    (598, 0),
+    (599, 0),
+    (604, 0),
+    (605, 0),
+    (606, 4),
+    (607, 0),
+    (608, 0),
+    (609, 0),
+    (610, 0),
+    (611, 0),
+    (612, 0),
+    (613, 0),
+    (614, 0),
+    (615, 0),
+    (616, 0),
+    (617, 0),
+    (618, 0),
+    (619, 0),
+    (620, 0),
+    (621, 0),
+    (622, 0),
+    (623, 0),
+    (624, 0),
+    (625, 0),
+    (626, 0),
+    (627, 0),
+    (628, 0),
+    (629, 0),
+    (630, 0),
+    (631, 0),
+    (632, 0),
+    (634, 4),
+    (635, 1),
+    (636, 2),
+    (637, 0),
+    (638, 3),
+    (639, 4),
+    (640, 2),
+    (641, 2),
+    (642, 2),
+    (643, 2),
+    (644, 2),
+    (645, 2),
+    (647, 4),
+    (650, 0),
+    (651, 3),
+    (652, 2),
+    (653, 0),
+    (654, 1),
+    (655, 0),
+    (656, 0),
+    (660, 0),
+    (662, 1),
+    (663, 2),
+    (664, 2),
+    (665, 0),
+    (666, 0),
+    (667, 0),
+    (668, 0),
+    (669, 0),
+    (672, 0),
+    (673, 0),
+    (675, 2),
+    (676, 4),
+    (677, 0),
+    (679, 0),
+    (681, 2),
+    (682, 0),
+    (683, 0),
+    (685, 0),
+    (686, 0),
+    (687, 0),
+    (689, 0),
+    (690, 2),
+    (691, 4),
+    (692, 2),
+    (693, 4),
+    (697, 2),
+    (698, 2),
+    (699, 2),
+    (700, 2),
+    (703, 4),
+    (705, 0),
+    (706, 2),
+    (707, 2),
+    (708, 0),
+    (709, 0),
+    (711, 1),
+    (713, 0),
+    (714, 0),
+    (715, 0),
+    (716, 2),
+    (717, 2),
+    (718, 2),
+    (719, 2),
+    (722, 0),
+    (724, 4),
+    (725, 0),
+    (726, 0),
+    (727, 0),
+    (728, 2),
+    (729, 2),
+    (730, 2),
+    (731, 0),
+    (734, 4),
+    (743, 0),
+    (744, 1),
+    (745, 0),
+    (746, 0),
+    (747, 0),
+    (748, 0),
+    (749, 2),
+    (750, 2),
+    (751, 2),
+    (752, 4),
+    (756, 2),
+    (757, 0),
+    (758, 0),
+    (759, 2),
+    (760, 2),
+    (761, 2),
+    (762, 2),
+    (763, 2),
+    (764, 0),
+    (765, 0),
+    (766, 1),
+    (770, 4),
+    (775, 0),
+    (776, 0),
+    (777, 2),
+    (778, 0),
+    (779, 4),
+    (781, 2),
+    (782, 4),
+    (783, 2),
+    (784, 2),
+    (785, 2),
+    (786, 2),
+    (800, 0),
+    (806, 2),
+    (807, 2),
+    (808, 2),
+    (809, 2),
+    (810, 2),
+    (811, 2),
+    (814, 0),
+    (816, 0),
+    (817, 1),
+    (818, 2),
+    (823, 0),
+    (824, 0),
+    (835, 0),
+    (836, 3),
+    (846, 0),
+    (848, 0),
+    (850, 4),
+    (851, 4),
+    (858, 0),
+    (859, 2),
+    (860, 2),
+    (862, 0),
+    (864, 2),
+    (865, 2),
+    (866, 1),
+    (868, 1),
+    (870, 0),
+    (871, 1),
+    (872, 0),
+    (873, 0),
+    (874, 0),
+    (875, 0),
+    (876, 0),
+    (887, 0),
+    (888, 2),
+    (889, 2),
+    (891, 4),
+    (892, 0),
+    (893, 0),
+    (894, 2),
+    (895, 4),
+    (907, 2),
+    (908, 2),
+    (911, 1),
+    (912, 0),
+    (914, 4),
+    (920, 1),
+    (921, 4),
+    (922, 0),
+    (926, 1),
+    (930, 0),
+    (931, 0),
+    (932, 0),
+    (934, 0),
+    (935, 0),
+    (952, 0),
+    (953, 4),
+    (954, 4),
+    (955, 4),
+    (956, 0),
+    (957, 0),
+    (962, 0),
+    (963, 1),
+    (965, 0),
+    (966, 0),
+    (971, 0),
+    (972, 0),
+    (973, 0),
+    (974, 0),
+    (975, 2),
+    (976, 2),
+    (977, 0),
+    (978, 0),
+    (979, 4),
+    (980, 0),
+    (981, 0),
+    (982, 0),
+    (983, 1),
+    (984, 1),
+    (985, 1),
+    (986, 0),
+    (987, 0),
+    (988, 0),
+    (989, 4),
+    (990, 4),
+    (991, 4),
+    (992, 4),
+    (993, 4),
+    (994, 4),
+    (995, 4),
+    (996, 4),
+    (997, 4),
+    (998, 0),
+    (1000, 4),
+    (1001, 4),
+    (1002, 4),
+    (1003, 4),
+    (1004, 4),
+    (1005, 4),
+    (1006, 4),
+    (1007, 4),
+    (1008, 4),
+    (1009, 4),
+    (1010, 0),
+    (1011, 0),
+    (1014, 4),
+    (1015, 0),
+    (1018, 0),
+    (1019, 0),
+    (1020, 0),
+    (1021, 0),
+    (1022, 0),
+    (1023, 2),
+    (1024, 2),
+    (1025, 4),
+    (1026, 0),
+    (1027, 0),
+    (1028, 0),
+    (1029, 2),
+    (1033, 0),
+    (1040, 2),
+    (1041, 2),
+    (1045, 0),
+    (1046, 0),
+    (1047, 0),
+    (1048, 0),
+    (1049, 0),
+    (1050, 0),
+    (1057, 2),
+    (1058, 2),
+    (1059, 0),
+    (1061, 0),
+    (1062, 0),
+    (1063, 2),
+    (1064, 0),
+    (1065, 2),
+    (1066, 2),
+    (1067, 2),
+    (1068, 0),
+    (1069, 2),
+    (1070, 2),
+    (1071, 2),
+    (1073, 0),
+    (1074, 0),
+    (1075, 0),
+    (1076, 0),
+    (1077, 0),
+    (1078, 0),
+    (1087, 0),
+    (1094, 0),
+    (1095, 4),
+    (1098, 4),
+    (1099, 4),
+    (1103, 2),
+    (1104, 2),
+    (1105, 2),
+    (1106, 2),
+    (1107, 2),
+];
+
+/// The physical kind of `property_key`: the file's own ToC first, then the runtime registry.
+fn riv_property_kind(property_key: u32, toc: &HashMap<u32, u8>) -> Option<u8> {
+    toc.get(&property_key).copied().or_else(|| {
+        RIV_PROPERTY_KINDS
+            .binary_search_by_key(&property_key, |(key, _)| *key)
+            .ok()
+            .map(|index| RIV_PROPERTY_KINDS[index].1)
+    })
+}
+
+/// Parses the Rive file header and object/property chunks.
+///
+/// The header is `"RIVE"`, major/minor/file-id varints, a zero-terminated list of property keys,
+/// then the property **kind** table bit-packed two bits per key in little-endian `u32`s. Objects
+/// follow: a type key varint, then `(property key, value)` pairs ended by key zero. Every property
+/// is skipped by the kind the header declared, so the stream stays aligned even for objects and
+/// properties this subset does not model.
+fn decode_riv(bytes: &[u8]) -> Result<RiveFileInfo, String> {
+    if bytes.len() < RIV_MAGIC.len() || &bytes[..RIV_MAGIC.len()] != RIV_MAGIC {
+        return Err("not a Rive file: expected the 4-byte \"RIVE\" magic at the start".to_string());
+    }
+    let mut reader = RivReader::new(bytes);
+    reader.position = RIV_MAGIC.len();
+    let major_version = reader.var_u32()?;
+    let minor_version = reader.var_u32()?;
+    if major_version == 0 || major_version > RIV_MAX_MAJOR {
+        return Err(format!(
+            "unsupported Rive version {major_version}.{minor_version}; this decoder supports 1..={RIV_MAX_MAJOR}"
+        ));
+    }
+    let _file_id = reader.var_uint()?;
+
+    let mut property_keys = Vec::new();
+    loop {
+        let key = reader.var_u32()?;
+        if key == 0 {
+            break;
+        }
+        property_keys.push(key);
+        if property_keys.len() > 1_000_000 {
+            return Err(reader.error("property table is unreasonably large"));
+        }
+    }
+
+    // Two bits per property key: 0 = uint, 1 = length-prefixed string, 2 = f32, 3 = packed colour.
+    let mut property_kinds = HashMap::new();
+    let mut current = 0u32;
+    let mut bit = 8u32;
+    for key in property_keys {
+        if bit == 8 {
+            current = reader.u32_le()?;
+            bit = 0;
+        }
+        property_kinds.insert(key, ((current >> bit) & 3) as u8);
+        bit += 2;
+    }
+
+    let mut info = RiveFileInfo {
+        major_version,
+        minor_version,
+        artboards: Vec::new(),
+        animations: Vec::new(),
+        state_machines: Vec::new(),
+    };
+
+    while !reader.eof() {
+        let type_key = reader.var_u32()?;
+        let mut name: Option<String> = None;
+        let mut fps: Option<u32> = None;
+        let mut duration: Option<u32> = None;
+
+        loop {
+            let property_key = reader.var_u32()?;
+            if property_key == 0 {
+                break;
+            }
+            let kind = riv_property_kind(property_key, &property_kinds).ok_or_else(|| {
+                reader
+                    .error(format!("unknown property key {property_key} on object type {type_key}"))
+            })?;
+            let value = match kind {
+                0 => RivPropertyValue::Uint(reader.var_uint()?),
+                1 => RivPropertyValue::Bytes(reader.bytes()?.to_vec()),
+                2 => {
+                    let bytes = reader.take(4)?;
+                    RivPropertyValue::Float(f32::from_le_bytes([
+                        bytes[0], bytes[1], bytes[2], bytes[3],
+                    ]))
+                }
+                3 => RivPropertyValue::Color(reader.u32_le()?),
+                4 => {
+                    // A bool occupies one byte; none of the names/durations extracted here use it.
+                    let _ = reader.byte()?;
+                    continue;
+                }
+                other => {
+                    return Err(
+                        reader.error(format!("property {property_key} has unknown kind {other}"))
+                    );
+                }
+            };
+
+            if (type_key == RIV_ARTBOARD_TYPE && property_key == RIV_COMPONENT_NAME_KEY)
+                || ((type_key == RIV_ANIMATION_TYPE || type_key == RIV_LINEAR_ANIMATION_TYPE)
+                    && property_key == RIV_ANIMATION_NAME_KEY)
+                || (type_key == RIV_STATE_MACHINE_TYPE
+                    && (property_key == RIV_STATE_MACHINE_NAME_KEY
+                        || property_key == RIV_ANIMATION_NAME_KEY))
+            {
+                name = value.as_string().map(str::to_string);
+            } else if type_key == RIV_LINEAR_ANIMATION_TYPE && property_key == RIV_ANIMATION_FPS_KEY
+            {
+                fps = value.as_u32();
+            } else if type_key == RIV_LINEAR_ANIMATION_TYPE
+                && property_key == RIV_ANIMATION_DURATION_KEY
+            {
+                duration = value.as_u32();
+            }
+        }
+
+        match type_key {
+            RIV_ARTBOARD_TYPE => {
+                if let Some(name) = name {
+                    info.artboards.push(name);
+                }
+            }
+            RIV_ANIMATION_TYPE | RIV_LINEAR_ANIMATION_TYPE => {
+                let name = name.unwrap_or_default();
+                if !name.is_empty() {
+                    info.animations.push(RiveAnimationInfo {
+                        name,
+                        duration_frames: duration.unwrap_or(0),
+                        frame_rate: fps
+                            .filter(|fps| *fps > 0)
+                            .map(|fps| fps as f32)
+                            .unwrap_or(60.0),
+                    });
+                }
+            }
+            RIV_STATE_MACHINE_TYPE => {
+                if let Some(name) = name.filter(|name| !name.is_empty()) {
+                    info.state_machines.push(name);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if info.artboards.is_empty() && info.animations.is_empty() {
+        return Err(
+            "malformed Rive file: the object stream contains no artboard or animation".to_string()
+        );
+    }
+    Ok(info)
+}
+
 /// RiveWidget — a Rive animation runtime widget.
 pub struct RiveWidget {
     base: BaseWidget,
@@ -317,6 +1307,8 @@ pub struct RiveWidget {
     /// original string in an `animation_json` field that nothing ever read — a second copy of the
     /// source whose only possible future was to drift from the parsed form (principle #99).
     animation_data: Option<RiveAnimationData>,
+    /// Names and durations decoded from a `.riv` file, when the current animation came from one.
+    file_info: Option<RiveFileInfo>,
 }
 
 impl RiveWidget {
@@ -336,29 +1328,97 @@ impl RiveWidget {
             state: RiveState::Idle,
             loops_completed: 0,
             animation_data: None,
+            file_info: None,
         }
     }
 
-    /// Loads a named animation.
+    /// Loads a named animation from a `.riv` file path.
     ///
-    /// This widget has no embedded animation library and no `.riv` decoder, so a
-    /// call that supplies only a name cannot produce animation data. It records
-    /// the name for the placeholder, leaves the widget in the honest "not
-    /// loaded" state (`animation_data` stays `None`) and returns an `Err`
-    /// pointing at [`Self::load_animation_from_json`], which accepts the
-    /// Rive-inspired JSON format this widget actually renders.
+    /// The file is read from disk and decoded by [`Self::load_animation_from_riv`]. A path that
+    /// cannot be read (or a caller with no filesystem, under the `mini` profile) is an explicit
+    /// error rather than a fabricated animation.
+    #[allow(clippy::needless_return)]
     pub fn load_animation(&mut self, name: &str) -> Result<(), String> {
-        self.animation_name = name.to_string();
+        #[cfg(not(feature = "mini"))]
+        {
+            let bytes = std::fs::read(name).map_err(|error| {
+                format!(
+                    "Rive animation \"{name}\" could not be read as a .riv file: {error}; \
+                     use load_animation_from_riv for an in-memory file"
+                )
+            })?;
+            return self.load_animation_from_riv(name, &bytes);
+        }
+        #[cfg(feature = "mini")]
+        {
+            let _ = name;
+            Err("this build has no filesystem; pass .riv bytes to load_animation_from_riv"
+                .to_string())
+        }
+    }
+
+    /// Loads an animation from the bytes of a `.riv` file, with no filesystem access.
+    ///
+    /// The decoder parses the Rive header, property table and object stream, and makes the
+    /// artboard, animation and state-machine names available through [`Self::artboard_names`],
+    /// [`Self::animation_names`] and [`Self::state_machine_names`]. Rendering stays host-provided:
+    /// a `.riv` file's artboard is not converted to drawable shapes here.
+    pub fn load_animation_from_riv(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        let info = decode_riv(bytes)?;
+        let display_name = if name.is_empty() {
+            info.animations
+                .first()
+                .map(|animation| animation.name.clone())
+                .or_else(|| info.artboards.first().cloned())
+                .unwrap_or_default()
+        } else {
+            name.to_string()
+        };
+        let animation = info.animations.first();
+        self.animation_name = display_name.clone();
         self.animation_progress = 0.0;
         self.frame_timer = 0;
         self.is_playing = false;
-        self.animation_data = None;
-        self.set_state(RiveState::Idle);
+        self.loops_completed = 0;
+        self.animation_data = Some(RiveAnimationData {
+            _name: display_name,
+            duration_frames: animation.map(|a| a.duration_frames).unwrap_or(60).max(1),
+            frame_rate: animation.map(|a| a.frame_rate).unwrap_or(60.0),
+            shapes: Vec::new(),
+        });
+        self.file_info = Some(info);
+        self.set_state(RiveState::Paused);
         self.base.request_redraw();
-        Err(format!(
-            "Rive animation \"{name}\" has no animation data; this widget loads the \
-             Rive-inspired JSON format through load_animation_from_json, not a .riv file"
-        ))
+        Ok(())
+    }
+
+    /// Alias for [`Self::load_animation_from_riv`], for callers that spell the input as bytes.
+    pub fn load_animation_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        self.load_animation_from_riv(name, bytes)
+    }
+
+    /// The header and object names decoded from the current `.riv` file, if any.
+    pub fn file_info(&self) -> Option<&RiveFileInfo> {
+        self.file_info.as_ref()
+    }
+
+    /// The animation names in the current `.riv` file, or the JSON-loaded animation's name.
+    pub fn animation_names(&self) -> Vec<String> {
+        if let Some(info) = &self.file_info {
+            if !info.animations.is_empty() {
+                return info.animations.iter().map(|animation| animation.name.clone()).collect();
+            }
+        }
+        if self.animation_name.is_empty() {
+            Vec::new()
+        } else {
+            vec![self.animation_name.clone()]
+        }
+    }
+
+    /// The artboard names in the current `.riv` file.
+    pub fn artboard_names(&self) -> Vec<String> {
+        self.file_info.as_ref().map(|info| info.artboards.clone()).unwrap_or_default()
     }
 
     /// Loads a named animation from JSON data.
@@ -379,6 +1439,7 @@ impl RiveWidget {
         self.frame_timer = 0;
         self.is_playing = false;
         self.animation_data = Some(RiveAnimationData::from_json(name, &parsed));
+        self.file_info = None;
         self.loops_completed = 0;
         self.set_state(RiveState::Paused);
         self.base.request_redraw();
@@ -440,12 +1501,22 @@ impl RiveWidget {
         self.state_changed.emit(state.as_str().to_string());
     }
 
-    /// The names this control's state machine exposes: every stored input name.
+    /// The state-machine names the current source exposes.
     ///
-    /// Rive state machine definitions are not decoded from the source, so this is the set of
-    /// names a host can address with [`Self::set_input`] / [`Self::fire_input`], not a list of
-    /// artboard state machines.
+    /// A `.riv` file's state machines come from its decoded object stream. The Rive-inspired JSON
+    /// path has no state-machine definitions, so its addressable input names are returned instead;
+    /// [`Self::input_names`] is the input-only view for either source.
     pub fn state_machine_names(&self) -> Vec<String> {
+        if let Some(info) = &self.file_info {
+            if !info.state_machines.is_empty() {
+                return info.state_machines.clone();
+            }
+        }
+        self.input_names()
+    }
+
+    /// The names a host can address with [`Self::set_input`] / [`Self::fire_input`].
+    pub fn input_names(&self) -> Vec<String> {
         self.state_machine_inputs.iter().map(|input| input.name.clone()).collect()
     }
 
@@ -1377,14 +2448,16 @@ mod tests {
         let _ = completed;
     }
 
-    /// A name alone is not animation data: the load must fail and draw no shapes.
+    /// A path with no readable file is an explicit error, and no animation data is fabricated.
     #[test]
-    fn rive_widget_load_animation_without_data_returns_error_and_draws_no_shapes() {
+    fn rive_widget_load_animation_without_a_readable_file_is_an_error() {
         let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
-        let error = rive.load_animation("idle").expect_err("a name alone has no animation data");
+        let error = rive
+            .load_animation("definitely-not-a-riv-file.riv")
+            .expect_err("an unreadable path is not animation data");
         assert!(
-            error.contains("load_animation_from_json"),
-            "the refusal must point at the data-loading entry point, got: {error:?}"
+            error.contains("load_animation_from_riv"),
+            "the refusal must point at the in-memory entry point, got: {error:?}"
         );
         assert!(rive.animation_data.is_none(), "a failed load must not fabricate animation data");
         assert!(!rive.is_playing(), "a failed load must not start playback");
@@ -1395,6 +2468,108 @@ mod tests {
             "the placeholder must paint a label:\n{svg}"
         );
         assert!(!svg.contains("<circle"), "no fake circle shape may be drawn:\n{svg}");
+    }
+
+    /// Encodes an unsigned LEB128 value the way a `.riv` header/object stream does.
+    fn push_var_uint(mut value: u64, out: &mut Vec<u8>) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    /// A minimal valid `.riv`: one artboard, one 24 fps / 48-frame animation and one state machine.
+    fn make_riv_file() -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIVE");
+        for value in [7u64, 4, 1] {
+            push_var_uint(value, &mut out);
+        }
+        // Property keys: artboard/animation/state-machine names, animation fps and duration.
+        for key in [4u64, 55, 56, 57, 138, 0] {
+            push_var_uint(key, &mut out);
+        }
+        // Two bits per key: key 4 = string, 55 = string, 56 = uint, 57 = uint, 138 = string.
+        // The header starts a fresh `u32` for every four keys, so the fifth key begins a second
+        // word even though only two of its bits are used.
+        let kinds = 1u32 | (1 << 2);
+        out.extend_from_slice(&kinds.to_le_bytes());
+        let kinds_tail = 1u32; // key 138: string
+        out.extend_from_slice(&kinds_tail.to_le_bytes());
+
+        let push_string = |out: &mut Vec<u8>, text: &str| {
+            push_var_uint(text.len() as u64, out);
+            out.extend_from_slice(text.as_bytes());
+        };
+
+        // Artboard.
+        push_var_uint(1, &mut out);
+        push_var_uint(4, &mut out);
+        push_string(&mut out, "Main");
+        push_var_uint(0, &mut out);
+
+        // Linear animation: name, fps, duration.
+        push_var_uint(31, &mut out);
+        push_var_uint(55, &mut out);
+        push_string(&mut out, "Bounce");
+        push_var_uint(56, &mut out);
+        push_var_uint(24, &mut out);
+        push_var_uint(57, &mut out);
+        push_var_uint(48, &mut out);
+        push_var_uint(0, &mut out);
+
+        // State machine.
+        push_var_uint(53, &mut out);
+        push_var_uint(138, &mut out);
+        push_string(&mut out, "Hover");
+        push_var_uint(0, &mut out);
+        out
+    }
+
+    #[test]
+    fn load_animation_from_riv_decodes_names_and_duration() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        rive.load_animation_from_riv("Bounce", &make_riv_file()).expect("a valid .riv file loads");
+        assert_eq!(rive.artboard_names(), vec!["Main".to_string()]);
+        assert_eq!(rive.animation_names(), vec!["Bounce".to_string()]);
+        assert_eq!(rive.state_machine_names(), vec!["Hover".to_string()]);
+        let info = rive.file_info().expect("the header was decoded");
+        assert_eq!((info.major_version, info.minor_version), (7, 4));
+        assert_eq!(info.animations[0].duration_frames, 48);
+        assert_eq!(info.animations[0].frame_rate, 24.0);
+        assert!(rive.animation_data.is_some(), "the animation is playable");
+        assert_eq!(rive.state(), RiveState::Paused);
+    }
+
+    #[test]
+    fn malformed_riv_files_are_refused_with_a_specific_error() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        let bad_magic = rive.load_animation_from_riv("x", b"NOPE").expect_err("bad magic");
+        assert!(bad_magic.contains("RIVE"), "got {bad_magic:?}");
+
+        let mut truncated = make_riv_file();
+        truncated.truncate(12);
+        let error = rive.load_animation_from_riv("x", &truncated).expect_err("truncated file");
+        assert!(error.contains("malformed Rive file"), "got {error:?}");
+
+        let mut unknown = make_riv_file();
+        // Rewrite the first object's property key (4) to a key absent from the ToC. Search from the
+        // end: the object stream follows the header's own property-key list.
+        let position = unknown
+            .windows(2)
+            .rposition(|window| window == [1, 4])
+            .expect("the artboard object header is present");
+        unknown[position + 1] = 22;
+        let error = rive.load_animation_from_riv("x", &unknown).expect_err("unknown key");
+        assert!(error.contains("unknown property key 22"), "got {error:?}");
+        assert!(rive.animation_data.is_none(), "a failed load leaves nothing playable");
     }
 
     /// The documented `playing` input gates the tick.

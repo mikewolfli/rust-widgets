@@ -261,6 +261,21 @@ pub struct MarkdownEditor {
     dragging_scrollbar: bool,
     /// The find bar.
     find: FindState,
+    /// The mounted find/replace bar.
+    ///
+    /// It is a view over this editor's bytes, not the editor's own find state: the bar paints the
+    /// query and the match counter while [`Self::find`] stays the navigation state the editor's
+    /// keyboard path uses. [`Self::show_find_bar`] is what points the two at the same text.
+    find_bar: FindBar,
+    /// The mounted document outline.
+    outline_panel: MarkdownOutlinePanel,
+    /// Whether the outline panel is painted inside the editor's own rectangle.
+    show_outline: bool,
+    /// The revision the panel's entries were last rebuilt for.
+    ///
+    /// `outline()` walks every line, so it is rebuilt when the text changes rather than on every
+    /// frame; the active row still follows the caret on each paint.
+    outline_revision: u64,
     /// Whether GFM constructs (tables, tasks, strikethrough, quotes, fences, rules) are parsed.
     gfm_extensions: bool,
     /// Whether fenced code blocks are tokenized with the shared lexer.
@@ -322,6 +337,10 @@ impl MarkdownEditor {
             show_scrollbar: true,
             dragging_scrollbar: false,
             find: FindState::default(),
+            find_bar: FindBar::new(Rect::new(0, 0, 0, 0)),
+            outline_panel: MarkdownOutlinePanel::new(Rect::new(0, 0, 0, 0)),
+            show_outline: false,
+            outline_revision: u64::MAX,
             gfm_extensions: true,
             code_highlight: true,
             revision: 0,
@@ -635,7 +654,22 @@ impl MarkdownEditor {
 
     /// Opens the find bar and focuses its query field.
     pub fn open_find(&mut self) {
+        self.show_find_bar();
+    }
+
+    /// Opens the mounted [`FindBar`] over this editor's text.
+    ///
+    /// This is the host-facing form of [`Self::open_find`]: the bar is told the current document
+    /// snapshot and the query the editor already holds, so the painted counter and the editor's
+    /// Enter-to-next match refer to the same bytes.
+    pub fn show_find_bar(&mut self) {
         self.find.visible = true;
+        self.find_bar.open();
+        let text = self.text.clone();
+        self.find_bar.set_text(&text);
+        if !self.find.query.is_empty() {
+            self.find_bar.set_query(self.find.query.clone());
+        }
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -644,9 +678,68 @@ impl MarkdownEditor {
     pub fn close_find(&mut self) {
         if self.find.visible {
             self.find.visible = false;
+            self.find_bar.close();
             self.base.request_layout();
             self.base.request_redraw();
         }
+    }
+
+    /// The mounted find/replace bar.
+    pub fn find_bar(&self) -> &FindBar {
+        &self.find_bar
+    }
+
+    /// The mounted find/replace bar, for a host that wants to set its replacement or policy.
+    pub fn find_bar_mut(&mut self) -> &mut FindBar {
+        &mut self.find_bar
+    }
+
+    /// The mounted document outline.
+    pub fn outline_panel(&self) -> &MarkdownOutlinePanel {
+        &self.outline_panel
+    }
+
+    /// The mounted document outline, for a host that wants to set its width or listen to it.
+    pub fn outline_panel_mut(&mut self) -> &mut MarkdownOutlinePanel {
+        &mut self.outline_panel
+    }
+
+    /// Whether the outline panel is painted.
+    pub fn show_outline(&self) -> bool {
+        self.show_outline
+    }
+
+    /// Shows or hides the outline panel inside the editor's rectangle.
+    pub fn set_show_outline(&mut self, show: bool) {
+        if self.show_outline == show {
+            return;
+        }
+        self.show_outline = show;
+        if show {
+            self.sync_outline();
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Rebuilds the mounted panel from this editor and marks the caret's heading.
+    ///
+    /// Entries are rebuilt only when the document revision changed; the active row is re-derived
+    /// from the caret every call, so moving the caret is O(headings), not O(document).
+    pub fn sync_outline(&mut self) {
+        if self.outline_revision != self.revision {
+            let entries = self.outline();
+            self.outline_panel.set_entries(entries);
+            self.outline_revision = self.revision;
+        }
+        let caret = self.cursor_line;
+        let active = self
+            .outline_panel
+            .entries()
+            .iter()
+            .rposition(|entry| entry.line <= caret)
+            .or_else(|| (!self.outline_panel.entries().is_empty()).then_some(0));
+        self.outline_panel.set_active_index(active);
     }
 
     /// Points a [`FindBar`] at this editor's document.
@@ -1352,18 +1445,24 @@ impl EventHandler for MarkdownEditor {
         if !self.cursor_blink.is_running() {
             self.cursor_blink.start();
         }
+        // The side panel and find bar are hit-tested in this widget's coordinates, so their boxes
+        // are refreshed before the press is resolved.
+        self.layout_companions();
 
         match event {
             // The find bar owns text input while it is open: otherwise typing a query would edit
-            // the document behind it.
+            // the document behind it. The mounted bar is kept in step through the same query, so
+            // the painted counter always describes the text Enter will search.
             Event::TextInput { text } if self.find.visible => {
                 self.find.query.push_str(text);
                 self.find.current = None;
+                self.find_bar.set_query(self.find.query.clone());
                 self.base.request_redraw();
             }
             Event::ImeCommit { text } if self.find.visible => {
                 self.find.query.push_str(text);
                 self.find.current = None;
+                self.find_bar.set_query(self.find.query.clone());
                 self.base.request_redraw();
             }
             // Printable text and IME commits are what the platform delivers for typing; a
@@ -1393,6 +1492,27 @@ impl EventHandler for MarkdownEditor {
             // controls.
             Event::MousePress { pos, button: 1, modifiers, .. } => {
                 let rect = self.geometry();
+                // The mounted outline is a real control: a press in its column selects the row and
+                // navigates to its line, exactly as a standalone panel would.
+                if let Some(panel_rect) = self.outline_rect() {
+                    if panel_rect.contains_point(*pos) {
+                        if let Some(index) = self.outline_panel.entry_at(*pos) {
+                            if let Some(line) = self.outline_panel.goto(index) {
+                                self.heading_activated.emit(index);
+                                let _ = self.goto_line(line);
+                            }
+                        }
+                        return;
+                    }
+                }
+                // The mounted find bar owns presses inside its own band (the `Aa`/`W` toggles and
+                // the query band); the document caret must not move for them.
+                if self.find.visible && self.find_bar_rect().contains_point(*pos) {
+                    self.find_bar.handle_event(event);
+                    self.find.query = self.find_bar.query().to_string();
+                    self.base.request_redraw();
+                    return;
+                }
                 if self.show_scrollbar && self.scrollbar_track_contains(*pos) {
                     let on_thumb = self.scrollbar_thumb().is_some_and(|thumb| {
                         pos.x >= thumb.x
@@ -1520,12 +1640,14 @@ impl MarkdownEditor {
                 8 => {
                     self.find.query.pop();
                     self.find.current = None;
+                    self.find_bar.set_query(self.find.query.clone());
                 }
                 13 => {
                     let query = self.find.query.clone();
                     if !self.find_next(&query) {
                         self.find.current = None;
                     }
+                    let _ = self.find_bar.find_next();
                 }
                 27 => self.close_find(),
                 _ if primary_shortcut_pressed(key, modifiers, Key::F) => self.close_find(),
@@ -1704,7 +1826,55 @@ impl MarkdownEditor {
         if bottom <= top {
             return None;
         }
-        Some(Rect::new(rect.x + rect.width as i32 - 10, top, 6, (bottom - top) as u32))
+        // The track stops where the outline panel begins, so the two pieces of chrome never
+        // paint over one another.
+        let outline_width = self.outline_rect().map_or(0, |panel| panel.width as i32);
+        Some(Rect::new(
+            rect.x + rect.width as i32 - 10 - outline_width,
+            top,
+            6,
+            (bottom - top) as u32,
+        ))
+    }
+
+    /// The rectangle the mounted outline panel occupies, when it is shown and fits.
+    fn outline_rect(&self) -> Option<Rect> {
+        if !self.show_outline {
+            return None;
+        }
+        let rect = self.geometry();
+        // Half the editor is the most a side panel may take; below this the text column would be
+        // too narrow to read, so the panel is simply not mounted.
+        if rect.width < 240 || rect.height < TEXT_TOP as u32 + 48 {
+            return None;
+        }
+        let width = self.outline_panel.width().min(rect.width / 2).max(1);
+        Some(Rect::new(
+            rect.x + rect.width as i32 - width as i32,
+            rect.y + TEXT_TOP,
+            width,
+            rect.height - TEXT_TOP as u32 - TEXT_BOTTOM_INSET as u32,
+        ))
+    }
+
+    /// The rectangle the mounted find bar occupies.
+    fn find_bar_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let height = self.find_bar.size_hint().height;
+        Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), height)
+    }
+
+    /// Places the mounted companions inside the editor's own rectangle.
+    fn layout_companions(&mut self) {
+        let find_bar = self.find_bar_rect();
+        if self.find_bar.base().geometry() != find_bar {
+            self.find_bar.base_mut().set_geometry(find_bar);
+        }
+        if let Some(outline) = self.outline_rect() {
+            if self.outline_panel.base().geometry() != outline {
+                self.outline_panel.base_mut().set_geometry(outline);
+            }
+        }
     }
 
     /// The scrollbar thumb, sized and placed from the scroll state.
@@ -1752,6 +1922,14 @@ impl Draw for MarkdownEditor {
         // The fence table depends on every line above it, so it is rebuilt once per revision —
         // before the style borrow is taken, because building it needs `&mut self`.
         self.ensure_blocks();
+        if self.show_outline {
+            // Reads the same heading list `outline()` reports, and marks the row the caret is in.
+            self.sync_outline();
+        }
+
+        // The mounted companions follow the editor's own rectangle; doing it here (rather than in
+        // `new`) means a resized editor moves its side panel and find bar with it.
+        self.layout_companions();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. Without the theme step
@@ -1816,16 +1994,23 @@ impl Draw for MarkdownEditor {
                 metrics.lines, metrics.words, metrics.headings
             )
         };
-        // Fitted to the control's width: the header is a long line of counts, and a narrow
-        // editor previously drew it straight past its own right edge.
-        let header_band = Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14);
-        context.draw_text_fitted_cow(
-            header_band,
-            &header,
-            effective_font(style),
-            header_ink,
-            HorizontalAlignment::Left,
-        );
+        // The mounted find bar replaces the plain header text while it is open: it paints the
+        // query, the match counter and its policy toggles, and a second header underneath would
+        // be an unreadable overprint.
+        if self.find.visible {
+            self.find_bar.draw(context);
+        } else {
+            // Fitted to the control's width: the header is a long line of counts, and a narrow
+            // editor previously drew it straight past its own right edge.
+            let header_band = Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14);
+            context.draw_text_fitted_cow(
+                header_band,
+                &header,
+                effective_font(style),
+                header_ink,
+                HorizontalAlignment::Left,
+            );
+        }
 
         let start = self.visible_start();
         let count = self.visible_line_count();
@@ -1835,7 +2020,8 @@ impl Draw for MarkdownEditor {
         let selection =
             self.selection.map(|(first, last)| (self.line_col_of(first), self.line_col_of(last)));
         let scrollbar_width = if self.scrollbar_track().is_some() { 12 } else { 0 };
-        let row_width = rect.width.saturating_sub(24 + scrollbar_width);
+        let outline_width = self.outline_rect().map_or(0, |panel| panel.width as i32);
+        let row_width = rect.width.saturating_sub(24 + scrollbar_width + outline_width as u32);
 
         {
             let text = &self.text;
@@ -1952,6 +2138,12 @@ impl Draw for MarkdownEditor {
                     }
                 }
             }
+        }
+
+        // The mounted outline is painted last, over the text column it reserved space for, so a
+        // selected row is fully visible even when the text underneath is long.
+        if self.outline_rect().is_some() {
+            self.outline_panel.draw(context);
         }
     }
 }
@@ -2551,7 +2743,11 @@ impl MarkdownOutlinePanel {
     /// Creates an empty panel 180 px wide.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::ListView, geometry, "MarkdownOutlinePanel"),
+            base: BaseWidget::new(
+                WidgetKind::MarkdownOutlinePanel,
+                geometry,
+                "MarkdownOutlinePanel",
+            ),
             entries: Vec::new(),
             active_index: None,
             width: 180,
@@ -2692,7 +2888,10 @@ impl MarkdownOutlinePanel {
     }
 
     /// The entry index under `pos`.
-    fn entry_at(&self, pos: Point) -> Option<usize> {
+    ///
+    /// Public because a host that mounts the panel in a container of its own resolves the press
+    /// itself; the editor's mounted panel uses it for the same reason.
+    pub fn entry_at(&self, pos: Point) -> Option<usize> {
         let rect = self.geometry();
         if !rect.contains_point(pos) {
             return None;
@@ -2971,7 +3170,7 @@ impl FindBar {
     /// Creates a closed find bar.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Panel, geometry, "FindBar"),
+            base: BaseWidget::new(WidgetKind::FindBar, geometry, "FindBar"),
             visible: false,
             query: String::new(),
             replacement: String::new(),
@@ -4229,5 +4428,51 @@ mod tests {
         assert!(!editor.show_scrollbar());
         editor.set("undo_stack_limit", CapabilityValue::UInt(7)).expect("writable");
         assert_eq!(editor.undo_stack_limit(), 7);
+    }
+
+    /// The editor mounts a real outline panel: a press in its side column navigates, and the
+    /// painted rows come from the same heading list `outline()` reports.
+    #[test]
+    fn mounted_outline_panel_navigates_and_paints() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("# One\ntext\n## Two\nmore");
+        editor.set_show_outline(true);
+        assert_eq!(editor.outline_panel().entries().len(), 2);
+        assert_eq!(editor.outline_panel().active_index(), Some(0));
+
+        // A first paint places the companion and proves the path draws without panicking.
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+        let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(420, 240), 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            editor.draw(&mut context);
+        }
+        backend.end_frame();
+
+        // The panel is 180 px wide, so it starts at x = 240; the second row sits one row down.
+        editor.handle_event(&Event::mouse_press(250, TEXT_TOP + OUTLINE_ROW_HEIGHT + 2, 1));
+        assert_eq!(editor.cursor_line(), 2, "the second outline row navigates to line 2");
+        assert_eq!(editor.outline_panel().active_index(), Some(1));
+    }
+
+    /// The mounted find bar is the painted form of the editor's own find state: typing goes to the
+    /// same query the editor's Enter handler searches, and closing mirrors both.
+    #[test]
+    fn mounted_find_bar_reflects_the_editor_query() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("alpha beta alpha");
+        editor.show_find_bar();
+        assert!(editor.find_bar().is_visible());
+        assert_eq!(editor.find_bar().text(), "alpha beta alpha");
+
+        editor.handle_event(&Event::text_input("beta"));
+        assert_eq!(editor.find_query(), "beta");
+        assert_eq!(editor.find_bar().query(), "beta");
+        assert_eq!(editor.find_bar().match_count(), 1);
+
+        editor.handle_event(&Event::key_press(27, 0));
+        assert!(!editor.find_bar_visible());
+        assert!(!editor.find_bar().is_visible());
     }
 }

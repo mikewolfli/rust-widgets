@@ -1060,7 +1060,7 @@ mod tests {
                 RenderCommand::FillRect { rect, .. } if *rect == segment => {
                     indicator_at = Some(index);
                 }
-                RenderCommand::DrawText { text, .. } if text.as_str() == "Overview" => {
+                RenderCommand::DrawText { text, .. } if text.as_ref() == "Overview" => {
                     label_at = Some(index);
                 }
                 _ => {}

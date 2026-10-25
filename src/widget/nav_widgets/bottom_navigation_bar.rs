@@ -6,7 +6,7 @@
 //! This widget provides a Material Design-style bottom navigation bar commonly
 //! found in mobile applications. It displays a horizontal bar with equally-sized
 //! tabs, each showing an icon character and a label below. The selected tab is
-//! highlighted with the accent color, and tapping a tab emits `selected_changed`
+//! highlighted with the accent color, and tapping a tab emits `current_changed`
 //! with the new index.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
@@ -72,7 +72,7 @@ pub struct BottomNavigationBar {
     /// How much of the bar is visible, `0.0` hidden to `1.0` shown.
     visibility: PropertyDriver,
     /// Emitted when the selected tab changes. The payload is the new index.
-    pub selected_changed: Signal1<usize>,
+    pub current_changed: Signal1<usize>,
 }
 
 impl BottomNavigationBar {
@@ -92,8 +92,13 @@ impl BottomNavigationBar {
             max_items: None,
             hide_on_scroll: false,
             visibility: PropertyDriver::at(1.0, MotionSlot::Normal),
-            selected_changed: Signal1::new(),
+            current_changed: Signal1::new(),
         }
+    }
+
+    /// Compatibility spelling of [`Self::current_changed`] (W-20): the same emitted signal.
+    pub fn selected_changed(&self) -> &Signal1<usize> {
+        &self.current_changed
     }
 
     /// Adds a navigation item with the given icon character and label text.
@@ -221,7 +226,7 @@ impl BottomNavigationBar {
     /// Sets the currently selected tab index.
     ///
     /// If the new index is different from the current selection and valid,
-    /// the `selected_changed` signal is emitted and the widget redraws.
+    /// the `current_changed` signal is emitted and the widget redraws.
     ///
     /// Out-of-range indices are clamped to the valid range.
     pub fn set_selected_index(&mut self, index: usize) {
@@ -243,7 +248,7 @@ impl BottomNavigationBar {
             self.selected_index = clamped;
             self.slide.jump_to(fraction);
             self.slide.set_target(1.0);
-            self.selected_changed.emit(clamped);
+            self.current_changed.emit(clamped);
             self.base.request_redraw();
         }
     }
@@ -321,8 +326,8 @@ impl Widget for BottomNavigationBar {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
-            "selected_changed" => {
-                Some(EventSignalRef::mapped("selected_changed", &self.selected_changed, |v| {
+            "current_changed" => {
+                Some(EventSignalRef::mapped("current_changed", &self.current_changed, |v| {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
@@ -742,11 +747,11 @@ mod tests {
     }
 
     #[test]
-    fn bottom_nav_bar_selected_changed_signal_emits() {
+    fn bottom_nav_bar_current_changed_signal_emits() {
         let mut bar = make_bar();
         let captured = Arc::new(AtomicUsize::new(usize::MAX));
         let c = captured.clone();
-        bar.selected_changed.connect(move |val: Arc<usize>| {
+        bar.current_changed.connect(move |val: Arc<usize>| {
             c.store(*val, Ordering::SeqCst);
         });
 
@@ -758,11 +763,11 @@ mod tests {
     }
 
     #[test]
-    fn bottom_nav_bar_selected_changed_not_emitted_for_same_index() {
+    fn bottom_nav_bar_current_changed_not_emitted_for_same_index() {
         let mut bar = make_bar();
         let count = Arc::new(AtomicUsize::new(0));
         let c = count.clone();
-        bar.selected_changed.connect(move |_: Arc<usize>| {
+        bar.current_changed.connect(move |_: Arc<usize>| {
             c.fetch_add(1, Ordering::SeqCst);
         });
 

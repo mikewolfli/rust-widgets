@@ -199,7 +199,7 @@ impl ToastHost {
     /// Creates an empty host with five visible rows and a ten-entry queue.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::PopupWindow, geometry, "ToastHost"),
+            base: BaseWidget::new(WidgetKind::ToastHost, geometry, "ToastHost"),
             visible: Vec::new(),
             queued: Vec::new(),
             max_visible: 5,
@@ -523,6 +523,13 @@ impl Draw for ToastHost {
         let style = self.style();
         let (surface, ink) = surface_ink(style);
         let font = effective_font(style);
+        if self.visible.is_empty() {
+            // The empty queue still paints its resting slot, so it is visible and theme-aware.
+            let rect = self.geometry();
+            context.fill_rect(rect, surface.with_alpha(32));
+            context.draw_rect(rect, surface.blend(&ink, 0.18));
+            return;
+        }
         for index in 0..self.visible.len() {
             let Some(row) = self.row_rect(index) else {
                 continue;

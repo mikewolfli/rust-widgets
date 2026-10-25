@@ -1181,7 +1181,7 @@ impl RangePresetBar {
     /// Creates an empty horizontal bar.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::DateRangePicker, geometry, "RangePresetBar"),
+            base: BaseWidget::new(WidgetKind::RangePresetBar, geometry, "RangePresetBar"),
             presets: Vec::new(),
             orientation: PresetBarOrientation::Horizontal,
             compact: false,

@@ -579,7 +579,7 @@ pub struct MaterialNavigationRail {
     /// Emitted with the newly selected index whenever the selection changes.
     /// One-based ordering is not implied; indices are positions in
     /// `MaterialNavigationRail::items()`.
-    pub selected_changed: Signal1<usize>,
+    pub current_changed: Signal1<usize>,
 }
 
 impl MaterialNavigationRail {
@@ -592,8 +592,13 @@ impl MaterialNavigationRail {
             items: Vec::new(),
             item_icon_sources: Vec::new(),
             selected_index: 0,
-            selected_changed: Signal1::new(),
+            current_changed: Signal1::new(),
         }
+    }
+
+    /// Compatibility spelling of [`Self::current_changed`] (W-20): the same emitted signal.
+    pub fn selected_changed(&self) -> &Signal1<usize> {
+        &self.current_changed
     }
 
     /// Adds an item with the given icon and label.
@@ -620,7 +625,7 @@ impl MaterialNavigationRail {
 
     /// Sets the selected index. Clamped to valid range.
     ///
-    /// `selected_changed` is deliberately not gated by `enabled`: selection here is driven
+    /// `current_changed` is deliberately not gated by `enabled`: selection here is driven
     /// by the host (navigation state), and the disabled control already ignores presses, so
     /// silencing the programmatic path would only desynchronise the host's state.
     pub fn set_selected(&mut self, index: usize) {
@@ -631,7 +636,7 @@ impl MaterialNavigationRail {
         let clamped = index.min(self.items.len() - 1);
         if clamped != self.selected_index {
             self.selected_index = clamped;
-            self.selected_changed.emit(clamped);
+            self.current_changed.emit(clamped);
             self.base.request_redraw();
         }
     }
@@ -691,8 +696,8 @@ impl Widget for MaterialNavigationRail {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
-            "selected_changed" => {
-                Some(EventSignalRef::mapped("selected_changed", &self.selected_changed, |v| {
+            "current_changed" => {
+                Some(EventSignalRef::mapped("current_changed", &self.current_changed, |v| {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }

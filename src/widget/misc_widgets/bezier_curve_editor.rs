@@ -7,6 +7,10 @@
 //! a grid background, snap-to-grid support, and drag interaction. It can be used to design
 //! custom easing functions for animations.
 
+/// A 2-D control point.
+type Point2 = (f32, f32);
+
+use crate::compat::{vec, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -26,13 +30,87 @@ const HANDLE_RADIUS: u32 = 8;
 /// expressing it as a blend weight lets the grid follow the resolved surface.
 const GRID_ALPHA: f32 = 0.24;
 
+/// One cubic segment of the editor's piecewise curve.
+///
+/// `t0..t1` is the segment's span in the curve's **global** parameter, so splitting a segment
+/// preserves the original parameterisation: `sample_at(t)` answers the same point before and
+/// after a split. `split_fraction` records where this segment was cut from its left neighbour,
+/// which is exactly the parameter `merge_cubics` needs to invert the split.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CubicSegment {
+    p0: (f32, f32),
+    p1: (f32, f32),
+    p2: (f32, f32),
+    p3: (f32, f32),
+    t0: f32,
+    t1: f32,
+    split_fraction: f32,
+}
+
+impl CubicSegment {
+    /// The editor's historical ease-in-out curve: one segment from `(0,0)` to `(1,1)`.
+    fn default_ease() -> Self {
+        Self {
+            p0: (0.0, 0.0),
+            p1: (0.25, 0.1),
+            p2: (0.75, 0.9),
+            p3: (1.0, 1.0),
+            t0: 0.0,
+            t1: 1.0,
+            split_fraction: 0.0,
+        }
+    }
+}
+
+/// A cubic Bézier split, as the two halves de Casteljau produces.
+fn split_cubic(
+    p0: Point2,
+    p1: Point2,
+    p2: Point2,
+    p3: Point2,
+    t: f32,
+) -> (Point2, Point2, Point2, Point2, Point2, Point2) {
+    let lerp =
+        |a: (f32, f32), b: (f32, f32), t: f32| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+    let q0 = lerp(p0, p1, t);
+    let q1 = lerp(p1, p2, t);
+    let q2 = lerp(p2, p3, t);
+    let r0 = lerp(q0, q1, t);
+    let r1 = lerp(q1, q2, t);
+    let s = lerp(r0, r1, t);
+    (q0, r0, s, r1, q2, s)
+}
+
+/// Inverts [`split_cubic`] at the same fraction.
+///
+/// For a pair produced by splitting a cubic at `t`, this returns the original control points
+/// exactly: `p1` is recovered from the left half's first de Casteljau point and `p2` from the
+/// right half's last one. Applied to an arbitrary adjacent pair it still produces a cubic whose
+/// endpoints are the pair's endpoints, which is the only well-defined general merge.
+fn merge_cubics(
+    p0: Point2,
+    l1: Point2,
+    r2: Point2,
+    p3: Point2,
+    t: f32,
+) -> (Point2, Point2, Point2, Point2) {
+    if t <= 0.0 || t >= 1.0 {
+        return (p0, l1, r2, p3);
+    }
+    let p1 = ((l1.0 - (1.0 - t) * p0.0) / t, (l1.1 - (1.0 - t) * p0.1) / t);
+    let p2 = ((r2.0 - t * p3.0) / (1.0 - t), (r2.1 - t * p3.1) / (1.0 - t));
+    (p0, p1, p2, p3)
+}
+
 /// BezierCurveEditor widget for creating custom easing curves.
 pub struct BezierCurveEditor {
     base: BaseWidget,
-    /// First control point as a fraction of the widget area (0.0–1.0).
-    control_point1: (f32, f32),
-    /// Second control point as a fraction of the widget area (0.0–1.0).
-    control_point2: (f32, f32),
+    /// The piecewise cubic the editor paints, in global-parameter order.
+    ///
+    /// One segment is the historical shape. `add_point` splits a segment with de Casteljau and
+    /// `remove_point` merges the two neighbours back, so the curve has a real point count rather
+    /// than two fixed handles.
+    segments: Vec<CubicSegment>,
     /// Grid cell size in pixels.
     grid_size: f32,
     /// Whether to draw the background grid.
@@ -50,7 +128,11 @@ pub struct BezierCurveEditor {
     hovered_handle: Option<DragTarget>,
     /// Whether the two handles are kept mirrored through the curve's midpoint.
     symmetric_handles: bool,
-    /// Emitted when the curve changes. Passes (control_point1, control_point2).
+    /// Emitted when the curve changes. Passes the first segment's two control handles.
+    ///
+    /// The payload is kept as the historical pair so the published event schema is unchanged;
+    /// a multi-segment curve can carry more handles than this event can name, and
+    /// [`Self::segments`] is the authoritative reader for those.
     pub curve_changed: Signal1<((f32, f32), (f32, f32))>,
 }
 
@@ -67,8 +149,7 @@ impl BezierCurveEditor {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::BezierCurveEditor, geometry, "BezierCurveEditor"),
-            control_point1: (0.25, 0.1),
-            control_point2: (0.75, 0.9),
+            segments: vec![CubicSegment::default_ease()],
             grid_size: 0.2,
             show_grid: true,
             snap_to_grid: false,
@@ -79,9 +160,20 @@ impl BezierCurveEditor {
         }
     }
 
+    /// The first segment, which is the one the two historical handles address.
+    fn first_segment(&self) -> CubicSegment {
+        self.segments.first().copied().unwrap_or_else(CubicSegment::default_ease)
+    }
+
+    /// The first segment's two control handles, the historical "the curve's handles" pair.
+    fn current_handles(&self) -> ((f32, f32), (f32, f32)) {
+        let segment = self.first_segment();
+        (segment.p1, segment.p2)
+    }
+
     /// Returns the first control point as a fraction (0.0–1.0).
     pub fn control_point1(&self) -> (f32, f32) {
-        self.control_point1
+        self.first_segment().p1
     }
 
     /// Sets the first control point with values clamped to 0.0–1.0.
@@ -89,12 +181,15 @@ impl BezierCurveEditor {
     /// While [`Self::symmetric_handles`] is set, the second point is mirrored through the
     /// curve's midpoint, so the curve keeps its S shape instead of bending towards one side.
     pub fn set_control_point1(&mut self, x: f32, y: f32) {
-        let old = (self.control_point1, self.control_point2);
-        self.control_point1 = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
-        if self.symmetric_handles {
-            self.control_point2 = (1.0 - self.control_point1.0, 1.0 - self.control_point1.1);
+        let old = self.current_handles();
+        let next = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
+        if let Some(segment) = self.segments.first_mut() {
+            segment.p1 = next;
+            if self.symmetric_handles {
+                segment.p2 = (1.0 - next.0, 1.0 - next.1);
+            }
         }
-        if (self.control_point1, self.control_point2) != old {
+        if self.current_handles() != old {
             self.emit_curve_changed();
             self.base.request_redraw();
         }
@@ -102,7 +197,7 @@ impl BezierCurveEditor {
 
     /// Returns the second control point as a fraction (0.0–1.0).
     pub fn control_point2(&self) -> (f32, f32) {
-        self.control_point2
+        self.first_segment().p2
     }
 
     /// Sets the second control point with values clamped to 0.0–1.0.
@@ -110,46 +205,159 @@ impl BezierCurveEditor {
     /// While [`Self::symmetric_handles`] is set, the first point is mirrored through the
     /// curve's midpoint.
     pub fn set_control_point2(&mut self, x: f32, y: f32) {
-        let old = (self.control_point1, self.control_point2);
-        self.control_point2 = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
-        if self.symmetric_handles {
-            self.control_point1 = (1.0 - self.control_point2.0, 1.0 - self.control_point2.1);
+        let old = self.current_handles();
+        let next = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
+        if let Some(segment) = self.segments.first_mut() {
+            segment.p2 = next;
+            if self.symmetric_handles {
+                segment.p1 = (1.0 - next.0, 1.0 - next.1);
+            }
         }
-        if (self.control_point1, self.control_point2) != old {
+        if self.current_handles() != old {
             self.emit_curve_changed();
             self.base.request_redraw();
         }
     }
 
-    /// Resets the curve to the editor's default ease-in-out shape.
+    /// The number of cubic segments the curve is made of.
+    pub fn segment_count(&self) -> usize {
+        self.segments.len()
+    }
+
+    /// The number of on-curve points: one more than the segment count.
+    pub fn point_count(&self) -> usize {
+        self.segments.len() + 1
+    }
+
+    /// The four control points of `index`'s segment, or `None` when it does not exist.
+    pub fn segment_control_points(&self, index: usize) -> Option<[(f32, f32); 4]> {
+        self.segments.get(index).map(|segment| [segment.p0, segment.p1, segment.p2, segment.p3])
+    }
+
+    /// Resets the curve to the editor's default single-segment ease-in-out shape.
     ///
-    /// Emits `curve_changed` once when the values actually change.
+    /// Emits `curve_changed` once when the shape actually changes.
     pub fn reset(&mut self) {
-        let old = (self.control_point1, self.control_point2);
-        self.control_point1 = (0.25, 0.1);
-        self.control_point2 = (0.75, 0.9);
-        if old != (self.control_point1, self.control_point2) {
+        let old_handles = self.current_handles();
+        let old_len = self.segments.len();
+        self.segments.clear();
+        self.segments.push(CubicSegment::default_ease());
+        if old_len != 1 || old_handles != self.current_handles() {
             self.emit_curve_changed();
             self.base.request_redraw();
         }
     }
 
-    /// Replaces both control points at once.
+    /// Replaces the curve with one cubic segment carrying these two control handles.
     ///
-    /// A cubic Bézier is defined by exactly two control points, so any other length is
+    /// A single cubic is defined by exactly two control points, so any other length is
     /// refused with [`CapabilityAccessError::OutOfRange`] rather than silently truncated.
+    /// This also collapses a multi-segment curve back to that one segment; use
+    /// [`Self::add_point`] to split it again.
     pub fn set_points(&mut self, points: &[(f32, f32)]) -> Result<(), CapabilityAccessError> {
         if points.len() != 2 {
             return Err(CapabilityAccessError::OutOfRange);
         }
-        let old = (self.control_point1, self.control_point2);
-        self.control_point1 = (points[0].0.clamp(0.0, 1.0), points[0].1.clamp(0.0, 1.0));
-        self.control_point2 = (points[1].0.clamp(0.0, 1.0), points[1].1.clamp(0.0, 1.0));
-        if old != (self.control_point1, self.control_point2) {
+        let old_handles = self.current_handles();
+        let old_len = self.segments.len();
+        self.segments.clear();
+        self.segments.push(CubicSegment {
+            p0: (0.0, 0.0),
+            p1: (points[0].0.clamp(0.0, 1.0), points[0].1.clamp(0.0, 1.0)),
+            p2: (points[1].0.clamp(0.0, 1.0), points[1].1.clamp(0.0, 1.0)),
+            p3: (1.0, 1.0),
+            t0: 0.0,
+            t1: 1.0,
+            split_fraction: 0.0,
+        });
+        if old_len != 1 || old_handles != self.current_handles() {
             self.emit_curve_changed();
             self.base.request_redraw();
         }
         Ok(())
+    }
+
+    /// Adds an on-curve point at global parameter `t` by splitting the containing cubic.
+    ///
+    /// De Casteljau splits one cubic into two that together trace exactly the original, so the
+    /// painted curve is unchanged while [`Self::point_count`] grows by one. `t` must be strictly
+    /// inside `0.0..1.0` and strictly inside one segment (not on an existing join); anything else
+    /// returns `false` without changing the curve.
+    pub fn add_point(&mut self, t: f32) -> bool {
+        let t = t.clamp(0.0, 1.0);
+        if t <= 0.0 || t >= 1.0 {
+            return false;
+        }
+        let Some(index) = self.segments.iter().position(|segment| t > segment.t0 && t < segment.t1)
+        else {
+            return false;
+        };
+        let segment = self.segments[index];
+        let span = segment.t1 - segment.t0;
+        if span <= 0.0 {
+            return false;
+        }
+        let u = (t - segment.t0) / span;
+        if !(u > 0.0 && u < 1.0) {
+            return false;
+        }
+        let (q0, r0, join, r1, q2, _) =
+            split_cubic(segment.p0, segment.p1, segment.p2, segment.p3, u);
+        let left = CubicSegment {
+            p0: segment.p0,
+            p1: q0,
+            p2: r0,
+            p3: join,
+            t0: segment.t0,
+            t1: t,
+            split_fraction: segment.split_fraction,
+        };
+        let right = CubicSegment {
+            p0: join,
+            p1: r1,
+            p2: q2,
+            p3: segment.p3,
+            t0: t,
+            t1: segment.t1,
+            split_fraction: u,
+        };
+        self.segments[index] = left;
+        self.segments.insert(index + 1, right);
+        self.emit_curve_changed();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes the interior on-curve point at `point`, merging its two neighbouring segments.
+    ///
+    /// Point `0` and the last point are the curve's endpoints and are not removable. The merge
+    /// is the exact inverse of [`Self::add_point`] at the recorded split fraction, so
+    /// split-then-remove restores the original cubic; an adjacent pair that was not produced by
+    /// a split still merges into the cubic with the same endpoints.
+    pub fn remove_point(&mut self, point: usize) -> bool {
+        if point == 0 || point >= self.segments.len() {
+            return false;
+        }
+        let left = self.segments[point - 1];
+        let right = self.segments[point];
+        let t = right.split_fraction;
+        if !(t > 0.0 && t < 1.0) {
+            return false;
+        }
+        let (p0, p1, p2, p3) = merge_cubics(left.p0, left.p1, right.p2, right.p3, t);
+        self.segments[point - 1] = CubicSegment {
+            p0,
+            p1,
+            p2,
+            p3,
+            t0: left.t0,
+            t1: right.t1,
+            split_fraction: left.split_fraction,
+        };
+        self.segments.remove(point);
+        self.emit_curve_changed();
+        self.base.request_redraw();
+        true
     }
 
     /// Enables or disables mirrored control handles.
@@ -162,7 +370,10 @@ impl BezierCurveEditor {
         }
         self.symmetric_handles = symmetric;
         if symmetric {
-            self.control_point2 = (1.0 - self.control_point1.0, 1.0 - self.control_point1.1);
+            let p1 = self.control_point1();
+            if let Some(segment) = self.segments.first_mut() {
+                segment.p2 = (1.0 - p1.0, 1.0 - p1.1);
+            }
             self.emit_curve_changed();
         }
         self.base.request_redraw();
@@ -214,9 +425,18 @@ impl BezierCurveEditor {
     /// Evaluates the cubic bezier curve at parameter t (0.0–1.0).
     /// Returns the (x, y) value on the curve at that parameter.
     pub fn sample_at(&self, t: f32) -> (f32, f32) {
-        let p0 = (0.0f32, 0.0f32);
-        let p3 = (1.0f32, 1.0f32);
-        Self::cubic_bezier(t, p0, self.control_point1, self.control_point2, p3)
+        let t = t.clamp(0.0, 1.0);
+        let Some(segment) = self
+            .segments
+            .iter()
+            .find(|segment| t >= segment.t0 && t <= segment.t1)
+            .or_else(|| self.segments.last())
+        else {
+            return (0.0, 0.0);
+        };
+        let span = segment.t1 - segment.t0;
+        let local = if span > 0.0 { ((t - segment.t0) / span).clamp(0.0, 1.0) } else { 0.0 };
+        Self::cubic_bezier(local, segment.p0, segment.p1, segment.p2, segment.p3)
     }
 
     /// Evaluates a cubic bezier curve at parameter t (0.0–1.0) with control points
@@ -244,7 +464,7 @@ impl BezierCurveEditor {
 
     /// Emits the curve_changed signal with current control points.
     fn emit_curve_changed(&self) {
-        self.curve_changed.emit((self.control_point1, self.control_point2));
+        self.curve_changed.emit(self.current_handles());
     }
 
     /// Converts a curve coordinate (0.0–1.0) to a pixel position within the widget.
@@ -287,8 +507,8 @@ impl BezierCurveEditor {
     /// Returns which control point handle is at the given position, if any.
     fn hit_test_handle(&self, pos: Point) -> Option<DragTarget> {
         let threshold = (HANDLE_RADIUS + 4) as f64;
-        let d1 = self.distance_to_handle(pos, self.control_point1);
-        let d2 = self.distance_to_handle(pos, self.control_point2);
+        let d1 = self.distance_to_handle(pos, self.control_point1());
+        let d2 = self.distance_to_handle(pos, self.control_point2());
         if d1 < threshold && d1 <= d2 {
             Some(DragTarget::ControlPoint1)
         } else if d2 < threshold {
@@ -498,12 +718,6 @@ impl Draw for BezierCurveEditor {
             return;
         }
 
-        // ── Control polygon (lines from endpoints to control points) ──
-        let p0 = self.curve_to_pixel(0.0, 0.0);
-        let p3 = self.curve_to_pixel(1.0, 1.0);
-        let cp1_pixel = self.curve_to_pixel(self.control_point1.0, self.control_point1.1);
-        let cp2_pixel = self.curve_to_pixel(self.control_point2.0, self.control_point2.1);
-
         // CP1 and CP2 are the two draggable identities of the curve, so they keep a
         // distinct hue each; both are drawn *over* the themed surface and their
         // handles are outlined in the surface colour so they stay readable in either
@@ -511,60 +725,65 @@ impl Draw for BezierCurveEditor {
         // on a light surface once the surface stopped being hardcoded too.
         let cp1_color = surface.blend(&Color::BLUE, 0.75);
         let cp2_color = surface.blend(&Color::GREEN, 0.75);
-
         let poly_color = surface.blend(&text_color, 0.5);
-        context.draw_line(p0, cp1_pixel, poly_color);
-        context.draw_line(p3, cp2_pixel, poly_color);
-
-        // ── Bezier curve ──
         let curve_color = crate::style::semantic_color(crate::style::SemanticColor::Info)
             .map(|token| surface.blend(&token, 0.8))
             .unwrap_or_else(|| surface.blend(&Color::BLUE, 0.8));
-        let segments = 50;
-        let mut prev = self.curve_to_pixel(0.0, 0.0);
-        for i in 1..=segments {
-            let t = i as f32 / segments as f32;
-            let (cx, cy) = self.sample_at(t);
-            let cur = self.curve_to_pixel(cx, cy);
-            context.draw_line_stroke(prev, cur, curve_color, 2);
-            prev = cur;
-        }
 
-        // ── Control point handles ──
-        // The outline is the surface colour, not white: on a light appearance a white
-        // outline would be invisible against the pale surface.
+        let first = self.first_segment();
+        let last = self.segments.last().copied().unwrap_or(first);
+        let p0 = self.curve_to_pixel(first.p0.0, first.p0.1);
+        let p3 = self.curve_to_pixel(last.p3.0, last.p3.1);
+
+        // ── Control polygon, curve and handles, segment by segment ──
         //
         // A handle the pointer is over, and the one being dragged, gains a halo in its own
-        // hue. Without it `dragging` was stored and announced but never *painted*, so a
-        // drag looked exactly like a still frame — the point moved, but nothing said which
-        // handle was under the pointer. Both facts come from the same `hit_test_handle`
-        // the press uses, so the handle that lights up is the handle a drag would move.
-        // CP1 handle.
-        Self::draw_handle(
-            context,
-            cp1_pixel,
-            cp1_color,
-            surface,
-            self.dragging == Some(DragTarget::ControlPoint1),
-            self.hovered_handle == Some(DragTarget::ControlPoint1),
-        );
+        // hue. Both facts come from the same `hit_test_handle` the press uses, so the
+        // handle that lights up is the handle a drag would move. Only the first segment's
+        // two handles are draggable, so only they take the hover/drag emphasis.
+        const SAMPLES_PER_SEGMENT: usize = 50;
+        for (index, segment) in self.segments.iter().enumerate() {
+            let seg_p0 = self.curve_to_pixel(segment.p0.0, segment.p0.1);
+            let seg_p3 = self.curve_to_pixel(segment.p3.0, segment.p3.1);
+            let seg_cp1 = self.curve_to_pixel(segment.p1.0, segment.p1.1);
+            let seg_cp2 = self.curve_to_pixel(segment.p2.0, segment.p2.1);
+            context.draw_line(seg_p0, seg_cp1, poly_color);
+            context.draw_line(seg_p3, seg_cp2, poly_color);
 
-        // CP2 handle.
-        Self::draw_handle(
-            context,
-            cp2_pixel,
-            cp2_color,
-            surface,
-            self.dragging == Some(DragTarget::ControlPoint2),
-            self.hovered_handle == Some(DragTarget::ControlPoint2),
-        );
+            let mut prev = seg_p0;
+            for step in 1..=SAMPLES_PER_SEGMENT {
+                let u = step as f32 / SAMPLES_PER_SEGMENT as f32;
+                let (cx, cy) =
+                    Self::cubic_bezier(u, segment.p0, segment.p1, segment.p2, segment.p3);
+                let cur = self.curve_to_pixel(cx, cy);
+                context.draw_line_stroke(prev, cur, curve_color, 2);
+                prev = cur;
+            }
+
+            Self::draw_handle(
+                context,
+                seg_cp1,
+                cp1_color,
+                surface,
+                index == 0 && self.dragging == Some(DragTarget::ControlPoint1),
+                index == 0 && self.hovered_handle == Some(DragTarget::ControlPoint1),
+            );
+            Self::draw_handle(
+                context,
+                seg_cp2,
+                cp2_color,
+                surface,
+                index == 0 && self.dragging == Some(DragTarget::ControlPoint2),
+                index == 0 && self.hovered_handle == Some(DragTarget::ControlPoint2),
+            );
+        }
 
         // ── Labels ──
         let font = effective_font(style);
-        let cp1_label =
-            format!("CP1: ({:.2}, {:.2})", self.control_point1.0, self.control_point1.1);
-        let cp2_label =
-            format!("CP2: ({:.2}, {:.2})", self.control_point2.0, self.control_point2.1);
+        let cp1 = self.control_point1();
+        let cp2 = self.control_point2();
+        let cp1_label = format!("CP1: ({:.2}, {:.2})", cp1.0, cp1.1);
+        let cp2_label = format!("CP2: ({:.2}, {:.2})", cp2.0, cp2.1);
 
         context.draw_text(
             Point::new(rect.x + 4, rect.y + 12),
@@ -944,5 +1163,98 @@ mod tests {
         assert_eq!(editor.control_point1(), (0.2, 0.3));
         assert_eq!(editor.control_point2(), (0.8, 0.7));
         assert_eq!(editor.set_points(&[(0.5, 0.5)]), Err(CapabilityAccessError::OutOfRange));
+    }
+
+    fn assert_point_close(actual: (f32, f32), expected: (f32, f32), context: &str) {
+        assert!(
+            (actual.0 - expected.0).abs() < 1e-4 && (actual.1 - expected.1).abs() < 1e-4,
+            "{context}: {actual:?} != {expected:?}"
+        );
+    }
+
+    /// de Casteljau split followed by the inverse merge must reproduce the original cubic.
+    #[test]
+    fn split_then_merge_restores_the_original_cubic() {
+        let mut editor = BezierCurveEditor::new(Rect::new(0, 0, 200, 200));
+        editor.set_points(&[(0.25, 0.1), (0.75, 0.9)]).expect("two controls");
+        let original = editor.segment_control_points(0).expect("one segment");
+
+        assert!(editor.add_point(0.4), "0.4 is inside the only segment");
+        assert_eq!(editor.segment_count(), 2);
+        assert_eq!(editor.point_count(), 3);
+
+        assert!(editor.remove_point(1), "the interior point is removable");
+        assert_eq!(editor.segment_count(), 1);
+        assert_eq!(editor.point_count(), 2);
+        let merged = editor.segment_control_points(0).expect("the merge produced a segment");
+        for index in 0..4 {
+            assert_point_close(merged[index], original[index], "merge is the split inverse");
+        }
+    }
+
+    /// Splitting a segment must not move the curve: only the point count changes.
+    #[test]
+    fn splitting_preserves_the_sampled_curve() {
+        let mut editor = BezierCurveEditor::new(Rect::new(0, 0, 200, 200));
+        editor.set_points(&[(0.1, 0.8), (0.9, 0.2)]).expect("two controls");
+        let before: Vec<(f32, f32)> =
+            (0..=40).map(|step| editor.sample_at(step as f32 / 40.0)).collect();
+
+        assert!(editor.add_point(0.37));
+        assert_eq!(editor.segment_count(), 2);
+        for (step, expected) in before.iter().enumerate() {
+            let actual = editor.sample_at(step as f32 / 40.0);
+            assert_point_close(actual, *expected, "split preserves the parameterisation");
+        }
+    }
+
+    /// The new on-curve point is exactly the join shared by the two halves.
+    #[test]
+    fn split_point_is_shared_by_the_two_segments() {
+        let mut editor = BezierCurveEditor::new(Rect::new(0, 0, 200, 200));
+        editor.set_points(&[(0.3, 0.2), (0.7, 0.8)]).expect("two controls");
+        let split = editor.sample_at(0.37);
+
+        assert!(editor.add_point(0.37));
+        let left = editor.segment_control_points(0).expect("left half");
+        let right = editor.segment_control_points(1).expect("right half");
+        assert_point_close(left[3], split, "the left half ends at the split point");
+        assert_point_close(right[0], split, "the right half starts at the split point");
+        assert_point_close(editor.sample_at(0.37), split, "the split parameter did not move");
+    }
+
+    /// Endpoints are not interior points: they cannot be removed and cannot be split onto.
+    #[test]
+    fn add_and_remove_reject_endpoints_and_empty_joins() {
+        let mut editor = BezierCurveEditor::new(Rect::new(0, 0, 200, 200));
+        assert!(!editor.add_point(0.0));
+        assert!(!editor.add_point(1.0));
+        assert!(!editor.remove_point(0));
+        assert!(!editor.remove_point(1), "a single segment has no interior point");
+        assert_eq!(editor.point_count(), 2);
+
+        assert!(editor.add_point(0.5));
+        assert!(!editor.add_point(0.5), "an existing join is not split again");
+    }
+
+    /// Repeated splits and removals are a stack: removing both points restores the original.
+    #[test]
+    fn repeated_split_and_remove_round_trips() {
+        let mut editor = BezierCurveEditor::new(Rect::new(0, 0, 200, 200));
+        editor.set_points(&[(0.2, 0.4), (0.8, 0.6)]).expect("two controls");
+        let original = editor.segment_control_points(0).expect("one segment");
+
+        assert!(editor.add_point(0.25));
+        assert!(editor.add_point(0.75));
+        assert_eq!(editor.segment_count(), 3);
+        assert_eq!(editor.point_count(), 4);
+
+        assert!(editor.remove_point(2));
+        assert!(editor.remove_point(1));
+        assert_eq!(editor.segment_count(), 1);
+        let merged = editor.segment_control_points(0).expect("back to one segment");
+        for index in 0..4 {
+            assert_point_close(merged[index], original[index], "nested round trip");
+        }
     }
 }

@@ -210,7 +210,13 @@ pub struct GanttWidget {
     id_index: HashMap<String, usize>,
     /// A drag in progress.
     drag: Option<GanttDrag>,
-    /// Emitted when task selected. Payload is task id.
+    /// The date axis painted in the header. Its range always mirrors the viewport.
+    axis: TimelineAxis,
+    /// The editable list of dependency edges.
+    dependency_editor: DependencyEditor,
+    /// Whether the dependency editor is painted over the right edge of the plot.
+    show_dependency_editor: bool,
+    /// Emitted when a task selected. Payload is task id.
     pub task_selected: Signal1<String>,
     /// Emitted when a task's dates change through a drag. Payload is task id.
     pub task_rescheduled: Signal1<String>,
@@ -220,6 +226,12 @@ pub struct GanttWidget {
     pub task_resize_finished: Signal1<String>,
     /// Emitted when the visible axis range changes.
     pub viewport_changed: Signal1<(i64, i64)>,
+    /// Emitted when a dependency edge is added through this widget.
+    pub dependency_added: Signal1<Dependency>,
+    /// Emitted when a dependency edge is removed through this widget.
+    pub dependency_removed: Signal1<Dependency>,
+    /// Emitted with the edge a press selected in the mounted editor.
+    pub link_selected: Signal1<Dependency>,
 }
 
 impl GanttWidget {
@@ -241,11 +253,162 @@ impl GanttWidget {
             show_today: true,
             id_index: HashMap::new(),
             drag: None,
+            axis: TimelineAxis::new(Rect::new(0, 0, 0, 0)),
+            dependency_editor: DependencyEditor::new(Rect::new(0, 0, 0, 0)),
+            show_dependency_editor: false,
             task_selected: Signal1::new(),
             task_rescheduled: Signal1::new(),
             task_resize_started: Signal1::new(),
             task_resize_finished: Signal1::new(),
             viewport_changed: Signal1::new(),
+            dependency_added: Signal1::new(),
+            dependency_removed: Signal1::new(),
+            link_selected: Signal1::new(),
+        }
+    }
+
+    /// The date axis painted in the header.
+    pub fn timeline_axis(&self) -> &TimelineAxis {
+        &self.axis
+    }
+
+    /// The date axis, for a host that changes its format or tick density.
+    pub fn timeline_axis_mut(&mut self) -> &mut TimelineAxis {
+        &mut self.axis
+    }
+
+    /// The editable dependency list.
+    pub fn dependency_editor(&self) -> &DependencyEditor {
+        &self.dependency_editor
+    }
+
+    /// The editable dependency list, for a host that wants its own selection policy.
+    pub fn dependency_editor_mut(&mut self) -> &mut DependencyEditor {
+        &mut self.dependency_editor
+    }
+
+    /// Whether the dependency editor is painted.
+    pub fn show_dependency_editor(&self) -> bool {
+        self.show_dependency_editor
+    }
+
+    /// Shows or hides the dependency editor.
+    pub fn set_show_dependency_editor(&mut self, show: bool) {
+        if self.show_dependency_editor == show {
+            return;
+        }
+        self.show_dependency_editor = show;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Adds an edge and re-emits `dependency_added`.
+    ///
+    /// Returns `false` for a self-edge or a duplicate, matching the editor's own rule: an edge that
+    /// would be discarded must not leave the widget reporting an addition it did not make.
+    pub fn add_dependency(
+        &mut self,
+        predecessor: impl Into<String>,
+        successor: impl Into<String>,
+    ) -> bool {
+        let dependency = Dependency::new(predecessor, successor);
+        if !self.dependency_editor.add_dependency(dependency.clone()) {
+            return false;
+        }
+        self.dependency_added.emit(dependency);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes the first matching edge and re-emits `dependency_removed`.
+    pub fn remove_dependency(
+        &mut self,
+        predecessor: impl Into<String>,
+        successor: impl Into<String>,
+    ) -> bool {
+        let dependency = Dependency::new(predecessor, successor);
+        if !self.dependency_editor.remove_dependency(&dependency) {
+            return false;
+        }
+        self.dependency_removed.emit(dependency);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Replaces the editable edge list without re-emitting additions.
+    pub fn set_dependencies(&mut self, dependencies: Vec<Dependency>) {
+        self.dependency_editor.set_dependencies(dependencies);
+        self.base.request_redraw();
+    }
+
+    /// Rebuilds the editor's edges from the tasks' two dependency spellings.
+    ///
+    /// Both `depends_on` and `dependencies` contribute, matching the arrow paint and the critical
+    /// path, so the editor lists the same schedule the chart draws.
+    pub fn sync_dependencies_from_tasks(&mut self) {
+        let mut edges: Vec<Dependency> = Vec::new();
+        for task in &self.tasks {
+            for predecessor in &task.depends_on {
+                edges.push(Dependency::new(predecessor.clone(), task.id.clone()));
+            }
+            for dependency in &task.dependencies {
+                edges.push(Dependency::new(dependency.id.clone(), task.id.clone()));
+            }
+        }
+        self.dependency_editor.set_dependencies(edges);
+        self.base.request_redraw();
+    }
+
+    /// The dependency row under `pos`, when the mounted editor is showing.
+    pub fn dependency_at(&self, pos: Point) -> Option<Dependency> {
+        if !self.show_dependency_editor {
+            return None;
+        }
+        let index = self.dependency_editor.hit_link(pos)?;
+        self.dependency_editor.dependencies().get(index).cloned()
+    }
+
+    /// The rectangle the date axis occupies, widened so its own track matches the task track.
+    ///
+    /// `TimelineAxis` pads its track by its own constant; growing its box by the same amount on
+    /// both sides makes `date_to_pixel` and `pixel_to_date` agree with the bars' `project_x`.
+    fn axis_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let (track_x, track_w) = self.track_geometry();
+        const AXIS_PADDING: i32 = 8;
+        Rect::new(
+            track_x - AXIS_PADDING,
+            rect.y,
+            track_w + 2 * AXIS_PADDING as u32,
+            self.axis_height().max(1) as u32,
+        )
+    }
+
+    /// The rectangle the dependency editor occupies, when it is shown.
+    fn dependency_editor_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let width = 220.min(rect.width);
+        Rect::new(
+            rect.x + rect.width as i32 - width as i32,
+            rect.y + self.axis_height(),
+            width,
+            rect.height.saturating_sub(self.axis_height().max(0) as u32),
+        )
+    }
+
+    /// Places the axis and editor and keeps the axis range on the viewport.
+    fn layout_companions(&mut self) {
+        let axis_rect = self.axis_rect();
+        if self.axis.base().geometry() != axis_rect {
+            self.axis.base_mut().set_geometry(axis_rect);
+        }
+        self.axis.set_range(self.viewport_start, self.viewport_end);
+        self.axis.set_tick_density(self.time_axis_ticks);
+        if self.show_dependency_editor {
+            let editor_rect = self.dependency_editor_rect();
+            if self.dependency_editor.base().geometry() != editor_rect {
+                self.dependency_editor.base_mut().set_geometry(editor_rect);
+            }
         }
     }
 
@@ -471,18 +634,11 @@ impl GanttWidget {
     }
 
     /// Maps a pointer x to an axis position.
+    ///
+    /// The mounted [`TimelineAxis`] owns the mapping, so a drag cannot disagree with the labels
+    /// above it; [`Self::layout_companions`] keeps the axis range on the viewport.
     fn axis_value_at(&self, x: i32) -> i64 {
-        let rect = self.geometry();
-        let track_x = rect.x + dimensions::CHART_LABEL_GUTTER;
-        let track_w = rect
-            .width
-            .saturating_sub(
-                dimensions::CHART_LABEL_GUTTER as u32 + dimensions::CHART_TRACK_MARGIN as u32,
-            )
-            .max(1);
-        let ratio = ((x - track_x) as f64 / track_w as f64).clamp(0.0, 1.0);
-        let span = (self.viewport_end - self.viewport_start).max(1);
-        self.viewport_start + (ratio * span as f64).round() as i64
+        self.axis.pixel_to_date(x)
     }
 
     /// The time track's left edge and width.
@@ -574,6 +730,9 @@ impl GanttWidget {
         }
         self.viewport_start = start;
         self.viewport_end = end;
+        // The mounted axis is a view of the same range, so a zoom or a scroll has to reach it
+        // without waiting for the next paint: the axis is readable state, not just a drawing.
+        self.axis.set_range(start, end);
         // The range is what the axis header and every bar are projected through, so a zoom or a
         // scroll changes the picture. It used to change silently, which left a host unable to keep a
         // linked chart (the finance panes, a second gantt) in step.
@@ -643,6 +802,7 @@ impl GanttWidget {
         };
         self.viewport_start = start;
         self.viewport_end = end;
+        self.axis.set_range(start, end);
         self.viewport_changed.emit((start, end));
     }
 
@@ -734,6 +894,32 @@ impl Widget for GanttWidget {
                     CapabilityValue::Tuple(alloc::vec![
                         CapabilityValue::Int(v.0),
                         CapabilityValue::Int(v.1),
+                    ])
+                }))
+            }
+            "dependency_added" => {
+                Some(EventSignalRef::mapped("dependency_added", &self.dependency_added, |edge| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::String(edge.predecessor.clone()),
+                        CapabilityValue::String(edge.successor.clone()),
+                    ])
+                }))
+            }
+            "dependency_removed" => Some(EventSignalRef::mapped(
+                "dependency_removed",
+                &self.dependency_removed,
+                |edge| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::String(edge.predecessor.clone()),
+                        CapabilityValue::String(edge.successor.clone()),
+                    ])
+                },
+            )),
+            "link_selected" => {
+                Some(EventSignalRef::mapped("link_selected", &self.link_selected, |edge| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::String(edge.predecessor.clone()),
+                        CapabilityValue::String(edge.successor.clone()),
                     ])
                 }))
             }
@@ -847,7 +1033,24 @@ impl EventHandler for GanttWidget {
             return;
         }
 
+        // The axis and editor live inside this widget's rectangle, so their geometry and the
+        // axis range are refreshed before any press is resolved against them.
+        self.layout_companions();
+
         match event {
+            Event::MousePress { pos, button: 1, .. }
+                if self.show_dependency_editor
+                    && self.dependency_editor_rect().contains_point(*pos) =>
+            {
+                // The editor owns its rows: a press selects the edge under the pointer and the
+                // widget re-emits it, so a host connects to the chart rather than to a child it
+                // never mounted itself.
+                self.dependency_editor.handle_event(event);
+                if let Some(dependency) = self.dependency_at(*pos) {
+                    self.link_selected.emit(dependency);
+                }
+                self.base.request_redraw();
+            }
             Event::MousePress { pos, button: 1, .. } => {
                 let Some(index) = self.row_at(*pos) else {
                     return;
@@ -984,6 +1187,9 @@ impl EventHandler for GanttWidget {
 impl Draw for GanttWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        // The axis and editor are children of this widget: their geometry and the axis' range are
+        // resolved before any colour borrow is taken.
+        self.layout_companions();
 
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
@@ -1072,31 +1278,10 @@ impl Draw for GanttWidget {
 
         // ── Time axis header ──
         //
-        // Opt-in because it shifts the lanes down. Ticks are evenly spaced across the track and
-        // labelled with their axis position, so the bars can be read against a scale instead of
-        // only against each other.
+        // Opt-in because it shifts the lanes down. The mounted [`TimelineAxis`] paints the ticks
+        // and formats the labels; its range is synced to the viewport by `layout_companions`.
         if self.show_time_axis {
-            let header = Rect::new(rect.x, rect.y, rect.width, self.axis_height().max(1) as u32);
-            context.draw_line(
-                Point::new(header.x, header.y + header.height as i32 - 1),
-                Point::new(header.x + header.width as i32, header.y + header.height as i32 - 1),
-                separator,
-            );
-            let ticks = self.time_axis_ticks.max(2);
-            let span = self.viewport_end - self.viewport_start;
-            for tick in 0..=ticks {
-                let ratio = tick as f64 / f64::from(ticks);
-                let value = self.viewport_start + (span as f64 * ratio).round() as i64;
-                let x = track_x + (track_w as f64 * ratio) as i32;
-                let band = Rect::new((x - 24).max(rect.x), header.y, 48, header.height);
-                context.draw_text_line_cow(
-                    band,
-                    &value.to_string(),
-                    effective_font(style),
-                    text_color.blend(&background, 0.3),
-                    HorizontalAlignment::Center,
-                );
-            }
+            self.axis.draw(context);
         }
 
         let first_visible = self.scroll_offset;
@@ -1310,6 +1495,12 @@ impl Draw for GanttWidget {
                     today_color,
                 );
             }
+        }
+
+        // The dependency editor is an editing surface, so it is painted over the schedule rather
+        // than beside it: hiding the bars would make the relationship it edits unverifiable.
+        if self.show_dependency_editor {
+            self.dependency_editor.draw(context);
         }
     }
 }
@@ -1990,5 +2181,87 @@ mod tests {
         assert!(!editor.editable());
         assert!(editor.set("dependencies", CapabilityValue::UInt(0)).is_err());
         assert_eq!(editor.get("dependencies").unwrap(), CapabilityValue::UInt(0));
+    }
+
+    /// The mounted axis is a view of the viewport: painting it leaves both on the same range.
+    #[test]
+    fn the_mounted_axis_follows_the_viewport() {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_show_time_axis(true);
+        gantt.set_tasks(sample_tasks());
+        let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(700, 180), 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            gantt.draw(&mut context);
+        }
+        backend.end_frame();
+        assert_eq!(gantt.timeline_axis().range(), gantt.viewport());
+        gantt.set_viewport(5, 25);
+        assert_eq!(gantt.timeline_axis().range(), gantt.viewport(), "a zoom is reflected");
+    }
+
+    /// Dependency editing lives on the chart: additions/removals and a press are re-emitted by the
+    /// widget, not only by the child editor a caller never mounted itself.
+    #[test]
+    fn dependency_edits_and_selection_reach_the_chart() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 240));
+        let added = Arc::new(Mutex::new(Vec::<Dependency>::new()));
+        let removed = Arc::new(Mutex::new(Vec::<Dependency>::new()));
+        let selected = Arc::new(Mutex::new(Vec::<Dependency>::new()));
+
+        let sink = added.clone();
+        gantt.dependency_added.connect(move |edge| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push((*edge).clone());
+            }
+        });
+        let sink = removed.clone();
+        gantt.dependency_removed.connect(move |edge| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push((*edge).clone());
+            }
+        });
+        let sink = selected.clone();
+        gantt.link_selected.connect(move |edge| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push((*edge).clone());
+            }
+        });
+
+        assert!(gantt.add_dependency("a", "b"));
+        assert!(!gantt.add_dependency("a", "b"), "a duplicate is refused by the editor");
+        assert_eq!(
+            added.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![Dependency::new("a", "b")]
+        );
+
+        gantt.set_show_dependency_editor(true);
+        // The editor is 220 px wide on the right; row 0 begins below its caption.
+        gantt.handle_event(&Event::mouse_press(520, 30, 1));
+        assert_eq!(
+            selected.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![Dependency::new("a", "b")]
+        );
+
+        assert!(gantt.remove_dependency("a", "b"));
+        assert!(!gantt.remove_dependency("a", "b"));
+        assert_eq!(
+            removed.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![Dependency::new("a", "b")]
+        );
+    }
+
+    /// The editor's edge list can be rebuilt from the tasks' two dependency spellings.
+    #[test]
+    fn dependencies_sync_from_tasks() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(vec![
+            GanttTask::new("t1", "Design", 0, 5, 0),
+            GanttTask::new("t2", "Build", 5, 10, 0).depends_on(["t1"]),
+        ]);
+        gantt.sync_dependencies_from_tasks();
+        assert_eq!(gantt.dependency_editor().dependencies(), &[Dependency::new("t1", "t2")]);
     }
 }

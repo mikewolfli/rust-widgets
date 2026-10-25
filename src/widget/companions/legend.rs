@@ -137,7 +137,7 @@ impl Legend {
     /// Creates an empty vertical legend.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Chart, geometry, "Legend"),
+            base: BaseWidget::new(WidgetKind::Legend, geometry, "Legend"),
             entries: Vec::new(),
             orientation: LegendOrientation::Vertical,
             checkable: false,

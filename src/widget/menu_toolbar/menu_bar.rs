@@ -3,7 +3,7 @@
 
 //! Menu bar widget.
 use crate::compat::{lock, Arc, Mutex, String, Vec};
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -11,8 +11,10 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::TooltipManager;
 use crate::widget::menu_toolbar::action::{Action, MenuRole};
 use crate::widget::menu_toolbar::menu::Menu;
+use crate::widget::menu_toolbar::tool_bar::child_hover_id;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -86,11 +88,62 @@ pub trait NativeMenuBridge {
 pub struct MenuBarEntry {
     title: String,
     enabled: bool,
+    /// Hover hint shown by the tooltip pipeline, or `""` for none.
+    tooltip: String,
 }
+
+/// A hover source adapter over a menu-bar entry.
+///
+/// The pipeline reads `WidgetProperties::tooltip`; an entry is presentation data rather than a
+/// widget, so this exposes exactly the one property the pipeline consumes. An entry with no hint
+/// of its own falls back to the bar's own `tooltip` property.
+struct EntryTooltipSource<'a> {
+    entry: &'a MenuBarEntry,
+    bar_tooltip: &'a str,
+}
+
+impl WidgetProperties for EntryTooltipSource<'_> {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "tooltip" => {
+                let text = if self.entry.tooltip.is_empty() {
+                    self.bar_tooltip
+                } else {
+                    self.entry.tooltip.as_str()
+                };
+                Ok(CapabilityValue::String(text.to_string()))
+            }
+            _ => Err(CapabilityAccessError::UnknownProperty),
+        }
+    }
+    fn set(&mut self, _name: &str, _value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        Err(CapabilityAccessError::UnknownProperty)
+    }
+    fn property_names(&self) -> &'static [&'static str] {
+        &["tooltip"]
+    }
+}
+
 impl MenuBarEntry {
     /// Creates an enabled entry with the given title.
     pub fn new(title: impl Into<String>) -> Self {
-        Self { title: title.into(), enabled: true }
+        Self { title: title.into(), enabled: true, tooltip: String::new() }
+    }
+
+    /// The entry's hover hint, or `""` when none was set.
+    pub fn tooltip(&self) -> &str {
+        &self.tooltip
+    }
+
+    /// Replaces the entry's hover hint.
+    pub fn set_tooltip(&mut self, tooltip: impl Into<String>) {
+        self.tooltip = tooltip.into();
+    }
+
+    /// Sets the hover hint and returns `self`, for chaining onto [`MenuBarEntry::new`].
+    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.set_tooltip(tooltip);
+        self
     }
 
     // --- Accessors ---
@@ -114,7 +167,7 @@ impl MenuBarEntry {
     /// Enables or disables the entry.
     ///
     /// A disabled entry is still drawn, in a greyed colour, but click and hover
-    /// do not activate it — in particular no `triggered` or `hovered_entry`
+    /// do not activate it — in particular no `triggered` or `entry_hovered`
     /// signal is emitted for it.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
@@ -159,7 +212,7 @@ pub struct MenuBar {
     /// Emitted with the title of the entry the pointer newly entered. Not
     /// emitted when the pointer moves to a different disabled entry, and not
     /// re-emitted while the pointer stays on the same entry.
-    pub hovered_entry: Signal1<String>,
+    pub entry_hovered: Signal1<String>,
     /// Emitted with the clicked entry's title **and** the rectangle it occupies.
     ///
     /// # Why the rectangle is part of the event
@@ -206,6 +259,12 @@ pub struct MenuBar {
     /// "which state cell". Keeping the cell here is what makes a registry change visible without
     /// the bar polling the manager.
     live_actions: Vec<(String, Arc<Mutex<crate::action::ActionLiveState>>)>,
+    /// The host-side tooltip pipeline for entry hints.
+    tooltips: TooltipManager,
+    /// The derived id currently registered as hovered, if any.
+    tooltip_source: Option<ObjectId>,
+    /// Monotonic clock fed to the tooltip pipeline from [`Widget::tick`].
+    tooltip_now_ms: u64,
 }
 impl MenuBar {
     /// Creates an empty bar with no active or hovered entry.
@@ -219,7 +278,7 @@ impl MenuBar {
             active_index: None,
             hovered_index: None,
             triggered: Signal1::new(),
-            hovered_entry: Signal1::new(),
+            entry_hovered: Signal1::new(),
             triggered_entry: Signal1::new(),
             corner: None,
             menus: Vec::new(),
@@ -228,7 +287,15 @@ impl MenuBar {
             actions: Vec::new(),
             platform_bridge: None,
             live_actions: Vec::new(),
+            tooltips: TooltipManager::new(geometry),
+            tooltip_source: None,
+            tooltip_now_ms: 0,
         }
+    }
+
+    /// Compatibility spelling of [`Self::entry_hovered`] (W-21): the same emitted signal.
+    pub fn hovered_entry(&self) -> &Signal1<String> {
+        &self.entry_hovered
     }
     /// Returns the entries in visual order.
     pub fn entries(&self) -> &[MenuBarEntry] {
@@ -248,6 +315,54 @@ impl MenuBar {
     /// pointer is outside every entry.
     pub fn hovered_index(&self) -> Option<usize> {
         self.hovered_index
+    }
+
+    /// Registers the hovered entry's hint with the tooltip pipeline.
+    ///
+    /// An entry without its own hint falls back to the bar's `tooltip` property, so both per-entry
+    /// and bar-wide hints share the one text source the issue names.
+    fn sync_hover_tooltip(&mut self) {
+        let Some(index) = self.hovered_index else {
+            if self.tooltip_source.take().is_some() {
+                self.tooltips.note_leave();
+            }
+            return;
+        };
+        let Some(entry) = self.entries.get(index) else {
+            if self.tooltip_source.take().is_some() {
+                self.tooltips.note_leave();
+            }
+            return;
+        };
+        let bar_tooltip = match WidgetProperties::get(self, "tooltip") {
+            Ok(CapabilityValue::String(text)) => text,
+            _ => String::new(),
+        };
+        let text = EntryTooltipSource { entry, bar_tooltip: &bar_tooltip }
+            .get("tooltip")
+            .ok()
+            .and_then(|value| match value {
+                CapabilityValue::String(text) if !text.is_empty() => Some(text),
+                _ => None,
+            });
+        match text {
+            Some(text) => {
+                let id = child_hover_id(self.base.id(), index);
+                self.tooltips.register(id, text);
+                self.tooltips.note_hover(id);
+                self.tooltip_source = Some(id);
+            }
+            None => {
+                if self.tooltip_source.take().is_some() {
+                    self.tooltips.note_leave();
+                }
+            }
+        }
+    }
+
+    /// Whether the tooltip pipeline still owes frames.
+    fn tooltip_owes_frames(&self) -> bool {
+        self.tooltip_source.is_some() || self.tooltips.tooltip().is_some()
     }
     /// Appends an entry and returns its index.
     ///
@@ -714,6 +829,18 @@ impl Widget for MenuBar {
     fn has_open_popup(&self) -> bool {
         self.open_menu_index.is_some()
     }
+
+    /// Advances the tooltip delay/duration clocks.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.tooltip_now_ms = self.tooltip_now_ms.saturating_add(u64::from(delta_ms));
+        let changed = self.tooltips.tick(u64::from(delta_ms), self.tooltip_now_ms);
+        changed || self.tooltip_owes_frames()
+    }
+
+    fn is_animating(&self) -> bool {
+        self.tooltip_owes_frames()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -744,8 +871,8 @@ impl Widget for MenuBar {
                     ]))
                 }))
             }
-            "hovered_entry" => {
-                Some(EventSignalRef::mapped("hovered_entry", &self.hovered_entry, |v| {
+            "entry_hovered" => {
+                Some(EventSignalRef::mapped("entry_hovered", &self.entry_hovered, |v| {
                     CapabilityValue::String(v.clone())
                 }))
             }
@@ -852,11 +979,13 @@ impl EventHandler for MenuBar {
                 let next = if self.base.is_hovered() { self.hit_entry(*pos) } else { None };
                 let prev = self.hovered_index;
                 self.hovered_index = next;
+                self.tooltips.note_pointer(*pos);
+                self.sync_hover_tooltip();
                 if self.hovered_index != prev {
                     if let Some(idx) = self.hovered_index {
                         if self.entries[idx].is_enabled() {
                             let title = self.entries[idx].title().to_string();
-                            self.hovered_entry.emit(title);
+                            self.entry_hovered.emit(title);
                         }
                     }
                 }
@@ -875,6 +1004,8 @@ impl EventHandler for MenuBar {
             // otherwise the last entry stays highlighted on a bar the pointer has left.
             Event::MouseLeave { .. } => {
                 self.hovered_index = None;
+                self.tooltip_source = None;
+                self.tooltips.note_leave();
             }
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(idx) = self.hit_entry(*pos) {
@@ -1063,6 +1194,12 @@ impl Draw for MenuBar {
                 }
             }
         }
+
+        // The hover hint is owned by the bar's tooltip pipeline, drawn last so it is never under
+        // the drop-down it explains.
+        let geometry = self.geometry();
+        self.tooltips.set_geometry(geometry);
+        self.tooltips.draw(context);
     }
 }
 

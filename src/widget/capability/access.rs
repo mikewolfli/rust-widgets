@@ -282,7 +282,10 @@ pub fn default_widget_property_default_value(
         "visible"
             if matches!(
                 kind,
-                WidgetKind::Menu | WidgetKind::MaterialSnackbar | WidgetKind::ModalBottomSheet
+                WidgetKind::Menu
+                    | WidgetKind::MaterialSnackbar
+                    | WidgetKind::ModalBottomSheet
+                    | WidgetKind::FindBar
             ) =>
         {
             return Some(CapabilityValue::Bool(false));
@@ -1280,6 +1283,10 @@ pub fn default_widget_property_default_value(
             // Mirrors the `COLUMN_WIDTH` layout constant in the control.
             "column_width" => CapabilityValue::UInt(220),
             "horizontal_scroll_offset" => CapabilityValue::UInt(0),
+            // The flat board is the default; lanes must be turned on explicitly.
+            "lane_mode" => CapabilityValue::String("none".to_string()),
+            "swimlanes" => CapabilityValue::Bool(false),
+            "lane_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::Heatmap => match property_name {
@@ -2279,6 +2286,192 @@ pub fn default_widget_property_default_value(
             "modal" => CapabilityValue::Bool(true),
             "default_button" => CapabilityValue::UInt(0),
             "check_box_checked" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+
+        // ── Companion controls (COMP-01/05/07/08/09/10/12/13/14/15/16/17/18/19/20) ──
+        //
+        // Each default mirrors the control's own `new`/
+        // `Default` initialiser, so a designer's "untouched" value and a freshly
+        // constructed control agree.
+        WidgetKind::Swatch => match property_name {
+            "colors" => CapabilityValue::Tuple(crate::compat::Vec::from([
+                CapabilityValue::Color(crate::core::Color::ERROR),
+                CapabilityValue::Color(crate::core::Color::WARNING),
+                CapabilityValue::Color(crate::core::Color::SUCCESS),
+                CapabilityValue::Color(crate::core::Color::PRIMARY),
+                CapabilityValue::Color(crate::core::Color::rgb(156, 39, 176)),
+                CapabilityValue::Color(crate::core::Color::SECONDARY),
+                CapabilityValue::Color(crate::core::Color::BLACK),
+                CapabilityValue::Color(crate::core::Color::WHITE),
+            ])),
+            "selected_index" => CapabilityValue::UInt(0),
+            "cell_size" => CapabilityValue::UInt(24),
+            "columns" => CapabilityValue::UInt(6),
+            _ => return None,
+        },
+        WidgetKind::FilterRow => match property_name {
+            "columns" | "conditions" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "operator" => CapabilityValue::String("contains".to_string()),
+            "live" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::Legend => match property_name {
+            "entries" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "orientation" => CapabilityValue::String("vertical".to_string()),
+            "checkable" => CapabilityValue::Bool(false),
+            "position" => CapabilityValue::String("top".to_string()),
+            _ => return None,
+        },
+        WidgetKind::ChartTooltip => match property_name {
+            "anchor" => CapabilityValue::Tuple(crate::compat::Vec::from([
+                CapabilityValue::Int(0),
+                CapabilityValue::Int(0),
+            ])),
+            "offset" => CapabilityValue::Tuple(crate::compat::Vec::from([
+                CapabilityValue::Int(12),
+                CapabilityValue::Int(18),
+            ])),
+            "follow_pointer" => CapabilityValue::Bool(true),
+            "content" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            _ => return None,
+        },
+        WidgetKind::TooltipManager => match property_name {
+            "delay_ms" => CapabilityValue::UInt(500),
+            "duration_ms" => CapabilityValue::UInt(3000),
+            "enabled" => CapabilityValue::Bool(true),
+            "follow_pointer" => CapabilityValue::Bool(true),
+            "max_width" => CapabilityValue::UInt(260),
+            _ => return None,
+        },
+        WidgetKind::ZoomPanController => match property_name {
+            "zoom_level" => CapabilityValue::Float(1.0),
+            "pan_offset" => CapabilityValue::Tuple(crate::compat::Vec::from([
+                CapabilityValue::Int(0),
+                CapabilityValue::Int(0),
+            ])),
+            "zoom_mode" => CapabilityValue::String("free".to_string()),
+            "min_zoom" => CapabilityValue::Float(0.05),
+            "max_zoom" => CapabilityValue::Float(32.0),
+            "roi" => CapabilityValue::Null,
+            _ => return None,
+        },
+        WidgetKind::ToastHost => match property_name {
+            "max_visible" => CapabilityValue::UInt(5),
+            "max_queued" => CapabilityValue::UInt(10),
+            "default_duration_ms" => CapabilityValue::UInt(3000),
+            "anchor" => CapabilityValue::String("bottom_left".to_string()),
+            "stacking_direction" => CapabilityValue::String("newest_at_top".to_string()),
+            "overflow_policy" => CapabilityValue::String("drop_oldest".to_string()),
+            _ => return None,
+        },
+        WidgetKind::TileLoader => match property_name {
+            "url_template" => CapabilityValue::String("tiles/{z}/{x}/{y}.png".to_string()),
+            "min_zoom" => CapabilityValue::UInt(0),
+            "max_zoom" => CapabilityValue::UInt(19),
+            "tile_size" => CapabilityValue::UInt(256),
+            "cache_limit" => CapabilityValue::UInt(256),
+            "cache_size" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::ZoomControl => match property_name {
+            "zoom_level" => CapabilityValue::Float(1.0),
+            "min" => CapabilityValue::Float(0.25),
+            "max" => CapabilityValue::Float(8.0),
+            _ => return None,
+        },
+        WidgetKind::ScaleBar => match property_name {
+            "meters_per_pixel" => CapabilityValue::Float(1.0),
+            "units" => CapabilityValue::String("metric".to_string()),
+            "style" => CapabilityValue::String("plain".to_string()),
+            _ => return None,
+        },
+        WidgetKind::Compass => match property_name {
+            "bearing_deg" => CapabilityValue::Float(0.0),
+            "clickable" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::TimelineAxis => match property_name {
+            "tick_density" => CapabilityValue::UInt(6),
+            "date_format" => CapabilityValue::String("numeric".to_string()),
+            "zoom_level" => CapabilityValue::Float(1.0),
+            "range" => CapabilityValue::Tuple(crate::compat::Vec::from([
+                CapabilityValue::Int(0),
+                CapabilityValue::Int(100),
+            ])),
+            "range_start" => CapabilityValue::Int(0),
+            "range_end" => CapabilityValue::Int(100),
+            _ => return None,
+        },
+        WidgetKind::DependencyEditor => match property_name {
+            "dependencies" => CapabilityValue::UInt(0),
+            "editable" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::DiffFileList => match property_name {
+            "files" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "file_count" => CapabilityValue::UInt(0),
+            "selected_path" => CapabilityValue::Null,
+            "selection_mode" => CapabilityValue::String("single".to_string()),
+            _ => return None,
+        },
+        WidgetKind::MarkdownOutlinePanel => match property_name {
+            "entries" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "active_index" => CapabilityValue::Null,
+            "width" => CapabilityValue::UInt(180),
+            "entry_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::FindBar => match property_name {
+            "query" | "replace_text" => CapabilityValue::String(String::new()),
+            "case_sensitive" => CapabilityValue::Bool(false),
+            "whole_word" => CapabilityValue::Bool(false),
+            "visible" => CapabilityValue::Bool(false),
+            "replace_visible" => CapabilityValue::Bool(false),
+            "match_count" => CapabilityValue::UInt(0),
+            "current_range" => CapabilityValue::Null,
+            _ => return None,
+        },
+        WidgetKind::ShapeCanvas => match property_name {
+            "shapes" | "selection" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "shape_count" => CapabilityValue::UInt(0),
+            "editable" => CapabilityValue::Bool(false),
+            "snap_to_grid" => CapabilityValue::Bool(false),
+            "grid_step" => CapabilityValue::UInt(8),
+            _ => return None,
+        },
+        WidgetKind::KanbanCardView => match property_name {
+            "title" | "description" | "assignee" => CapabilityValue::String(String::new()),
+            "done" => CapabilityValue::Bool(false),
+            "tags" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "draggable" => CapabilityValue::Bool(true),
+            "editing" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::KanbanColumnHeader => match property_name {
+            "title" => CapabilityValue::String(String::new()),
+            "count" => CapabilityValue::UInt(0),
+            "wip_limit" => CapabilityValue::Null,
+            "collapsed" => CapabilityValue::Bool(false),
+            "editable" => CapabilityValue::Bool(true),
+            "at_wip_limit" => CapabilityValue::Bool(false),
+            "editing" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::RangePresetBar => match property_name {
+            "presets" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "orientation" => CapabilityValue::String("horizontal".to_string()),
+            "compact" => CapabilityValue::Bool(false),
+            "selected_label" => CapabilityValue::Null,
+            _ => return None,
+        },
+        WidgetKind::GridViewHeader => match property_name {
+            "columns" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "column_count" => CapabilityValue::UInt(0),
+            "sort_indicator_visible" => CapabilityValue::Bool(true),
+            "resize_mode" => CapabilityValue::String("fixed".to_string()),
+            "filter_icon_visible" => CapabilityValue::Bool(true),
+            "sort_columns" => CapabilityValue::String(String::new()),
             _ => return None,
         },
 

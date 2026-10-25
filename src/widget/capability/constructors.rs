@@ -1896,3 +1896,134 @@ pub fn create_about_dialog(geometry: Rect, text: &str) -> Box<dyn Widget> {
 pub fn create_time_picker(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(TimeEdit::new(geometry)))
 }
+
+// ── Companion constructors (COMP-01/05/07/08/09/10/12/13/14/15/16/17/18/19/20) ──
+//
+// Each companion is constructible by its own name, so a document or a designer can
+// place it without reaching for the primary control it partners.
+
+#[cfg(full_widgets)]
+/// Creates the default palette grid (`COMP-01`).
+pub fn create_swatch(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::Swatch::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty filter row (`COMP-05`).
+pub fn create_filter_row(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::FilterRow::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty vertical legend (`COMP-07`).
+pub fn create_legend(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::Legend::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a hidden chart tooltip (`COMP-08`).
+pub fn create_chart_tooltip(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::ChartTooltip::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an enabled host tooltip pipeline (`COMP-09`).
+pub fn create_tooltip_manager(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::TooltipManager::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a 1:1 zoom/pan controller (`COMP-10`).
+pub fn create_zoom_pan_controller(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::ZoomPanController::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty toast host with the default caps (`COMP-12`).
+pub fn create_toast_host(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::ToastHost::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a tile loader with the default template (`COMP-13`).
+pub fn create_tile_loader(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::special_widgets::map_view::TileLoader::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a map zoom strip at 1:1 (`COMP-13`).
+pub fn create_zoom_control(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::special_widgets::map_view::ZoomControl::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a metric scale bar (`COMP-13`).
+pub fn create_scale_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::special_widgets::map_view::ScaleBar::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a clickable compass pointing north (`COMP-13`).
+pub fn create_compass(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::special_widgets::map_view::Compass::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a timeline axis over `0 ..= 100` (`COMP-14`).
+pub fn create_timeline_axis(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::special_widgets::gantt_widget::TimelineAxis::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty dependency editor (`COMP-14`).
+pub fn create_dependency_editor(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::special_widgets::gantt_widget::DependencyEditor::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty diff file list (`COMP-15`).
+pub fn create_diff_file_list(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::special_widgets::diff_viewer::DiffFileList::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty markdown outline panel (`COMP-16`).
+pub fn create_markdown_outline_panel(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::special_widgets::markdown_editor::MarkdownOutlinePanel::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a closed find bar (`COMP-16`).
+pub fn create_find_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::special_widgets::markdown_editor::FindBar::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty shape canvas (`COMP-17`).
+pub fn create_shape_canvas(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::special_widgets::freeform_shape::ShapeCanvas::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a kanban card titled by `text` (`COMP-18`).
+pub fn create_kanban_card_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::special_widgets::kanban_board::KanbanCardView::new(geometry, text))
+}
+
+#[cfg(full_widgets)]
+/// Creates a kanban column header titled by `text` (`COMP-18`).
+pub fn create_kanban_column_header(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::special_widgets::kanban_board::KanbanColumnHeader::new(geometry, text))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty horizontal range preset bar (`COMP-19`).
+pub fn create_range_preset_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::misc_widgets::date_range_picker::RangePresetBar::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty shared table header (`COMP-20`).
+pub fn create_grid_view_header(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::view_widgets::data_grid::GridViewHeader::new(geometry))
+}

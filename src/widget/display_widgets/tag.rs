@@ -111,6 +111,15 @@ impl Tag {
         }
     }
 
+    /// Compatibility spelling of [`Self::selected_changed`] (W-20).
+    ///
+    /// A tag's selection is a boolean rather than a current index, so the published
+    /// row keeps `selected_changed`; this accessor exposes the canonical event-layer
+    /// name and returns the same emitted signal.
+    pub fn current_changed(&self) -> &Signal1<bool> {
+        &self.selected_changed
+    }
+
     /// The tag's label.
     pub fn text(&self) -> &str {
         &self.text

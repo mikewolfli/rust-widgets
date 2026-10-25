@@ -520,7 +520,7 @@ impl GridViewHeader {
     /// Creates an empty header.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Table, geometry, "GridViewHeader"),
+            base: BaseWidget::new(WidgetKind::GridViewHeader, geometry, "GridViewHeader"),
             columns: Vec::new(),
             sorts: Vec::new(),
             sort_indicator_visible: true,
@@ -1662,8 +1662,11 @@ impl DataGrid {
         self.row_height
     }
 
-    /// Sets fixed column width.
-    pub fn set_column_width(&mut self, column_width: u32) {
+    /// Sets the fallback width every column uses when it has no override.
+    ///
+    /// This is the historical single-width setter, renamed from `set_column_width` so the
+    /// per-column form can carry the name the issue asks for (V-07).
+    pub fn set_default_column_width(&mut self, column_width: u32) {
         let next = column_width.max(1);
         if self.column_width == next {
             return;
@@ -1675,9 +1678,27 @@ impl DataGrid {
         self.base.request_redraw();
     }
 
-    /// Returns column width.
-    pub fn column_width(&self) -> u32 {
+    /// Returns the fallback column width, i.e. the width of a column without an override.
+    pub fn default_column_width(&self) -> u32 {
         self.column_width
+    }
+
+    /// The width painted for `column` under the current sizing mode.
+    ///
+    /// The issue's `column_width(col)` name. It is the same answer as
+    /// [`Self::column_width_at`], which remains as an explicit alias so existing callers keep
+    /// compiling; the zero-argument getter is now [`Self::default_column_width`].
+    pub fn column_width(&self, column: usize) -> u32 {
+        self.column_width_at(column)
+    }
+
+    /// Sets one column's width and switches to interactive sizing, returning whether the
+    /// column exists.
+    ///
+    /// The issue's `set_column_width(col, w)` name. It is the same operation as
+    /// [`Self::set_column_width_at`] (which emits `column_resized`).
+    pub fn set_column_width(&mut self, column: usize, width: u32) -> bool {
+        self.set_column_width_at(column, width)
     }
 
     /// Sets frozen leading columns, clamped to source column count.
@@ -2600,7 +2621,7 @@ impl WidgetProperties for DataGrid {
             "scroll_row" => Ok(CapabilityValue::UInt(self.scroll_row() as u64)),
             "scroll_column" => Ok(CapabilityValue::UInt(self.scroll_column() as u64)),
             "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
-            "column_width" => Ok(CapabilityValue::UInt(self.column_width() as u64)),
+            "column_width" => Ok(CapabilityValue::UInt(self.default_column_width() as u64)),
             "frozen_columns" => Ok(CapabilityValue::UInt(self.frozen_columns() as u64)),
             "sort_spec_count" => Ok(CapabilityValue::UInt(self.sort_specs().len() as u64)),
             // The count is of *conditions*, not of `ColumnFilter`s: a tree with a
@@ -2646,7 +2667,7 @@ impl WidgetProperties for DataGrid {
                 Ok(())
             }
             "column_width" => {
-                self.set_column_width(expect_usize(value)? as u32);
+                self.set_default_column_width(expect_usize(value)? as u32);
                 Ok(())
             }
             "frozen_columns" => {
@@ -3395,9 +3416,12 @@ mod tests {
         let width = grid.column_width_at(2);
         assert!(width > 0);
         // The first two columns keep the base width, so the last takes the rest.
-        assert_eq!(grid.column_width_at(0), grid.column_width());
-        assert_eq!(grid.column_width_at(1), grid.column_width());
-        assert_eq!(width as i32, grid.cells_box().width as i32 - 2 * grid.column_width() as i32);
+        assert_eq!(grid.column_width_at(0), grid.default_column_width());
+        assert_eq!(grid.column_width_at(1), grid.default_column_width());
+        assert_eq!(
+            width as i32,
+            grid.cells_box().width as i32 - 2 * grid.default_column_width() as i32
+        );
     }
 
     /// A cell's box must be a pure function of its own projected indices.
@@ -3800,7 +3824,7 @@ mod tests {
         assert_eq!(grid.scroll_row(), 0);
         assert_eq!(grid.scroll_column(), 0);
         assert_eq!(grid.row_height(), 20);
-        assert_eq!(grid.column_width(), 120);
+        assert_eq!(grid.default_column_width(), 120);
         assert_eq!(grid.frozen_columns(), 0);
         assert!(grid.sort_specs().is_empty());
         assert!(grid.filters().is_empty());
@@ -4116,11 +4140,11 @@ mod tests {
         grid.set_row_height(25);
         assert_eq!(grid.row_height(), 25);
 
-        grid.set_column_width(0);
-        assert_eq!(grid.column_width(), 1);
+        grid.set_default_column_width(0);
+        assert_eq!(grid.default_column_width(), 1);
 
-        grid.set_column_width(100);
-        assert_eq!(grid.column_width(), 100);
+        grid.set_default_column_width(100);
+        assert_eq!(grid.default_column_width(), 100);
     }
 
     /// N-V-03 / N-V-04: a full-width control with a full-height row must not overflow the
@@ -4131,7 +4155,7 @@ mod tests {
         // `height + row_height - 1` and `width + column_width - 1` overflowed (debug panic).
         let mut grid = DataGrid::new(Rect::new(0, 0, u32::MAX, u32::MAX));
         grid.set_row_height(u32::MAX);
-        grid.set_column_width(u32::MAX);
+        grid.set_default_column_width(u32::MAX);
         // Reaching the assertions means neither capacity calculation panicked.
         assert_eq!(grid.visible_row_capacity(), 1);
         assert_eq!(grid.visible_column_capacity(), 1);

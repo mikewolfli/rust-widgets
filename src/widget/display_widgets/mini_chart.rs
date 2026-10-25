@@ -60,8 +60,54 @@ pub struct DataPoint {
 
 impl DataPoint {
     /// Creates a new data point.
-    pub fn new(label: impl Into<String>, value: u32) -> Self {
-        Self { label: label.into(), value }
+    ///
+    /// The label accepts either text or a numeric index. Text is the normal form; an integer is
+    /// the categorical-index spelling a caller uses when the point is identified by position
+    /// ("0", "1", …), and both arrive as the same `String` label. Keeping one constructor for the
+    /// two spellings avoids a second `from_index` entry point that would have to be kept in step
+    /// with this one.
+    pub fn new(label: impl IntoDataPointLabel, value: u32) -> Self {
+        Self { label: label.into_data_point_label(), value }
+    }
+}
+
+/// A label accepted by [`DataPoint::new`].
+///
+/// Implemented for the two forms a caller actually writes — an owned/borrowed string and a
+/// categorical index — so the single constructor serves both without a trait import at the call
+/// site.
+pub trait IntoDataPointLabel {
+    /// Converts this label to the stored `String` form.
+    fn into_data_point_label(self) -> String;
+}
+
+impl IntoDataPointLabel for String {
+    fn into_data_point_label(self) -> String {
+        self
+    }
+}
+
+impl IntoDataPointLabel for &str {
+    fn into_data_point_label(self) -> String {
+        self.to_string()
+    }
+}
+
+impl IntoDataPointLabel for u32 {
+    fn into_data_point_label(self) -> String {
+        self.to_string()
+    }
+}
+
+impl IntoDataPointLabel for i32 {
+    fn into_data_point_label(self) -> String {
+        self.to_string()
+    }
+}
+
+impl IntoDataPointLabel for usize {
+    fn into_data_point_label(self) -> String {
+        self.to_string()
     }
 }
 
@@ -80,7 +126,7 @@ pub struct MiniChart {
     /// The data index the pointer is nearest to, when the pointer is over the plot.
     hovered_index: Option<usize>,
     /// Emitted with the hovered index, or `None` when the pointer leaves.
-    pub hovered_point_changed: Signal1<Option<usize>>,
+    pub point_hover_changed: Signal1<Option<usize>>,
     /// Whether a new series grows from the baseline instead of appearing at full height.
     animate_data: bool,
     /// Drives the entrance scale from `0.0` to `1.0`.
@@ -105,7 +151,7 @@ impl MiniChart {
             max_value: 100,
             show_axis_labels: false,
             hovered_index: None,
-            hovered_point_changed: Signal1::new(),
+            point_hover_changed: Signal1::new(),
             animate_data: false,
             // At rest at the settled end: with the option off the series is never scaled, and
             // turning it on resets the driver deliberately.
@@ -113,6 +159,11 @@ impl MiniChart {
             hover_caption: String::new(),
             hover_caption_key: None,
         }
+    }
+
+    /// Compatibility spelling of [`Self::point_hover_changed`] (W-21): the same emitted signal.
+    pub fn hovered_point_changed(&self) -> &Signal1<Option<usize>> {
+        &self.point_hover_changed
     }
 
     /// Sets the chart type (Line or Bar).
@@ -297,7 +348,7 @@ impl MiniChart {
             return;
         }
         self.hovered_index = next;
-        self.hovered_point_changed.emit(next);
+        self.point_hover_changed.emit(next);
         self.base.request_redraw();
     }
 
@@ -358,9 +409,9 @@ impl Widget for MiniChart {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
-            "hovered_point_changed" => Some(EventSignalRef::mapped(
-                "hovered_point_changed",
-                &self.hovered_point_changed,
+            "point_hover_changed" => Some(EventSignalRef::mapped(
+                "point_hover_changed",
+                &self.point_hover_changed,
                 |v| match v {
                     Some(index) => CapabilityValue::UInt(*index as u64),
                     None => CapabilityValue::Null,
@@ -742,7 +793,7 @@ mod tests {
     #[test]
     fn published_hovered_point_event_resolves_to_a_signal() {
         let chart = MiniChart::new(Rect::new(0, 0, 200, 150));
-        assert!(chart.event_signal_dyn("hovered_point_changed").is_some());
+        assert!(chart.event_signal_dyn("point_hover_changed").is_some());
         assert!(chart.event_signal_dyn("no_such_event").is_none());
     }
 
@@ -945,7 +996,7 @@ mod tests {
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
-        chart.hovered_point_changed.connect(move |index| {
+        chart.point_hover_changed.connect(move |index| {
             if let Ok(mut values) = sink.lock() {
                 values.push(*index);
             }

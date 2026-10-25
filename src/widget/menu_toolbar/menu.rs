@@ -24,8 +24,10 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::TooltipManager;
 use crate::widget::menu_toolbar::action::Action;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
+use crate::widget::menu_toolbar::tool_bar::child_hover_id;
 pub use crate::widget::menu_toolbar::MAX_SUBMENU_DEPTH;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
@@ -385,6 +387,29 @@ impl MenuEntry {
     }
 }
 
+/// A hover source adapter over a menu row.
+///
+/// The tooltip pipeline reads `WidgetProperties::tooltip`; a `MenuEntry` is presentation data,
+/// so this exposes that one property over the row's stored hint.
+struct EntryTooltipSource<'a> {
+    entry: &'a MenuEntry,
+}
+
+impl WidgetProperties for EntryTooltipSource<'_> {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "tooltip" => Ok(CapabilityValue::String(self.entry.tooltip.clone())),
+            _ => Err(CapabilityAccessError::UnknownProperty),
+        }
+    }
+    fn set(&mut self, _name: &str, _value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        Err(CapabilityAccessError::UnknownProperty)
+    }
+    fn property_names(&self) -> &'static [&'static str] {
+        &["tooltip"]
+    }
+}
+
 /// The facts [`Menu::item_bands`] is a pure function of.
 ///
 /// A version counter alongside the geometry is what makes the cache cheap to validate: every
@@ -576,6 +601,12 @@ pub struct Menu {
     /// change made through the registry is visible without the menu polling it. The row keeps its
     /// `action_id`; this is the state half of that link.
     live_actions: Vec<(String, Arc<Mutex<crate::action::ActionLiveState>>)>,
+    /// The host-side hover/delay/show pipeline for row hints.
+    tooltips: TooltipManager,
+    /// The derived id currently registered as hovered, if any.
+    tooltip_source: Option<ObjectId>,
+    /// Monotonic clock fed to the tooltip pipeline from [`Widget::tick`].
+    tooltip_now_ms: u64,
 }
 impl Menu {
     /// Creates a menu titled `title`, initially **hidden**.
@@ -612,6 +643,9 @@ impl Menu {
             tearoff_requested: GenericSignal::new(),
             show_mnemonics: false,
             live_actions: Vec::new(),
+            tooltips: TooltipManager::new(geometry),
+            tooltip_source: None,
+            tooltip_now_ms: 0,
         };
         // A menu is a popup, so it starts hidden. `BaseWidget` defaults to visible,
         // which is right for a control that owns part of the surface but wrong for
@@ -935,6 +969,48 @@ impl Menu {
     pub fn hovered_index(&self) -> Option<usize> {
         self.hovered_index
     }
+
+    /// Registers the hovered row's hint with the tooltip pipeline.
+    ///
+    /// The text is read through `WidgetProperties::get("tooltip")` on a row adapter, which is the
+    /// one text source the issue names. A row without a hint leaves the pipeline.
+    fn sync_hover_tooltip(&mut self) {
+        let Some(index) = self.hovered_index else {
+            if self.tooltip_source.take().is_some() {
+                self.tooltips.note_leave();
+            }
+            return;
+        };
+        let Some(entry) = self.items.get(index) else {
+            if self.tooltip_source.take().is_some() {
+                self.tooltips.note_leave();
+            }
+            return;
+        };
+        let text = EntryTooltipSource { entry }.get("tooltip").ok().and_then(|value| match value {
+            CapabilityValue::String(text) if !text.is_empty() => Some(text),
+            _ => None,
+        });
+        match text {
+            Some(text) => {
+                let id = child_hover_id(self.base.id(), index);
+                self.tooltips.register(id, text);
+                self.tooltips.note_hover(id);
+                self.tooltip_source = Some(id);
+            }
+            None => {
+                if self.tooltip_source.take().is_some() {
+                    self.tooltips.note_leave();
+                }
+            }
+        }
+    }
+
+    /// Whether the tooltip pipeline still owes frames.
+    fn tooltip_owes_frames(&self) -> bool {
+        self.tooltip_source.is_some() || self.tooltips.tooltip().is_some()
+    }
+
     /// Appends a pre-built entry.
     ///
     /// No repaint is requested, so a visible menu does not redraw until
@@ -2044,6 +2120,8 @@ impl Widget for Menu {
         // still animated: `draw` paints the body while the reveal has anything left to show, and
         // only a fully collapsed reveal stops it.
         self.reveal.set_open(false);
+        self.tooltip_source = None;
+        self.tooltips.note_leave();
         self.base.hide();
         // Clear the invoker position with the popup: it describes an open menu, and
         // leaving it set would make a reopened menu report a stale origin.
@@ -2059,11 +2137,13 @@ impl Widget for Menu {
     /// mounted control, so a menu that kept its tick inherent would be one the host cannot
     /// advance.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        self.reveal.tick(delta_ms)
+        self.tooltip_now_ms = self.tooltip_now_ms.saturating_add(u64::from(delta_ms));
+        let tooltip_changed = self.tooltips.tick(u64::from(delta_ms), self.tooltip_now_ms);
+        self.reveal.tick(delta_ms) || tooltip_changed || self.tooltip_owes_frames()
     }
 
     fn is_animating(&self) -> bool {
-        self.reveal.is_animating()
+        self.reveal.is_animating() || self.tooltip_owes_frames()
     }
 
     impl_draw_bridge!();
@@ -2200,6 +2280,7 @@ impl EventHandler for Menu {
         }
         match event {
             Event::MouseMove { pos } => {
+                self.tooltips.note_pointer(*pos);
                 if let Some((level, index)) = self.hit_test_submenu(*pos) {
                     if self
                         .level_entries(level)
@@ -2214,6 +2295,12 @@ impl EventHandler for Menu {
                         self.hovered_index = Some(index);
                     }
                 }
+                self.sync_hover_tooltip();
+            }
+            Event::MouseLeave { .. } => {
+                self.hovered_index = None;
+                self.tooltip_source = None;
+                self.tooltips.note_leave();
             }
             Event::MousePress { pos, button: 1, .. } => {
                 // The nested panels are outside the parent's own rectangle, so they are
@@ -2695,6 +2782,11 @@ impl Draw for Menu {
         if self.is_visible() || !self.reveal.is_closed() {
             self.draw_submenu_panel(context, font, ink, secondary, primary, border, face);
         }
+
+        // The hover hint is drawn last, over the row it explains and any open child panel.
+        let geometry = self.geometry();
+        self.tooltips.set_geometry(geometry);
+        self.tooltips.draw(context);
     }
 }
 

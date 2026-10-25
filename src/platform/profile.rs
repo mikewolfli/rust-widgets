@@ -453,11 +453,29 @@ pub fn system_theme() -> Option<bool> {
 pub fn environment_generation() -> u64 {
     #[cfg(feature = "mini")]
     {
-        0
+        crate::platform::environment_notify::combine(0)
     }
     #[cfg(not(feature = "mini"))]
     {
-        crate::platform::get_platform().environment_generation()
+        let base = crate::platform::get_platform().environment_generation();
+        crate::platform::environment_notify::combine(base)
+    }
+}
+
+/// Records that the host observed an environment change (G-23).
+///
+/// The single entry point for backends and hosts: on a device profile it asks the platform, whose
+/// default bumps the shared revision, while `mini` has no platform singleton and bumps the revision
+/// directly. Either way [`environment_generation`] returns a different value afterwards, which is
+/// what the style watcher keys on.
+pub fn notify_environment_changed() {
+    #[cfg(feature = "mini")]
+    {
+        crate::platform::environment_notify::bump();
+    }
+    #[cfg(not(feature = "mini"))]
+    {
+        crate::platform::get_platform().notify_environment_changed();
     }
 }
 

@@ -1554,6 +1554,14 @@ impl PaintBackend for SvgPaintBackend {
                     self.blend_group_open = true;
                 }
             }
+            RenderCommand::PushMatte { .. } | RenderCommand::PopMatte | RenderCommand::EndMatte => {
+                // SVG has no track-matte primitive: a matte is a coverage mask derived from the
+                // drawn alpha or luminance, and encoding that faithfully would need an offscreen
+                // raster and a mask element. The vector backend is a diagnostic exporter, so the
+                // commands are flattened — the matte source and the matted layer are emitted in
+                // document order without the mask. This is a stated limitation, not a silent
+                // success: the software backend is the one that owns matte compositing.
+            }
             RenderCommand::DrawConicGradient { center, start_angle, stops } => {
                 // SVG has no native conic gradient, so the sweep is drawn as a fan of wedges, each
                 // filled with the colour the ramp reaches at its own angle. `draw_conic_fan` samples
@@ -1701,7 +1709,7 @@ mod tests {
         svg.begin_frame(Color::WHITE);
         svg.execute_command(&RenderCommand::DrawText {
             origin: Point::new(10, 20),
-            text: "<hello> & world".to_string(),
+            text: Arc::from("<hello> & world"),
             font: Font::default_ui(),
             color: Color::BLACK,
             alignment: HorizontalAlignment::Left,
@@ -1740,7 +1748,7 @@ mod tests {
         svg.begin_frame(Color::TRANSPARENT);
         svg.execute_command(&RenderCommand::DrawText {
             origin: Point::new(4, 4),
-            text: "A".to_string(),
+            text: Arc::from("A"),
             // Named as `Font::family` names it: the outline path selects by family for the reason
             // `text::outline` documents.
             font: Font::new(family, 32.0, false, false),
@@ -1778,7 +1786,7 @@ mod tests {
         svg.begin_frame(Color::TRANSPARENT);
         svg.execute_command(&RenderCommand::DrawText {
             origin: Point::new(4, 4),
-            text: "A".to_string(),
+            text: Arc::from("A"),
             // No outline face exists on this build, so any family name resolves to the bitmap face.
             font: Font::new("Arial", 32.0, false, false),
             color: Color::WHITE,
@@ -1821,7 +1829,7 @@ mod tests {
             svg.begin_frame(Color::WHITE);
             svg.execute_command(&RenderCommand::DrawText {
                 origin,
-                text: "Cancel".to_string(),
+                text: Arc::from("Cancel"),
                 font: font.clone(),
                 color: Color::BLACK,
                 alignment,
@@ -1940,7 +1948,7 @@ mod tests {
         });
         svg.execute_command(&RenderCommand::DrawText {
             origin: Point::new(10, 180),
-            text: "Test".to_string(),
+            text: Arc::from("Test"),
             font: Font::default_ui(),
             color: Color::BLACK,
             alignment: HorizontalAlignment::Left,
@@ -2120,7 +2128,7 @@ mod tests {
         // `i` advances a fraction of an em; at this size the rounded cell is one pixel wide.
         svg.execute_command(&RenderCommand::DrawText {
             origin: Point::new(0, 0),
-            text: "i".to_string(),
+            text: Arc::from("i"),
             font: Font::new("Arial", 12.0, false, false),
             color: Color::BLACK,
             alignment: HorizontalAlignment::Left,
@@ -2255,6 +2263,9 @@ mod tests {
                 RenderCommand::ClipPath { .. } => "ClipPath",
                 RenderCommand::SetBlendMode { .. } => "SetBlendMode",
                 RenderCommand::DrawConicGradient { .. } => "DrawConicGradient",
+                RenderCommand::PushMatte { .. } => "PushMatte",
+                RenderCommand::PopMatte => "PopMatte",
+                RenderCommand::EndMatte => "EndMatte",
                 #[cfg(feature = "3d")]
                 RenderCommand::FillQuad { .. } => "FillQuad",
                 #[cfg(feature = "3d")]
@@ -2303,7 +2314,7 @@ mod tests {
             },
             RenderCommand::DrawText {
                 origin: point,
-                text: "Hi".to_string(),
+                text: Arc::from("Hi"),
                 font: Font::default_ui(),
                 color: Color::BLACK,
                 alignment: HorizontalAlignment::Left,
@@ -2338,23 +2349,35 @@ mod tests {
                 cache_key: Some(1),
             },
             RenderCommand::PopLayer,
+            RenderCommand::PushMatte {
+                bounds: rect,
+                mode: crate::render::core::command::MatteMode::Alpha,
+            },
+            RenderCommand::PopMatte,
+            RenderCommand::EndMatte,
             RenderCommand::DrawGradient {
                 rect,
-                gradient: crate::style::Gradient::linear(point, Point::new(80, 40))
-                    .add_stop(0.0, Color::RED)
-                    .add_stop(1.0, Color::BLUE),
+                gradient: Arc::new(
+                    crate::style::Gradient::linear(point, Point::new(80, 40))
+                        .add_stop(0.0, Color::RED)
+                        .add_stop(1.0, Color::BLUE),
+                ),
             },
             RenderCommand::DrawGradient {
                 rect,
-                gradient: crate::style::Gradient::radial(point, 40.0)
-                    .add_stop(0.0, Color::GREEN)
-                    .add_stop(1.0, Color::BLUE),
+                gradient: Arc::new(
+                    crate::style::Gradient::radial(point, 40.0)
+                        .add_stop(0.0, Color::GREEN)
+                        .add_stop(1.0, Color::BLUE),
+                ),
             },
             RenderCommand::DrawGradient {
                 rect,
-                gradient: crate::style::Gradient::conic(point, 0.0)
-                    .add_stop(0.0, Color::RED)
-                    .add_stop(1.0, Color::BLUE),
+                gradient: Arc::new(
+                    crate::style::Gradient::conic(point, 0.0)
+                        .add_stop(0.0, Color::RED)
+                        .add_stop(1.0, Color::BLUE),
+                ),
             },
             RenderCommand::DrawArc {
                 center: point,
@@ -2487,6 +2510,11 @@ mod tests {
             // `PopLayer` is the same state transition for a layer: with no layer open there is no
             // group to close, and the layer's markup was never emitted.
             "PopLayer",
+            // The SVG backend has no offscreen matte composite; `PushMatte` / `PopMatte` /
+            // `EndMatte` are state transitions whose pixels the software backend applies.
+            "PushMatte",
+            "PopMatte",
+            "EndMatte",
         ];
         let mut exempted: Vec<&'static str> = Vec::new();
         for command in &commands {
@@ -2571,6 +2599,9 @@ mod tests {
             "ClipPath",
             "SetBlendMode",
             "DrawConicGradient",
+            "PushMatte",
+            "PopMatte",
+            "EndMatte",
         ];
         #[cfg(feature = "3d")]
         let expected_names = {

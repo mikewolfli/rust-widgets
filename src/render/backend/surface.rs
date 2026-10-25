@@ -6,7 +6,7 @@ use crate::compat::Arc;
 use crate::compat::Rc;
 use crate::compat::{lock, vec, Cow, MiniToString, Mutex, OnceLock, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::render::core::command::LayerEffect;
+use crate::render::core::command::{LayerEffect, MatteMode};
 use crate::render::pixel_bytes_len;
 use crate::render::{BlendMode, PaintBackend, RenderCommand, ShapedText, TextMetrics};
 
@@ -80,6 +80,24 @@ pub(crate) struct CachedLayer {
     pub(crate) foreground: Arc<Vec<u8>>,
 }
 
+/// One active track matte, pushed by [`RenderCommand::PushMatte`].
+///
+/// The capture goes through three phases, which is why it holds both a backdrop and a mask:
+/// `PushMatte` captures the backdrop and clears the region for the matte drawing; `PopMatte`
+/// converts that drawing into `mask` and clears the region for the matted layer; `EndMatte`
+/// multiplies the foreground by the mask and composites it over `backdrop`.
+#[derive(Debug, Clone)]
+pub(crate) struct MatteCapture {
+    /// Device-space `(x, y, width, height)` of the matted region.
+    pub(crate) rect: (i32, i32, u32, u32),
+    /// Pixels the region held before the matte was pushed, row-major RGBA.
+    pub(crate) backdrop: Vec<u8>,
+    /// How the matte drawing becomes coverage.
+    pub(crate) mode: crate::render::MatteMode,
+    /// Per-pixel coverage (`0..=255`), one byte per pixel, filled by `PopMatte`.
+    pub(crate) mask: Vec<u8>,
+}
+
 /// Double-buffered 8-bit RGBA pixel storage used by software rendering.
 ///
 /// Pixels are stored as `[R, G, B, A]` bytes with no padding: the buffers are
@@ -107,6 +125,8 @@ pub struct BackBuffer {
     /// invalidated by a resize (the region it indexes may no longer exist) and by a present
     /// (unbalanced pushes must not leak into the next frame), so both clear the stack.
     pub(crate) layers: Vec<LayerCapture>,
+    /// Open track-matte captures, innermost last.
+    pub(crate) mattes: Vec<MatteCapture>,
     /// Regions the caller reported as changed since the last present.
     ///
     /// This is the damage list, not a list of pixels that were actually written: the surface
@@ -143,6 +163,7 @@ impl BackBuffer {
             front: vec![0; bytes],
             back: vec![0; bytes],
             layers: Vec::new(),
+            mattes: Vec::new(),
             damage: Vec::new(),
             layer_cache: Vec::new(),
             suppress_depth: 0,
@@ -160,6 +181,7 @@ impl BackBuffer {
         self.front.resize(bytes, 0);
         self.back.resize(bytes, 0);
         self.layers.clear();
+        self.mattes.clear();
         self.damage.clear();
         // A cached region indexes the old buffer's geometry, so it cannot survive a resize.
         self.layer_cache.clear();
@@ -220,6 +242,7 @@ impl BackBuffer {
         // push into a lost effect rather than a stale capture that would be applied to the
         // *next* frame's pixels.
         self.layers.clear();
+        self.mattes.clear();
         self.damage.clear();
         self.suppress_depth = 0;
     }
@@ -832,13 +855,187 @@ pub struct RenderContext<'a> {
     offset_y: i32,
     /// Stack of previous offsets, restored by [`RenderContext::pop_offset`].
     offset_stack: Vec<(i32, i32)>,
+    /// When set, draw commands are recorded into control-level groups instead of being sent to
+    /// the backend immediately. [`RenderContext::end_region_buckets`] replays them per region.
+    buckets: Option<RegionBuckets>,
+    /// How many region clips the last bucket flush issued, for tests and diagnostics.
+    last_region_passes: usize,
+}
+
+/// One recorded control: the box it painted plus the commands it emitted, in order.
+struct RegionGroup {
+    /// The control's device-space bounds, or `None` when the command's own bounds are used.
+    bounds: Option<Rect>,
+    /// Commands emitted by the control, in paint order.
+    commands: Vec<RenderCommand>,
+}
+
+/// A set of damage regions plus the control groups to replay into each one.
+///
+/// This is the data the one-traversal region pass needs: the widget tree is walked once and every
+/// emitted control is stored with its bounds, so a later flush can replay a control into exactly
+/// the regions it touches. Before this, the driver walked the tree once per region (G-04).
+struct RegionBuckets {
+    /// Device-space damage rectangles. The tracker has already merged them, so they are disjoint.
+    regions: Vec<Rect>,
+    /// Recorded controls in emission order.
+    groups: Vec<RegionGroup>,
+    /// The group index each open [`RenderContext::begin_control`] writes into.
+    open_groups: Vec<usize>,
+}
+
+impl RegionBuckets {
+    fn new(regions: Vec<Rect>) -> Self {
+        Self { regions, groups: Vec::new(), open_groups: Vec::new() }
+    }
+
+    fn begin_control(&mut self, bounds: Rect) {
+        let index = self.groups.len();
+        self.groups.push(RegionGroup { bounds: Some(bounds), commands: Vec::new() });
+        self.open_groups.push(index);
+    }
+
+    fn end_control(&mut self) {
+        let Some(child) = self.open_groups.pop() else {
+            return;
+        };
+        // A nested control's commands become part of its parent's group, because the parent's
+        // bounds already contain them and replaying the parent as one unit keeps emission order.
+        let Some(&parent) = self.open_groups.last() else {
+            return;
+        };
+        if parent == child {
+            return;
+        }
+        let commands = core::mem::take(&mut self.groups[child].commands);
+        self.groups[parent].commands.extend(commands);
+    }
+
+    fn record(&mut self, command: RenderCommand) {
+        if let Some(&index) = self.open_groups.last() {
+            self.groups[index].commands.push(command);
+            return;
+        }
+        let bounds = command.bounds();
+        self.groups.push(RegionGroup { bounds, commands: vec![command] });
+    }
+
+    /// Replays every group into each region it intersects, and returns the number of region clips
+    /// issued.
+    fn flush(&self, backend: &mut dyn PaintBackend) -> usize {
+        for region in &self.regions {
+            backend.execute_command(&RenderCommand::PushClip {
+                x: region.x,
+                y: region.y,
+                width: region.width,
+                height: region.height,
+            });
+            for group in &self.groups {
+                let touches = group.bounds.is_none_or(|bounds| bounds.intersects(region));
+                if !touches {
+                    continue;
+                }
+                for command in &group.commands {
+                    backend.execute_command(command);
+                }
+            }
+            backend.execute_command(&RenderCommand::PopClip);
+        }
+        self.regions.len()
+    }
 }
 impl<'a> RenderContext<'a> {
     /// Wraps `backend` in a context whose translation offset starts at `(0, 0)`.
     ///
     /// The context borrows the backend mutably; it does not take ownership.
     pub fn new(backend: &'a mut dyn PaintBackend) -> Self {
-        Self { backend, offset_x: 0, offset_y: 0, offset_stack: Vec::new() }
+        Self {
+            backend,
+            offset_x: 0,
+            offset_y: 0,
+            offset_stack: Vec::new(),
+            buckets: None,
+            last_region_passes: 0,
+        }
+    }
+
+    /// Sends one command to the backend, or records it when region bucketing is active.
+    fn dispatch(&mut self, command: &RenderCommand) {
+        match self.buckets.as_mut() {
+            Some(buckets) => buckets.record(command.clone()),
+            None => self.backend.execute_command(command),
+        }
+    }
+
+    /// The owned form of [`Self::dispatch`], which an owning caller can hand over without a clone.
+    fn dispatch_owned(&mut self, command: RenderCommand) {
+        match self.buckets.as_mut() {
+            Some(buckets) => buckets.record(command),
+            None => self.backend.execute_command(&command),
+        }
+    }
+
+    /// Starts recording the traversal into `regions` instead of painting it immediately.
+    ///
+    /// Every draw command issued until [`Self::end_region_buckets`] is stored with the bounds of
+    /// the control that emitted it. The end call then replays each control into the regions it
+    /// touches, so the tree is walked **once** regardless of how many regions are damaged (G-04).
+    ///
+    /// Regions are in the caller's coordinate space and are translated by the context's current
+    /// offset, exactly like a clip or a primitive.
+    pub fn begin_region_buckets(&mut self, regions: &[Rect]) {
+        let translated = regions
+            .iter()
+            .map(|region| {
+                Rect::new(
+                    region.x + self.offset_x,
+                    region.y + self.offset_y,
+                    region.width,
+                    region.height,
+                )
+            })
+            .collect();
+        self.buckets = Some(RegionBuckets::new(translated));
+        self.last_region_passes = 0;
+    }
+
+    /// Flushes a bucket traversal recorded by [`Self::begin_region_buckets`].
+    ///
+    /// A no-op when no traversal is active. Nested bucket traversals are not supported; a caller
+    /// that starts one while another is active replaces it.
+    pub fn end_region_buckets(&mut self) {
+        let Some(buckets) = self.buckets.take() else {
+            return;
+        };
+        self.last_region_passes = buckets.flush(self.backend);
+    }
+
+    /// Opens a control group so every command until [`Self::end_control`] is bucketed together.
+    ///
+    /// A container that draws its children in its own `draw` body should bracket each child with
+    /// this pair; a control that does not call it is still bucketed, at its commands' own bounds.
+    /// Calling it outside a bucket traversal is a no-op.
+    pub fn begin_control(&mut self, bounds: Rect) {
+        let bounds = self.offset_rect(bounds);
+        if let Some(buckets) = self.buckets.as_mut() {
+            buckets.begin_control(bounds);
+        }
+    }
+
+    /// Closes the innermost control group. A no-op when none is open or bucket mode is off.
+    pub fn end_control(&mut self) {
+        if let Some(buckets) = self.buckets.as_mut() {
+            buckets.end_control();
+        }
+    }
+
+    /// The number of region clips the last [`Self::end_region_buckets`] issued.
+    ///
+    /// Zero when no bucket pass has run. This is the observable that distinguishes "painted the
+    /// three damaged regions" from "repainted the whole frame", and it is what the dirty-region
+    /// tests assert on.
+    pub fn region_bucket_passes(&self) -> usize {
+        self.last_region_passes
     }
     /// Returns the wrapped backend, for operations not exposed by the context.
     ///
@@ -896,7 +1093,7 @@ impl<'a> RenderContext<'a> {
     /// `rect` is translated by the current offset before drawing.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         let rect = self.offset_rect(rect);
-        self.backend.execute_command(&RenderCommand::FillRect { rect, color });
+        self.dispatch(&RenderCommand::FillRect { rect, color });
     }
 
     /// Draws the shadow behind a raised face.
@@ -920,7 +1117,7 @@ impl<'a> RenderContext<'a> {
         spread: i32,
     ) {
         let rect = self.offset_rect(rect);
-        self.backend.execute_command(&RenderCommand::BoxShadow {
+        self.dispatch(&RenderCommand::BoxShadow {
             rect,
             color,
             offset_x,
@@ -943,9 +1140,16 @@ impl<'a> RenderContext<'a> {
     /// `rect` is translated by the current offset before drawing.
     pub fn fill_gradient(&mut self, rect: Rect, gradient: &crate::style::Gradient) {
         let rect = self.offset_rect(rect);
-        // Straight to the backend, which may paint it without owning a copy; the owning command is
-        // the *default* of that method, so a recording backend still gets the command it needs.
-        self.backend.fill_gradient(rect, gradient);
+        // Straight to the backend, which may paint it without owning a copy; a bucket traversal
+        // needs an owning handle, and an immutable gradient is shared by refcount (G-12).
+        if self.buckets.is_some() {
+            self.dispatch(&RenderCommand::DrawGradient {
+                rect,
+                gradient: crate::compat::Arc::new(gradient.clone()),
+            });
+        } else {
+            self.backend.fill_gradient(rect, gradient);
+        }
     }
 
     /// Paints a control's background: the `gradient` when the style declares one, otherwise the
@@ -975,7 +1179,7 @@ impl<'a> RenderContext<'a> {
     /// `rect` is translated by the current offset before drawing.
     pub fn draw_rect(&mut self, rect: Rect, color: Color) {
         let rect = self.offset_rect(rect);
-        self.backend.execute_command(&RenderCommand::DrawRect { rect, color });
+        self.dispatch(&RenderCommand::DrawRect { rect, color });
     }
     /// Draws an outline of `rect` in `color` with the given stroke `width` in
     /// pixels.
@@ -983,7 +1187,7 @@ impl<'a> RenderContext<'a> {
     /// `rect` is translated by the current offset before drawing.
     pub fn draw_rect_stroke(&mut self, rect: Rect, color: Color, width: u32) {
         let rect = self.offset_rect(rect);
-        self.backend.execute_command(&RenderCommand::DrawRectStroke { rect, color, width });
+        self.dispatch(&RenderCommand::DrawRectStroke { rect, color, width });
     }
     /// Fills `rect` with `color` using rounded corners of `radius` pixels.
     ///
@@ -992,7 +1196,7 @@ impl<'a> RenderContext<'a> {
     /// the shorter side of `rect`.
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color) {
         let rect = self.offset_rect(rect);
-        self.backend.execute_command(&RenderCommand::FillRoundedRect { rect, radius, color });
+        self.dispatch(&RenderCommand::FillRoundedRect { rect, radius, color });
     }
 
     /// Paints a control's own **face**: its shadow, then its fill.
@@ -1112,7 +1316,7 @@ impl<'a> RenderContext<'a> {
     /// configured `aa_samples_per_axis` grid.
     pub fn fill_rounded_rect_aa(&mut self, rect: Rect, radius: u32, color: Color) {
         let rect = self.offset_rect(rect);
-        self.backend.execute_command(&RenderCommand::FillRoundedRectAA { rect, radius, color });
+        self.dispatch(&RenderCommand::FillRoundedRectAA { rect, radius, color });
     }
     /// Strokes the rounded-rectangle outline of `rect` in `color` with the
     /// given `width` in pixels.
@@ -1121,12 +1325,7 @@ impl<'a> RenderContext<'a> {
     /// [`RenderContext::draw_rounded_rect_stroke_aa`] for smoother edges.
     pub fn draw_rounded_rect_stroke(&mut self, rect: Rect, radius: u32, color: Color, width: u32) {
         let rect = self.offset_rect(rect);
-        self.backend.execute_command(&RenderCommand::DrawRoundedRectStroke {
-            rect,
-            radius,
-            color,
-            width,
-        });
+        self.dispatch(&RenderCommand::DrawRoundedRectStroke { rect, radius, color, width });
     }
     /// Anti-aliased equivalent of
     /// [`RenderContext::draw_rounded_rect_stroke`].
@@ -1138,12 +1337,7 @@ impl<'a> RenderContext<'a> {
         width: u32,
     ) {
         let rect = self.offset_rect(rect);
-        self.backend.execute_command(&RenderCommand::DrawRoundedRectStrokeAA {
-            rect,
-            radius,
-            color,
-            width,
-        });
+        self.dispatch(&RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width });
     }
     /// Draws a one-pixel-wide, non-anti-aliased line from `from` to `to` in
     /// `color`.
@@ -1152,26 +1346,26 @@ impl<'a> RenderContext<'a> {
     pub fn draw_line(&mut self, from: Point, to: Point, color: Color) {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
-        self.backend.execute_command(&RenderCommand::DrawLine { from, to, color });
+        self.dispatch(&RenderCommand::DrawLine { from, to, color });
     }
     /// Anti-aliased equivalent of [`RenderContext::draw_line`].
     pub fn draw_line_aa(&mut self, from: Point, to: Point, color: Color) {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
-        self.backend.execute_command(&RenderCommand::DrawLineAA { from, to, color });
+        self.dispatch(&RenderCommand::DrawLineAA { from, to, color });
     }
     /// Draws a line from `from` to `to` in `color` with the given `width` in
     /// pixels, without anti-aliasing.
     pub fn draw_line_stroke(&mut self, from: Point, to: Point, color: Color, width: u32) {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
-        self.backend.execute_command(&RenderCommand::DrawLineStroke { from, to, color, width });
+        self.dispatch(&RenderCommand::DrawLineStroke { from, to, color, width });
     }
     /// Anti-aliased equivalent of [`RenderContext::draw_line_stroke`].
     pub fn draw_line_stroke_aa(&mut self, from: Point, to: Point, color: Color, width: u32) {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
-        self.backend.execute_command(&RenderCommand::DrawLineStrokeAA { from, to, color, width });
+        self.dispatch(&RenderCommand::DrawLineStrokeAA { from, to, color, width });
     }
     /// Fills a circle centred on `center` with `radius` pixels, without
     /// anti-aliasing.
@@ -1179,29 +1373,24 @@ impl<'a> RenderContext<'a> {
     /// The centre is translated by the current offset.
     pub fn fill_circle(&mut self, center: Point, radius: u32, color: Color) {
         let center = self.offset_point(center);
-        self.backend.execute_command(&RenderCommand::FillCircle { center, radius, color });
+        self.dispatch(&RenderCommand::FillCircle { center, radius, color });
     }
     /// Anti-aliased equivalent of [`RenderContext::fill_circle`].
     pub fn fill_circle_aa(&mut self, center: Point, radius: u32, color: Color) {
         let center = self.offset_point(center);
-        self.backend.execute_command(&RenderCommand::FillCircleAA { center, radius, color });
+        self.dispatch(&RenderCommand::FillCircleAA { center, radius, color });
     }
     /// Draws the one-pixel outline of a circle centred on `center` with
     /// `radius` pixels, without anti-aliasing.
     pub fn draw_circle(&mut self, center: Point, radius: u32, color: Color) {
         let center = self.offset_point(center);
-        self.backend.execute_command(&RenderCommand::DrawCircle { center, radius, color });
+        self.dispatch(&RenderCommand::DrawCircle { center, radius, color });
     }
     /// Draws a circular outline of `width` pixels centred on `center` with
     /// `radius` pixels, without anti-aliasing.
     pub fn draw_circle_stroke(&mut self, center: Point, radius: u32, color: Color, width: u32) {
         let center = self.offset_point(center);
-        self.backend.execute_command(&RenderCommand::DrawCircleStroke {
-            center,
-            radius,
-            color,
-            width,
-        });
+        self.dispatch(&RenderCommand::DrawCircleStroke { center, radius, color, width });
     }
     /// Draw a polyline/polygon path from a list of points.
     ///
@@ -1218,13 +1407,7 @@ impl<'a> RenderContext<'a> {
         width: u32,
     ) {
         let points = self.offset_points(points);
-        self.backend.execute_command(&RenderCommand::DrawPath {
-            points,
-            closed,
-            color,
-            filled,
-            width,
-        });
+        self.dispatch(&RenderCommand::DrawPath { points, closed, color, filled, width });
     }
     /// Fills packed contours together using the non-zero winding rule.
     ///
@@ -1236,7 +1419,14 @@ impl<'a> RenderContext<'a> {
         contours: &[(usize, usize)],
         color: Color,
     ) -> Result<(), crate::render::CompoundPathError> {
-        self.backend.fill_path_non_zero(points, contours, color, self.offset_x, self.offset_y)
+        if self.buckets.is_some() {
+            let translated = self.offset_points(points);
+            let path = crate::render::CompoundPath::new(translated, contours.to_vec())?;
+            self.dispatch(&RenderCommand::FillPathNonZero { path, color });
+            Ok(())
+        } else {
+            self.backend.fill_path_non_zero(points, contours, color, self.offset_x, self.offset_y)
+        }
     }
     /// Draws `text` with its origin (baseline start, per `alignment`) at
     /// `origin`, using `font` and `color`.
@@ -1252,7 +1442,17 @@ impl<'a> RenderContext<'a> {
         alignment: HorizontalAlignment,
     ) {
         let origin = self.offset_point(origin);
-        self.backend.draw_text(origin, text, font, color, alignment);
+        if self.buckets.is_some() {
+            self.dispatch(&RenderCommand::DrawText {
+                origin,
+                text: crate::compat::Arc::from(text),
+                font: font.clone(),
+                color,
+                alignment,
+            });
+        } else {
+            self.backend.draw_text(origin, text, font, color, alignment);
+        }
     }
     /// Returns the measured bounds of `text` in `font` under the backend's DPI
     /// scale.
@@ -1400,14 +1600,14 @@ impl<'a> RenderContext<'a> {
     pub fn push_clip(&mut self, x: i32, y: i32, width: u32, height: u32) {
         let x = x + self.offset_x;
         let y = y + self.offset_y;
-        self.backend.execute_command(&RenderCommand::PushClip { x, y, width, height });
+        self.dispatch(&RenderCommand::PushClip { x, y, width, height });
     }
     /// Pops the innermost clip rectangle from the backend's clip stack.
     ///
     /// A pop with an empty stack is a no-op on the software backend; unbalanced
     /// pops would otherwise widen the clip unexpectedly.
     pub fn pop_clip(&mut self) {
-        self.backend.execute_command(&RenderCommand::PopClip);
+        self.dispatch(&RenderCommand::PopClip);
     }
 
     /// Begins a composed layer inside `bounds`, translated by the current offset.
@@ -1421,7 +1621,7 @@ impl<'a> RenderContext<'a> {
     /// takes the plain `(radius, tint)` pair that resolution returns.
     pub(crate) fn push_layer(&mut self, bounds: Rect, effect: Option<LayerEffect>) {
         let bounds = self.offset_rect(bounds);
-        self.backend.execute_command(&RenderCommand::PushLayer { bounds, effect });
+        self.dispatch(&RenderCommand::PushLayer { bounds, effect });
     }
 
     /// Begins a material layer inside `bounds` from a plain blur radius and optional tint.
@@ -1449,7 +1649,28 @@ impl<'a> RenderContext<'a> {
     /// Ends the innermost [`RenderContext::push_layer`] / [`RenderContext::push_material_layer`]
     /// and composites it.
     pub fn pop_layer(&mut self) {
-        self.backend.execute_command(&RenderCommand::PopLayer);
+        self.dispatch(&RenderCommand::PopLayer);
+    }
+
+    /// Begins a track matte inside `bounds`; see [`RenderCommand::PushMatte`].
+    ///
+    /// The commands until [`Self::pop_matte`] draw the matte source (the Lottie “matte layer”),
+    /// the commands after it draw the matted content, and [`Self::end_matte`] composites the
+    /// content through the captured coverage. This is the offscreen primitive Lottie's `tt`
+    /// layers needed: a partial-coverage mask cannot be expressed as a rectangular clip.
+    pub fn push_matte(&mut self, bounds: Rect, mode: MatteMode) {
+        let bounds = self.offset_rect(bounds);
+        self.dispatch(&RenderCommand::PushMatte { bounds, mode });
+    }
+
+    /// Ends the matte drawing and starts the matted layer's foreground.
+    pub fn pop_matte(&mut self) {
+        self.dispatch(&RenderCommand::PopMatte);
+    }
+
+    /// Composites the matted layer through the mask and restores the backdrop.
+    pub fn end_matte(&mut self) {
+        self.dispatch(&RenderCommand::EndMatte);
     }
 
     /// Begins a composed layer with subtree opacity and an optional replay cache.
@@ -1466,12 +1687,7 @@ impl<'a> RenderContext<'a> {
         cache_key: Option<u64>,
     ) {
         let bounds = self.offset_rect(bounds);
-        self.backend.execute_command(&RenderCommand::PushLayerGroup {
-            bounds,
-            effect,
-            opacity,
-            cache_key,
-        });
+        self.dispatch(&RenderCommand::PushLayerGroup { bounds, effect, opacity, cache_key });
     }
 
     /// Drops every cached layer foreground.
@@ -1502,7 +1718,17 @@ impl<'a> RenderContext<'a> {
     pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
         let x = x + self.offset_x;
         let y = y + self.offset_y;
-        self.backend.draw_image(x, y, width, height, data);
+        if self.buckets.is_some() {
+            self.dispatch(&RenderCommand::DrawImage {
+                x,
+                y,
+                width,
+                height,
+                data: crate::compat::Arc::from(data),
+            });
+        } else {
+            self.backend.draw_image(x, y, width, height, data);
+        }
     }
 
     /// Execute an arbitrary render command directly.
@@ -1510,7 +1736,7 @@ impl<'a> RenderContext<'a> {
     /// Useful for widgets like `Canvas` that store a command buffer
     /// and replay it during the draw pass.
     pub fn execute_command(&mut self, command: RenderCommand) {
-        self.backend.execute_command(&command);
+        self.dispatch_owned(command);
     }
 
     /// Executes a command that the caller still owns.
@@ -1522,7 +1748,7 @@ impl<'a> RenderContext<'a> {
     /// `&RenderCommand`, so the owned entry point above was the only reason the clone
     /// existed.
     pub fn execute_command_ref(&mut self, command: &RenderCommand) {
-        self.backend.execute_command(command);
+        self.dispatch(command);
     }
 }
 

@@ -3058,3 +3058,281 @@ pub(crate) fn mac_window_chrome_capability() -> WidgetCapability {
         commands: &[],
     }
 }
+
+// ── Companion capabilities (COMP-01/05/07/08/09/10/12/13/14/15/16/17/18/19/20) ──
+//
+// Each companion is its own control with its own kind, so its capability is a
+// first-class row rather than a comment on the primary control it partners.
+
+#[cfg(not(alloc_frugal))]
+/// `swatch` — the shared colour-cell grid (`COMP-01`).
+pub(crate) fn swatch_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Swatch,
+        canonical_name: "swatch",
+        aliases: &["color_swatch", "colour_swatch"],
+        properties: SWATCH_PROPERTIES,
+        events: events_of!("swatch"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `filter_row` — one column filter editor per column (`COMP-05`).
+pub(crate) fn filter_row_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::FilterRow,
+        canonical_name: "filter_row",
+        aliases: &["filter_bar"],
+        properties: FILTER_ROW_PROPERTIES,
+        events: events_of!("filter_row"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `legend` — a checkable chart series key (`COMP-07`).
+pub(crate) fn legend_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Legend,
+        canonical_name: "legend",
+        aliases: &["chart_legend"],
+        properties: LEGEND_PROPERTIES,
+        events: events_of!("legend"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `chart_tooltip` — the follow-pointer chart bubble (`COMP-08`).
+pub(crate) fn chart_tooltip_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ChartTooltip,
+        canonical_name: "chart_tooltip",
+        aliases: &["tooltip_bubble"],
+        properties: CHART_TOOLTIP_PROPERTIES,
+        events: events_of!("chart_tooltip"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `tooltip_manager` — the host hover-to-tooltip pipeline (`COMP-09`).
+pub(crate) fn tooltip_manager_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::TooltipManager,
+        canonical_name: "tooltip_manager",
+        aliases: &["tooltip_pipeline"],
+        properties: TOOLTIP_MANAGER_PROPERTIES,
+        events: events_of!("tooltip_manager"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `zoom_pan_controller` — zoom/pan/ROI state for an image view (`COMP-10`).
+pub(crate) fn zoom_pan_controller_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ZoomPanController,
+        canonical_name: "zoom_pan_controller",
+        aliases: &["zoom_pan"],
+        properties: ZOOM_PAN_CONTROLLER_PROPERTIES,
+        events: events_of!("zoom_pan_controller"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `toast_host` — the bounded, expiring toast queue (`COMP-12`).
+pub(crate) fn toast_host_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ToastHost,
+        canonical_name: "toast_host",
+        aliases: &["toast_queue"],
+        properties: TOAST_HOST_PROPERTIES,
+        events: events_of!("toast_host"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `tile_loader` — tile addresses and their cache (`COMP-13`).
+pub(crate) fn tile_loader_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::TileLoader,
+        canonical_name: "tile_loader",
+        aliases: &["map_tile_loader"],
+        properties: TILE_LOADER_PROPERTIES,
+        events: events_of!("tile_loader"),
+        commands: &["clear_cache"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `zoom_control` — the map's three-button zoom strip (`COMP-13`).
+pub(crate) fn zoom_control_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ZoomControl,
+        canonical_name: "zoom_control",
+        aliases: &["map_zoom_control"],
+        properties: ZOOM_CONTROL_PROPERTIES,
+        events: events_of!("zoom_control"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `scale_bar` — the map's distance legend (`COMP-13`).
+pub(crate) fn scale_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ScaleBar,
+        canonical_name: "scale_bar",
+        aliases: &["map_scale_bar"],
+        properties: SCALE_BAR_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `compass` — the map's north-up dial (`COMP-13`).
+pub(crate) fn compass_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Compass,
+        canonical_name: "compass",
+        aliases: &["map_compass"],
+        properties: COMPASS_PROPERTIES,
+        events: events_of!("compass"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `timeline_axis` — the Gantt date/value axis (`COMP-14`).
+pub(crate) fn timeline_axis_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::TimelineAxis,
+        canonical_name: "timeline_axis",
+        aliases: &["gantt_timeline_axis"],
+        properties: TIMELINE_AXIS_PROPERTIES,
+        events: events_of!("timeline_axis"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `dependency_editor` — the Gantt dependency edge editor (`COMP-14`).
+pub(crate) fn dependency_editor_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::DependencyEditor,
+        canonical_name: "dependency_editor",
+        aliases: &["gantt_dependency_editor"],
+        properties: DEPENDENCY_EDITOR_PROPERTIES,
+        events: events_of!("dependency_editor"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `diff_file_list` — the multi-file selector beside a diff (`COMP-15`).
+pub(crate) fn diff_file_list_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::DiffFileList,
+        canonical_name: "diff_file_list",
+        aliases: &["diff_files"],
+        properties: DIFF_FILE_LIST_PROPERTIES,
+        events: events_of!("diff_file_list"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `markdown_outline_panel` — the markdown editor's heading outline (`COMP-16`).
+pub(crate) fn markdown_outline_panel_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MarkdownOutlinePanel,
+        canonical_name: "markdown_outline_panel",
+        aliases: &["markdown_outline"],
+        properties: MARKDOWN_OUTLINE_PANEL_PROPERTIES,
+        events: events_of!("markdown_outline_panel"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `find_bar` — the editor's find/replace strip (`COMP-16`).
+pub(crate) fn find_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::FindBar,
+        canonical_name: "find_bar",
+        aliases: &["find_replace_bar"],
+        properties: FIND_BAR_PROPERTIES,
+        events: events_of!("find_bar"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `shape_canvas` — the free-form shape scene (`COMP-17`).
+pub(crate) fn shape_canvas_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ShapeCanvas,
+        canonical_name: "shape_canvas",
+        aliases: &["shape_board"],
+        properties: SHAPE_CANVAS_PROPERTIES,
+        events: events_of!("shape_canvas"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `kanban_card_view` — a real card inside a kanban column (`COMP-18`).
+pub(crate) fn kanban_card_view_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::KanbanCardView,
+        canonical_name: "kanban_card_view",
+        aliases: &["kanban_card_control"],
+        properties: KANBAN_CARD_VIEW_PROPERTIES,
+        events: events_of!("kanban_card_view"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `kanban_column_header` — a real column header for a kanban board (`COMP-18`).
+pub(crate) fn kanban_column_header_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::KanbanColumnHeader,
+        canonical_name: "kanban_column_header",
+        aliases: &["kanban_column_bar"],
+        properties: KANBAN_COLUMN_HEADER_PROPERTIES,
+        events: events_of!("kanban_column_header"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `range_preset_bar` — quick date-range presets (`COMP-19`).
+pub(crate) fn range_preset_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::RangePresetBar,
+        canonical_name: "range_preset_bar",
+        aliases: &["preset_bar"],
+        properties: RANGE_PRESET_BAR_PROPERTIES,
+        events: events_of!("range_preset_bar"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `grid_view_header` — the shared table header (`COMP-20`).
+pub(crate) fn grid_view_header_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::GridViewHeader,
+        canonical_name: "grid_view_header",
+        aliases: &["table_header_bar"],
+        properties: GRID_VIEW_HEADER_PROPERTIES,
+        events: events_of!("grid_view_header"),
+        commands: &[],
+    }
+}

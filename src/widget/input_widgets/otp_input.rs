@@ -78,7 +78,7 @@ pub struct OtpInput {
     /// key doing nothing.
     pub submitted: Signal1<String>,
     /// Emitted when Escape is pressed — the user abandoned the entry.
-    pub cancelled: GenericSignal,
+    pub canceled: GenericSignal,
 }
 
 impl OtpInput {
@@ -94,13 +94,18 @@ impl OtpInput {
             value_changed: Signal1::new(),
             completed: Signal1::new(),
             submitted: Signal1::new(),
-            cancelled: GenericSignal::new(),
+            canceled: GenericSignal::new(),
         }
     }
 
     /// Returns the entered code, without separators.
     pub fn value(&self) -> String {
         self.value.iter().collect()
+    }
+
+    /// Compatibility spelling of [`Self::canceled`] (W-19): the same emitted signal.
+    pub fn cancelled(&self) -> &GenericSignal {
+        &self.canceled
     }
 
     /// Replaces the code. Extra characters are truncated to `length` and anything
@@ -388,7 +393,7 @@ impl Widget for OtpInput {
             "submitted" => Some(EventSignalRef::mapped("submitted", &self.submitted, |v| {
                 CapabilityValue::String(v.clone())
             })),
-            "cancelled" => Some(EventSignalRef::unit("cancelled", &self.cancelled)),
+            "canceled" => Some(EventSignalRef::unit("canceled", &self.canceled)),
             // W-19 compatibility spelling.
             _ => None,
         }
@@ -529,7 +534,7 @@ impl EventHandler for OtpInput {
                         self.submitted.emit(self.value());
                     }
                     27 => {
-                        self.cancelled.emit();
+                        self.canceled.emit();
                     }
                     // Tab steps to the next box, Shift+Tab to the previous one. A code is a row
                     // of slots, so Tab is a lateral movement rather than a focus gesture.
@@ -1346,7 +1351,7 @@ mod tests {
         otp.submitted.connect(move |value| *submitted_clone.lock().unwrap() = value.to_string());
         let cancelled = Arc::new(Mutex::new(false));
         let cancelled_clone = cancelled.clone();
-        otp.cancelled.connect(move || *cancelled_clone.lock().unwrap() = true);
+        otp.canceled.connect(move || *cancelled_clone.lock().unwrap() = true);
 
         otp.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
         assert_eq!(*submitted.lock().unwrap(), "12");

@@ -89,7 +89,7 @@ pub struct InplaceEditor {
     /// Emitted when the edit is accepted (Enter/Tab). Carries the final text.
     pub edit_accepted: Signal1<String>,
     /// Emitted when the edit is cancelled (Escape).
-    pub edit_cancelled: GenericSignal,
+    pub edit_canceled: GenericSignal,
 }
 
 impl InplaceEditor {
@@ -114,8 +114,13 @@ impl InplaceEditor {
             selection_anchor: None,
             dragging_selection: false,
             edit_accepted: Signal1::new(),
-            edit_cancelled: GenericSignal::new(),
+            edit_canceled: GenericSignal::new(),
         }
+    }
+
+    /// Compatibility spelling of [`Self::edit_canceled`] (W-19): the same emitted signal.
+    pub fn edit_cancelled(&self) -> &GenericSignal {
+        &self.edit_canceled
     }
 
     /// Starts editing mode.
@@ -147,7 +152,7 @@ impl InplaceEditor {
             self.edit_accepted.emit(self.text.clone());
         } else {
             self.text = self.original_text.clone();
-            self.edit_cancelled.emit();
+            self.edit_canceled.emit();
         }
         self.base.request_redraw();
     }
@@ -544,7 +549,7 @@ impl Widget for InplaceEditor {
                     CapabilityValue::String(v.clone())
                 }))
             }
-            "edit_cancelled" => Some(EventSignalRef::unit("edit_cancelled", &self.edit_cancelled)),
+            "edit_canceled" => Some(EventSignalRef::unit("edit_canceled", &self.edit_canceled)),
             _ => None,
         }
     }
@@ -599,7 +604,7 @@ impl WidgetProperties for InplaceEditor {
     ///
     /// The two actions enter and leave edit mode through the control's own methods, so
     /// the guard against a redundant start, the revert-on-cancel and the
-    /// `edit_accepted` / `edit_cancelled` signals all stay in one place. `finish_editing`
+    /// `edit_accepted` / `edit_canceled` signals all stay in one place. `finish_editing`
     /// accepts, which is the meaning of the name: a caller that wants the revert spells
     /// it as `set("editing", false)`, where the payload says so. `set_text` assigns the
     /// text and is answered through the property route.
@@ -1054,7 +1059,7 @@ mod tests {
 
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancelled_clone = cancelled.clone();
-        ie.edit_cancelled.connect(move || {
+        ie.edit_canceled.connect(move || {
             cancelled_clone.store(true, std::sync::atomic::Ordering::SeqCst);
         });
 

@@ -12,6 +12,7 @@
 use core::cell::Cell;
 use core::fmt::Write as _;
 
+use crate::compat::Arc;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -43,10 +44,26 @@ impl SubtitleCue {
     }
 }
 
+/// The pixel layout of a decoded video frame.
+///
+/// Only tightly packed 4-byte layouts are accepted by [`VideoPlayer::set_video_frame`]; the
+/// control is a presenter, not a converter, so a layout it cannot blit is refused rather than
+/// drawn as a garbled image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VideoPixelFormat {
+    /// Tightly packed RGBA, 4 bytes per pixel.
+    #[default]
+    Rgba8888,
+    /// Tightly packed BGRA, 4 bytes per pixel.
+    Bgra8888,
+}
+
 /// A decoded frame supplied by the host.
 ///
-/// The data is tightly packed RGBA, row-major, with no padding between rows. The control does
-/// not demux or decode anything itself; it presents what the host hands it.
+/// The data is row-major RGBA (or BGRA, see [`Self::format`]) with `stride` bytes per row. A
+/// stride larger than `width * 4` is allowed, so a decoder that pads rows to 64 or 256 bytes can
+/// hand over its buffer without a repack. The control does not demux or decode anything itself;
+/// it presents what the host hands it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoFrame {
     /// Frame width in pixels.
@@ -55,8 +72,55 @@ pub struct VideoFrame {
     pub height: u32,
     /// Presentation timestamp in milliseconds.
     pub pts_ms: u64,
-    /// RGBA bytes, `width * height * 4` long.
-    pub data: Vec<u8>,
+    /// Pixel layout of `data`.
+    pub format: VideoPixelFormat,
+    /// Bytes per row, including any padding. Must be at least `width * 4`.
+    pub stride: u32,
+    /// Pixel bytes, `stride * height` long.
+    ///
+    /// The buffer is shared so a decoder can hand over a buffer it already owns without the
+    /// player copying it on injection, and so the double-buffer swap moves handles rather than
+    /// pixels.
+    pub data: Arc<[u8]>,
+}
+
+impl VideoFrame {
+    /// A tightly packed RGBA frame with `stride = width * 4`.
+    ///
+    /// This is the common construction: a decoder that already produces tightly packed RGBA
+    /// passes its buffer here, and a decoder with padded rows builds the struct with an explicit
+    /// `stride` and `format`.
+    pub fn new(width: u32, height: u32, pts_ms: u64, data: Vec<u8>) -> Self {
+        Self::from_shared(
+            width,
+            height,
+            pts_ms,
+            VideoPixelFormat::Rgba8888,
+            width.saturating_mul(4),
+            Arc::from(data),
+        )
+    }
+
+    /// A frame over an already-shared pixel buffer, with no copy of the pixels.
+    ///
+    /// This is the decoder-thread entry point: a host that owns an `Arc<[u8]>` buffer hands the
+    /// handle over and the frame keeps it. The caller still declares the layout, since a padded
+    /// row stride and a BGRA order cannot be inferred from a byte count.
+    pub fn from_shared(
+        width: u32,
+        height: u32,
+        pts_ms: u64,
+        format: VideoPixelFormat,
+        stride: u32,
+        data: Arc<[u8]>,
+    ) -> Self {
+        Self { width, height, pts_ms, format, stride, data }
+    }
+
+    /// The byte length this frame requires for `height` rows at its declared stride.
+    pub fn expected_len(&self) -> usize {
+        self.stride as usize * self.height as usize
+    }
 }
 
 /// What the host-driven pipeline is currently doing.
@@ -212,14 +276,25 @@ pub struct VideoPlayer {
     pub duration_changed: Signal1<f64>,
     /// Emitted with the presentation timestamp when the host injects a decoded frame.
     pub frame_available: Signal1<u64>,
-    /// Emitted with the presentation timestamp when a frame is presented on screen.
-    pub frame_presented: Signal1<u64>,
+    /// Emitted with the presented timestamp **in seconds** when a frame is swapped on screen.
+    ///
+    /// Seconds rather than milliseconds so it shares a unit with [`Self::time_updated`] and the
+    /// rest of the playback clock; a subscriber that needs the frame's own `pts_ms` reads it from
+    /// [`Self::video_frame`].
+    pub frame_presented: Signal1<f64>,
     /// Emitted when the host replaces the container metadata.
     pub metadata_changed: GenericSignal,
     /// Whether playback loops at the end instead of stopping.
     looping: bool,
-    /// The most recent host-supplied frame, if any.
-    frame: Option<VideoFrame>,
+    /// The most recent frame the host supplied, waiting for [`Self::present_frame`].
+    ///
+    /// The control keeps **two** slots: a host writes the back slot and `present_frame` swaps it
+    /// into the front. A host that decodes on a worker thread therefore never mutates the pixels
+    /// the painter is reading, and a burst of frames between presents costs one handle swap rather
+    /// than a copy.
+    back: Option<Arc<VideoFrame>>,
+    /// The frame currently on screen.
+    front: Option<Arc<VideoFrame>>,
     /// The reported pipeline stage.
     pipeline: VideoPipelineState,
     /// Host-supplied audio tracks.
@@ -270,7 +345,8 @@ impl VideoPlayer {
             frame_presented: Signal1::new(),
             metadata_changed: GenericSignal::new(),
             looping: false,
-            frame: None,
+            back: None,
+            front: None,
             pipeline: VideoPipelineState::Idle,
             audio_tracks: Vec::new(),
             active_audio_track: None,
@@ -289,7 +365,8 @@ impl VideoPlayer {
         self.source = source.to_string();
         self.current_time = 0.0;
         self.is_playing = false;
-        self.frame = None;
+        self.back = None;
+        self.front = None;
         self.subtitle_cursor.set(0);
         self.pipeline =
             if source.is_empty() { VideoPipelineState::Idle } else { VideoPipelineState::Demuxing };
@@ -304,44 +381,85 @@ impl VideoPlayer {
     /// it is stored, so a malformed buffer cannot be painted. The pipeline moves to
     /// [`VideoPipelineState::Presenting`] and `frame_available` announces the timestamp.
     pub fn set_video_frame(&mut self, frame: VideoFrame) -> Result<(), String> {
+        self.set_video_frame_shared(Arc::new(frame))
+    }
+
+    /// Accepts a frame already owned through an `Arc`, with no `VideoFrame` copy.
+    ///
+    /// A worker thread that owns its decoded frames can share the handle with the UI thread and
+    /// hand it here; the control validates and stores that same allocation. This is the zero-copy
+    /// sibling of [`Self::set_video_frame`].
+    pub fn set_video_frame_shared(&mut self, frame: Arc<VideoFrame>) -> Result<(), String> {
         if frame.width == 0 || frame.height == 0 {
             return Err("a video frame needs non-zero dimensions".to_string());
         }
-        let expected = (frame.width as usize) * (frame.height as usize) * 4;
-        if frame.data.len() != expected {
+        if frame.format != VideoPixelFormat::Rgba8888 {
             return Err(format!(
-                "a {}x{} RGBA frame needs {expected} bytes, got {}",
+                "a {:?} video frame cannot be painted; this control accepts RGBA8888",
+                frame.format
+            ));
+        }
+        let minimum = (frame.width as usize) * (frame.height as usize) * 4;
+        let expected = frame.expected_len();
+        if (frame.stride as usize) < frame.width as usize * 4 {
+            return Err(format!(
+                "a {}x{} frame needs a stride of at least {} bytes, got {}",
                 frame.width,
                 frame.height,
+                frame.width as usize * 4,
+                frame.stride
+            ));
+        }
+        if frame.data.len() != expected {
+            return Err(format!(
+                "a {}x{} RGBA frame at stride {} needs {expected} bytes, got {}",
+                frame.width,
+                frame.height,
+                frame.stride,
                 frame.data.len()
             ));
         }
+        debug_assert!(expected >= minimum);
         let pts = frame.pts_ms;
-        self.frame = Some(frame);
+        // The back slot, not the front: the painter must never see a half-published frame. The
+        // next `present_frame` swaps it in.
+        self.back = Some(frame);
         self.pipeline = VideoPipelineState::Presenting;
         self.frame_available.emit(pts);
         self.base.request_redraw();
         Ok(())
     }
 
-    /// Presents the most recent host frame, announcing it as `frame_presented`.
+    /// Swaps the waiting frame into the front slot and announces it as `frame_presented`.
     ///
-    /// Returns `false` when the host has not supplied a frame, which is a statement about the
-    /// pipeline rather than an error: a player may legitimately be waiting for its first frame.
+    /// This is the explicit double-buffer swap: `set_video_frame` writes the back slot, this moves
+    /// it to the front, and the previous front becomes the new back (dropping it). Returns `false`
+    /// when the host has not supplied a new frame, which is a statement about the pipeline rather
+    /// than an error: a player may legitimately be waiting for its first frame, and re-presenting
+    /// the same frame would emit a timestamp that did not happen.
     pub fn present_frame(&mut self) -> bool {
-        let Some(frame) = self.frame.as_ref() else {
+        let Some(frame) = self.back.take() else {
             return false;
         };
         let pts = frame.pts_ms;
+        self.front = Some(frame);
         self.pipeline = VideoPipelineState::Presenting;
-        self.frame_presented.emit(pts);
+        self.frame_presented.emit(pts as f64 / 1000.0);
         self.base.request_redraw();
         true
     }
 
-    /// The most recent host frame, if any.
+    /// The frame currently on screen, if any.
+    ///
+    /// Returns the **presented** frame, not a frame waiting for [`Self::present_frame`]; use
+    /// [`Self::pending_frame`] to inspect the back slot.
     pub fn video_frame(&self) -> Option<&VideoFrame> {
-        self.frame.as_ref()
+        self.front.as_deref()
+    }
+
+    /// The frame waiting for the next [`Self::present_frame`], if any.
+    pub fn pending_frame(&self) -> Option<&VideoFrame> {
+        self.back.as_deref()
     }
 
     /// The reported pipeline stage.
@@ -946,7 +1064,7 @@ impl Widget for VideoPlayer {
             }
             "frame_presented" => {
                 Some(EventSignalRef::mapped("frame_presented", &self.frame_presented, |v| {
-                    crate::widget::capability::CapabilityValue::UInt(*v)
+                    crate::widget::capability::CapabilityValue::Float(*v)
                 }))
             }
             "metadata_changed" => {
@@ -1116,11 +1234,11 @@ impl Draw for VideoPlayer {
         // The control owns no decoder, so the picture is exactly the buffer the host injected.
         // It is centred at its native pixel size and clipped to the player: scaling here would
         // invent a resampling policy the pipeline did not ask for.
-        if let Some(frame) = self.frame.as_ref() {
+        if let Some(frame) = self.front.as_deref() {
             let dx = rect.x + (rect.width as i32 - frame.width as i32) / 2;
             let dy = rect.y + (rect.height as i32 - frame.height as i32) / 2;
             context.push_clip(rect.x, rect.y, rect.width, rect.height);
-            context.draw_image(dx, dy, frame.width, frame.height, &frame.data);
+            context.draw_image(dx, dy, frame.width, frame.height, frame.data.as_ref());
             context.pop_clip();
         }
 
@@ -1790,24 +1908,68 @@ mod tests {
         });
 
         assert!(
-            vp.set_video_frame(VideoFrame { width: 2, height: 2, pts_ms: 42, data: vec![9u8; 8] })
-                .is_err(),
+            vp.set_video_frame(VideoFrame {
+                width: 2,
+                height: 2,
+                pts_ms: 42,
+                format: VideoPixelFormat::Rgba8888,
+                stride: 8,
+                data: Arc::from(vec![9u8; 8]),
+            })
+            .is_err(),
             "a wrong byte count must be refused"
         );
         assert!(vp.video_frame().is_none());
 
-        vp.set_video_frame(VideoFrame { width: 2, height: 2, pts_ms: 42, data: vec![9u8; 16] })
-            .expect("a matching frame is accepted");
+        vp.set_video_frame(VideoFrame {
+            width: 2,
+            height: 2,
+            pts_ms: 42,
+            format: VideoPixelFormat::Rgba8888,
+            stride: 8,
+            data: Arc::from(vec![9u8; 16]),
+        })
+        .expect("a matching frame is accepted");
         assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 42);
         assert_eq!(vp.pipeline(), VideoPipelineState::Presenting);
+        assert!(vp.video_frame().is_none(), "a set frame waits for an explicit present");
+        assert!(vp.pending_frame().is_some());
 
         let presented = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
         let p = presented.clone();
-        vp.frame_presented.connect(move |pts: std::sync::Arc<u64>| {
-            p.store(*pts, std::sync::atomic::Ordering::SeqCst);
+        vp.frame_presented.connect(move |pts: std::sync::Arc<f64>| {
+            p.store((*pts * 1000.0) as u64, std::sync::atomic::Ordering::SeqCst);
         });
         assert!(vp.present_frame());
         assert_eq!(presented.load(std::sync::atomic::Ordering::SeqCst), 42);
+        assert!(vp.video_frame().is_some());
+        assert!(!vp.present_frame(), "presenting twice without a new frame does nothing");
+    }
+
+    #[test]
+    fn a_shared_video_frame_is_swapped_without_repacking() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("movie.mp4");
+        let pixels: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![5u8; 4 * 4 * 4]);
+        let frame = std::sync::Arc::new(VideoFrame::from_shared(
+            4,
+            4,
+            80,
+            VideoPixelFormat::Rgba8888,
+            16,
+            std::sync::Arc::clone(&pixels),
+        ));
+        let handle = std::sync::Arc::clone(&frame);
+        vp.set_video_frame_shared(handle).expect("a well-formed shared frame is adopted");
+        assert_eq!(
+            std::sync::Arc::strong_count(&frame),
+            2,
+            "the back slot keeps the caller's frame handle"
+        );
+        assert!(vp.present_frame());
+        let stored = vp.video_frame().expect("the frame is on screen");
+        assert!(std::sync::Arc::ptr_eq(&stored.data, &pixels));
+        assert_eq!((stored.width, stored.height, stored.stride), (4, 4, 16));
     }
 
     #[test]

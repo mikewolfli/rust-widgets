@@ -201,6 +201,10 @@ static VERB_CLASSES: &[VerbClass] = &[
     verb("back", PayloadFree, CommandEffect::SideEffecting),
     verb("cancel_drag", PayloadFree, CommandEffect::MutatesControl),
     verb("choose", PayloadFree, CommandEffect::MutatesControl),
+    // `tile_loader` (COMP-13): drops every cached tile. It only empties the loader's own
+    // cache — refetching is the host's answer to the next `tile_loaded` request — so it is
+    // a control-local mutation, not a side effect.
+    verb("clear_cache", PayloadFree, CommandEffect::MutatesControl),
     verb("clear_focused_node", PayloadFree, CommandEffect::MutatesControl),
     verb("clear_focused_row", PayloadFree, CommandEffect::MutatesControl),
     verb("clear_selection", PayloadFree, CommandEffect::MutatesControl),

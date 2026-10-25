@@ -51,7 +51,7 @@ impl FilterRow {
     /// Creates an empty filter row.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::QueryBuilder, geometry, "FilterRow"),
+            base: BaseWidget::new(WidgetKind::FilterRow, geometry, "FilterRow"),
             columns: Vec::new(),
             conditions: Vec::new(),
             operator: FilterOperator::Contains,

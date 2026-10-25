@@ -108,6 +108,11 @@ impl SearchBar {
         &self.text
     }
 
+    /// Compatibility spelling of [`Self::canceled`] (W-19): the same emitted signal.
+    pub fn cancelled(&self) -> &GenericSignal {
+        &self.canceled
+    }
+
     /// How the typed value is aligned within its own box.
     pub fn alignment(&self) -> crate::core::Alignment {
         self.alignment

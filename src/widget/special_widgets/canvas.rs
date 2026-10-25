@@ -8,6 +8,7 @@
 //! them replayed during the `draw()` pass. It also emits mouse interaction
 //! signals so callers can respond to clicks, drags, and hover events on
 //! the drawing area.
+use crate::compat::Arc;
 use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{PaintBackend, RenderCommand, RenderContext};
@@ -941,7 +942,7 @@ impl Canvas {
     pub fn draw_text(&mut self, origin: Point, text: &str, font: &crate::core::Font, color: Color) {
         self.push_command(RenderCommand::DrawText {
             origin,
-            text: text.to_string(),
+            text: Arc::from(text),
             font: font.clone(),
             color,
             alignment: crate::core::HorizontalAlignment::Left,

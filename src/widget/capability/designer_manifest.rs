@@ -813,6 +813,19 @@ struct JsonReader<'a> {
 }
 
 impl<'a> JsonReader<'a> {
+    /// The first non-whitespace byte after a `[`, without consuming anything.
+    fn peek_after_open_bracket(&self) -> Option<u8> {
+        let mut index = self.cursor + 1;
+        while let Some(byte) = self.bytes.get(index) {
+            if byte.is_ascii_whitespace() {
+                index += 1;
+            } else {
+                return Some(*byte);
+            }
+        }
+        None
+    }
+
     fn new(text: &'a str) -> Self {
         Self { bytes: text.as_bytes(), cursor: 0 }
     }
@@ -1422,10 +1435,16 @@ fn read_value(reader: &mut JsonReader<'_>) -> Result<CapabilityValue, ManifestPa
     if reader.peek(b'{') {
         return read_icon_spec(reader).map(CapabilityValue::IconSpec);
     }
-    // A record list (B26.09). Tested before the number arm for the same reason the booleans are:
-    // `[` is not a digit, so the number arm would report a malformed number for a valid list.
+    // A JSON array is either a record list (`[{...}]`) or a plain scalar list (`["a"]`, `[1,2]`).
+    // The writer emits both; deciding by the first element keeps the round trip for `StringList`
+    // and `NumberList` defaults (swatch colours, chart-tooltip offsets, axis ranges).
     if reader.peek(b'[') {
-        return Ok(CapabilityValue::Records(read_record_list(reader)?));
+        let first = reader.peek_after_open_bracket();
+        if first == Some(b'{') {
+            return Ok(CapabilityValue::Records(read_record_list(reader)?));
+        }
+        let items = read_scalar_list(reader)?;
+        return Ok(CapabilityValue::Tuple(items.into_iter().collect()));
     }
     let leading_plus = reader.peek_leading_plus();
     let (number, is_float) = reader.read_number()?;
@@ -1442,6 +1461,27 @@ fn read_value(reader: &mut JsonReader<'_>) -> Result<CapabilityValue, ManifestPa
         return Ok(CapabilityValue::Int(number as i64));
     }
     Ok(CapabilityValue::UInt(number as u64))
+}
+
+/// Reads a JSON array of scalar values into a `Tuple`.
+fn read_scalar_list(
+    reader: &mut JsonReader<'_>,
+) -> Result<Vec<CapabilityValue>, ManifestParseError> {
+    reader.expect(b'[', "expected `[` to start a list")?;
+    let mut items = Vec::new();
+    if reader.peek(b']') {
+        reader.expect(b']', "expected `]`")?;
+        return Ok(items);
+    }
+    loop {
+        items.push(read_value(reader)?);
+        if reader.peek(b',') {
+            reader.expect(b',', "expected `,` between list items")?;
+            continue;
+        }
+        reader.expect(b']', "expected `]` to close a list")?;
+        return Ok(items);
+    }
 }
 
 fn read_icon_spec(

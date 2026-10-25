@@ -38,5 +38,6 @@ pub use lottie_widget::{
 };
 pub use rive_widget::{RiveInput, RiveInputValue, RiveState, RiveWidget};
 pub use video_player::{
-    AudioTrack, SubtitleTrack, VideoFrame, VideoMetadata, VideoPipelineState, VideoPlayer,
+    AudioTrack, SubtitleTrack, VideoFrame, VideoMetadata, VideoPipelineState, VideoPixelFormat,
+    VideoPlayer,
 };

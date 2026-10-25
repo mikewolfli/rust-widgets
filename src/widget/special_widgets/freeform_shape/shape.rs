@@ -111,7 +111,7 @@ pub struct FreeformShapeWidget {
     /// Emitted when the pointer enters or leaves the outline, with the new
     /// state. Fires from a pointer move that crosses the outline, not on every
     /// move.
-    pub hovered_changed: Signal1<bool>,
+    pub hover_changed: Signal1<bool>,
     /// Emitted when the primary button is pressed or released inside the
     /// outline, with the new state. A press that begins outside the shape and
     /// drags in never emits it.
@@ -149,9 +149,14 @@ impl FreeformShapeWidget {
             vertex_changed: Signal1::new(),
             history_changed: Signal1::new(),
             clicked: GenericSignal::new(),
-            hovered_changed: Signal1::new(),
+            hover_changed: Signal1::new(),
             pressed_changed: Signal1::new(),
         }
+    }
+
+    /// Compatibility spelling of [`Self::hover_changed`] (W-21): the same emitted signal.
+    pub fn hovered_changed(&self) -> &Signal1<bool> {
+        &self.hover_changed
     }
 
     /// The outline this shape is drawn and hit-tested as.
@@ -1099,8 +1104,8 @@ impl Widget for FreeformShapeWidget {
         use crate::signal::EventSignalRef;
         match name {
             "clicked" => Some(EventSignalRef::unit("clicked", &self.clicked)),
-            "hovered_changed" => {
-                Some(EventSignalRef::mapped("hovered_changed", &self.hovered_changed, |v| {
+            "hover_changed" => {
+                Some(EventSignalRef::mapped("hover_changed", &self.hover_changed, |v| {
                     CapabilityValue::Bool(*v)
                 }))
             }
@@ -1259,7 +1264,7 @@ impl Draw for FreeformShapeWidget {
 
         // # Why the pointer state changes what is painted
         //
-        // `hovered_item` and `pressed_item` were tracked, signalled (`hovered_changed`,
+        // `hovered_item` and `pressed_item` were tracked, signalled (`hover_changed`,
         // `pressed_changed`) and **never read by `draw`** — so a shape reported a hover to every
         // listener while looking exactly like a shape nothing was pointing at. That is the same
         // defect `segmented_control`'s teleporting pill was: the mechanism exists, the signal is
@@ -1358,7 +1363,7 @@ impl crate::event::EventHandler for FreeformShapeWidget {
                 let was_hovered = self.hovered_item;
                 self.hovered_item = self.contains(*pos);
                 if was_hovered != self.hovered_item {
-                    self.hovered_changed.emit(self.hovered_item);
+                    self.hover_changed.emit(self.hovered_item);
                     self.base.request_redraw();
                 }
             }
@@ -1369,7 +1374,7 @@ impl crate::event::EventHandler for FreeformShapeWidget {
                 let hovered = self.contains(*pos);
                 if hovered != self.hovered_item {
                     self.hovered_item = hovered;
-                    self.hovered_changed.emit(hovered);
+                    self.hover_changed.emit(hovered);
                     self.base.request_redraw();
                 }
             }
@@ -1421,7 +1426,7 @@ impl crate::event::EventHandler for FreeformShapeWidget {
                 self.body_drag = None;
                 self.hovered_item = false;
                 self.pressed_item = false;
-                self.hovered_changed.emit(false);
+                self.hover_changed.emit(false);
                 self.pressed_changed.emit(false);
                 self.base.request_redraw();
             }
@@ -1512,7 +1517,7 @@ impl ShapeCanvas {
     /// Creates an empty, non-editable canvas.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Canvas, geometry, "ShapeCanvas"),
+            base: BaseWidget::new(WidgetKind::ShapeCanvas, geometry, "ShapeCanvas"),
             shapes: Vec::new(),
             selection: Vec::new(),
             editable: false,
@@ -1733,6 +1738,7 @@ impl Widget for ShapeCanvas {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(320, 240)
     }
+    impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves the canvas-level event names; see `DiffViewer`'s note for why the arms are
     /// explicit rather than derived.
@@ -2105,6 +2111,37 @@ mod shape_canvas_tests {
         assert_eq!(
             canvas.set("shape_count", CapabilityValue::UInt(3)),
             Err(CapabilityAccessError::ReadOnlyProperty)
+        );
+    }
+
+    /// The container reports selection and removal itself: a host connects to the canvas, not to
+    /// each shape it added.
+    #[test]
+    fn the_canvas_reports_selection_changes_and_removal() {
+        let mut canvas = ShapeCanvas::new(Rect::new(0, 0, 400, 300));
+        let selected = Arc::new(Mutex::new(Vec::new()));
+        let sink = selected.clone();
+        canvas.shape_selected.connect(move |ids| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(ids.as_ref().clone());
+            }
+        });
+
+        let first = canvas.add_shape(box_shape(0, 0, 50));
+        let second = canvas.add_shape(box_shape(80, 0, 50));
+        let touched = canvas.select_in_rect(Rect::new(0, 0, 200, 60));
+        assert_eq!(touched, vec![first, second]);
+        assert_eq!(
+            *selected.lock().expect("selected lock"),
+            vec![vec![first, second]],
+            "the container emits the new selection once"
+        );
+
+        assert!(canvas.remove_shape(first));
+        assert_eq!(
+            *selected.lock().expect("selected lock"),
+            vec![vec![first, second], vec![second]],
+            "removing a selected shape reports the smaller selection"
         );
     }
 }

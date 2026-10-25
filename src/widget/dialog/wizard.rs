@@ -5,7 +5,7 @@
 //!
 //! Displays a step indicator at the top (numbered circles), a content area with the
 //! current step title, and navigation buttons (Back, Next/Finish, Cancel) at the bottom.
-//! Emits `finished`, `cancelled`, and `step_changed` signals.
+//! Emits `finished`, `canceled`, and `step_changed` signals.
 //!
 //! # This is the control a toolkit calls `Stepper` (BLUE22 · F-8)
 //!
@@ -151,7 +151,7 @@ pub struct WizardDialog {
     /// Emitted when the user clicks Finish on the last step.
     pub finished: GenericSignal,
     /// Emitted when the user clicks Cancel (or presses Escape).
-    pub cancelled: GenericSignal,
+    pub canceled: GenericSignal,
     /// Emitted when the current step index changes.
     pub step_changed: Signal1<usize>,
     /// Emitted when a Help action is activated.
@@ -193,7 +193,7 @@ impl WizardDialog {
             button_texts: Vec::new(),
             sidebar_page_activated: Signal1::new(),
             finished: GenericSignal::new(),
-            cancelled: GenericSignal::new(),
+            canceled: GenericSignal::new(),
             step_changed: Signal1::new(),
             help_requested: GenericSignal::new(),
             custom_button_clicked: Signal1::new(),
@@ -205,6 +205,11 @@ impl WizardDialog {
     /// Returns the wizard's title.
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// Compatibility spelling of [`Self::canceled`] (W-19): the same emitted signal.
+    pub fn cancelled(&self) -> &GenericSignal {
+        &self.canceled
     }
 
     /// Sets the wizard's title.
@@ -627,7 +632,7 @@ impl WizardDialog {
 
     /// Called when the user cancels: the Cancel action, Escape, or a host-driven command.
     fn do_cancel(&mut self) {
-        self.cancelled.emit();
+        self.canceled.emit();
     }
 
     /// Height of the step-indicator band, in logical pixels.
@@ -912,8 +917,7 @@ impl Widget for WizardDialog {
         use crate::signal::EventSignalRef;
         match name {
             "finished" => Some(EventSignalRef::unit("finished", &self.finished)),
-            "cancelled" => Some(EventSignalRef::unit("cancelled", &self.cancelled)),
-            // W-19 compatibility spelling; the control's canonical published name stays `cancelled`.
+            "canceled" => Some(EventSignalRef::unit("canceled", &self.canceled)),
             "step_changed" => {
                 Some(EventSignalRef::mapped("step_changed", &self.step_changed, |v| {
                     CapabilityValue::UInt(*v as u64)
@@ -1804,7 +1808,7 @@ mod tests {
 
         let fired = Arc::new(AtomicUsize::new(0));
         let f = fired.clone();
-        wiz.cancelled.connect(move || {
+        wiz.canceled.connect(move || {
             f.fetch_add(1, Ordering::SeqCst);
         });
 
@@ -1849,7 +1853,7 @@ mod tests {
 
         let fired = Arc::new(AtomicUsize::new(0));
         let f = fired.clone();
-        wiz.cancelled.connect(move || {
+        wiz.canceled.connect(move || {
             f.fetch_add(1, Ordering::SeqCst);
         });
 

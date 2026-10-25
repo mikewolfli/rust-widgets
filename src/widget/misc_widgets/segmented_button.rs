@@ -109,7 +109,7 @@ pub struct SegmentedButton {
     /// The group generation this control last observed.
     group_generation: u64,
     /// Emitted when the selected segment changes. Payload is the newly selected index.
-    pub selected_changed: Signal1<usize>,
+    pub current_changed: Signal1<usize>,
 }
 
 impl SegmentedButton {
@@ -122,8 +122,13 @@ impl SegmentedButton {
             allows_multiple: false,
             group_id: None,
             group_generation: 0,
-            selected_changed: Signal1::new(),
+            current_changed: Signal1::new(),
         }
+    }
+
+    /// Compatibility spelling of [`Self::current_changed`] (W-20): the same emitted signal.
+    pub fn selected_changed(&self) -> &Signal1<usize> {
+        &self.current_changed
     }
 
     /// Returns the **primary** selected segment index, or `None` if none is selected.
@@ -214,7 +219,7 @@ impl SegmentedButton {
         if next != self.selected {
             self.selected = next;
             if let Some(idx) = self.selected.first().copied() {
-                self.selected_changed.emit(idx);
+                self.current_changed.emit(idx);
             }
             self.publish_group_selection();
             self.base.request_redraw();
@@ -236,7 +241,7 @@ impl SegmentedButton {
         if next != self.selected {
             self.selected = next;
             if let Some(idx) = self.selected.first().copied() {
-                self.selected_changed.emit(idx);
+                self.current_changed.emit(idx);
             }
             self.publish_group_selection();
             self.base.request_redraw();
@@ -382,8 +387,8 @@ impl Widget for SegmentedButton {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
-            "selected_changed" => {
-                Some(EventSignalRef::mapped("selected_changed", &self.selected_changed, |v| {
+            "current_changed" => {
+                Some(EventSignalRef::mapped("current_changed", &self.current_changed, |v| {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
@@ -758,7 +763,7 @@ impl EventHandler for SegmentedButton {
                         self.selected.clear();
                         self.selected.push(index);
                     }
-                    self.selected_changed.emit(index);
+                    self.current_changed.emit(index);
                     self.base.request_redraw();
                 }
             }
@@ -861,13 +866,13 @@ mod tests {
     }
 
     #[test]
-    fn segmented_button_selected_changed_signal() {
+    fn segmented_button_current_changed_signal() {
         let mut btn = SegmentedButton::new(Rect::new(0, 0, 300, 36));
         btn.add_segment(Segment::new("A"));
         btn.add_segment(Segment::new("B"));
 
         let captured = Arc::new(Mutex::new(None));
-        btn.selected_changed.connect({
+        btn.current_changed.connect({
             let captured = Arc::clone(&captured);
             move |val: Arc<usize>| {
                 *captured.lock().unwrap() = Some(*val);

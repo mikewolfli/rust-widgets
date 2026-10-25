@@ -726,6 +726,48 @@ pub enum WidgetKind {
     /// AboutDialog — the standard application-information dialog.
     #[cfg(widgets_unstripped)]
     AboutDialog,
+    /// Swatch — a selectable grid of colour cells shared by the colour controls.
+    Swatch,
+    /// FilterRow — one editor per column that publishes the row's filter conditions.
+    FilterRow,
+    /// Legend — a checkable series key for charts and canvas hosts.
+    Legend,
+    /// ChartTooltip — a follow-pointer bubble carrying chart series values.
+    ChartTooltip,
+    /// TooltipManager — the host pipeline that turns hover into a delayed tooltip.
+    TooltipManager,
+    /// ZoomPanController — zoom, pan and region-of-interest state for an image view.
+    ZoomPanController,
+    /// ToastHost — the bounded, expiring queue in front of a toast stack.
+    ToastHost,
+    /// TileLoader — tile addressing, caching and load results for a map view.
+    TileLoader,
+    /// ZoomControl — the three-button zoom strip beside a map.
+    ZoomControl,
+    /// ScaleBar — the metric/imperial distance legend for a map.
+    ScaleBar,
+    /// Compass — a clickable bearing dial that requests north-up.
+    Compass,
+    /// TimelineAxis — a date/value axis with pixel conversion and scale changes.
+    TimelineAxis,
+    /// DependencyEditor — editable predecessor/successor edges for a Gantt chart.
+    DependencyEditor,
+    /// DiffFileList — the multi-file selector beside a diff viewer.
+    DiffFileList,
+    /// MarkdownOutlinePanel — a heading outline that navigates a markdown editor.
+    MarkdownOutlinePanel,
+    /// FindBar — query, match and replacement controls for an editor.
+    FindBar,
+    /// ShapeCanvas — a scene that hosts, selects and orders shapes.
+    ShapeCanvas,
+    /// KanbanCardView — a real card control for a kanban column.
+    KanbanCardView,
+    /// KanbanColumnHeader — a real column header with rename, count and WIP limit.
+    KanbanColumnHeader,
+    /// RangePresetBar — quick date-range chips beside a range picker.
+    RangePresetBar,
+    /// GridViewHeader — a shared table header with sorting, resizing and filtering.
+    GridViewHeader,
 }
 
 impl WidgetKind {
@@ -1113,6 +1155,27 @@ impl WidgetKind {
             Self::ConfirmDialog => "ConfirmDialog",
             #[cfg(widgets_unstripped)]
             Self::AboutDialog => "AboutDialog",
+            Self::Swatch => "Swatch",
+            Self::FilterRow => "FilterRow",
+            Self::Legend => "Legend",
+            Self::ChartTooltip => "ChartTooltip",
+            Self::TooltipManager => "TooltipManager",
+            Self::ZoomPanController => "ZoomPanController",
+            Self::ToastHost => "ToastHost",
+            Self::TileLoader => "TileLoader",
+            Self::ZoomControl => "ZoomControl",
+            Self::ScaleBar => "ScaleBar",
+            Self::Compass => "Compass",
+            Self::TimelineAxis => "TimelineAxis",
+            Self::DependencyEditor => "DependencyEditor",
+            Self::DiffFileList => "DiffFileList",
+            Self::MarkdownOutlinePanel => "MarkdownOutlinePanel",
+            Self::FindBar => "FindBar",
+            Self::ShapeCanvas => "ShapeCanvas",
+            Self::KanbanCardView => "KanbanCardView",
+            Self::KanbanColumnHeader => "KanbanColumnHeader",
+            Self::RangePresetBar => "RangePresetBar",
+            Self::GridViewHeader => "GridViewHeader",
         }
     }
 
@@ -1198,7 +1261,20 @@ impl WidgetKind {
             | Self::MaterialNavigationRail
             | Self::CupertinoSegmentedControl
             | Self::DateRangePicker
-            | Self::CupertinoDatePicker => true,
+            | Self::CupertinoDatePicker
+            // Companion controls that handle `Event::KeyPress` themselves (arrow navigation,
+            // toggle keys, editing commits). The rest of the companions either take no keyboard
+            // input or have no control of their own in a stripped build.
+            | Self::Swatch
+            | Self::FilterRow
+            | Self::DiffFileList
+            | Self::MarkdownOutlinePanel
+            | Self::FindBar
+            | Self::ShapeCanvas
+            | Self::KanbanCardView
+            | Self::KanbanColumnHeader
+            | Self::RangePresetBar
+            | Self::GridViewHeader => true,
             _ => false,
         }
     }
@@ -1225,7 +1301,13 @@ impl WidgetKind {
             | Self::Mention
             | Self::EditableComboBox
             | Self::OtpInput
-            | Self::InplaceEditor => true,
+            | Self::InplaceEditor
+            // Companions with an editable text field: the find bar's query/replace, the filter
+            // row's per-column operand, and the two in-place editors on a kanban control.
+            | Self::FilterRow
+            | Self::FindBar
+            | Self::KanbanCardView
+            | Self::KanbanColumnHeader => true,
             _ => false,
         }
     }

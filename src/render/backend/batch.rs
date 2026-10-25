@@ -6,7 +6,7 @@
 //! Provides types for organizing draw commands into batches that can be
 //! recorded once and replayed efficiently by the renderer.
 
-use crate::compat::{fmt, Arc, HashMap, Rc, String, Vec};
+use crate::compat::{fmt, Arc, HashMap, Rc, Vec};
 
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::render::{
@@ -249,8 +249,8 @@ pub enum BatchCommand {
     DrawText {
         /// Baseline start point, offset by the active translation.
         position: Point,
-        /// Text to draw.
-        text: String,
+        /// Text to draw, shared so recording and replay never copy the label (G-12).
+        text: Arc<str>,
         /// Text colour, with alpha scaled by the active opacity.
         color: Color,
         /// Font size in logical points.
@@ -933,7 +933,7 @@ fn transform_command(
             let origin = state.apply_to_point(position);
             Some(RenderCommand::DrawText {
                 origin,
-                text: text.clone(),
+                text: Arc::clone(text),
                 font,
                 color: state.apply_to_color(color),
                 alignment: HorizontalAlignment::Left,
@@ -1190,8 +1190,6 @@ impl BatchRenderer for SoftwarePaintBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compat::MiniToString;
-    use crate::core::{Color, Point, Rect};
 
     // ── BatchId construction & conversions ──────────────────────────────
 
@@ -1317,18 +1315,39 @@ mod tests {
     fn batch_command_draw_text_roundtrip() {
         let cmd = BatchCommand::DrawText {
             position: Point::new(15, 30),
-            text: "Hello".to_string(),
+            text: Arc::from("Hello"),
             color: Color::WHITE,
             font_size: 16.0,
         };
         match cmd {
             BatchCommand::DrawText { position, text, color, font_size } => {
                 assert_eq!(position, Point::new(15, 30));
-                assert_eq!(text, "Hello");
+                assert_eq!(&*text, "Hello");
                 assert_eq!(color, Color::WHITE);
                 assert!((font_size - 16.0).abs() < 1e-6);
             }
             _ => panic!("expected DrawText variant"),
+        }
+    }
+
+    /// G-12: translating a recorded label hands over the same `Arc<str>`, not a copy of its bytes.
+    #[test]
+    fn replaying_a_label_shares_the_recorded_text() {
+        let text: Arc<str> = Arc::from("a label shared by recording and replay");
+        let recorded = BatchCommand::DrawText {
+            position: Point::new(4, 8),
+            text: Arc::clone(&text),
+            color: Color::BLACK,
+            font_size: 12.0,
+        };
+        let mut state = TransformState::default();
+        let translated = transform_command(&recorded, &HashMap::new(), &mut state)
+            .expect("a text command translates");
+        match translated {
+            RenderCommand::DrawText { text: replayed, .. } => {
+                assert!(Arc::ptr_eq(&replayed, &text), "replay clones the refcount, not the text");
+            }
+            other => panic!("expected DrawText, got {other:?}"),
         }
     }
 
@@ -1505,7 +1524,7 @@ mod tests {
         let drawn = transform_command(
             &BatchCommand::DrawText {
                 position: crate::core::Point::new(0, 0),
-                text: "hi".to_string(),
+                text: Arc::from("hi"),
                 color: Color::BLACK,
                 font_size: 12.0,
             },

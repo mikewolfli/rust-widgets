@@ -1790,7 +1790,7 @@ impl DiffFileList {
     /// Creates an empty file list.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::ListView, geometry, "DiffFileList"),
+            base: BaseWidget::new(WidgetKind::DiffFileList, geometry, "DiffFileList"),
             files: Vec::new(),
             selected: Vec::new(),
             selection_mode: crate::widget::view_widgets::list_view::SelectionMode::Single,

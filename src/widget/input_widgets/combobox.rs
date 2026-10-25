@@ -568,6 +568,14 @@ impl ComboBox {
             icon_advance_cache: RefCell::new(None),
         }
     }
+
+    /// Compatibility spelling of [`Self::current_index_changed`] (W-20).
+    ///
+    /// Both names resolve to the same emitted signal; the published row keeps the
+    /// index spelling, so this accessor is the only Rust-side canonical name.
+    pub fn current_changed(&self) -> &Signal1<Option<usize>> {
+        &self.current_index_changed
+    }
     /// Bumped whenever `items` or `item_meta` changes, so the derived caches invalidate.
     fn invalidate_item_caches(&mut self) {
         self.item_revision = self.item_revision.wrapping_add(1);

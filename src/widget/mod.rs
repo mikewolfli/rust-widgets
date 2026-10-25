@@ -490,7 +490,7 @@ pub use misc_widgets::barcode_scanner::{BarcodeFormat, BarcodeResult, BarcodeSca
 #[cfg(full_widgets)]
 pub use misc_widgets::bezier_curve_editor::BezierCurveEditor;
 #[cfg(full_widgets)]
-pub use misc_widgets::date_range_picker::DateRangePicker;
+pub use misc_widgets::date_range_picker::{DateRangePicker, RangePresetBar};
 #[cfg(full_widgets)]
 pub use misc_widgets::drop_zone::DropZone;
 #[cfg(full_widgets)]
@@ -565,7 +565,7 @@ pub use view_widgets::table_widget::TableModel;
 pub use view_widgets::tree_view::TreeModel;
 #[cfg(full_widgets)]
 pub use view_widgets::{
-    data_grid::{ColumnFilter, DataGrid, SortSpec},
+    data_grid::{ColumnFilter, DataGrid, GridViewHeader, SortSpec},
     filter_expr::{FilterCondition, FilterExpr, FilterOperator},
     grid_table::GridTableWidget,
     image_gallery::{GalleryImage, ImageGallery},
@@ -583,12 +583,16 @@ pub use view_widgets::{
 #[cfg(full_widgets)]
 pub use special_widgets::{
     Breadcrumb, BreadcrumbSegment, Canvas, ChartWidget, Chip, ChipItem, CodeEditor, ColorPicker,
-    CommandEntry, CommandPalette, DiagnosticMarker, DiffKind, DiffLine, DiffViewer,
-    FreeformShapeWidget, GanttTask, GanttWidget, GridWidget, Heatmap, HeatmapCell, KanbanBoard,
-    KanbanCard, KanbanColumn, MapMarker, MapView, MarkdownEditor, MarkerSeverity, MediaPlayer,
-    NotificationCenter, NotificationItem, NotificationLevel, RadarChart, SegmentItem,
-    SegmentedControl, SignaturePad, SignatureStroke, Snackbar, SplitAction, SplitButton,
-    TerminalView, TimelineItem, TimelineWidget, Toast, ToastItem, ToastLevel, ToastStack,
+    CommandEntry, CommandPalette, Compass, DateFormat, Dependency, DependencyEditor,
+    DiagnosticMarker, DiffFileList, DiffKind, DiffLine, DiffViewer, FindBar, FreeformShapeWidget,
+    GanttTask, GanttWidget, GridWidget, Heatmap, HeatmapCell, KanbanBoard, KanbanCard,
+    KanbanCardView, KanbanColumn, KanbanColumnHeader, MapMarker, MapView, MarkdownEditor,
+    MarkdownOutlinePanel, MarkerSeverity, MediaPlayer, NotificationCenter, NotificationItem,
+    NotificationLevel, RadarChart, ScaleBar, ScaleBarStyle, ScaleUnits, SegmentItem,
+    SegmentedControl, ShapeCanvas, SignaturePad, SignatureStroke, Snackbar, SplitAction,
+    SplitButton, TerminalView, TileKey, TileLoadError, TileLoader, TileRequest, TileViewport,
+    TimelineAxis, TimelineItem, TimelineWidget, Toast, ToastItem, ToastLevel, ToastStack,
+    ZoomButton, ZoomControl,
 };
 /// Alias for [`ProgressBar`], naming an indicator use case.
 /// This is a plain progress bar: it does not animate on its own.

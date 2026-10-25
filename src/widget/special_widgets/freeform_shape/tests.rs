@@ -239,7 +239,7 @@ fn freeform_shape_hovered_signal_emits_on_mouse_move() {
     let mut shape = FreeformShapeWidget::new(Rect::new(0, 0, 200, 200), ShapePath::Heart);
     let states = Arc::new(Mutex::new(Vec::<bool>::new()));
     let sink = states.clone();
-    shape.hovered_changed.connect(move |h| {
+    shape.hover_changed.connect(move |h| {
         if let Ok(mut s) = sink.lock() {
             s.push(*h);
         }
@@ -254,7 +254,7 @@ fn freeform_shape_hovered_signal_emits_on_mouse_move() {
     shape.handle_event(&ev2);
 
     let got = states.lock().ok().map(|g| g.clone()).unwrap_or_default();
-    assert_eq!(got, vec![true, false], "hovered_changed should fire true then false");
+    assert_eq!(got, vec![true, false], "hover_changed should fire true then false");
 }
 
 #[test]
@@ -310,7 +310,7 @@ fn freeform_shape_mouse_enter_and_leave() {
     let mut shape = FreeformShapeWidget::new(Rect::new(0, 0, 200, 200), ShapePath::Heart);
     let states = Arc::new(Mutex::new(Vec::<bool>::new()));
     let sink = states.clone();
-    shape.hovered_changed.connect(move |h| {
+    shape.hover_changed.connect(move |h| {
         if let Ok(mut s) = sink.lock() {
             s.push(*h);
         }
@@ -323,7 +323,7 @@ fn freeform_shape_mouse_enter_and_leave() {
     shape.handle_event(&leave);
 
     let got = states.lock().ok().map(|g| g.clone()).unwrap_or_default();
-    assert_eq!(got, vec![true, false], "MouseEnter/MouseLeave should fire hovered_changed");
+    assert_eq!(got, vec![true, false], "MouseEnter/MouseLeave should fire hover_changed");
 }
 
 #[test]
@@ -507,7 +507,7 @@ fn mouse_enter_does_not_claim_the_transparent_corner() {
     );
     let states = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&states);
-    shape.hovered_changed.connect(move |hovered| sink.lock().unwrap().push(*hovered));
+    shape.hover_changed.connect(move |hovered| sink.lock().unwrap().push(*hovered));
 
     // The top-left corner of the bounding box is outside a five-point star.
     shape.handle_event(&crate::event::Event::MouseEnter { pos: Point::new(0, 0) });

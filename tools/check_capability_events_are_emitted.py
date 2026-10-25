@@ -231,7 +231,10 @@ def collect_struct_emits() -> dict[str, set[str]]:
                     depth -= 1
                 index += 1
             body = production[match.end() : index]
-            for call in re.finditer(r"(\w+)\.(?:emit|emit_at)\(", body):
+            # A `.emit(..)` may be written on its own line after a long receiver chain
+            # (`self.replace_requested\n    .emit(..)`), so whitespace before the dot is part of
+            # the call rather than evidence that no call exists.
+            for call in re.finditer(r"(\w+)\s*\.\s*(?:emit|emit_at)\(", body):
                 emits.setdefault(struct, set()).add(call.group(1))
     return emits
 

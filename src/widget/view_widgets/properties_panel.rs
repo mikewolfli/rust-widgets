@@ -140,6 +140,22 @@ impl EditTrigger {
     }
 }
 
+/// A typed handle to the entry whose inline editor was opened.
+///
+/// The payload used to be only the property name, so a subscriber that wanted the entry's value
+/// or index had to name-match it back out of `properties()`. This carries the index, the name and
+/// a snapshot of the value at open time — the three facts a per-type editor host needs.
+/// `editor_opened` publishes this handle.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PropertyEditorHandle {
+    /// Index into [`PropertiesPanel::properties`].
+    pub index: usize,
+    /// The entry's display name.
+    pub name: String,
+    /// The entry's value when the editor opened.
+    pub value: PropertyValue,
+}
+
 /// An open row editor: which entry, its scratch buffer, and the caret's character position.
 ///
 /// The caret is a **character** index rather than a byte offset, so left/right move one grapheme
@@ -149,6 +165,85 @@ struct PropertyEdit {
     index: usize,
     buffer: String,
     cursor: usize,
+}
+
+/// The open choice drop-down: which entry owns it and which option is highlighted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChoicePopup {
+    index: usize,
+    highlighted: usize,
+}
+
+/// The open colour swatch palette: which entry owns it and which swatch is highlighted.
+///
+/// A colour is edited by picking a swatch rather than by typing a hex string. The palette is the
+/// active theme's semantic colours ([`color_palette`]), so the editor offers the same colours the
+/// rest of the UI is built from instead of an arbitrary colour wheel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ColorPopup {
+    index: usize,
+    highlighted: usize,
+}
+
+/// Swatches per palette row.
+const COLOR_POPUP_COLUMNS: usize = 4;
+/// A swatch's cell size, in pixels.
+const COLOR_SWATCH_SIZE: u32 = 24;
+/// The gap between swatches, also used as the palette's inner margin.
+const COLOR_SWATCH_GAP: u32 = 4;
+
+/// The swatches an inline colour editor offers.
+///
+/// The theme palette when one is active, and a fixed semantic set otherwise, so a colour can be
+/// edited on a build with no theme. A value already in the palette is highlighted when the editor
+/// opens; one outside it starts on the first swatch.
+fn color_palette() -> Vec<Color> {
+    match crate::style::palette_shared() {
+        Some(colors) => vec![
+            colors.primary,
+            colors.secondary,
+            colors.accent,
+            colors.success,
+            colors.warning,
+            colors.error,
+            colors.info,
+            colors.foreground,
+        ],
+        None => vec![
+            Color::rgb(33, 150, 243),
+            Color::rgb(156, 39, 176),
+            Color::rgb(0, 150, 136),
+            Color::rgb(76, 175, 80),
+            Color::rgb(255, 152, 0),
+            Color::rgb(244, 67, 54),
+            Color::rgb(3, 169, 244),
+            Color::rgb(33, 33, 33),
+        ],
+    }
+}
+
+/// The palette index under `pos`, or `None` when the pointer is over a gap or outside the grid.
+fn color_swatch_at(rect: Rect, pos: crate::core::Point) -> Option<usize> {
+    let stride = COLOR_SWATCH_SIZE + COLOR_SWATCH_GAP;
+    let inner_x = pos.x - (rect.x + COLOR_SWATCH_GAP as i32);
+    let inner_y = pos.y - (rect.y + COLOR_SWATCH_GAP as i32);
+    if inner_x < 0 || inner_y < 0 {
+        return None;
+    }
+    let column = inner_x as u32 / stride;
+    let row = inner_y as u32 / stride;
+    if column as usize >= COLOR_POPUP_COLUMNS || (inner_x as u32 % stride) >= COLOR_SWATCH_SIZE {
+        return None;
+    }
+    if (inner_y as u32 % stride) >= COLOR_SWATCH_SIZE {
+        return None;
+    }
+    let index = row as usize * COLOR_POPUP_COLUMNS + column as usize;
+    if index < color_palette().len() {
+        Some(index)
+    } else {
+        None
+    }
 }
 
 impl PropertyEdit {
@@ -277,6 +372,20 @@ const TOOLTIP_DELAY_MS: u32 = 450;
 /// Padding around the tooltip's text.
 const TOOLTIP_PADDING: i32 = 6;
 
+/// Width of the inline swatch/checkbox column that precedes a typed value's text.
+const TYPE_INDICATOR_WIDTH: u32 = 18;
+
+/// The trailing browse affordance of a file value cell.
+fn file_browse_rect(value_rect: Rect) -> Rect {
+    let width = 18.min(value_rect.width);
+    Rect::new(
+        value_rect.x + value_rect.width as i32 - width as i32,
+        value_rect.y,
+        width,
+        value_rect.height,
+    )
+}
+
 /// PropertiesPanel widget — a property editor with categorized grid layout.
 pub struct PropertiesPanel {
     base: BaseWidget,
@@ -320,8 +429,24 @@ pub struct PropertiesPanel {
     hover_pos: Option<crate::core::Point>,
     /// How long the pointer has rested on `hovered_entry`, in milliseconds.
     hover_elapsed_ms: u32,
-    /// Emitted with the property name when a row's editor opens.
-    pub editor_opened: Signal1<String>,
+    /// Emitted with a typed handle when a row's editor opens.
+    pub editor_opened: Signal1<PropertyEditorHandle>,
+    /// The open choice drop-down, if any.
+    choice_popup: Option<ChoicePopup>,
+    /// The open colour swatch palette, if any.
+    color_popup: Option<ColorPopup>,
+    /// Emitted with the property name when the user asks to browse for a file value.
+    ///
+    /// A panel cannot open a native file dialog itself, so this is the request a host answers.
+    /// The value itself is still edited inline (the path is text), which keeps the control usable
+    /// without a host that implements a picker.
+    ///
+    /// # Capability note
+    ///
+    /// This signal is **not** in the published capability event list yet (the owned task forbids
+    /// editing capability files). Rust hosts can subscribe directly; `connect_event` cannot reach
+    /// it until the schema adds `file_picker_requested`.
+    pub file_picker_requested: Signal1<String>,
 }
 
 impl PropertiesPanel {
@@ -343,6 +468,9 @@ impl PropertiesPanel {
             hover_pos: None,
             hover_elapsed_ms: 0,
             editor_opened: Signal1::new(),
+            choice_popup: None,
+            color_popup: None,
+            file_picker_requested: Signal1::new(),
         }
     }
 
@@ -350,6 +478,11 @@ impl PropertiesPanel {
     /// which entries are shown or which category they belong to.
     fn invalidate_grouping(&mut self) {
         *self.grouped_cache.get_mut() = None;
+        // A structural/filter change can move or delete the entry the drop-down was opened on,
+        // so the popup cannot outlive it. The value it would have committed may now belong to
+        // another property.
+        self.choice_popup = None;
+        self.color_popup = None;
     }
 
     /// Drops the cached display texts. Called whenever a value changes.
@@ -651,9 +784,10 @@ impl PropertiesPanel {
             PropertyValue::Bool(value) => {
                 self.commit_value(index, PropertyValue::Bool(!value));
             }
-            PropertyValue::Choice { options, selected } if !options.is_empty() => {
-                let next = (selected + 1) % options.len();
-                self.commit_value(index, PropertyValue::Choice { options, selected: next });
+            PropertyValue::Choice { options, .. } if !options.is_empty() => {
+                // A choice is edited in a drop-down, not by cycling: cycling made the value an
+                // implicit ordered list, so a user could not pick non-adjacent options directly.
+                self.open_choice_popup(index);
             }
             // A choice with no options has nothing to cycle to; the guarded arm above does not
             // count towards exhaustiveness.
@@ -668,16 +802,23 @@ impl PropertiesPanel {
                     self.begin_edit(index, value.to_string());
                 }
             }
-            // A colour is edited as its hex spelling and a path as its text: both are the
-            // string form the value already displays, so a single text editor is a real editor
-            // for them rather than the previous no-op.
-            PropertyValue::Color(color) => {
+            // A colour is a swatch: the editor is a palette of the theme's semantic colours, so
+            // picking a value is a click rather than typing a hex spelling. A path keeps its text
+            // editor and its trailing browse affordance.
+            PropertyValue::Color(_) => {
                 if editor_allowed {
-                    self.begin_edit(index, color.to_hex_rgb());
+                    self.open_color_popup(index);
                 }
             }
             PropertyValue::File(path) => {
-                if editor_allowed {
+                // The trailing ellipsis asks the host for a picker; the rest of the cell opens
+                // the path editor, so the control still works without a picker host.
+                let value_rect = self.value_rect_for(row_rect);
+                if file_browse_rect(value_rect).contains_point(pos) {
+                    let name = self.properties[index].name.clone();
+                    self.focused_entry = Some(index);
+                    self.file_picker_requested.emit(name);
+                } else if editor_allowed {
                     self.begin_edit(index, path);
                 }
             }
@@ -685,15 +826,285 @@ impl PropertiesPanel {
         self.base.request_redraw();
     }
 
-    /// The entry index whose value column covers `pos`.
-    fn editable_index_at(&self, row_rect: Rect, pos: crate::core::Point) -> Option<usize> {
+    /// The value cell of a row, shared by the draw pass and the hit tests.
+    fn value_rect_for(&self, row_rect: Rect) -> Rect {
         let content = self.content_box();
-        let value_rect = Rect::new(
+        Rect::new(
             content.x + VALUE_COL_LEFT,
             row_rect.y,
             content.width.saturating_sub(VALUE_COL_LEFT as u32),
             ROW_HEIGHT,
-        );
+        )
+    }
+
+    /// Opens the choice drop-down for `index`, returning whether the entry has options.
+    pub fn open_choice_popup(&mut self, index: usize) -> bool {
+        let Some(entry) = self.properties.get(index) else {
+            return false;
+        };
+        if !entry.editable {
+            return false;
+        }
+        let selected = match &entry.value {
+            PropertyValue::Choice { options, selected } if !options.is_empty() => *selected,
+            _ => return false,
+        };
+        self.editing = None;
+        self.color_popup = None;
+        self.choice_popup = Some(ChoicePopup { index, highlighted: selected });
+        self.focused_entry = Some(index);
+        self.emit_editor_opened(index);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Closes the choice drop-down without changing the value.
+    pub fn close_choice_popup(&mut self) {
+        if self.choice_popup.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The entry whose choice drop-down is open, if any.
+    pub fn choice_popup_entry(&self) -> Option<usize> {
+        self.choice_popup.map(|popup| popup.index)
+    }
+
+    /// The highlighted option of the open drop-down, if any.
+    pub fn choice_popup_highlighted(&self) -> Option<usize> {
+        self.choice_popup.map(|popup| popup.highlighted)
+    }
+
+    /// The drop-down's box, or `None` when it is closed or the entry is no longer a choice.
+    fn choice_popup_rect(&self, index: usize) -> Option<Rect> {
+        let entry = self.properties.get(index)?;
+        let PropertyValue::Choice { options, .. } = &entry.value else {
+            return None;
+        };
+        if options.is_empty() {
+            return None;
+        }
+        let row = self.visual_row_of_entry(index)?;
+        let anchor = self.row_rect_for(row);
+        let content = self.content_box();
+        let width = content.width.saturating_sub(VALUE_COL_LEFT as u32);
+        let height = ROW_HEIGHT.saturating_mul(options.len() as u32);
+        let below = anchor.y + ROW_HEIGHT as i32;
+        let bottom = content.y + content.height as i32;
+        // Open downwards when the list fits and upwards when it would fall out of the panel.
+        let y = if below + height as i32 <= bottom {
+            below
+        } else {
+            (anchor.y - height as i32).max(content.y)
+        };
+        Some(Rect::new(content.x + VALUE_COL_LEFT, y, width, height))
+    }
+
+    /// The visual row that paints `index`, accounting for headers and the current filter.
+    fn visual_row_of_entry(&self, index: usize) -> Option<usize> {
+        let mut row = 0usize;
+        for (_, indices) in self.grouped_indices().iter() {
+            row += 1; // category header
+            for &entry in indices {
+                if entry == index {
+                    return Some(row);
+                }
+                row += 1;
+            }
+        }
+        None
+    }
+
+    /// Handles one key while the choice drop-down is open, returning whether a frame is owed.
+    fn handle_choice_key(&mut self, key: u32) -> bool {
+        let Some(mut popup) = self.choice_popup else {
+            return false;
+        };
+        let count = match self.properties.get(popup.index).map(|entry| &entry.value) {
+            Some(PropertyValue::Choice { options, .. }) if !options.is_empty() => options.len(),
+            _ => {
+                // The entry disappeared under the open popup (remove_property): close it.
+                self.choice_popup = None;
+                return true;
+            }
+        };
+        match key {
+            crate::event::key_codes::ESCAPE => {
+                self.choice_popup = None;
+                true
+            }
+            crate::event::key_codes::UP => {
+                popup.highlighted = popup.highlighted.saturating_sub(1);
+                self.choice_popup = Some(popup);
+                true
+            }
+            crate::event::key_codes::DOWN => {
+                popup.highlighted = popup.highlighted.saturating_add(1).min(count - 1);
+                self.choice_popup = Some(popup);
+                true
+            }
+            crate::event::key_codes::HOME => {
+                popup.highlighted = 0;
+                self.choice_popup = Some(popup);
+                true
+            }
+            crate::event::key_codes::END => {
+                popup.highlighted = count - 1;
+                self.choice_popup = Some(popup);
+                true
+            }
+            crate::event::key_codes::ENTER | crate::event::key_codes::SPACE => {
+                self.select_choice_option(popup.index, popup.highlighted);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Commits `option` for the open drop-down's entry.
+    fn select_choice_option(&mut self, index: usize, option: usize) {
+        let Some(entry) = self.properties.get(index) else {
+            return;
+        };
+        let PropertyValue::Choice { options, .. } = &entry.value else {
+            return;
+        };
+        if option >= options.len() {
+            return;
+        }
+        let options = options.clone();
+        self.choice_popup = None;
+        self.commit_value(index, PropertyValue::Choice { options, selected: option });
+        self.base.request_redraw();
+    }
+
+    /// Opens the colour palette for `index`, returning whether the entry holds a colour.
+    pub fn open_color_popup(&mut self, index: usize) -> bool {
+        let Some(entry) = self.properties.get(index) else {
+            return false;
+        };
+        if !entry.editable {
+            return false;
+        }
+        let PropertyValue::Color(color) = &entry.value else {
+            return false;
+        };
+        let palette = color_palette();
+        let highlighted = palette.iter().position(|swatch| *swatch == *color).unwrap_or(0);
+        self.editing = None;
+        self.choice_popup = None;
+        self.color_popup = Some(ColorPopup { index, highlighted });
+        self.focused_entry = Some(index);
+        self.emit_editor_opened(index);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Closes the colour palette without changing the value.
+    pub fn close_color_popup(&mut self) {
+        if self.color_popup.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The entry whose colour palette is open, if any.
+    pub fn color_popup_entry(&self) -> Option<usize> {
+        self.color_popup.map(|popup| popup.index)
+    }
+
+    /// The highlighted swatch of the open colour palette, if any.
+    pub fn color_popup_highlighted(&self) -> Option<usize> {
+        self.color_popup.map(|popup| popup.highlighted)
+    }
+
+    /// The palette's box, or `None` when it is closed or the entry is no longer a colour.
+    fn color_popup_rect(&self, index: usize) -> Option<Rect> {
+        let entry = self.properties.get(index)?;
+        if !matches!(&entry.value, PropertyValue::Color(_)) {
+            return None;
+        }
+        let row = self.visual_row_of_entry(index)?;
+        let anchor = self.row_rect_for(row);
+        let content = self.content_box();
+        let width = content.width.saturating_sub(VALUE_COL_LEFT as u32);
+        let palette = color_palette();
+        let palette_rows = palette.len().div_ceil(COLOR_POPUP_COLUMNS) as u32;
+        let height = palette_rows * (COLOR_SWATCH_SIZE + COLOR_SWATCH_GAP) + COLOR_SWATCH_GAP;
+        let below = anchor.y + ROW_HEIGHT as i32;
+        let bottom = content.y + content.height as i32;
+        let y = if below + height as i32 <= bottom {
+            below
+        } else {
+            (anchor.y - height as i32).max(content.y)
+        };
+        Some(Rect::new(content.x + VALUE_COL_LEFT, y, width, height))
+    }
+
+    /// Handles one key while the colour palette is open, returning whether a frame is owed.
+    fn handle_color_key(&mut self, key: u32) -> bool {
+        let Some(mut popup) = self.color_popup else {
+            return false;
+        };
+        let count = color_palette().len();
+        match key {
+            crate::event::key_codes::ESCAPE => {
+                self.color_popup = None;
+                true
+            }
+            crate::event::key_codes::LEFT | crate::event::key_codes::UP => {
+                popup.highlighted = popup.highlighted.saturating_sub(1);
+                self.color_popup = Some(popup);
+                true
+            }
+            crate::event::key_codes::RIGHT | crate::event::key_codes::DOWN => {
+                popup.highlighted = popup.highlighted.saturating_add(1).min(count - 1);
+                self.color_popup = Some(popup);
+                true
+            }
+            crate::event::key_codes::HOME => {
+                popup.highlighted = 0;
+                self.color_popup = Some(popup);
+                true
+            }
+            crate::event::key_codes::END => {
+                popup.highlighted = count - 1;
+                self.color_popup = Some(popup);
+                true
+            }
+            crate::event::key_codes::ENTER | crate::event::key_codes::SPACE => {
+                self.select_color(popup.index, popup.highlighted);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Commits palette swatch `swatch` for the open colour palette's entry.
+    fn select_color(&mut self, index: usize, swatch: usize) {
+        let palette = color_palette();
+        let Some(color) = palette.get(swatch).copied() else {
+            return;
+        };
+        self.color_popup = None;
+        self.commit_value(index, PropertyValue::Color(color));
+        self.base.request_redraw();
+    }
+
+    /// Emits `editor_opened` with the typed handle for `index`.
+    fn emit_editor_opened(&self, index: usize) {
+        if let Some(entry) = self.properties.get(index) {
+            self.editor_opened.emit(PropertyEditorHandle {
+                index,
+                name: entry.name.clone(),
+                value: entry.value.clone(),
+            });
+        }
+    }
+
+    /// The entry index whose value column covers `pos`.
+    fn editable_index_at(&self, row_rect: Rect, pos: crate::core::Point) -> Option<usize> {
+        let content = self.content_box();
+        let value_rect = self.value_rect_for(row_rect);
         if !value_rect.contains_point(pos) {
             return None;
         }
@@ -728,10 +1139,11 @@ impl PropertiesPanel {
         if !entry.editable {
             return;
         }
-        let name = entry.name.clone();
+        self.choice_popup = None;
+        self.color_popup = None;
         self.editing = Some(PropertyEdit::new(index, text));
         self.focused_entry = Some(index);
-        self.editor_opened.emit(name);
+        self.emit_editor_opened(index);
         self.base.request_redraw();
     }
 
@@ -809,6 +1221,98 @@ impl PropertiesPanel {
             }
         }
         None
+    }
+
+    /// Paints the open choice drop-down, if any.
+    fn draw_choice_popup(
+        &self,
+        context: &mut RenderContext,
+        font: &crate::core::Font,
+        background: Color,
+        border: Color,
+        text_color: Color,
+        accent: Color,
+    ) {
+        let Some(popup) = self.choice_popup else {
+            return;
+        };
+        let Some(rect) = self.choice_popup_rect(popup.index) else {
+            return;
+        };
+        let Some(entry) = self.properties.get(popup.index) else {
+            return;
+        };
+        let PropertyValue::Choice { options, selected } = &entry.value else {
+            return;
+        };
+        context.fill_rect(rect, background.blend(&text_color, 0.16));
+        context.draw_rect_stroke(rect, border, 1);
+        for (option, label) in options.iter().enumerate() {
+            let row = Rect::new(
+                rect.x,
+                rect.y + option as i32 * ROW_HEIGHT as i32,
+                rect.width,
+                ROW_HEIGHT,
+            );
+            if option == popup.highlighted {
+                context.fill_rect(row, background.blend(&accent, 0.24));
+            }
+            let line = context.text_line(row, font);
+            context.draw_text_fitted_cow(
+                Rect::new(row.x + 4, line.y, row.width.saturating_sub(8), line.height),
+                label,
+                font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
+            if option == *selected {
+                // The current value keeps a margin marker independent of the highlight, so the
+                // selection is still readable while the pointer moves over other rows.
+                context.draw_text(
+                    crate::core::Point::new(row.x + row.width as i32 - 14, line.y),
+                    "*",
+                    font,
+                    accent,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
+    }
+
+    /// Paints the open colour palette over the rows it covers.
+    fn draw_color_popup(
+        &self,
+        context: &mut RenderContext,
+        background: Color,
+        border: Color,
+        accent: Color,
+    ) {
+        let Some(popup) = self.color_popup else {
+            return;
+        };
+        let Some(rect) = self.color_popup_rect(popup.index) else {
+            return;
+        };
+        let palette = color_palette();
+        context.fill_rect(rect, background.blend(&accent, 0.16));
+        context.draw_rect_stroke(rect, border, 1);
+        let stride = COLOR_SWATCH_SIZE + COLOR_SWATCH_GAP;
+        for (swatch, color) in palette.iter().enumerate() {
+            let column = (swatch % COLOR_POPUP_COLUMNS) as i32;
+            let row = (swatch / COLOR_POPUP_COLUMNS) as i32;
+            let cell = Rect::new(
+                rect.x + COLOR_SWATCH_GAP as i32 + column * stride as i32,
+                rect.y + COLOR_SWATCH_GAP as i32 + row * stride as i32,
+                COLOR_SWATCH_SIZE,
+                COLOR_SWATCH_SIZE,
+            );
+            context.fill_rect(cell, *color);
+            // The highlight is a heavier stroke rather than a recolour, so the swatch still reads
+            // as its own colour while the pointer moves over it.
+            let (stroke, width) =
+                if swatch == popup.highlighted { (accent, 2) } else { (border, 1) };
+            context.draw_rect_stroke(cell, stroke, width);
+        }
     }
 
     /// Paints the hovered entry's description according to [`Self::description_mode`].
@@ -982,10 +1486,19 @@ impl Widget for PropertiesPanel {
                 }))
             }
             "editor_opened" => {
+                // The Rust signal carries a typed [`PropertyEditorHandle`]; the published
+                // capability still declares a `String` payload, so the bridge reports the entry
+                // name. A schema change to a tuple would be an event-contract edit, which this
+                // file does not own.
                 Some(EventSignalRef::mapped("editor_opened", &self.editor_opened, |v| {
-                    CapabilityValue::String(v.clone())
+                    CapabilityValue::String(v.name.clone())
                 }))
             }
+            "file_picker_requested" => Some(EventSignalRef::mapped(
+                "file_picker_requested",
+                &self.file_picker_requested,
+                |name| CapabilityValue::String(name.clone()),
+            )),
             _ => None,
         }
     }
@@ -1197,12 +1710,7 @@ impl Draw for PropertiesPanel {
                 }
 
                 // Property value (with label-style background)
-                let value_rect = Rect::new(
-                    content.x + VALUE_COL_LEFT,
-                    row_rect.y,
-                    content.width.saturating_sub(VALUE_COL_LEFT as u32),
-                    ROW_HEIGHT,
-                );
+                let value_rect = self.value_rect_for(row_rect);
                 let display = match self.editing.as_ref() {
                     Some(edit) if edit.index == index => std::borrow::Cow::Owned(edit.with_caret()),
                     _ => std::borrow::Cow::Borrowed(
@@ -1210,13 +1718,85 @@ impl Draw for PropertiesPanel {
                     ),
                 };
                 context.fill_rect(value_rect, value_background);
+
+                // A per-type indicator column turns the value cell into the right *kind* of
+                // editor affordance: a swatch for a colour, a check box for a bool, a caret for
+                // a choice and an ellipsis for a file.
+                let indicator = Rect::new(
+                    value_rect.x + 2,
+                    value_rect.y + (ROW_HEIGHT.saturating_sub(14) / 2) as i32,
+                    TYPE_INDICATOR_WIDTH.saturating_sub(4),
+                    14,
+                );
+                let mut text_x = value_rect.x + 2;
+                let mut text_width = value_rect.width.saturating_sub(4);
+                match &entry.value {
+                    PropertyValue::Color(color) => {
+                        let swatch = Rect::new(
+                            indicator.x,
+                            indicator.y,
+                            TYPE_INDICATOR_WIDTH.saturating_sub(4),
+                            14,
+                        );
+                        context.fill_rect(swatch, *color);
+                        context.draw_rect_stroke(swatch, border, 1);
+                        text_x = swatch.x + swatch.width as i32 + 4;
+                        text_width = text_width.saturating_sub(TYPE_INDICATOR_WIDTH);
+                    }
+                    PropertyValue::Bool(on) => {
+                        context.draw_rect_stroke(indicator, border, 1);
+                        if *on {
+                            context.fill_rect(
+                                Rect::new(
+                                    indicator.x + 3,
+                                    indicator.y + 3,
+                                    indicator.width.saturating_sub(6),
+                                    indicator.height.saturating_sub(6),
+                                ),
+                                accent,
+                            );
+                        }
+                        text_x = indicator.x + indicator.width as i32 + 4;
+                        text_width = text_width.saturating_sub(TYPE_INDICATOR_WIDTH);
+                    }
+                    PropertyValue::Choice { .. } => {
+                        // A down caret on the trailing edge, matching the drop-down it opens.
+                        let caret_x = value_rect.x + value_rect.width as i32 - 12;
+                        let caret_y = value_rect.y + ROW_HEIGHT as i32 / 2;
+                        context.draw_line(
+                            crate::core::Point::new(caret_x - 4, caret_y - 2),
+                            crate::core::Point::new(caret_x, caret_y + 2),
+                            text_color,
+                        );
+                        context.draw_line(
+                            crate::core::Point::new(caret_x, caret_y + 2),
+                            crate::core::Point::new(caret_x + 4, caret_y - 2),
+                            text_color,
+                        );
+                        text_width = text_width.saturating_sub(14);
+                    }
+                    PropertyValue::File(_) => {
+                        let browse = file_browse_rect(value_rect);
+                        context.draw_rect_stroke(browse, border, 1);
+                        context.draw_text_fitted_cow(
+                            Rect::new(browse.x + 2, browse.y, browse.width.saturating_sub(4), 18),
+                            "...",
+                            font,
+                            text_color,
+                            HorizontalAlignment::Center,
+                        );
+                        text_width = text_width.saturating_sub(browse.width + 2);
+                    }
+                    PropertyValue::Text(_) | PropertyValue::Number(_) => {}
+                }
+
                 let value_line = context.text_line(value_rect, font);
                 if !display.is_empty() {
                     context.draw_text_fitted_cow(
                         Rect {
-                            x: value_rect.x + 2,
+                            x: text_x,
                             y: value_line.y,
-                            width: value_rect.width.saturating_sub(4),
+                            width: text_width,
                             height: value_line.height,
                         },
                         &display,
@@ -1239,6 +1819,10 @@ impl Draw for PropertiesPanel {
         context.pop_clip();
         context.draw_rect_stroke(geom, border, 1);
 
+        // The choice drop-down is painted last so it sits over the rows it covers.
+        self.draw_choice_popup(context, font, background, border, text_color, accent);
+        self.draw_color_popup(context, background, border, accent);
+
         self.draw_description(context, geom, background, border, text_color, font);
     }
 }
@@ -1255,6 +1839,35 @@ impl EventHandler for PropertiesPanel {
                     return;
                 }
                 if *button == 1 {
+                    // An open popup owns the press: a cell chooses a value, anywhere else
+                    // dismisses it. This runs before the row walk so a press can never open a
+                    // second editor underneath the popup.
+                    if let Some(popup) = self.color_popup {
+                        if let Some(rect) = self.color_popup_rect(popup.index) {
+                            if rect.contains_point(*pos) {
+                                if let Some(swatch) = color_swatch_at(rect, *pos) {
+                                    self.select_color(popup.index, swatch);
+                                } else {
+                                    self.close_color_popup();
+                                }
+                                return;
+                            }
+                        }
+                        self.close_color_popup();
+                        return;
+                    }
+                    if let Some(popup) = self.choice_popup {
+                        if let Some(rect) = self.choice_popup_rect(popup.index) {
+                            if rect.contains_point(*pos) {
+                                let option =
+                                    ((pos.y - rect.y).max(0) as usize) / ROW_HEIGHT as usize;
+                                self.select_choice_option(popup.index, option);
+                                return;
+                            }
+                        }
+                        self.close_choice_popup();
+                        return;
+                    }
                     // The press is resolved through the same derivation the draw pass uses, so
                     // the editable box a click lands in is the box that was painted for that
                     // row. The old version re-ran its own `y` accumulator from `geom.y`
@@ -1276,6 +1889,11 @@ impl EventHandler for PropertiesPanel {
                 }
             }
             Event::MouseDoubleClick { pos, button: 1 } => {
+                // A double click while a popup is open is two presses on the popup, not a
+                // second editor request.
+                if self.choice_popup.is_some() || self.color_popup.is_some() {
+                    return;
+                }
                 // The second press of a double click is delivered separately as a `MousePress`,
                 // so this arm only opens the editor; `toggle_editable_row` owns the trigger
                 // decision and the by-type dispatch.
@@ -1316,7 +1934,9 @@ impl EventHandler for PropertiesPanel {
             Event::MouseLeave { .. } => {
                 self.hover_pos = None;
                 self.hover_elapsed_ms = 0;
-                if self.hovered_entry.take().is_some() {
+                let popup_closed = self.choice_popup.take().is_some();
+                let color_closed = self.color_popup.take().is_some();
+                if self.hovered_entry.take().is_some() || popup_closed || color_closed {
                     self.base.request_redraw();
                 }
                 self.base.handle_event(event);
@@ -1342,6 +1962,20 @@ impl EventHandler for PropertiesPanel {
                 self.base.request_redraw();
             }
             Event::KeyPress { key, modifiers } if self.base.focus_reason().is_some() => {
+                // An open drop-down owns the keyboard while it is up: arrows move the highlight,
+                // Enter/Space commit it and Escape closes it without changing the value.
+                if self.choice_popup.is_some() {
+                    if self.handle_choice_key(*key) {
+                        self.base.request_redraw();
+                    }
+                    return;
+                }
+                if self.color_popup.is_some() {
+                    if self.handle_color_key(*key) {
+                        self.base.request_redraw();
+                    }
+                    return;
+                }
                 if self.editing.is_some() {
                     // Commit/cancel take the editor out of the field, so they cannot run inside a
                     // borrow of it; the remaining keys mutate the buffer and report whether the
@@ -1431,7 +2065,7 @@ mod tests {
     use crate::core::Point;
     use crate::widget::svg::render_to_svg;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     fn make_text_property(name: &str, value: &str, category: Option<&str>) -> PropertyEntry {
         PropertyEntry::new(
@@ -1900,5 +2534,158 @@ mod tests {
         panel.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
         assert!(panel.scroll_offset >= 0);
         let _ = crate::widget::svg::render_to_svg(&mut panel);
+    }
+
+    /// V-21: a choice is edited in a drop-down, and the typed handle is published on open.
+    #[test]
+    fn a_choice_opens_a_dropdown_and_commits_the_highlighted_option() {
+        use crate::event::key_codes::{DOWN, ENTER};
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 320, 240));
+        panel.add_property(make_choice_property(
+            "mode",
+            vec!["Alpha".to_string(), "Beta".to_string(), "Gamma".to_string()],
+            0,
+            Some("General"),
+        ));
+        let opened = Arc::new(Mutex::new(None));
+        panel.editor_opened.connect({
+            let opened = Arc::clone(&opened);
+            move |handle: Arc<PropertyEditorHandle>| {
+                *opened.lock().unwrap() = Some(handle.as_ref().clone());
+            }
+        });
+
+        let row = panel.row_rect_for(1);
+        panel.handle_event(&Event::MousePress {
+            pos: Point::new(row.x + VALUE_COL_LEFT + 4, row.y + 13),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(panel.choice_popup_entry(), Some(0), "a click opens the drop-down");
+        let handle = opened.lock().unwrap().clone().expect("editor_opened carries a handle");
+        assert_eq!(handle.index, 0);
+        assert_eq!(handle.name, "mode");
+
+        panel.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        panel.handle_event(&Event::KeyPress { key: DOWN, modifiers: 0 });
+        panel.handle_event(&Event::KeyPress { key: ENTER, modifiers: 0 });
+        assert_eq!(panel.choice_popup_entry(), None, "Enter closes the drop-down");
+        assert!(matches!(panel.properties()[0].value, PropertyValue::Choice { selected: 1, .. }));
+    }
+
+    /// V-21: `edit_trigger` decides which gesture opens a text-style editor.
+    #[test]
+    fn the_edit_trigger_decides_whether_a_single_click_opens_the_editor() {
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 320, 240));
+        panel.set_edit_trigger(EditTrigger::DoubleClick);
+        panel.add_property(make_text_property("name", "ab", Some("General")));
+        let row = panel.row_rect_for(1);
+        let pos = Point::new(row.x + VALUE_COL_LEFT + 4, row.y + 13);
+
+        panel.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(panel.editing_entry(), None, "a single click only focuses with this trigger");
+
+        panel.handle_event(&Event::MouseDoubleClick { pos, button: 1 });
+        assert_eq!(panel.editing_entry(), Some(0), "a double click opens the editor");
+    }
+
+    /// V-21: a colour is edited through the theme palette, not by typing a hex string.
+    #[test]
+    fn a_color_opens_a_swatch_palette_and_commits_the_chosen_swatch() {
+        use crate::event::key_codes::{ENTER, RIGHT};
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 320, 240));
+        let palette = color_palette();
+        panel.add_property(PropertyEntry::new(
+            "accent",
+            PropertyValue::Color(palette[0]),
+            Some("Appearance"),
+            None,
+            true,
+        ));
+
+        let row = panel.row_rect_for(1);
+        panel.handle_event(&Event::MousePress {
+            pos: Point::new(row.x + VALUE_COL_LEFT + 4, row.y + 13),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(panel.color_popup_entry(), Some(0), "a click opens the palette");
+        assert_eq!(panel.editing_entry(), None, "the colour is not text-edited");
+
+        panel.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        panel.handle_event(&Event::KeyPress { key: RIGHT, modifiers: 0 });
+        panel.handle_event(&Event::KeyPress { key: ENTER, modifiers: 0 });
+        assert_eq!(panel.color_popup_entry(), None, "Enter closes the palette");
+        assert_eq!(
+            panel.properties()[0].value,
+            PropertyValue::Color(palette[1]),
+            "the second swatch is committed"
+        );
+    }
+
+    /// V-21: the browse affordance asks the host for a picker, and the value body stays editable.
+    #[test]
+    fn a_file_value_requests_a_picker_or_edits_the_path_inline() {
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 320, 240));
+        panel.add_property(PropertyEntry::new(
+            "source",
+            PropertyValue::File("/tmp/a.txt".to_string()),
+            Some("General"),
+            None,
+            true,
+        ));
+        let requested = Arc::new(Mutex::new(None));
+        panel.file_picker_requested.connect({
+            let requested = Arc::clone(&requested);
+            move |name: Arc<String>| {
+                *requested.lock().unwrap() = Some(name.as_ref().clone());
+            }
+        });
+
+        let row = panel.row_rect_for(1);
+        let value = panel.value_rect_for(row);
+        let browse = file_browse_rect(value);
+        panel.handle_event(&Event::MousePress {
+            pos: Point::new(browse.x + browse.width as i32 - 2, browse.y + 13),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(requested.lock().unwrap().as_deref(), Some("source"));
+        assert_eq!(panel.editing_entry(), None, "the browse button does not open the text editor");
+
+        panel.handle_event(&Event::MousePress {
+            pos: Point::new(value.x + 4, value.y + 13),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(panel.editing_entry(), Some(0), "the value body edits the path inline");
+    }
+
+    /// V-21: committed text arrives through `TextInput` (so IME input works) and the caret moves.
+    #[test]
+    fn an_editor_accepts_ime_text_and_moves_the_caret() {
+        use crate::event::key_codes::{ENTER, LEFT, RIGHT};
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 320, 240));
+        panel.add_property(make_text_property("name", "ab", Some("General")));
+        let row = panel.row_rect_for(1);
+        panel.handle_event(&Event::MousePress {
+            pos: Point::new(row.x + VALUE_COL_LEFT + 4, row.y + 13),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(panel.edit_cursor(), Some(2), "the caret starts at the end");
+
+        panel.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        // A CJK cluster arrives as committed `TextInput`, not as ASCII key codes.
+        panel.handle_event(&Event::text_input("\u{4e2d}"));
+        assert_eq!(panel.edit_cursor(), Some(3), "the caret advances past the inserted cluster");
+
+        panel.handle_event(&Event::KeyPress { key: LEFT, modifiers: 0 });
+        assert_eq!(panel.edit_cursor(), Some(2));
+        panel.handle_event(&Event::KeyPress { key: RIGHT, modifiers: 0 });
+        assert_eq!(panel.edit_cursor(), Some(3));
+
+        panel.handle_event(&Event::KeyPress { key: ENTER, modifiers: 0 });
+        assert_eq!(panel.properties()[0].value, PropertyValue::Text("ab\u{4e2d}".to_string()));
     }
 }

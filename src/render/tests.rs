@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::MiniToString;
+use crate::compat::Arc;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::{
     last_auto_render_backend, AutoRenderBackend, PaintBackend, RenderCommand, RenderScene,
@@ -811,7 +811,7 @@ fn auto_compose_handles_draw_text_scene_with_gpu_or_cpu_backend() {
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::DrawText {
         origin: Point { x: 1, y: 10 },
-        text: "fallback".to_string(),
+        text: Arc::from("fallback"),
         font: Font::default(),
         color: Color::rgba(250, 120, 40, 255),
         alignment: HorizontalAlignment::Left,
@@ -869,7 +869,7 @@ fn scene_layer_accepts_common_render_command_variants() {
     layer.push(RenderCommand::FillRect { rect: Rect::new(0, 0, 100, 100), color: Color::BLUE });
     layer.push(RenderCommand::DrawText {
         origin: Point::new(10, 10),
-        text: "Hello".to_string(),
+        text: Arc::from("Hello"),
         font: font(),
         color: Color::BLACK,
         alignment: HorizontalAlignment::Left,
@@ -916,7 +916,7 @@ fn auto_compose_renders_fill_rect_scene_with_gpu_or_cpu_backend() {
     });
     layer.push(RenderCommand::DrawText {
         origin: Point::new(16, 50),
-        text: "Test".to_string(),
+        text: Arc::from("Test"),
         font: font(),
         color: Color::BLACK,
         alignment: HorizontalAlignment::Left,
@@ -941,21 +941,21 @@ fn data_range_scene_layer_accepts_drawtext_fillcircle_fillrect() {
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::DrawText {
         origin: Point::new(4, 4),
-        text: "Alpha".to_string(),
+        text: Arc::from("Alpha"),
         font: font(),
         color: Color::BLACK,
         alignment: HorizontalAlignment::Left,
     });
     layer.push(RenderCommand::DrawText {
         origin: Point::new(4, 28),
-        text: "Row-1".to_string(),
+        text: Arc::from("Row-1"),
         font: font(),
         color: Color::BLACK,
         alignment: HorizontalAlignment::Left,
     });
     layer.push(RenderCommand::DrawText {
         origin: Point::new(4, 48),
-        text: "Row-2".to_string(),
+        text: Arc::from("Row-2"),
         font: font(),
         color: Color::BLACK,
         alignment: HorizontalAlignment::Left,
@@ -994,7 +994,7 @@ fn auto_compose_renders_mixed_commands_scene_with_gpu_or_cpu_backend() {
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::DrawText {
         origin: Point::new(8, 8),
-        text: "Test".to_string(),
+        text: Arc::from("Test"),
         font: font(),
         color: Color::BLACK,
         alignment: HorizontalAlignment::Left,
@@ -1029,14 +1029,14 @@ fn scene_layer_accepts_host_navigation_command_types() {
     });
     layer.push(RenderCommand::DrawText {
         origin: Point::new(6, 6),
-        text: "File".to_string(),
+        text: Arc::from("File"),
         font: font(),
         color: Color::BLACK,
         alignment: HorizontalAlignment::Left,
     });
     layer.push(RenderCommand::DrawText {
         origin: Point::new(46, 6),
-        text: "Edit".to_string(),
+        text: Arc::from("Edit"),
         font: font(),
         color: Color::BLACK,
         alignment: HorizontalAlignment::Left,
@@ -1044,7 +1044,7 @@ fn scene_layer_accepts_host_navigation_command_types() {
     layer.push(RenderCommand::FillRect { rect: Rect::new(0, 24, 160, 100), color: Color::WHITE });
     layer.push(RenderCommand::DrawText {
         origin: Point::new(8, 36),
-        text: "Open".to_string(),
+        text: Arc::from("Open"),
         font: font(),
         color: Color::BLACK,
         alignment: HorizontalAlignment::Left,
@@ -1092,7 +1092,7 @@ fn auto_compose_renders_multi_command_scene_with_gpu_or_cpu_backend() {
     layer.push(RenderCommand::FillRect { rect: Rect::new(0, 0, 320, 24), color: Color::DARK_GRAY });
     layer.push(RenderCommand::DrawText {
         origin: Point::new(6, 6),
-        text: "File".to_string(),
+        text: Arc::from("File"),
         font: font(),
         color: Color::WHITE,
         alignment: HorizontalAlignment::Left,
@@ -1155,7 +1155,10 @@ fn draw_gradient_svg_produces_valid_markup() {
         .add_stop(1.0, Color::WHITE);
     let mut svg = SvgPaintBackend::new(Size::new(100, 20));
     svg.begin_frame(Color::TRANSPARENT);
-    svg.execute_command(&RenderCommand::DrawGradient { rect: Rect::new(0, 0, 100, 20), gradient });
+    svg.execute_command(&RenderCommand::DrawGradient {
+        rect: Rect::new(0, 0, 100, 20),
+        gradient: Arc::new(gradient),
+    });
     svg.end_frame();
     let output = svg.finish();
     assert!(output.contains("linearGradient"));

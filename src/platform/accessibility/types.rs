@@ -623,6 +623,28 @@ impl From<WidgetKind> for AccessibleRole {
             WidgetKind::EmptyState => AccessibleRole::Group,
             WidgetKind::Carousel => AccessibleRole::TabGroup,
             WidgetKind::Frame => AccessibleRole::Group,
+            // Companion controls (COMP-01..COMP-20). Each is its own kind, so leaving them on
+            // the `Unknown` fallback would have meant a registered, focusable control that
+            // assistive technology cannot classify at all.
+            WidgetKind::Swatch | WidgetKind::Legend | WidgetKind::DiffFileList => {
+                AccessibleRole::List
+            }
+            WidgetKind::DependencyEditor | WidgetKind::MarkdownOutlinePanel => AccessibleRole::List,
+            WidgetKind::ChartTooltip | WidgetKind::ScaleBar => AccessibleRole::StaticText,
+            WidgetKind::ZoomControl | WidgetKind::RangePresetBar => AccessibleRole::ToolBar,
+            WidgetKind::Compass => AccessibleRole::Button,
+            // Containers and hosts: a name for a region rather than an actionable control.
+            WidgetKind::FilterRow
+            | WidgetKind::TooltipManager
+            | WidgetKind::ZoomPanController
+            | WidgetKind::ToastHost
+            | WidgetKind::TileLoader
+            | WidgetKind::TimelineAxis
+            | WidgetKind::FindBar
+            | WidgetKind::ShapeCanvas
+            | WidgetKind::KanbanCardView
+            | WidgetKind::KanbanColumnHeader
+            | WidgetKind::GridViewHeader => AccessibleRole::Group,
             _ => AccessibleRole::Unknown,
         }
     }

@@ -80,10 +80,11 @@ pub enum PixelFormat {
 
 /// A decoded camera frame supplied by the host.
 ///
-/// The data is tightly packed RGBA, row-major, with no padding between rows. The widget never
-/// captures or decodes anything itself; it paints what the host hands it. The buffer is shared
-/// rather than copied: [`CameraPreview::set_frame_shared`] adopts an `Arc` with no pixel copy, so a
-/// host double-buffering its capture does not pay a per-frame 640x480x4 copy on the UI thread.
+/// The data is row-major in [`Self::format`] with `stride` bytes per row. A stride larger than
+/// `width * 4` is allowed for a capture pipeline that pads rows. The widget never captures or
+/// decodes anything itself; it paints what the host hands it. The buffer is shared rather than
+/// copied: [`CameraPreview::set_frame_shared`] adopts an `Arc` with no pixel copy, so a host
+/// double-buffering its capture does not pay a per-frame 640x480x4 copy on the UI thread.
 #[derive(Debug, Clone)]
 pub struct CameraFrame {
     /// Frame width in pixels.
@@ -92,8 +93,43 @@ pub struct CameraFrame {
     pub height: u32,
     /// Capture timestamp in milliseconds.
     pub pts_ms: u64,
-    /// RGBA bytes, `width * height * 4` long.
+    /// Pixel layout of `data`.
+    pub format: PixelFormat,
+    /// Bytes per row, including any padding. Must be at least `width * 4`.
+    pub stride: u32,
+    /// Pixel bytes, `stride * height` long.
     pub data: Arc<[u8]>,
+}
+
+impl CameraFrame {
+    /// A tightly packed RGBA frame over a shared buffer.
+    pub fn new(width: u32, height: u32, pts_ms: u64, data: Arc<[u8]>) -> Self {
+        Self::from_shared(
+            width,
+            height,
+            pts_ms,
+            PixelFormat::Rgba8888,
+            width.saturating_mul(4),
+            data,
+        )
+    }
+
+    /// A frame with an explicit layout over a shared buffer, with no pixel copy.
+    pub fn from_shared(
+        width: u32,
+        height: u32,
+        pts_ms: u64,
+        format: PixelFormat,
+        stride: u32,
+        data: Arc<[u8]>,
+    ) -> Self {
+        Self { width, height, pts_ms, format, stride, data }
+    }
+
+    /// The byte length this frame requires for `height` rows at its declared stride.
+    pub fn expected_len(&self) -> usize {
+        self.stride as usize * self.height as usize
+    }
 }
 
 /// Camera preview widget — draws a simulated camera viewfinder area with controls.
@@ -115,22 +151,29 @@ pub struct CameraPreview {
     show_controls: bool,
     /// Current zoom level (1.0 = normal).
     zoom_level: f32,
-    /// The most recent frame supplied by the host, if any.
-    frame: Option<CameraFrame>,
+    /// The frame waiting for [`Self::present_frame`].
+    back: Option<Arc<CameraFrame>>,
+    /// The frame currently shown in the viewfinder.
+    front: Option<Arc<CameraFrame>>,
     /// Emitted when the host reports a capture failure.
     pub error_occurred: Signal1<String>,
     /// Emitted when the host reports that camera permission was denied.
     pub permission_denied: GenericSignal,
     /// Emitted with the capture timestamp when the host delivers a frame.
     pub frame_available: Signal1<u64>,
+    /// Emitted with the presented timestamp **in seconds** when a frame is swapped on screen.
+    pub frame_presented: Signal1<f64>,
     /// Devices the host has enumerated.
     available_cameras: Vec<CameraDevice>,
     /// Pixel layout the capture device negotiated.
     pixel_format: PixelFormat,
     /// Requested capture rate in frames per second.
     target_fps: u32,
-    /// Emitted when the negotiated format (or resolution) changes.
-    pub format_negotiated: Signal1<String>,
+    /// Emitted when the negotiated format (or resolution) changes, as `(width, height)`.
+    ///
+    /// The resolution is the format pin both the readout and the painted frame share; a caller that
+    /// also needs the pixel layout reads [`Self::pixel_format`].
+    pub format_negotiated: Signal1<(u32, u32)>,
 }
 
 impl CameraPreview {
@@ -144,10 +187,12 @@ impl CameraPreview {
             mirror_mode: false,
             show_controls: true,
             zoom_level: 1.0,
-            frame: None,
+            back: None,
+            front: None,
             error_occurred: Signal1::new(),
             permission_denied: GenericSignal::new(),
             frame_available: Signal1::new(),
+            frame_presented: Signal1::new(),
             available_cameras: Vec::new(),
             pixel_format: PixelFormat::Rgba8888,
             target_fps: 30,
@@ -255,13 +300,9 @@ impl CameraPreview {
         self.base.request_redraw();
     }
 
-    /// Announces `(resolution, pixel format, target fps)` as the negotiated format.
+    /// Announces `(width, height)` as the negotiated format.
     fn announce_format(&mut self) {
-        let description = format!(
-            "{}x{} {:?} @{}fps",
-            self.resolution.0, self.resolution.1, self.pixel_format, self.target_fps
-        );
-        self.format_negotiated.emit(description);
+        self.format_negotiated.emit(self.resolution);
     }
 
     /// Returns the current camera device ID.
@@ -318,58 +359,145 @@ impl CameraPreview {
     /// readout name the same size because both come from the frame that is on screen. Returns
     /// `Err` when the dimensions are empty or the byte count is not `width * height * 4`.
     pub fn set_frame(&mut self, width: u32, height: u32, data: &[u8]) -> Result<(), String> {
-        let result = self.set_frame_shared(width, height, 0, Arc::from(data));
+        let result = self.set_frame_bytes_shared(width, height, 0, Arc::from(data));
         if let Err(error) = &result {
             self.error_occurred.emit(error.clone());
         }
         result
     }
 
-    /// Supplies a frame from a shared buffer, with no pixel copy.
+    /// Supplies a frame from a shared byte buffer, with no pixel copy.
     ///
-    /// This is the copy-free entry point: a host that double-buffers its capture can hand over an
-    /// `Arc<[u8]>` it already owns, and the control stores that handle. The buffer must still hold
-    /// `width * height * 4` RGBA bytes; the length is checked against the shared slice, not copied.
-    pub fn set_frame_shared(
+    /// The buffer must hold `width * height * 4` RGBA bytes; the length is checked against the
+    /// shared slice, not copied. Use [`Self::set_frame_shared`] when the caller already owns a
+    /// whole [`CameraFrame`], which also carries the layout.
+    pub fn set_frame_bytes_shared(
         &mut self,
         width: u32,
         height: u32,
         pts_ms: u64,
         data: Arc<[u8]>,
     ) -> Result<(), String> {
-        if width == 0 || height == 0 {
+        self.set_frame_shared_with_format(
+            width,
+            height,
+            pts_ms,
+            self.pixel_format,
+            width.saturating_mul(4),
+            data,
+        )
+    }
+
+    /// Adopts a whole [`CameraFrame`] through its existing `Arc`, with no pixel copy.
+    ///
+    /// This is the zero-copy contract a capture thread needs: it owns the frames, the UI thread
+    /// validates the shared handle and stores that same allocation in the back slot. The frame's
+    /// declared `format` and `stride` are honoured exactly as in
+    /// [`Self::set_frame_shared_with_format`].
+    pub fn set_frame_shared(&mut self, frame: Arc<CameraFrame>) -> Result<(), String> {
+        self.validate_frame(&frame)?;
+        self.publish_frame(frame);
+        Ok(())
+    }
+
+    /// Checks a frame's layout and byte count without copying its pixels.
+    fn validate_frame(&self, frame: &CameraFrame) -> Result<(), String> {
+        if frame.width == 0 || frame.height == 0 {
             return Err("a camera frame needs non-zero dimensions".to_string());
         }
-        if self.pixel_format != PixelFormat::Rgba8888 {
+        if self.pixel_format != PixelFormat::Rgba8888 || frame.format != PixelFormat::Rgba8888 {
             return Err(format!(
                 "the negotiated {:?} layout cannot be painted; this control accepts RGBA8888 frames",
-                self.pixel_format
+                frame.format
             ));
         }
-        let expected = (width as usize) * (height as usize) * 4;
-        if data.len() != expected {
+        let minimum = frame.width as usize * 4;
+        if (frame.stride as usize) < minimum {
             return Err(format!(
-                "a {width}x{height} RGBA frame needs {expected} bytes, got {}",
-                data.len()
+                "a {}x{} RGBA frame needs a stride of at least {minimum} bytes, got {}",
+                frame.width, frame.height, frame.stride
             ));
         }
-        self.frame = Some(CameraFrame { width, height, pts_ms, data });
-        self.resolution = (width, height);
-        self.frame_available.emit(pts_ms);
-        self.base.request_redraw();
+        let expected = frame.expected_len();
+        if frame.data.len() != expected {
+            return Err(format!(
+                "a {}x{} RGBA frame at stride {} needs {expected} bytes, got {}",
+                frame.width,
+                frame.height,
+                frame.stride,
+                frame.data.len()
+            ));
+        }
         Ok(())
+    }
+
+    /// Stores a validated frame in the back slot and announces it.
+    fn publish_frame(&mut self, frame: Arc<CameraFrame>) {
+        // Back slot, not front: a painter reading the front frame must never observe a partially
+        // published capture. `present_frame` performs the swap.
+        let resolution = (frame.width, frame.height);
+        let negotiated = self.resolution != resolution;
+        self.resolution = resolution;
+        self.frame_available.emit(frame.pts_ms);
+        self.back = Some(frame);
+        if negotiated {
+            self.announce_format();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Supplies a frame with an explicit pixel layout and row stride.
+    ///
+    /// The capture-device entry point: a pipeline that pads rows (a 640-wide BGRA frame aligned
+    /// to 64 bytes, say) declares its own `stride` here instead of repacking. `format` must match
+    /// the negotiated [`Self::pixel_format`] and be one this control can paint; the row stride must
+    /// be at least `width * 4` and the buffer exactly `stride * height` bytes.
+    pub fn set_frame_shared_with_format(
+        &mut self,
+        width: u32,
+        height: u32,
+        pts_ms: u64,
+        format: PixelFormat,
+        stride: u32,
+        data: Arc<[u8]>,
+    ) -> Result<(), String> {
+        let frame = Arc::new(CameraFrame::from_shared(width, height, pts_ms, format, stride, data));
+        self.validate_frame(&frame)?;
+        self.publish_frame(frame);
+        Ok(())
+    }
+
+    /// Swaps the waiting frame into the viewfinder and announces it as `frame_presented`.
+    ///
+    /// Returns `false` when no new frame is waiting. The explicit swap is what makes the two
+    /// slots meaningful: a capture thread can publish frame N+1 while the painter is still
+    /// reading frame N, and the next present changes what is on screen without copying pixels.
+    pub fn present_frame(&mut self) -> bool {
+        let Some(frame) = self.back.take() else {
+            return false;
+        };
+        let pts = frame.pts_ms;
+        self.front = Some(frame);
+        self.frame_presented.emit(pts as f64 / 1000.0);
+        self.base.request_redraw();
+        true
     }
 
     /// Removes the host frame, returning the viewfinder to its simulated drawing.
     pub fn clear_frame(&mut self) {
-        if self.frame.take().is_some() {
-            self.base.request_redraw();
-        }
+        self.front = None;
+        self.back = None;
+        self.base.request_redraw();
     }
 
-    /// Returns the most recent host frame, if any.
+    /// Returns the frame currently shown in the viewfinder, if any.
     pub fn frame(&self) -> Option<&CameraFrame> {
-        self.frame.as_ref()
+        self.front.as_deref()
+    }
+
+    /// Returns the frame waiting for the next [`Self::present_frame`], if any.
+    pub fn pending_frame(&self) -> Option<&CameraFrame> {
+        self.back.as_deref()
     }
 
     /// Reports a capture failure to the host's listeners.
@@ -461,11 +589,21 @@ impl Widget for CameraPreview {
                     CapabilityValue::UInt(*v)
                 }))
             }
-            "format_negotiated" => {
-                Some(EventSignalRef::mapped("format_negotiated", &self.format_negotiated, |v| {
-                    CapabilityValue::String(v.clone())
+            "frame_presented" => {
+                Some(EventSignalRef::mapped("frame_presented", &self.frame_presented, |v| {
+                    CapabilityValue::Float(*v)
                 }))
             }
+            "format_negotiated" => Some(EventSignalRef::mapped(
+                "format_negotiated",
+                &self.format_negotiated,
+                |(width, height)| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(*width as u64),
+                        CapabilityValue::UInt(*height as u64),
+                    ]))
+                },
+            )),
             _ => None,
         }
     }
@@ -589,17 +727,32 @@ impl Draw for CameraPreview {
 
             // The host's frame is painted at its own pixel size, centred and clipped to the
             // preview. Content, not chrome: it is the caller's picture and is never recoloured.
-            if let Some(frame) = self.frame.as_ref() {
+            if let Some(frame) = self.front.as_deref() {
                 let dx = rect.x + (w - frame.width as i32) / 2;
                 let dy = rect.y + (h - frame.height as i32) / 2;
                 context.push_clip(rect.x, rect.y, rect.width, rect.height);
-                context.draw_image(
-                    dx.max(0),
-                    dy.max(0),
-                    frame.width,
-                    frame.height,
-                    frame.data.as_ref(),
-                );
+                let tight_len = frame.width as usize * 4;
+                if frame.stride as usize == tight_len {
+                    context.draw_image(
+                        dx.max(0),
+                        dy.max(0),
+                        frame.width,
+                        frame.height,
+                        frame.data.as_ref(),
+                    );
+                } else {
+                    // The image primitive is tightly packed, so a padded capture is repacked
+                    // here — the only place a padded frame costs a copy, and only for that layout.
+                    let mut packed =
+                        crate::compat::Vec::with_capacity(tight_len * frame.height as usize);
+                    for row in 0..frame.height as usize {
+                        let start = row * frame.stride as usize;
+                        if let Some(pixels) = frame.data.get(start..start + tight_len) {
+                            packed.extend_from_slice(pixels);
+                        }
+                    }
+                    context.draw_image(dx.max(0), dy.max(0), frame.width, frame.height, &packed);
+                }
                 context.pop_clip();
             }
 
@@ -745,8 +898,13 @@ mod tests {
     #[test]
     fn published_camera_events_resolve_to_signals() {
         let preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
-        for name in ["error_occurred", "permission_denied", "frame_available", "format_negotiated"]
-        {
+        for name in [
+            "error_occurred",
+            "permission_denied",
+            "frame_available",
+            "frame_presented",
+            "format_negotiated",
+        ] {
             assert!(preview.event_signal_dyn(name).is_some(), "{name} must resolve");
         }
         assert!(preview.event_signal_dyn("no_such_event").is_none());
@@ -762,14 +920,78 @@ mod tests {
             s.store(*pts, std::sync::atomic::Ordering::SeqCst);
         });
         let buffer: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![7u8; 4 * 4 * 4]);
-        let handle = std::sync::Arc::clone(&buffer);
-        preview.set_frame_shared(4, 4, 33, handle).expect("a matching shared buffer is accepted");
+        let frame = std::sync::Arc::new(CameraFrame::new(4, 4, 33, std::sync::Arc::clone(&buffer)));
+        let frame_handle = std::sync::Arc::clone(&frame);
+        preview.set_frame_shared(frame_handle).expect("a matching shared frame is accepted");
         assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 33);
-        let frame = preview.frame().expect("the frame was stored");
+        assert!(preview.frame().is_none(), "a capture waits for an explicit present");
+        assert!(preview.present_frame(), "the present swaps the waiting frame in");
+        let stored = preview.frame().expect("the frame was stored");
         assert!(
-            std::sync::Arc::ptr_eq(&frame.data, &buffer),
+            std::sync::Arc::ptr_eq(&stored.data, &buffer),
             "the control must store the host's handle, not a copy"
         );
+        assert_eq!(stored.stride, 16);
+        assert_eq!(stored.format, PixelFormat::Rgba8888);
+    }
+
+    #[test]
+    fn adopting_a_whole_shared_frame_is_zero_copy() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        let data: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![3u8; 4 * 4 * 4]);
+        let frame = std::sync::Arc::new(CameraFrame::new(4, 4, 12, std::sync::Arc::clone(&data)));
+        let handle = std::sync::Arc::clone(&frame);
+        preview.set_frame_shared(handle).expect("a well-formed shared frame is adopted");
+        assert_eq!(
+            std::sync::Arc::strong_count(&frame),
+            2,
+            "the control stores the caller's frame handle, not a re-wrapped copy"
+        );
+        assert!(preview.present_frame());
+        let stored = preview.frame().expect("the frame is on screen");
+        assert!(std::sync::Arc::ptr_eq(&stored.data, &data));
+        assert_eq!(stored.format, PixelFormat::Rgba8888);
+        assert_eq!(stored.stride, 16);
+    }
+
+    #[test]
+    fn presenting_swaps_the_back_slot_and_announces_seconds() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        preview.start_preview();
+        let presented = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let p = std::sync::Arc::clone(&presented);
+        preview.frame_presented.connect(move |pts: std::sync::Arc<f64>| {
+            p.lock().unwrap().push(*pts);
+        });
+
+        let first: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![1u8; 4 * 4 * 4]);
+        preview
+            .set_frame_shared(std::sync::Arc::new(CameraFrame::new(4, 4, 250, first)))
+            .expect("the first frame is accepted");
+        let second: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![2u8; 4 * 4 * 4]);
+        preview
+            .set_frame_shared(std::sync::Arc::new(CameraFrame::new(4, 4, 500, second)))
+            .expect("the second frame is accepted");
+
+        assert!(preview.frame().is_none(), "nothing is on screen before the first present");
+        assert_eq!(preview.pending_frame().map(|frame| frame.pts_ms), Some(500));
+        assert!(preview.present_frame());
+        assert_eq!(preview.frame().map(|frame| frame.pts_ms), Some(500));
+        assert!(preview.pending_frame().is_none(), "the back slot is consumed by the swap");
+        assert!(!preview.present_frame(), "a second present has nothing to swap");
+        assert_eq!(*presented.lock().unwrap(), vec![0.5], "the signal carries seconds");
+    }
+
+    #[test]
+    fn a_padded_stride_is_honoured() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        let stride = 32u32;
+        let data: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![0u8; stride as usize * 4]);
+        preview
+            .set_frame_shared_with_format(4, 4, 0, PixelFormat::Rgba8888, stride, data)
+            .expect("a padded row stride is a valid layout");
+        assert!(preview.present_frame());
+        assert_eq!(preview.frame().map(|frame| frame.stride), Some(stride));
     }
 
     #[test]
@@ -777,8 +999,8 @@ mod tests {
         let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
         let formats = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let f = formats.clone();
-        preview.format_negotiated.connect(move |value: std::sync::Arc<String>| {
-            f.lock().unwrap().push((*value).clone());
+        preview.format_negotiated.connect(move |value: std::sync::Arc<(u32, u32)>| {
+            f.lock().unwrap().push(*value);
         });
         preview.set_available_cameras(vec![CameraDevice::new(1, "Front")]);
         assert_eq!(preview.available_cameras().len(), 1);
@@ -790,6 +1012,11 @@ mod tests {
         preview.set_pixel_format(PixelFormat::Bgra8888);
         preview.set_target_fps(60);
         assert!(!formats.lock().unwrap().is_empty(), "each negotiation is announced");
+        assert_eq!(
+            *formats.lock().unwrap().last().expect("a negotiation"),
+            (640, 480),
+            "the event carries the negotiated resolution"
+        );
         let data = vec![0u8; 4 * 4 * 4];
         assert!(
             preview.set_frame(4, 4, &data).is_err(),
@@ -901,6 +1128,7 @@ mod tests {
         let data = vec![200u8; 4 * 4 * 4];
         preview.set_frame(4, 4, &data).expect("a matching byte count is accepted");
         assert_eq!(preview.resolution(), (4, 4));
+        assert!(preview.present_frame(), "the frame is swapped on screen");
         assert_eq!(preview.frame().map(|frame| frame.width), Some(4));
         let svg = crate::widget::svg::render_to_svg(&mut preview);
         assert!(svg.starts_with("<svg"));

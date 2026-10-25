@@ -411,6 +411,12 @@ impl ProgressDialog {
         }
         self.hide();
     }
+
+    /// Compatibility spelling of [`Self::canceled`] (W-19): the same emitted signal.
+    pub fn cancelled(&self) -> &GenericSignal {
+        &self.canceled
+    }
+
     /// Returns progress as a fraction in `0.0..=1.0`, where `0.0` is the
     /// minimum and `1.0` is the maximum.
     ///

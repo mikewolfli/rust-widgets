@@ -281,6 +281,14 @@ impl FontComboBox {
             popup_hidden: GenericSignal::new(),
         }
     }
+
+    /// Compatibility spelling of [`Self::current_index_changed`] (W-20).
+    ///
+    /// Both names resolve to the same emitted signal; the published row keeps the
+    /// index spelling, so this accessor is the only Rust-side canonical name.
+    pub fn current_changed(&self) -> &Signal1<i32> {
+        &self.current_index_changed
+    }
     /// Returns the font family and size currently in effect. This is a
     /// [`Font`] value, which carries the size; note that selecting an index
     /// keeps the size but resets the bold/italic flags to `false`.

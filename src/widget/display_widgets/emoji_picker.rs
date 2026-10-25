@@ -167,7 +167,7 @@ pub struct EmojiPicker {
     /// and its `id` when it has none — the same vocabulary search matches, so a
     /// tooltip and a query agree about what a glyph is called. An empty string
     /// means the pointer is no longer over a glyph.
-    pub hovered_glyph_changed: Signal1<String>,
+    pub glyph_hover_changed: Signal1<String>,
 }
 
 impl EmojiPicker {
@@ -201,8 +201,13 @@ impl EmojiPicker {
             hovered: None,
             visible_indices: Vec::new(),
             glyph_chosen: Signal1::new(),
-            hovered_glyph_changed: Signal1::new(),
+            glyph_hover_changed: Signal1::new(),
         }
+    }
+
+    /// Compatibility spelling of [`Self::glyph_hover_changed`] (W-21): the same emitted signal.
+    pub fn hovered_glyph_changed(&self) -> &Signal1<String> {
+        &self.glyph_hover_changed
     }
 
     /// Replaces the glyph table.
@@ -673,9 +678,9 @@ impl Widget for EmojiPicker {
                     CapabilityValue::String(v.clone())
                 }))
             }
-            "hovered_glyph_changed" => Some(EventSignalRef::mapped(
-                "hovered_glyph_changed",
-                &self.hovered_glyph_changed,
+            "glyph_hover_changed" => Some(EventSignalRef::mapped(
+                "glyph_hover_changed",
+                &self.glyph_hover_changed,
                 |v| crate::widget::capability::CapabilityValue::String(v.clone()),
             )),
             _ => None,
@@ -1114,13 +1119,13 @@ impl EventHandler for EmojiPicker {
                         .and_then(|index| self.glyph_at_index(index))
                         .map(Self::glyph_caption)
                         .unwrap_or_default();
-                    self.hovered_glyph_changed.emit(caption);
+                    self.glyph_hover_changed.emit(caption);
                     self.base.request_redraw();
                 }
             }
             Event::MouseLeave { .. } => {
                 if self.hovered.take().is_some() {
-                    self.hovered_glyph_changed.emit(String::new());
+                    self.glyph_hover_changed.emit(String::new());
                     self.base.request_redraw();
                 }
             }
@@ -1586,7 +1591,7 @@ mod tests {
         let mut p = picker();
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let sink = std::sync::Arc::clone(&seen);
-        p.hovered_glyph_changed.connect(move |caption| {
+        p.glyph_hover_changed.connect(move |caption| {
             sink.lock().unwrap().push((*caption).clone());
         });
 
@@ -1608,7 +1613,7 @@ mod tests {
         plain.set_categories(vec!["faces".to_string()]);
         let plain_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let plain_sink = std::sync::Arc::clone(&plain_seen);
-        plain.hovered_glyph_changed.connect(move |caption| {
+        plain.glyph_hover_changed.connect(move |caption| {
             plain_sink.lock().unwrap().push((*caption).clone());
         });
         let cell = plain.cell_rect(0).expect("cell 0");

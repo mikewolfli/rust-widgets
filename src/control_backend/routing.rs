@@ -263,6 +263,29 @@ mod tests {
             | WidgetKind::ConfirmDialog
             | WidgetKind::AboutDialog
             | WidgetKind::DropZone => ControlRoutePreference::CustomRequired,
+            // Companion controls registered as first-class capabilities (COMP-01/05/07/08/
+            // 09/10/12/13/14/15/16/17/18/19/20).
+            WidgetKind::Swatch
+            | WidgetKind::FilterRow
+            | WidgetKind::Legend
+            | WidgetKind::ChartTooltip
+            | WidgetKind::TooltipManager
+            | WidgetKind::ZoomPanController
+            | WidgetKind::ToastHost
+            | WidgetKind::TileLoader
+            | WidgetKind::ZoomControl
+            | WidgetKind::ScaleBar
+            | WidgetKind::Compass
+            | WidgetKind::TimelineAxis
+            | WidgetKind::DependencyEditor
+            | WidgetKind::DiffFileList
+            | WidgetKind::MarkdownOutlinePanel
+            | WidgetKind::FindBar
+            | WidgetKind::ShapeCanvas
+            | WidgetKind::KanbanCardView
+            | WidgetKind::KanbanColumnHeader
+            | WidgetKind::RangePresetBar
+            | WidgetKind::GridViewHeader => ControlRoutePreference::CustomRequired,
         }
     }
 

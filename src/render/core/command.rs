@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Render commands for composing widget visuals.
-use crate::compat::{Arc, String, Vec};
+use crate::compat::{Arc, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 #[cfg(feature = "3d")]
 use crate::render::math3d::Mat4;
@@ -161,6 +161,23 @@ impl LayerEffect {
             Self::BackdropBlurTint { tint, tint_weight, .. } => Some((tint, tint_weight)),
         }
     }
+}
+
+/// How a track matte's captured drawing is turned into a coverage mask.
+///
+/// The four spellings are the Lottie `tt` values (1..=4). They are a rendering primitive rather
+/// than a Lottie detail: an alpha matte uses the source's alpha, a luma matte its luminance, and
+/// the inverted forms use `255 - value`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatteMode {
+    /// Use the matte's alpha channel.
+    Alpha,
+    /// Use `255 - alpha`.
+    AlphaInverted,
+    /// Use the matte's luminance times its alpha.
+    Luma,
+    /// Use `255 - luminance`.
+    LumaInverted,
 }
 
 /// Draw command recorded by a render layer.
@@ -440,7 +457,11 @@ pub enum RenderCommand {
         /// horizontal placement is controlled by `alignment`.
         origin: Point,
         /// Text to draw; supports combining marks and variation selectors.
-        text: String,
+        ///
+        /// Shared rather than owned so recording, batching and replay all hand over the same
+        /// bytes by refcount (G-12). A deferred backend that keeps the command therefore never
+        /// copies a label per frame.
+        text: Arc<str>,
         /// Font family, size, weight and style used to rasterize the glyphs.
         font: Font,
         /// Glyph color.
@@ -529,7 +550,10 @@ pub enum RenderCommand {
         rect: Rect,
         /// Gradient stops and direction; see [`crate::style::Gradient`] for how the
         /// stops are mapped onto `rect`.
-        gradient: Gradient,
+        ///
+        /// A gradient is immutable once built, so recording, batching and replay share one
+        /// handle instead of deep-copying its `stops` vector (G-12).
+        gradient: Arc<Gradient>,
     },
     /// Draw an arc (partial circle).
     DrawArc {
@@ -605,6 +629,32 @@ pub enum RenderCommand {
         /// Mode applied to later draw commands.
         mode: BlendMode,
     },
+    /// Begin capturing a track matte inside `bounds`.
+    ///
+    /// The commands between this push and the matching [`RenderCommand::PopMatte`] draw the
+    /// **matte source** into its own region. The pop turns that drawing into a coverage mask; the
+    /// commands after it draw the **matted layer**, which [`RenderCommand::EndMatte`] composites
+    /// through the mask over the backdrop captured at the push.
+    ///
+    /// # Why this is a primitive rather than a sequence of existing commands
+    ///
+    /// A layer ([`RenderCommand::PushLayer`]) captures a backdrop and composites a foreground, but
+    /// it has no way to express “multiply the foreground's alpha by a second drawing”. Splitting a
+    /// matte into a layer plus a clip would look like the effect while producing the wrong pixels
+    /// wherever the mask is partial, so the composition gets its own pair of commands.
+    PushMatte {
+        /// Region of the surface the matte and its layer cover, in logical pixels.
+        bounds: Rect,
+        /// How the captured drawing becomes coverage.
+        mode: MatteMode,
+    },
+    /// Finish the matte drawing started by [`RenderCommand::PushMatte`].
+    ///
+    /// The region is cleared for the matted layer's foreground; the captured backdrop and mask
+    /// stay pending until [`RenderCommand::EndMatte`].
+    PopMatte,
+    /// Composite the matted layer through the mask and restore the backdrop.
+    EndMatte,
     /// Draw a conic (angular/sweep) gradient (BLUE11 R5.7).
     DrawConicGradient {
         /// Center point of the gradient.
@@ -614,4 +664,157 @@ pub enum RenderCommand {
         /// Color stops as (position \[0,1\], color) pairs.
         stops: Vec<(f32, Color)>,
     },
+}
+
+impl RenderCommand {
+    /// The device-space rectangle this command can affect, when it is bounded.
+    ///
+    /// # Why this exists
+    ///
+    /// A dirty-region pass has to decide which recorded commands belong to which damaged
+    /// rectangle. Measuring each primitive once here is what lets
+    /// [`crate::render::RenderContext`] bucket a single widget-tree traversal by region instead of
+    /// re-emitting the whole tree once per region (G-04).
+    ///
+    /// `None` means "the extent is not expressible from the command alone" (a clip pop, a blend
+    /// mode, a state change). Such a command is replayed for every region rather than being
+    /// dropped, because dropping a state change would change the pixels that follow it. A command
+    /// whose bounds can only be estimated is deliberately over-estimated: including a command in a
+    /// region it does not touch costs work, excluding one it does touch is a wrong picture.
+    pub fn bounds(&self) -> Option<Rect> {
+        match self {
+            Self::FillRect { rect, .. }
+            | Self::DrawRect { rect, .. }
+            | Self::DrawRectStroke { rect, .. }
+            | Self::FillRoundedRect { rect, .. }
+            | Self::FillRoundedRectAA { rect, .. }
+            | Self::DrawRoundedRectStroke { rect, .. }
+            | Self::DrawRoundedRectStrokeAA { rect, .. }
+            | Self::BoxShadow { rect, .. }
+            | Self::DrawGradient { rect, .. }
+            | Self::PushLayer { bounds: rect, .. }
+            | Self::PushLayerGroup { bounds: rect, .. }
+            | Self::PushMatte { bounds: rect, .. } => Some(*rect),
+            Self::DrawImage { x, y, width, height, .. } => Some(Rect::new(*x, *y, *width, *height)),
+            #[cfg(feature = "3d")]
+            Self::FillQuad { corners, .. }
+            | Self::FillQuadAA { corners, .. }
+            | Self::StrokeQuad { corners, .. } => Some(bounds_of_corners(corners)),
+            #[cfg(feature = "3d")]
+            Self::DrawImageQuad { corners, width, height, .. } => {
+                let mut rect = bounds_of_corners(corners);
+                if rect.width == 0 {
+                    rect.width = *width;
+                }
+                if rect.height == 0 {
+                    rect.height = *height;
+                }
+                Some(rect)
+            }
+            #[cfg(feature = "3d")]
+            Self::DrawMesh3D { viewport, .. } => Some(*viewport),
+            Self::DrawLine { from, to, .. } | Self::DrawLineAA { from, to, .. } => {
+                Some(bounds_of_points(&[*from, *to], 1))
+            }
+            Self::DrawLineStroke { from, to, width, .. }
+            | Self::DrawLineStrokeAA { from, to, width, .. } => {
+                Some(bounds_of_points(&[*from, *to], *width))
+            }
+            Self::FillCircle { center, radius, .. }
+            | Self::FillCircleAA { center, radius, .. }
+            | Self::DrawCircle { center, radius, .. } => {
+                Some(bounds_around_point(*center, *radius))
+            }
+            Self::DrawCircleStroke { center, radius, width, .. } => {
+                Some(bounds_around_point(*center, radius.saturating_add(*width)))
+            }
+            Self::DrawArc { center, radius, .. } => Some(bounds_around_point(*center, *radius)),
+            Self::DrawText { origin, text, font, alignment, .. } => {
+                Some(bounds_of_text(*origin, text, font, *alignment))
+            }
+            Self::PushClip { x, y, width, height } => Some(Rect::new(*x, *y, *width, *height)),
+            Self::DrawPath { points, width, .. } => Some(bounds_of_points(points, *width)),
+            Self::FillPathNonZero { path, .. } => Some(bounds_of_points(path.points(), 0)),
+            Self::ClipPath { points } => Some(bounds_of_points(points, 0)),
+            // State commands, and conic gradients whose extent comes from the clip rather than
+            // from the command. Replayed in every region.
+            Self::PopClip
+            | Self::PopLayer
+            | Self::PopMatte
+            | Self::EndMatte
+            | Self::Blur { .. }
+            | Self::SetBlendMode { .. }
+            | Self::DrawConicGradient { .. } => None,
+        }
+    }
+}
+
+/// The smallest rectangle containing all four corners.
+#[cfg(feature = "3d")]
+fn bounds_of_corners(corners: &[Point; 4]) -> Rect {
+    let min_x = corners.iter().map(|point| point.x).min().unwrap_or(0);
+    let min_y = corners.iter().map(|point| point.y).min().unwrap_or(0);
+    let max_x = corners.iter().map(|point| point.x).max().unwrap_or(min_x);
+    let max_y = corners.iter().map(|point| point.y).max().unwrap_or(min_y);
+    Rect::new(
+        min_x,
+        min_y,
+        max_x.saturating_sub(min_x).max(0) as u32,
+        max_y.saturating_sub(min_y).max(0) as u32,
+    )
+}
+
+/// The bounding box of `points`, expanded by `stroke` pixels on each side.
+fn bounds_of_points(points: &[Point], stroke: u32) -> Rect {
+    let Some(first) = points.first() else {
+        return Rect::new(0, 0, 0, 0);
+    };
+    let mut min_x = first.x;
+    let mut min_y = first.y;
+    let mut max_x = first.x;
+    let mut max_y = first.y;
+    for point in &points[1..] {
+        min_x = min_x.min(point.x);
+        min_y = min_y.min(point.y);
+        max_x = max_x.max(point.x);
+        max_y = max_y.max(point.y);
+    }
+    let pad = stroke as i32;
+    Rect::new(
+        min_x.saturating_sub(pad),
+        min_y.saturating_sub(pad),
+        max_x.saturating_sub(min_x).max(0) as u32 + stroke.saturating_mul(2),
+        max_y.saturating_sub(min_y).max(0) as u32 + stroke.saturating_mul(2),
+    )
+}
+
+/// The square around `center` that a circle of `radius` can touch.
+fn bounds_around_point(center: Point, radius: u32) -> Rect {
+    let radius = radius as i32;
+    Rect::new(
+        center.x.saturating_sub(radius),
+        center.y.saturating_sub(radius),
+        (radius.saturating_mul(2)).max(0) as u32,
+        (radius.saturating_mul(2)).max(0) as u32,
+    )
+}
+
+/// A deliberately generous box around a text run.
+///
+/// A shaped advance is the backend's answer, and asking for it here would put a measurement on
+/// the recording path. One em per scalar plus one em of slack is an upper bound for ordinary UI
+/// text and, because it is only used to decide which region a command is replayed into, erring
+/// large is safe: the command may be replayed by one extra region, never omitted from one it
+/// touches.
+fn bounds_of_text(origin: Point, text: &str, font: &Font, alignment: HorizontalAlignment) -> Rect {
+    let em = font.size().max(1.0);
+    let scalars = text.chars().count().max(1) as f32;
+    let width = (scalars * em + em * 2.0).round().max(1.0) as u32;
+    let height = (em * 2.0).round().max(1.0) as u32;
+    let x = match alignment {
+        HorizontalAlignment::Left => origin.x,
+        HorizontalAlignment::Center => origin.x.saturating_sub(width as i32 / 2),
+        HorizontalAlignment::Right => origin.x.saturating_sub(width as i32),
+    };
+    Rect::new(x.saturating_sub(em as i32), origin.y.saturating_sub(em as i32), width, height)
 }

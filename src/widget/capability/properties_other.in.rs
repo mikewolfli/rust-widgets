@@ -364,7 +364,12 @@ macro_rules! impl_properties_other {
             PropertySchema::new("fold_threshold", PropertyValueKind::UInt, true, true),
             PropertySchema::new("fold_context_lines", PropertyValueKind::UInt, true, true),
             PropertySchema::new("unified_changed_pair", PropertyValueKind::Bool, true, true),
-            PropertySchema::enumerated("whitespace_mode", true, true, &["show", "ignore_eol", "ignore_all", "mark_blank_changes"]),
+            PropertySchema::enumerated(
+                "whitespace_mode",
+                true,
+                true,
+                &["show", "ignore_eol", "ignore_all", "mark_blank_changes"],
+            ),
             PropertySchema::new("word_granularity", PropertyValueKind::Bool, true, true),
         ];
 
@@ -381,8 +386,18 @@ macro_rules! impl_properties_other {
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
             PropertySchema::new("max_visible", PropertyValueKind::UInt, true, true),
-            PropertySchema::enumerated("anchor", true, true, &["top_left", "top_right", "bottom_left", "bottom_right"]),
-            PropertySchema::enumerated("stacking_direction", true, true, &["newest_at_bottom", "newest_at_top"]),
+            PropertySchema::enumerated(
+                "anchor",
+                true,
+                true,
+                &["top_left", "top_right", "bottom_left", "bottom_right"],
+            ),
+            PropertySchema::enumerated(
+                "stacking_direction",
+                true,
+                true,
+                &["newest_at_bottom", "newest_at_top"],
+            ),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -513,7 +528,6 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("live_update", PropertyValueKind::Bool, true, true),
             PropertySchema::new("commit_delay_ms", PropertyValueKind::UInt, true, true),
             PropertySchema::new("has_pending_commit", PropertyValueKind::Bool, true, false),
@@ -554,6 +568,11 @@ macro_rules! impl_properties_other {
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
             PropertySchema::new("horizontal_scroll_offset", PropertyValueKind::UInt, true, true),
+            // Swimlanes: `lane_mode` is the explicit switch, `swimlanes` the boolean alias the
+            // control accepts for it, and the count is read-only because a lane is an identity.
+            PropertySchema::enumerated("lane_mode", true, true, &["none", "lanes"]),
+            PropertySchema::new("swimlanes", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("lane_count", PropertyValueKind::UInt, true, false),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -723,7 +742,6 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("section_separator_visible", PropertyValueKind::Bool, true, true),
         ];
 
@@ -861,7 +879,6 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::enumerated("badge_style", true, true, &["text", "dot"]),
             PropertySchema::new("drawer_animated", PropertyValueKind::Bool, true, true),
             PropertySchema::new("scrim_opacity", PropertyValueKind::Float, true, true),
@@ -893,7 +910,6 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("back_visible", PropertyValueKind::Bool, true, true),
         ];
 
@@ -1002,7 +1018,6 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("keyboard_navigation_enabled", PropertyValueKind::Bool, true, true),
         ];
 
@@ -1298,6 +1313,370 @@ macro_rules! impl_properties_other {
             PropertySchema::new("fullscreen", PropertyValueKind::Bool, true, true),
             PropertySchema::new("document_edited", PropertyValueKind::Bool, true, true),
             PropertySchema::new("focused", PropertyValueKind::Bool, true, true),
+        ];
+
+        // ── Companion controls (COMP-01/05/07/08/09/10/12/13/14/15/16/17/18/19/20) ──
+        //
+        // The companion controls are first-class capabilities. Their property tables are
+        // declared here beside the controls they describe; each name is the one the
+        // control's own `WidgetProperties::property_names` publishes.
+
+        /// Palette grid shared by the colour controls (`COMP-01`).
+        ///
+        /// `colors` is a list of typed colours carried as a `Tuple` of
+        /// `CapabilityValue::Color`; the schema names the element kind because there is no
+        /// dedicated colour-list kind in `PropertyValueKind`.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const SWATCH_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("colors", PropertyValueKind::Color, true, true),
+            PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("cell_size", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("columns", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// One filter editor per column (`COMP-05`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const FILTER_ROW_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("columns", PropertyValueKind::StringList, true, true),
+            // Each entry is the `[column, operator, operand]` triple the reader produces.
+            PropertySchema::new("conditions", PropertyValueKind::StringList, true, true),
+            PropertySchema::enumerated(
+                "operator",
+                true,
+                true,
+                &[
+                    "contains",
+                    "equals",
+                    "starts_with",
+                    "ends_with",
+                    "not_contains",
+                    "equals_number",
+                    "greater_than",
+                    "greater_or_equal",
+                    "less_than",
+                    "less_or_equal",
+                ],
+            ),
+            PropertySchema::new("live", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Series key for charts (`COMP-07`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const LEGEND_PROPERTIES: &[PropertySchema] = &[
+            // Each entry is the `[label, colour, visible]` triple the reader produces.
+            PropertySchema::new("entries", PropertyValueKind::StringList, true, true),
+            PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
+            PropertySchema::new("checkable", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated(
+                "position",
+                true,
+                true,
+                &["top", "right", "bottom", "left", "outside"],
+            ),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Follow-pointer chart bubble (`COMP-08`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const CHART_TOOLTIP_PROPERTIES: &[PropertySchema] = &[
+            // Points travel as a two-number tuple, so `NumberList` is the closest carrier.
+            PropertySchema::new("anchor", PropertyValueKind::NumberList, true, true),
+            PropertySchema::new("offset", PropertyValueKind::NumberList, true, true),
+            PropertySchema::new("follow_pointer", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("content", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Host-wide hover-to-tooltip pipeline (`COMP-09`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const TOOLTIP_MANAGER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("delay_ms", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("duration_ms", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("follow_pointer", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("max_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Zoom/pan/ROI state for an image view (`COMP-10`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const ZOOM_PAN_CONTROLLER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("zoom_level", PropertyValueKind::Float, true, true),
+            PropertySchema::new("pan_offset", PropertyValueKind::NumberList, true, true),
+            PropertySchema::enumerated(
+                "zoom_mode",
+                true,
+                true,
+                &["free", "fit_width", "fit_height", "original"],
+            ),
+            PropertySchema::new("min_zoom", PropertyValueKind::Float, true, true),
+            PropertySchema::new("max_zoom", PropertyValueKind::Float, true, true),
+            PropertySchema::new("roi", PropertyValueKind::Rect, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Bounded, expiring toast queue (`COMP-12`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const TOAST_HOST_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("max_visible", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("max_queued", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("default_duration_ms", PropertyValueKind::UInt, true, true),
+            PropertySchema::enumerated(
+                "anchor",
+                true,
+                true,
+                &[
+                    "top_left",
+                    "top_center",
+                    "top_right",
+                    "bottom_left",
+                    "bottom_center",
+                    "bottom_right",
+                ],
+            ),
+            PropertySchema::enumerated(
+                "stacking_direction",
+                true,
+                true,
+                &["newest_at_top", "newest_at_bottom"],
+            ),
+            PropertySchema::enumerated(
+                "overflow_policy",
+                true,
+                true,
+                &["drop_oldest", "drop_newest", "queue"],
+            ),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Tile addressing and cache for a map (`COMP-13`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const TILE_LOADER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("url_template", PropertyValueKind::String, true, true),
+            PropertySchema::new("min_zoom", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("max_zoom", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("tile_size", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("cache_limit", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("cache_size", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Three-button zoom strip for a map (`COMP-13`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const ZOOM_CONTROL_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("zoom_level", PropertyValueKind::Float, true, true),
+            PropertySchema::new("min", PropertyValueKind::Float, true, true),
+            PropertySchema::new("max", PropertyValueKind::Float, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Distance legend for a map (`COMP-13`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const SCALE_BAR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("meters_per_pixel", PropertyValueKind::Float, true, true),
+            PropertySchema::enumerated("units", true, true, &["metric", "imperial"]),
+            PropertySchema::enumerated("style", true, true, &["plain", "boxed"]),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Bearing dial for a map (`COMP-13`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const COMPASS_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("bearing_deg", PropertyValueKind::Float, true, true),
+            PropertySchema::new("clickable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Date/value axis for a Gantt chart (`COMP-14`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const TIMELINE_AXIS_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("tick_density", PropertyValueKind::UInt, true, true),
+            PropertySchema::enumerated("date_format", true, true, &["numeric", "iso"]),
+            PropertySchema::new("zoom_level", PropertyValueKind::Float, true, true),
+            // The range pair is read as `[start, end]`; the two scalar names below write it.
+            PropertySchema::new("range", PropertyValueKind::NumberList, true, false),
+            PropertySchema::new("range_start", PropertyValueKind::Int, true, true),
+            PropertySchema::new("range_end", PropertyValueKind::Int, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Editable dependency edges for a Gantt chart (`COMP-14`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const DEPENDENCY_EDITOR_PROPERTIES: &[PropertySchema] = &[
+            // The reader reports the list's length; the list itself is replaced through the
+            // control's `set_dependencies` method, so the property is read-only.
+            PropertySchema::new("dependencies", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Multi-file selector beside a diff viewer (`COMP-15`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const DIFF_FILE_LIST_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("files", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("file_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("selected_path", PropertyValueKind::String, true, false),
+            PropertySchema::enumerated(
+                "selection_mode",
+                true,
+                true,
+                &["single", "multi", "extended", "none"],
+            ),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Heading outline beside a markdown editor (`COMP-16`).
+        ///
+        /// Each `entries` row is the `level|title|line` token the control reads.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const MARKDOWN_OUTLINE_PANEL_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("entries", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("active_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("entry_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Find/replace strip beside an editor (`COMP-16`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const FIND_BAR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("query", PropertyValueKind::String, true, true),
+            PropertySchema::new("case_sensitive", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("whole_word", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("replace_text", PropertyValueKind::String, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("replace_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("match_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("current_range", PropertyValueKind::String, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Scene container for free-form shapes (`COMP-17`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const SHAPE_CANVAS_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("shapes", PropertyValueKind::NumberList, true, false),
+            PropertySchema::new("shape_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("selection", PropertyValueKind::NumberList, true, true),
+            PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("snap_to_grid", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("grid_step", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Real card control for a kanban column (`COMP-18`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const KANBAN_CARD_VIEW_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
+            PropertySchema::new("description", PropertyValueKind::String, true, true),
+            PropertySchema::new("done", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tags", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("assignee", PropertyValueKind::String, true, true),
+            PropertySchema::new("draggable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("editing", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Real column header for a kanban board (`COMP-18`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const KANBAN_COLUMN_HEADER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
+            PropertySchema::new("count", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("wip_limit", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("collapsed", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("at_wip_limit", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("editing", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Quick date-range presets beside a range picker (`COMP-19`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const RANGE_PRESET_BAR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("presets", PropertyValueKind::StringList, true, true),
+            PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
+            PropertySchema::new("compact", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("selected_label", PropertyValueKind::String, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Shared table header with sorting, resizing and filtering (`COMP-20`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const GRID_VIEW_HEADER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("columns", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("column_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("sort_indicator_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated(
+                "resize_mode",
+                true,
+                true,
+                &["fixed", "stretch", "stretch_last", "interactive"],
+            ),
+            PropertySchema::new("filter_icon_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("sort_columns", PropertyValueKind::String, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
     };
 }

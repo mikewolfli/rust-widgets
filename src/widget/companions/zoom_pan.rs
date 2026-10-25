@@ -87,7 +87,7 @@ impl ZoomPanController {
     /// Creates a 1:1 controller with the given viewport geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::ImageView, geometry, "ZoomPanController"),
+            base: BaseWidget::new(WidgetKind::ZoomPanController, geometry, "ZoomPanController"),
             zoom_level: 1.0,
             pan_offset: Point::new(0, 0),
             zoom_mode: ZoomMode::Free,
@@ -289,6 +289,15 @@ impl EventHandler for ZoomPanController {
     }
 }
 
+/// The overlap of two rectangles, or an empty rectangle when they do not meet.
+fn intersect_rect(a: Rect, b: Rect) -> Rect {
+    let x = a.x.max(b.x);
+    let y = a.y.max(b.y);
+    let right = (a.x + a.width as i32).min(b.x + b.width as i32);
+    let bottom = (a.y + a.height as i32).min(b.y + b.height as i32);
+    Rect::new(x, y, right.saturating_sub(x).max(0) as u32, bottom.saturating_sub(y).max(0) as u32)
+}
+
 impl Draw for ZoomPanController {
     fn draw(&mut self, context: &mut RenderContext) {
         let viewport = self.geometry();
@@ -298,10 +307,11 @@ impl Draw for ZoomPanController {
         context.fill_rect(viewport, surface);
         context.draw_rect(viewport, surface.blend(&ink, 0.20));
 
-        let content = self.content_rect();
-        if !viewport.intersects(&content) {
+        let content = intersect_rect(self.content_rect(), viewport);
+        if content.width == 0 || content.height == 0 {
             return;
         }
+        context.push_clip(viewport.x, viewport.y, viewport.width, viewport.height);
         context.fill_rect(content, surface.blend(&ink, 0.06));
         context.draw_rect(content, surface.blend(&ink, 0.35));
         // A coarse grid makes pan and zoom observable without image pixels.
@@ -331,9 +341,13 @@ impl Draw for ZoomPanController {
                 width,
                 height,
             );
-            context.fill_rect(rect, accent.with_alpha(40));
-            context.draw_rect(rect, accent);
+            let rect = intersect_rect(rect, viewport);
+            if rect.width > 0 && rect.height > 0 {
+                context.fill_rect(rect, accent.with_alpha(40));
+                context.draw_rect(rect, accent);
+            }
         }
+        context.pop_clip();
     }
 }
 

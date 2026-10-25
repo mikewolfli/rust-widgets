@@ -756,7 +756,7 @@ mod tests {
             .commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                RenderCommand::DrawText { text, .. } => Some(text.as_ref()),
                 _ => None,
             })
             .collect();
@@ -780,7 +780,7 @@ mod tests {
             .iter()
             .position(|command| matches!(command, RenderCommand::FillRoundedRect { .. }));
         let label_at = recorder.commands.iter().position(|command| {
-            matches!(command, RenderCommand::DrawText { text, .. } if text.as_str() == "Inbox")
+            matches!(command, RenderCommand::DrawText { text, .. } if text.as_ref() == "Inbox")
         });
         assert!(fill_at.is_some(), "the selected row is highlighted");
         assert!(fill_at.unwrap() < label_at.unwrap(), "the caption stays legible");
@@ -806,7 +806,7 @@ mod tests {
             .commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                RenderCommand::DrawText { text, .. } => Some(text.as_ref()),
                 _ => None,
             })
             .collect();
@@ -863,7 +863,7 @@ mod tests {
             .commands
             .iter()
             .filter_map(|command| match command {
-                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                RenderCommand::DrawText { text, .. } => Some(text.as_ref()),
                 _ => None,
             })
             .collect();

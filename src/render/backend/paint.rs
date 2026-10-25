@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+#![allow(clippy::chunks_exact_to_as_chunks)]
 //! Paint backend trait and software implementation.
 use super::batch::BatchState;
 use crate::compat::vec;
@@ -12,7 +13,7 @@ use crate::render::pipeline::{
     sat_add_i32, sat_mul_i32, sat_neg_i32, set_pixel, u32_to_i32_saturating,
 };
 use crate::render::{
-    blend_pixel_with_mode, BlendMode, RenderCommand, ShapedText, SoftwareRenderConfig,
+    blend_pixel_with_mode, BlendMode, MatteMode, RenderCommand, ShapedText, SoftwareRenderConfig,
     SoftwareSurface, TextMetrics,
 };
 
@@ -115,11 +116,9 @@ pub trait PaintBackend {
     ///
     /// # Why this is a trait method and not only a command
     ///
-    /// [`RenderCommand::DrawText`] owns its `String` and `Font`, so routing every label through
-    /// the command forces two heap copies per text draw even when the backend rasterises it
-    /// immediately and retains nothing. A window with a few hundred labels paid that on every
-    /// frame. This entry point hands the text over by reference; the **default implementation**
-    /// is exactly the old behaviour (build the owning command, execute it), so a recording or
+    /// [`RenderCommand::DrawText`] owns its `Arc<str>` and `Font`, so routing every label through
+    /// the command hands the bytes over by refcount (G-12). This entry point hands the text over
+    /// by reference; the **default implementation** is the old behaviour, so a recording or
     /// deferred backend is unchanged. Only an immediate backend should override it.
     fn draw_text(
         &mut self,
@@ -131,7 +130,7 @@ pub trait PaintBackend {
     ) {
         self.execute_command(&RenderCommand::DrawText {
             origin,
-            text: crate::compat::String::from(text),
+            text: crate::compat::Arc::from(text),
             font: font.clone(),
             color,
             alignment,
@@ -140,17 +139,16 @@ pub trait PaintBackend {
     /// Fills `rect` with `gradient`.
     ///
     /// The same shape as [`Self::draw_text`], and for the same reason: [`RenderCommand::DrawGradient`]
-    /// owns its `Gradient` — a paint server with a `stops` vector — so routing every gradient fill
-    /// through the command copies that vector even when the backend paints it immediately and keeps
-    /// nothing. `RenderContext::fill_gradient` did exactly that, once per gradient-filled control per
-    /// frame.
-    ///
-    /// The default implementation is the old behaviour, so a recording or deferred backend is
-    /// unchanged and only an immediate backend has anything to gain by overriding it.
+    /// owns an `Arc<Gradient>` (G-12), so a recording backend stores the same immutable paint
+    /// server by refcount rather than deep-copying its `stops` vector. An immediate backend
+    /// overrides this and paints straight from the borrowed gradient.
     fn fill_gradient(&mut self, rect: crate::core::Rect, gradient: &crate::style::Gradient) {
         #[cfg(test)]
         note_gradient_owned_command();
-        self.execute_command(&RenderCommand::DrawGradient { rect, gradient: gradient.clone() });
+        self.execute_command(&RenderCommand::DrawGradient {
+            rect,
+            gradient: Arc::new(gradient.clone()),
+        });
     }
     /// Returns the size of the target surface in logical (DPI-independent)
     /// units.
@@ -481,11 +479,12 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
         match command {
             RenderCommand::PushClip { .. }
             | RenderCommand::PushLayer { .. }
-            | RenderCommand::PushLayerGroup { .. } => {
+            | RenderCommand::PushLayerGroup { .. }
+            | RenderCommand::PushMatte { .. } => {
                 surface.buffer.suppress_depth += 1;
                 return;
             }
-            RenderCommand::PopClip => {
+            RenderCommand::PopClip | RenderCommand::PopMatte => {
                 surface.buffer.suppress_depth -= 1;
                 return;
             }
@@ -587,6 +586,9 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
             push_layer_group(surface, *bounds, *effect, *opacity, *cache_key)
         }
         RenderCommand::PopLayer => pop_layer(surface),
+        RenderCommand::PushMatte { bounds, mode } => push_matte(surface, *bounds, *mode),
+        RenderCommand::PopMatte => pop_matte(surface),
+        RenderCommand::EndMatte => end_matte(surface),
         RenderCommand::DrawGradient { rect, gradient } => {
             surface.fill_rect_gradient(*rect, gradient);
         }
@@ -850,6 +852,104 @@ fn begin_layer(
         cache_key,
         cached_foreground,
     });
+}
+
+/// Begins a track matte: captures the backdrop and clears the region for the matte drawing.
+///
+/// The clip stack is used exactly as [`begin_layer`] uses it, so the captured region is the
+/// intersection of `bounds` with the caller's own clip and the matching [`end_matte`] releases
+/// that same clip. A matte is three phases rather than two: the commands after this push draw
+/// the **matte source**, [`pop_matte`] converts that drawing into a coverage mask, and the
+/// commands after the pop draw the **matted layer**, which [`end_matte`] composites through the
+/// mask.
+fn push_matte(surface: &mut SoftwareSurface, bounds: Rect, mode: MatteMode) {
+    surface.push_clip(bounds.x, bounds.y, bounds.width, bounds.height);
+    let size = surface.size();
+    let Some(rect) = clipped_region(surface.current_clip(), size) else {
+        surface.buffer.mattes.push(super::surface::MatteCapture {
+            rect: (0, 0, 0, 0),
+            backdrop: Vec::new(),
+            mode,
+            mask: Vec::new(),
+        });
+        return;
+    };
+    let backdrop = capture_region(surface.buffer.back_mut(), size.width as usize, rect);
+    clear_region(surface.buffer.back_mut(), size.width as usize, rect);
+    surface.buffer.mattes.push(super::surface::MatteCapture {
+        rect,
+        backdrop,
+        mode,
+        mask: Vec::new(),
+    });
+}
+
+/// Converts the drawing since [`push_matte`] into coverage, then clears the region for the
+/// matted layer.
+fn pop_matte(surface: &mut SoftwareSurface) {
+    let Some(mut capture) = surface.buffer.mattes.pop() else { return };
+    let (_, _, width, height) = capture.rect;
+    if width == 0 || height == 0 {
+        surface.buffer.mattes.push(capture);
+        return;
+    }
+    let surface_width = surface.size().width as usize;
+    let drawn = capture_region(surface.buffer.back_mut(), surface_width, capture.rect);
+    capture.mask = matte_coverage(&drawn, capture.mode);
+    // The matte source has served its purpose; the matted layer starts from a clean region.
+    clear_region(surface.buffer.back_mut(), surface_width, capture.rect);
+    surface.buffer.mattes.push(capture);
+}
+
+/// Composites the matted layer through the captured coverage and restores the backdrop.
+fn end_matte(surface: &mut SoftwareSurface) {
+    let Some(capture) = surface.buffer.mattes.pop() else { return };
+    surface.pop_clip();
+    let (_, _, width, height) = capture.rect;
+    if width == 0 || height == 0 {
+        return;
+    }
+    let pixel_count = width as usize * height as usize;
+    if capture.backdrop.len() != pixel_count * 4 || capture.mask.len() != pixel_count {
+        return;
+    }
+    let surface_width = surface.size().width as usize;
+    let mut matted = capture_region(surface.buffer.back_mut(), surface_width, capture.rect);
+    for (index, pixel) in matted.chunks_exact_mut(4).enumerate() {
+        let coverage = capture.mask[index] as u32;
+        pixel[3] = ((pixel[3] as u32 * coverage) / 255) as u8;
+    }
+    composite_foreground(
+        surface.buffer.back_mut(),
+        surface_width,
+        capture.rect,
+        &capture.backdrop,
+        &matted,
+        1.0,
+    );
+}
+
+/// Per-pixel coverage for a captured matte drawing.
+///
+/// `Alpha` is the source's own alpha; `Luma` is its luminance times its alpha, so a transparent
+/// pixel contributes no coverage regardless of its colour. The inverted modes complement the
+/// result, which is what a Lottie `tt` layer with the invert flag asks for.
+fn matte_coverage(source: &[u8], mode: MatteMode) -> Vec<u8> {
+    let mut mask = Vec::with_capacity(source.len() / 4);
+    for pixel in source.chunks_exact(4) {
+        let alpha = pixel[3] as u32;
+        // Rec. 709 luminance, scaled by 10000 to stay in integer arithmetic.
+        let luma =
+            (2126 * pixel[0] as u32 + 7152 * pixel[1] as u32 + 722 * pixel[2] as u32) / 10_000;
+        let coverage = match mode {
+            MatteMode::Alpha => alpha,
+            MatteMode::AlphaInverted => 255 - alpha,
+            MatteMode::Luma => luma * alpha / 255,
+            MatteMode::LumaInverted => 255 - luma * alpha / 255,
+        };
+        mask.push(coverage.min(255) as u8);
+    }
+    mask
 }
 
 /// How many cached layer foregrounds a surface keeps.
@@ -1408,7 +1508,6 @@ mod tests {
     // broke `check_harmony_cross.sh` (`cannot find type Vec in this scope`) while every host build
     // stayed green. `compat` re-exports `alloc::vec::Vec`, so importing it makes the tests mean the
     // same thing on every target rather than only on the ones with a `std`.
-    use crate::compat::MiniToString;
     use crate::compat::Vec;
     use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 
@@ -1482,7 +1581,7 @@ mod tests {
         through_command.begin_frame(Color::WHITE);
         through_command.execute_command(&RenderCommand::DrawGradient {
             rect: Rect::new(0, 0, 16, 16),
-            gradient: gradient.clone(),
+            gradient: Arc::new(gradient.clone()),
         });
         through_command.end_frame();
         let mut untouched = SoftwarePaintBackend::new(size, 1.0);
@@ -1723,7 +1822,7 @@ mod tests {
         let font = Font::simple("Arial", 12.0);
         backend.execute_command(&RenderCommand::DrawText {
             origin: Point::new(10, 20),
-            text: "Hello".to_string(),
+            text: Arc::from("Hello"),
             font,
             color: Color::BLACK,
             alignment: HorizontalAlignment::Left,

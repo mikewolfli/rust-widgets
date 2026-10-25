@@ -812,22 +812,29 @@ pub struct EventAlias {
 /// The table is intentionally small and explicit: an alias is a published promise, so it is not
 /// derived from string similarity (that would make `selected_changed` and `selection_changed`
 /// collide even though their payloads differ).
+///
+/// # The backing invariant (W-19/W-20/W-21)
+///
+/// A row is only kept when **both** spellings resolve to a schema in a control's published
+/// `events` table, and every published row is backed by an `.emit(..)` in production code (the
+/// `check_capability_events_are_emitted` gate). `connect_event(alias, ..)` subscribes under the
+/// resolved schema's own name, so it can only return `Ok` for a signal that fires. A spelling a
+/// control has no concept for is not in this table at all.
 pub static EVENT_ALIASES: &[EventAlias] = &[
     EventAlias {
         alias: "cancelled",
         canonical: "canceled",
-        note: "W-19: the US spelling is canonical; the double-l form stays subscribable",
+        note: "W-19: `canceled` is the emitted field; the double-l spelling resolves to it",
     },
     EventAlias {
         alias: "edit_cancelled",
         canonical: "edit_canceled",
-        note: "W-19: spelling variant of the same edit-canceled event",
+        note: "W-19: spelling variant that resolves to the same emitted edit-canceled signal",
     },
     EventAlias {
         alias: "current_index_changed",
         canonical: "current_changed",
-        note:
-            "W-20: a single current item uses `current_changed`; the older index spelling resolves",
+        note: "W-20: single-current controls emit `current_changed`; the index spelling resolves",
     },
     EventAlias {
         alias: "selected_changed",
@@ -837,7 +844,7 @@ pub static EVENT_ALIASES: &[EventAlias] = &[
     EventAlias {
         alias: "hovered_point_changed",
         canonical: "point_hover_changed",
-        note: "W-21: hover names are `X_hovered` / `X_hover_changed`, subject first",
+        note: "W-21: subject-first hover name; the old subject-last spelling resolves",
     },
     EventAlias {
         alias: "hovered_glyph_changed",
