@@ -228,6 +228,27 @@ impl DateRangePicker {
         self.base.request_redraw();
     }
 
+    /// Applies `preset` to the selection.
+    ///
+    /// When the preset's label matches one already configured through
+    /// [`DateRangePicker::set_presets`], the existing selection path runs and `preset_selected`
+    /// carries that index — that is the wiring between a [`RangePresetBar`] and this picker. A
+    /// preset that is not in the picker's own list is still applied (the range is the useful part)
+    /// but no index can honestly be reported, so the return value is `None`.
+    pub fn apply_preset(&mut self, preset: &RangePreset) -> Option<usize> {
+        if let Some(index) = self.presets.iter().position(|own| own.label == preset.label) {
+            self.select_preset(index);
+            return Some(index);
+        }
+        self.start_date = Some(preset.start);
+        self.end_date = Some(preset.end);
+        self.display_year = preset.start.0;
+        self.display_month = preset.start.1;
+        self.emit_range_changed();
+        self.base.request_redraw();
+        None
+    }
+
     /// The `(year, month)` shown by panel `panel` (`0` is the primary month).
     fn panel_month(&self, panel: usize) -> (i32, u32) {
         if panel == 0 {
@@ -1056,6 +1077,457 @@ impl EventHandler for DateRangePicker {
     }
 }
 
+/// A calendar date as `(year, month, day)`, the tuple every date API in this module uses.
+pub type Date = (i32, u32, u32);
+
+/// One named shortcut range offered by a [`RangePresetBar`].
+///
+/// Unlike [`DatePreset`] — which the picker owns and may use as a partial anchor — a range preset
+/// is always a complete range, because a bar's whole job is to apply both ends at once.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RangePreset {
+    /// The chip's caption, and the key [`RangePresetBar::select`] matches.
+    pub label: String,
+    /// Inclusive first day.
+    pub start: Date,
+    /// Inclusive last day.
+    pub end: Date,
+}
+
+impl RangePreset {
+    /// Creates a preset from its caption and endpoints.
+    pub fn new(label: impl Into<String>, start: Date, end: Date) -> Self {
+        Self { label: label.into(), start, end }
+    }
+
+    /// Converts a picker-owned [`DatePreset`] that names both ends.
+    ///
+    /// Returns `None` for a partial preset: a bar chip cannot stand for "start only", and
+    /// inventing an end would make the chip's caption a lie.
+    pub fn from_date_preset(preset: &DatePreset) -> Option<Self> {
+        Some(Self { label: preset.label.clone(), start: preset.start?, end: preset.end? })
+    }
+
+    /// The published property spelling: `label|start|end` with ISO dates.
+    pub fn to_token(&self) -> String {
+        format!("{}|{}|{}", self.label, format_iso_date(self.start), format_iso_date(self.end))
+    }
+
+    /// Parses [`Self::to_token`].
+    pub fn from_token(token: &str) -> Option<Self> {
+        let mut parts = token.splitn(3, '|');
+        let label = parts.next()?.to_string();
+        let start = parse_iso_date(parts.next()?)?;
+        let end = parse_iso_date(parts.next()?)?;
+        Some(Self { label, start, end })
+    }
+}
+
+/// Whether a preset bar lays its chips out across or down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PresetBarOrientation {
+    /// Chips share one row; the default.
+    #[default]
+    Horizontal,
+    /// Chips share one column.
+    Vertical,
+}
+
+impl PresetBarOrientation {
+    /// The token spelling published as the `orientation` property.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Horizontal => "horizontal",
+            Self::Vertical => "vertical",
+        }
+    }
+
+    /// Parses a published token spelling.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "horizontal" | "row" => Some(Self::Horizontal),
+            "vertical" | "column" => Some(Self::Vertical),
+            _ => None,
+        }
+    }
+}
+
+/// Height of one horizontal chip, and of a compact one.
+const CHIP_HEIGHT: u32 = 24;
+const COMPACT_CHIP_HEIGHT: u32 = 18;
+
+/// A strip of named range shortcuts that reports the range a reader picked.
+///
+/// The bar is the companion [`DateRangePicker`] lacked rather than a second calendar: it paints
+/// the presets, owns which one is active, and emits the range as a `(start, end)` pair. A host
+/// feeds that pair to [`DateRangePicker::apply_preset`], which is the same value type, so the two
+/// controls cannot disagree about what "last 7 days" means.
+pub struct RangePresetBar {
+    base: BaseWidget,
+    presets: Vec<RangePreset>,
+    orientation: PresetBarOrientation,
+    compact: bool,
+    /// Index of the active chip, once one has been chosen.
+    selected: Option<usize>,
+    /// Index of the chip the pointer is over, for the hover wash.
+    hovered: Option<usize>,
+    /// Index keyboard navigation points at, whether or not it is selected yet.
+    cursor: usize,
+    /// Emitted with the applied range whenever a chip is chosen.
+    pub preset_selected: Signal1<(Date, Date)>,
+}
+
+impl RangePresetBar {
+    /// Creates an empty horizontal bar.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::DateRangePicker, geometry, "RangePresetBar"),
+            presets: Vec::new(),
+            orientation: PresetBarOrientation::Horizontal,
+            compact: false,
+            selected: None,
+            hovered: None,
+            cursor: 0,
+            preset_selected: Signal1::new(),
+        }
+    }
+
+    /// The configured presets, in display order.
+    pub fn presets(&self) -> &[RangePreset] {
+        &self.presets
+    }
+
+    /// Replaces the presets.
+    ///
+    /// An active chip is kept when its label still exists, so a refreshed preset list (the
+    /// classic "last 7 days" sliding forward overnight) keeps the reader's choice rather than
+    /// clearing it.
+    pub fn set_presets(&mut self, presets: Vec<RangePreset>) {
+        let active_label = self
+            .selected
+            .and_then(|index| self.presets.get(index))
+            .map(|preset| preset.label.clone());
+        self.presets = presets;
+        self.selected = active_label
+            .and_then(|label| self.presets.iter().position(|preset| preset.label == label));
+        self.cursor = self.cursor.min(self.presets.len().saturating_sub(1));
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The layout direction.
+    pub fn orientation(&self) -> PresetBarOrientation {
+        self.orientation
+    }
+
+    /// Sets the layout direction.
+    pub fn set_orientation(&mut self, orientation: PresetBarOrientation) {
+        if self.orientation == orientation {
+            return;
+        }
+        self.orientation = orientation;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Whether chips are drawn in their compact size.
+    pub fn compact(&self) -> bool {
+        self.compact
+    }
+
+    /// Enables or disables the compact chip size.
+    pub fn set_compact(&mut self, compact: bool) {
+        if self.compact == compact {
+            return;
+        }
+        self.compact = compact;
+        self.base.request_redraw();
+    }
+
+    /// The active preset's label, when one has been chosen.
+    pub fn selected_label(&self) -> Option<&str> {
+        self.selected.and_then(|index| self.presets.get(index)).map(|preset| preset.label.as_str())
+    }
+
+    /// The active preset's range, when one has been chosen.
+    pub fn selected_range(&self) -> Option<(Date, Date)> {
+        self.selected
+            .and_then(|index| self.presets.get(index))
+            .map(|preset| (preset.start, preset.end))
+    }
+
+    /// Chooses the preset whose label is `label`, emitting its range.
+    ///
+    /// Returns `false` for an unknown label instead of silently choosing the first chip: a host
+    /// that mistyped a caption must find out, not discover later that the picker was showing a
+    /// different range from the one it asked for.
+    pub fn select(&mut self, label: &str) -> bool {
+        let Some(index) = self.presets.iter().position(|preset| preset.label == label) else {
+            return false;
+        };
+        self.select_index(index);
+        true
+    }
+
+    /// Chooses preset `index`, emitting its range.
+    pub fn select_index(&mut self, index: usize) {
+        let Some(preset) = self.presets.get(index) else {
+            return;
+        };
+        let range = (preset.start, preset.end);
+        let changed = self.selected != Some(index);
+        self.selected = Some(index);
+        self.cursor = index;
+        if changed {
+            self.preset_selected.emit(range);
+        }
+        self.base.request_redraw();
+    }
+
+    /// The painted box of chip `index`.
+    ///
+    /// Draw and hit-testing both call this, so a click can never choose a chip the reader is not
+    /// pointing at.
+    pub fn chip_rect(&self, index: usize) -> Option<Rect> {
+        if index >= self.presets.len() {
+            return None;
+        }
+        let rect = self.geometry();
+        let count = self.presets.len() as u32;
+        match self.orientation {
+            PresetBarOrientation::Horizontal => {
+                let width = rect.width / count.max(1);
+                let height = if self.compact {
+                    COMPACT_CHIP_HEIGHT.min(rect.height)
+                } else {
+                    CHIP_HEIGHT.min(rect.height)
+                };
+                Some(Rect::new(
+                    rect.x + (index as u32 * width) as i32,
+                    rect.y,
+                    width.saturating_sub(2),
+                    height,
+                ))
+            }
+            PresetBarOrientation::Vertical => {
+                let height = rect.height / count.max(1);
+                Some(Rect::new(
+                    rect.x,
+                    rect.y + (index as u32 * height) as i32,
+                    rect.width,
+                    height.saturating_sub(2),
+                ))
+            }
+        }
+    }
+
+    /// The chip under `pos`.
+    fn chip_at(&self, pos: Point) -> Option<usize> {
+        (0..self.presets.len())
+            .find(|index| self.chip_rect(*index).is_some_and(|chip| chip.contains_point(pos)))
+    }
+
+    /// Moves keyboard navigation by `delta` and selects the reached chip.
+    fn move_cursor(&mut self, delta: isize) {
+        if self.presets.is_empty() {
+            return;
+        }
+        let last = self.presets.len() - 1;
+        let next = (self.cursor as isize + delta).clamp(0, last as isize) as usize;
+        self.select_index(next);
+    }
+}
+
+impl Widget for RangePresetBar {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+    fn size_hint(&self) -> crate::core::Size {
+        match self.orientation {
+            PresetBarOrientation::Horizontal => crate::core::Size::new(320, CHIP_HEIGHT),
+            PresetBarOrientation::Vertical => crate::core::Size::new(160, 160),
+        }
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+    /// Resolves `preset_selected`; see `DiffViewer`'s note for why the arms are explicit.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "preset_selected" => {
+                Some(EventSignalRef::mapped("preset_selected", &self.preset_selected, |range| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::String(format_iso_date(range.0)),
+                        CapabilityValue::String(format_iso_date(range.1)),
+                    ]))
+                }))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl WidgetProperties for RangePresetBar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "presets" => Ok(CapabilityValue::Tuple(
+                self.presets
+                    .iter()
+                    .map(|preset| CapabilityValue::String(preset.to_token()))
+                    .collect(),
+            )),
+            "orientation" => Ok(CapabilityValue::String(self.orientation.as_str().to_string())),
+            "compact" => Ok(CapabilityValue::Bool(self.compact)),
+            "selected_label" => Ok(match self.selected_label() {
+                Some(label) => CapabilityValue::String(label.to_string()),
+                None => CapabilityValue::Null,
+            }),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "presets" => {
+                let items = expect_string_list(value)?;
+                let mut presets = Vec::with_capacity(items.len());
+                for item in items {
+                    let preset = RangePreset::from_token(&item)
+                        .ok_or(CapabilityAccessError::TypeMismatch)?;
+                    presets.push(preset);
+                }
+                self.set_presets(presets);
+                Ok(())
+            }
+            "orientation" => {
+                let token = expect_string(value)?;
+                let orientation = PresetBarOrientation::from_token(&token)
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_orientation(orientation);
+                Ok(())
+            }
+            "compact" => {
+                let compact = match value {
+                    CapabilityValue::Bool(flag) => flag,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_compact(compact);
+                Ok(())
+            }
+            "selected_label" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "presets",
+            "orientation",
+            "compact",
+            "selected_label",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
+impl EventHandler for RangePresetBar {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos, button: 1, .. } => {
+                if let Some(index) = self.chip_at(*pos) {
+                    self.select_index(index);
+                }
+            }
+            Event::MouseMove { pos } => {
+                let hovered = self.chip_at(*pos);
+                if hovered != self.hovered {
+                    self.hovered = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::KeyPress { key, .. } => match *key {
+                37 | 38 => self.move_cursor(-1),
+                39 | 40 => self.move_cursor(1),
+                13 if !self.presets.is_empty() => {
+                    self.select_index(self.cursor.min(self.presets.len() - 1));
+                }
+                _ => { /* Other keys are not relevant */ }
+            },
+            _ => {}
+        }
+    }
+}
+
+impl Draw for RangePresetBar {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let style = self.base.style();
+        let theme = crate::style::resolved_theme_style_shared("date_range_picker");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let accent =
+            crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(Color::BLUE);
+        let font = role_font(style, 10.0);
+
+        context.face_with_gradient(
+            rect,
+            surface,
+            self.style().background_gradient.as_ref(),
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
+
+        for index in 0..self.presets.len() {
+            let Some(chip) = self.chip_rect(index) else {
+                continue;
+            };
+            let active = self.selected == Some(index);
+            let fill = if active {
+                accent.blend(&surface, 0.25)
+            } else if self.hovered == Some(index) {
+                surface.blend(&text_color, 0.08)
+            } else {
+                surface.blend(&text_color, 0.03)
+            };
+            context.fill_rounded_rect(chip, 4, fill);
+            if active {
+                context.draw_rect(chip, accent);
+            }
+            let label = crate::widget::text_utils::elide_end(
+                &self.presets[index].label,
+                (chip.width as usize / 7).max(1),
+            );
+            context.draw_text(
+                Point::new(chip.x + 6, chip.y + 4),
+                &label,
+                &font,
+                if active { text_color } else { text_color.blend(&surface, 0.25) },
+                HorizontalAlignment::Left,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1277,6 +1749,82 @@ mod tests {
         assert!(picker.nights_allowed((2025, 1, 1), (2025, 1, 3)));
         picker.set_max_nights(Some(3));
         assert!(!picker.nights_allowed((2025, 1, 1), (2025, 1, 5)));
+    }
+
+    /// A preset bar's range applies to the picker, and the picker reports the matching index.
+    #[test]
+    fn a_range_preset_applies_to_the_picker() {
+        let mut picker = make_picker();
+        picker.set_presets(vec![DatePreset::new("Week", (2025, 1, 1), (2025, 1, 7))]);
+        let reported = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = reported.clone();
+        picker.preset_selected.connect(move |index| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*index);
+            }
+        });
+
+        let known = RangePreset::new("Week", (2025, 1, 1), (2025, 1, 7));
+        assert_eq!(picker.apply_preset(&known), Some(0));
+        assert_eq!(picker.start_date(), Some((2025, 1, 1)));
+        assert_eq!(picker.end_date(), Some((2025, 1, 7)));
+        assert_eq!(*reported.lock().expect("reported lock"), vec![0]);
+
+        let unknown = RangePreset::new("Quarter", (2025, 4, 1), (2025, 6, 30));
+        assert_eq!(picker.apply_preset(&unknown), None);
+        assert_eq!(picker.start_date(), Some((2025, 4, 1)));
+        assert_eq!(picker.end_date(), Some((2025, 6, 30)));
+    }
+
+    #[test]
+    fn preset_bar_emits_the_range_it_applies() {
+        let mut bar = RangePresetBar::new(Rect::new(0, 0, 300, 24));
+        bar.set_presets(vec![
+            RangePreset::new("Today", (2025, 1, 1), (2025, 1, 1)),
+            RangePreset::new("Week", (2025, 1, 1), (2025, 1, 7)),
+        ]);
+        let ranges = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = ranges.clone();
+        bar.preset_selected.connect(move |range| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*range);
+            }
+        });
+
+        assert!(bar.select("Week"));
+        assert!(!bar.select("Missing"));
+        assert_eq!(bar.selected_label(), Some("Week"));
+        assert_eq!(bar.selected_range(), Some(((2025, 1, 1), (2025, 1, 7))));
+        assert_eq!(*ranges.lock().expect("ranges lock"), vec![((2025, 1, 1), (2025, 1, 7))]);
+
+        // A press on the first chip chooses it, and the chip boxes are the hit targets.
+        let chip = bar.chip_rect(0).expect("chip 0");
+        bar.handle_event(&Event::mouse_press(chip.x + 2, chip.y + 2, 1));
+        assert_eq!(bar.selected_label(), Some("Today"));
+    }
+
+    #[test]
+    fn preset_bar_properties_drive_layout_and_round_trip() {
+        let mut bar = RangePresetBar::new(Rect::new(0, 0, 300, 100));
+        let presets = CapabilityValue::Tuple(vec![
+            CapabilityValue::String("Today|2025-01-01|2025-01-01".to_string()),
+            CapabilityValue::String("Week|2025-01-01|2025-01-07".to_string()),
+        ]);
+        bar.set("presets", presets.clone()).expect("presets writable");
+        assert_eq!(bar.get("presets"), Ok(presets));
+
+        bar.set("orientation", CapabilityValue::String("vertical".to_string()))
+            .expect("orientation writable");
+        assert_eq!(bar.orientation(), PresetBarOrientation::Vertical);
+        assert_eq!(bar.chip_rect(1).expect("chip 1").y, 50);
+
+        bar.set("compact", CapabilityValue::Bool(true)).expect("compact writable");
+        assert!(bar.compact());
+        assert_eq!(bar.get("selected_label"), Ok(CapabilityValue::Null));
+        assert_eq!(
+            bar.set("selected_label", CapabilityValue::String("Week".to_string())),
+            Err(CapabilityAccessError::ReadOnlyProperty)
+        );
     }
 
     #[test]

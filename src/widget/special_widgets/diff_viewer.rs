@@ -196,6 +196,12 @@ pub struct DiffViewer {
     fold_context_lines: usize,
     /// Whether a `Changed` row is painted as a `-` row and a `+` row in unified mode.
     unified_changed_pair: bool,
+    /// Whether the inline change tint covers whole words instead of the exact changed run.
+    ///
+    /// The spans are derived from the rows themselves, so switching this recomputes them for the
+    /// rows already on screen; a word-granularity diff therefore needs no new comparison and no
+    /// change to [`DiffLine`]'s public shape.
+    word_granularity: bool,
     /// The start line of every folded run the reader expanded.
     ///
     /// Keyed by the **whole** unchanged run, not by the marker's position inside it: with context
@@ -263,6 +269,7 @@ impl DiffViewer {
             fold_threshold: 8,
             fold_context_lines: 0,
             unified_changed_pair: true,
+            word_granularity: false,
             expanded_hunks: Vec::new(),
             display_rows: Vec::new(),
             display_dirty: true,
@@ -331,6 +338,47 @@ impl DiffViewer {
         self.display_dirty = true;
         self.view_mode_changed.emit(mode.as_str().to_string());
         self.base.request_redraw();
+    }
+
+    /// Whether inline changes are tinted word-by-word (`true`) or byte-by-byte (`false`).
+    pub fn word_granularity(&self) -> bool {
+        self.word_granularity
+    }
+
+    /// Chooses the inline change granularity.
+    ///
+    /// A word-granularity view widens the changed run to the word boundaries it touches, which is
+    /// what a reader expects from a prose or code diff: `alpha` → `alphabet` tints `alphabet`
+    /// rather than just the appended `bet`. The comparison itself is untouched, so the row set and
+    /// [`Self::change_count`] are the same either way.
+    pub fn set_word_granularity(&mut self, enabled: bool) {
+        if self.word_granularity == enabled {
+            return;
+        }
+        self.word_granularity = enabled;
+        self.refresh_changed_spans();
+        self.base.request_redraw();
+    }
+
+    /// Recomputes every changed row's inline spans under the current granularity.
+    fn refresh_changed_spans(&mut self) {
+        for line in &mut self.lines {
+            let Some(((left_start, left_end), (right_start, right_end))) = line.changed_spans
+            else {
+                continue;
+            };
+            let (Some(left), Some(right)) = (line.left.as_deref(), line.right.as_deref()) else {
+                continue;
+            };
+            if self.word_granularity {
+                line.changed_spans = Some((
+                    word_spans(left, (left_start, left_end)),
+                    word_spans(right, (right_start, right_end)),
+                ));
+            } else {
+                line.changed_spans = Some(differing_spans(left, right));
+            }
+        }
     }
 
     /// Enables collapsing long unchanged runs into one marker row.
@@ -737,6 +785,10 @@ impl DiffViewer {
             );
         }
 
+        if self.word_granularity {
+            self.refresh_changed_spans();
+        }
+
         let next_selection = if self.lines.is_empty() { None } else { Some(0) };
         self.set_selection(next_selection);
         self.display_dirty = true;
@@ -1059,6 +1111,7 @@ impl WidgetProperties for DiffViewer {
             "fold_threshold" => Ok(CapabilityValue::UInt(self.fold_threshold as u64)),
             "fold_context_lines" => Ok(CapabilityValue::UInt(self.fold_context_lines as u64)),
             "unified_changed_pair" => Ok(CapabilityValue::Bool(self.unified_changed_pair)),
+            "word_granularity" => Ok(CapabilityValue::Bool(self.word_granularity)),
             "whitespace_mode" => {
                 Ok(CapabilityValue::String(self.whitespace_mode.as_str().to_string()))
             }
@@ -1110,6 +1163,10 @@ impl WidgetProperties for DiffViewer {
                 self.set_unified_changed_pair(expect_bool(value)?);
                 Ok(())
             }
+            "word_granularity" => {
+                self.set_word_granularity(expect_bool(value)?);
+                Ok(())
+            }
             "whitespace_mode" => {
                 let token = expect_string(value)?;
                 let mode = WhitespaceMode::from_token(&token)
@@ -1133,6 +1190,7 @@ impl WidgetProperties for DiffViewer {
             "fold_threshold",
             "fold_context_lines",
             "unified_changed_pair",
+            "word_granularity",
             "whitespace_mode",
             BASE_PROPERTY_NAMES
         ]
@@ -1525,11 +1583,58 @@ fn collapse_whitespace(line: &str) -> String {
     line.chars().filter(|ch| !ch.is_whitespace()).collect()
 }
 
+/// Widens `span` to the word boundaries it touches in `text`.
+///
+/// A word character is a letter, a digit or `_`, which is the same set a reader calls "part of an
+/// identifier" in the code this control is mostly used for. When the span is empty (an insertion
+/// at a point) the word under that point is selected instead, so a pure insertion still has
+/// something to tint.
+fn word_spans(text: &str, span: (usize, usize)) -> (usize, usize) {
+    if span.0 >= text.len() && span.1 >= text.len() {
+        return span;
+    }
+    let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+    let mut start = span.0.min(text.len());
+    let mut end = span.1.max(start).min(text.len());
+    if start == end {
+        // An empty span sits between two characters; take the word on either side.
+        start = text[..start]
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| !is_word(*ch))
+            .map_or(0, |(i, ch)| i + ch.len_utf8());
+        end = text[end..]
+            .char_indices()
+            .find(|(_, ch)| !is_word(*ch))
+            .map_or(text.len(), |(i, _)| end + i);
+        return (start, end);
+    }
+    while start > 0 {
+        let Some((index, ch)) = text[..start].char_indices().next_back() else {
+            break;
+        };
+        if !is_word(ch) {
+            break;
+        }
+        start = index;
+    }
+    while end < text.len() {
+        let Some(ch) = text[end..].chars().next() else {
+            break;
+        };
+        if !is_word(ch) {
+            break;
+        }
+        end += ch.len_utf8();
+    }
+    (start, end)
+}
+
 /// The byte spans that differ between two lines.
 ///
 /// The common prefix and suffix are trimmed; what remains is the changed run on each side. That
-/// is the right granularity for a line diff: a single edited word leaves one word tinted rather
-/// than the whole line.
+/// is the character granularity of a line diff; [`word_spans`] widens it when the reader asked for
+/// word granularity, so a single edited word leaves one word tinted rather than the whole line.
 fn differing_spans(left: &str, right: &str) -> ((usize, usize), (usize, usize)) {
     let left_chars: Vec<(usize, char)> = left.char_indices().collect();
     let right_chars: Vec<(usize, char)> = right.char_indices().collect();
@@ -1557,6 +1662,571 @@ fn differing_spans(left: &str, right: &str) -> ((usize, usize), (usize, usize)) 
         .get(right_chars.len().saturating_sub(suffix))
         .map_or(right.len(), |(offset, _)| *offset);
     ((left_start, left_end.max(left_start)), (right_start, right_end.max(right_start)))
+}
+
+/// How one file of a multi-file comparison changed.
+///
+/// This is the model-level status a file list displays; it is deliberately unrelated to
+/// [`DiffKind`], which classifies a single *line*. A file can be `Modified` and every changed line
+/// in it `Changed`, but the two answers are owned by different parts of the review view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileDiffStatus {
+    /// The file exists only on the right-hand side.
+    Added,
+    /// The file exists only on the left-hand side.
+    Removed,
+    /// The file exists on both sides and differs.
+    #[default]
+    Modified,
+    /// The file exists on both sides under different paths.
+    Renamed,
+}
+
+impl FileDiffStatus {
+    /// The token spelling published as part of the `files` property.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Removed => "removed",
+            Self::Modified => "modified",
+            Self::Renamed => "renamed",
+        }
+    }
+
+    /// Parses a published token spelling.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "added" | "a" | "+" => Some(Self::Added),
+            "removed" | "deleted" | "d" | "-" => Some(Self::Removed),
+            "modified" | "m" | "~" => Some(Self::Modified),
+            "renamed" | "r" => Some(Self::Renamed),
+            _ => None,
+        }
+    }
+
+    /// The one-glyph marker drawn in a row's status cell.
+    pub fn marker(self) -> &'static str {
+        match self {
+            Self::Added => "+",
+            Self::Removed => "-",
+            Self::Modified => "~",
+            Self::Renamed => "R",
+        }
+    }
+}
+
+/// One file of a multi-file comparison.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDiffEntry {
+    /// Repository-relative path of the file.
+    pub path: String,
+    /// How the file changed.
+    pub status: FileDiffStatus,
+    /// Added line count, as the host's own comparison reported it.
+    pub additions: u32,
+    /// Removed line count, as the host's own comparison reported it.
+    pub deletions: u32,
+}
+
+impl FileDiffEntry {
+    /// Creates an entry with the counts at zero.
+    pub fn new(path: impl Into<String>, status: FileDiffStatus) -> Self {
+        Self { path: path.into(), status, additions: 0, deletions: 0 }
+    }
+
+    /// Sets the added/removed counts.
+    pub fn with_counts(mut self, additions: u32, deletions: u32) -> Self {
+        self.additions = additions;
+        self.deletions = deletions;
+        self
+    }
+
+    /// The entry's published property spelling: `path|status|additions|deletions`.
+    pub fn to_token(&self) -> String {
+        format!("{}|{}|{}|{}", self.path, self.status.as_str(), self.additions, self.deletions)
+    }
+
+    /// Parses [`Self::to_token`]; an unknown status is a `TypeMismatch` for the caller.
+    pub fn from_token(token: &str) -> Option<Self> {
+        let mut parts = token.splitn(4, '|');
+        let path = parts.next()?.to_string();
+        let status = FileDiffStatus::from_token(parts.next()?)?;
+        let additions = parts.next().unwrap_or("0").trim().parse().unwrap_or(0);
+        let deletions = parts.next().unwrap_or("0").trim().parse().unwrap_or(0);
+        Some(Self { path, status, additions, deletions })
+    }
+}
+
+/// Height of one file row and the gap above the first row.
+const FILE_ROW_HEIGHT: i32 = 22;
+const FILE_TOP: i32 = 6;
+
+/// A file selector that drives a multi-file [`DiffViewer`].
+///
+/// `DiffViewer::set_texts` compares exactly one pair of snapshots, so a review of several files
+/// has always needed a host-owned list beside it. This control is that list: it holds the file set
+/// and its own selection, and reports which file the reader picked so the host can feed the
+/// corresponding pair to a viewer.
+///
+/// It does **not** load or compare files — it has no source of file contents — so it never claims
+/// a file was read. `file_selected` means "the selection moved to this path" and `file_activated`
+/// means "the reader asked to open this path" (a double-click or Enter).
+pub struct DiffFileList {
+    base: BaseWidget,
+    files: Vec<FileDiffEntry>,
+    /// The selected rows, as indices into `files`.
+    selected: Vec<usize>,
+    /// How many rows a press may add to the selection.
+    selection_mode: crate::widget::view_widgets::list_view::SelectionMode,
+    /// The first row the viewport paints.
+    first_visible: usize,
+    /// Emitted when the selection moves, with the newly selected path.
+    pub file_selected: Signal1<String>,
+    /// Emitted when a file is activated by Enter or a double-click, with its path.
+    pub file_activated: Signal1<String>,
+}
+
+impl DiffFileList {
+    /// Creates an empty file list.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ListView, geometry, "DiffFileList"),
+            files: Vec::new(),
+            selected: Vec::new(),
+            selection_mode: crate::widget::view_widgets::list_view::SelectionMode::Single,
+            first_visible: 0,
+            file_selected: Signal1::new(),
+            file_activated: Signal1::new(),
+        }
+    }
+
+    /// The files in display order.
+    pub fn files(&self) -> &[FileDiffEntry] {
+        &self.files
+    }
+
+    /// Replaces the file set.
+    ///
+    /// A selection that still names a row is kept (the reader's place in a refreshed list is
+    /// worth preserving), and a selection that no longer exists is dropped. No signal fires for a
+    /// programmatic replacement: nothing was *selected* by the reader, and a subscriber that
+    /// treated this as a pick would open a file the reader never chose.
+    pub fn set_files(&mut self, files: Vec<FileDiffEntry>) {
+        // Remember the selection by path, not by index: a refreshed list may be reordered, and an
+        // index kept across it would point at a different file.
+        let selected_paths: Vec<String> = self
+            .selected
+            .iter()
+            .filter_map(|index| self.files.get(*index))
+            .map(|file| file.path.clone())
+            .collect();
+        self.files = files;
+        self.selected = selected_paths
+            .into_iter()
+            .filter_map(|path| self.files.iter().position(|file| file.path == path))
+            .collect();
+        self.clamp_scroll();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// How many rows a press may select.
+    pub fn selection_mode(&self) -> crate::widget::view_widgets::list_view::SelectionMode {
+        self.selection_mode
+    }
+
+    /// Sets how many rows a press may select.
+    pub fn set_selection_mode(
+        &mut self,
+        mode: crate::widget::view_widgets::list_view::SelectionMode,
+    ) {
+        if self.selection_mode == mode {
+            return;
+        }
+        self.selection_mode = mode;
+        if !matches!(mode, crate::widget::view_widgets::list_view::SelectionMode::Multi) {
+            self.selected.truncate(1);
+        }
+        self.base.request_redraw();
+    }
+
+    /// The selected paths, in display order.
+    pub fn selected_paths(&self) -> Vec<&str> {
+        self.selected
+            .iter()
+            .filter_map(|index| self.files.get(*index))
+            .map(|file| file.path.as_str())
+            .collect()
+    }
+
+    /// The first selected path, which is the one a viewer is expected to show.
+    pub fn selected_path(&self) -> Option<&str> {
+        self.selected_paths().first().copied()
+    }
+
+    /// Selects `path`, reporting the move.
+    ///
+    /// Returns `false` — and emits nothing — when no file has that path, because a subscriber told
+    /// about a file that is not in the list would ask the viewer for contents that are not there.
+    pub fn select_file(&mut self, path: &str) -> bool {
+        let Some(index) = self.files.iter().position(|file| file.path == path) else {
+            return false;
+        };
+        self.select_index(index);
+        true
+    }
+
+    /// Selects the row at `index`, honouring the selection mode.
+    pub fn select_index(&mut self, index: usize) {
+        let Some(file) = self.files.get(index) else { return };
+        let path = file.path.clone();
+        let changed = match self.selection_mode {
+            crate::widget::view_widgets::list_view::SelectionMode::None => false,
+            crate::widget::view_widgets::list_view::SelectionMode::Multi => {
+                if let Some(position) = self.selected.iter().position(|row| *row == index) {
+                    self.selected.remove(position);
+                } else {
+                    self.selected.push(index);
+                    self.selected.sort_unstable();
+                }
+                true
+            }
+            _ => {
+                if self.selected == [index] {
+                    false
+                } else {
+                    self.selected = vec![index];
+                    true
+                }
+            }
+        };
+        if changed {
+            self.reveal(index);
+            self.file_selected.emit(path);
+            self.base.request_redraw();
+        }
+    }
+
+    /// Activates the row at `index`, reporting it.
+    pub fn activate_index(&mut self, index: usize) {
+        if let Some(file) = self.files.get(index) {
+            let path = file.path.clone();
+            self.file_activated.emit(path);
+        }
+    }
+
+    /// The height one row occupies in the painted list.
+    fn row_height() -> i32 {
+        FILE_ROW_HEIGHT
+    }
+
+    /// Rows the viewport can paint.
+    fn visible_rows(&self) -> usize {
+        ((self.geometry().height as i32 - FILE_TOP).max(0) / Self::row_height()).max(1) as usize
+    }
+
+    /// Keeps `first_visible` inside the scrollable range.
+    fn clamp_scroll(&mut self) {
+        let max_first = self.files.len().saturating_sub(self.visible_rows());
+        self.first_visible = self.first_visible.min(max_first);
+    }
+
+    /// Scrolls the list so `index` is visible.
+    fn reveal(&mut self, index: usize) {
+        let rows = self.visible_rows();
+        if index < self.first_visible {
+            self.first_visible = index;
+        } else if index >= self.first_visible + rows {
+            self.first_visible = index + 1 - rows;
+        }
+        self.clamp_scroll();
+    }
+
+    /// The row index under `pos`, when the point is on a file row.
+    fn row_at(&self, pos: Point) -> Option<usize> {
+        let rect = self.geometry();
+        if !rect.contains_point(pos) {
+            return None;
+        }
+        let row = (pos.y - rect.y - FILE_TOP) / Self::row_height();
+        if row < 0 {
+            return None;
+        }
+        let index = self.first_visible + row as usize;
+        (index < self.files.len()).then_some(index)
+    }
+
+    /// The painted box of row `index`, for hit tests and tests of the layout.
+    pub fn row_rect(&self, index: usize) -> Option<Rect> {
+        if index < self.first_visible || index >= self.files.len() {
+            return None;
+        }
+        let row = (index - self.first_visible) as i32;
+        let rect = self.geometry();
+        Some(Rect::new(
+            rect.x,
+            rect.y + FILE_TOP + row * Self::row_height(),
+            rect.width,
+            Self::row_height() as u32,
+        ))
+    }
+
+    /// Scrolls by `rows`, returning whether the position moved.
+    pub fn scroll_by(&mut self, rows: i32) -> bool {
+        let before = self.first_visible;
+        let next = self.first_visible as i32 + rows;
+        self.first_visible = next.max(0) as usize;
+        self.clamp_scroll();
+        let moved = self.first_visible != before;
+        if moved {
+            self.base.request_redraw();
+        }
+        moved
+    }
+}
+
+impl Widget for DiffFileList {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(240, 280)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+    /// Resolves the two names this control emits; see `DiffViewer`'s own note for why the arms
+    /// are explicit.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "file_selected" => {
+                Some(EventSignalRef::mapped("file_selected", &self.file_selected, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
+            "file_activated" => {
+                Some(EventSignalRef::mapped("file_activated", &self.file_activated, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl WidgetProperties for DiffFileList {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "files" => Ok(CapabilityValue::Tuple(
+                self.files.iter().map(|file| CapabilityValue::String(file.to_token())).collect(),
+            )),
+            "file_count" => Ok(CapabilityValue::UInt(self.files.len() as u64)),
+            "selected_path" => Ok(match self.selected_path() {
+                Some(path) => CapabilityValue::String(path.to_string()),
+                None => CapabilityValue::Null,
+            }),
+            "selection_mode" => Ok(CapabilityValue::String(
+                match self.selection_mode {
+                    crate::widget::view_widgets::list_view::SelectionMode::Single => "single",
+                    crate::widget::view_widgets::list_view::SelectionMode::Multi => "multi",
+                    crate::widget::view_widgets::list_view::SelectionMode::Extended => "extended",
+                    crate::widget::view_widgets::list_view::SelectionMode::None => "none",
+                }
+                .to_string(),
+            )),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "files" => {
+                let items = crate::widget::capability::coercion::expect_string_list(value)?;
+                let mut files = Vec::with_capacity(items.len());
+                for item in items {
+                    let entry = FileDiffEntry::from_token(&item)
+                        .ok_or(CapabilityAccessError::TypeMismatch)?;
+                    files.push(entry);
+                }
+                self.set_files(files);
+                Ok(())
+            }
+            "file_count" | "selected_path" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "selection_mode" => {
+                let token = expect_string(value)?;
+                let mode = match token.as_str() {
+                    "single" => crate::widget::view_widgets::list_view::SelectionMode::Single,
+                    "multi" => crate::widget::view_widgets::list_view::SelectionMode::Multi,
+                    "extended" => crate::widget::view_widgets::list_view::SelectionMode::Extended,
+                    "none" => crate::widget::view_widgets::list_view::SelectionMode::None,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_selection_mode(mode);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "files",
+            "file_count",
+            "selected_path",
+            "selection_mode",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
+impl EventHandler for DiffFileList {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos, button: 1, .. } => {
+                if let Some(index) = self.row_at(*pos) {
+                    self.select_index(index);
+                }
+            }
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
+                if let Some(index) = self.row_at(*pos) {
+                    self.activate_index(index);
+                }
+            }
+            Event::KeyPress { key, .. } => match *key {
+                38 => {
+                    let next = self.selected.first().map_or(0, |index| index.saturating_sub(1));
+                    if !self.files.is_empty() {
+                        self.select_index(next);
+                    }
+                }
+                40 => {
+                    if !self.files.is_empty() {
+                        let next = self
+                            .selected
+                            .first()
+                            .map_or(0, |index| (index + 1).min(self.files.len() - 1));
+                        self.select_index(next);
+                    }
+                }
+                13 => {
+                    if let Some(index) = self.selected.first().copied() {
+                        self.activate_index(index);
+                    }
+                }
+                _ => { /* Other keys are not relevant */ }
+            },
+            Event::Wheel { delta, modifiers, .. } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 3);
+                self.scroll_by(-scroll.lines_y);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Draw for DiffFileList {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.geometry();
+        let style = self.base.style();
+        let theme = crate::style::resolved_theme_style_shared("diff_viewer");
+        let background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| crate::core::Color::border_of(background));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let selection = crate::style::semantic_color(crate::style::SemanticColor::Info)
+            .map(|token| token.blend(&background, 0.75))
+            .unwrap_or_else(|| background.blend(&text_color, 0.25));
+        let font = effective_font(style);
+
+        // A translucent accent wash so a selected row keeps its text readable.
+        context.face_with_gradient(
+            rect,
+            background,
+            self.style().background_gradient.as_ref(),
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
+        context.draw_rect(rect, border);
+
+        let rows = self.visible_rows();
+        for offset in 0..rows {
+            let index = self.first_visible + offset;
+            let Some(file) = self.files.get(index) else {
+                break;
+            };
+            let Some(row) = self.row_rect(index) else {
+                break;
+            };
+            if self.selected.contains(&index) {
+                context.fill_rect(row, selection);
+            }
+            let status_color = match file.status {
+                FileDiffStatus::Added => {
+                    crate::style::semantic_color(crate::style::SemanticColor::Success)
+                }
+                FileDiffStatus::Removed => {
+                    crate::style::semantic_color(crate::style::SemanticColor::Error)
+                }
+                FileDiffStatus::Modified => {
+                    crate::style::semantic_color(crate::style::SemanticColor::Warning)
+                }
+                FileDiffStatus::Renamed => {
+                    crate::style::semantic_color(crate::style::SemanticColor::Info)
+                }
+            }
+            .unwrap_or(text_color);
+            context.draw_text(
+                Point::new(row.x + 6, row.y + 5),
+                file.status.marker(),
+                font,
+                status_color,
+                HorizontalAlignment::Left,
+            );
+            let counts = format!("+{} -{}", file.additions, file.deletions);
+            let counts_width = context.measure_text(&counts, font).width as i32;
+            let path_band = (row.width as i32 - 12 - counts_width - 8).max(24);
+            let path =
+                crate::widget::text_utils::elide_end(&file.path, (path_band / 7).max(1) as usize);
+            context.draw_text(
+                Point::new(row.x + 22, row.y + 5),
+                &path,
+                font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
+            context.draw_text(
+                Point::new(row.x + row.width as i32 - counts_width - 6, row.y + 5),
+                &counts,
+                font,
+                text_color.blend(&background, 0.45),
+                HorizontalAlignment::Left,
+            );
+            context.draw_line(
+                Point::new(row.x, row.y + row.height as i32 - 1),
+                Point::new(row.x + row.width as i32, row.y + row.height as i32 - 1),
+                background.blend(&text_color, 0.10),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1847,6 +2517,106 @@ mod tests {
             .lines()
             .iter()
             .all(|line| line.kind == DiffKind::Changed || line.changed_spans.is_none()));
+    }
+
+    /// Character granularity is the default; word granularity widens the tint to the words the
+    /// changed run touches, without changing the row set.
+    #[test]
+    fn word_granularity_widens_the_inline_span() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_texts("alpha beta", "alphabet beta");
+        assert!(!viewer.word_granularity());
+        let char_span = viewer.lines()[0].changed_spans.expect("changed row");
+        // The changed run under character granularity is the appended `bet`.
+        assert_eq!(char_span.0, (5, 5));
+        assert_eq!(char_span.1, (5, 8));
+
+        viewer.set_word_granularity(true);
+        assert!(viewer.word_granularity());
+        let word_span = viewer.lines()[0].changed_spans.expect("changed row");
+        let ((left_start, left_end), (right_start, right_end)) = word_span;
+        assert_eq!(&"alpha beta"[left_start..left_end], "alpha");
+        assert_eq!(&"alphabet beta"[right_start..right_end], "alphabet");
+
+        // Switching back restores the character span rather than leaving the widened one.
+        viewer.set_word_granularity(false);
+        assert_eq!(viewer.lines()[0].changed_spans, Some(char_span));
+    }
+
+    /// A comparison rebuilt while word granularity is on keeps the widened spans.
+    #[test]
+    fn word_granularity_survives_a_recomparison() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_word_granularity(true);
+        viewer.set_texts("total = 41", "total = 42");
+        let span = viewer.lines()[0].changed_spans.expect("changed row");
+        assert_eq!(&"total = 41"[span.0 .0..span.0 .1], "41");
+        assert_eq!(&"total = 42"[span.1 .0..span.1 .1], "42");
+    }
+
+    fn file_list() -> DiffFileList {
+        let mut list = DiffFileList::new(Rect::new(0, 0, 300, 200));
+        list.set_files(vec![
+            FileDiffEntry::new("src/a.rs", FileDiffStatus::Modified).with_counts(3, 1),
+            FileDiffEntry::new("src/b.rs", FileDiffStatus::Added).with_counts(10, 0),
+            FileDiffEntry::new("src/c.rs", FileDiffStatus::Removed).with_counts(0, 7),
+        ]);
+        list
+    }
+
+    #[test]
+    fn file_list_reports_selection_and_activation() {
+        let mut list = file_list();
+        let selected = Arc::new(Mutex::new(Vec::<String>::new()));
+        let activated = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = selected.clone();
+        list.file_selected.connect(move |path| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(path.as_str().to_string());
+            }
+        });
+        let sink = activated.clone();
+        list.file_activated.connect(move |path| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(path.as_str().to_string());
+            }
+        });
+
+        assert!(list.select_file("src/b.rs"));
+        assert!(!list.select_file("src/missing.rs"), "an unknown path is refused");
+        let row = list.row_rect(1).expect("row 1 is visible");
+        list.handle_event(&Event::mouse_double_click(row.x + 4, row.y + 4, 1));
+
+        assert_eq!(list.selected_path(), Some("src/b.rs"));
+        assert_eq!(
+            selected.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec!["src/b.rs".to_string()]
+        );
+        assert_eq!(
+            activated.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec!["src/b.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn file_list_files_property_round_trips() {
+        let mut list = file_list();
+        let read = list.get("files").expect("files readable");
+        let written = list.set("files", read.clone());
+        assert!(written.is_ok());
+        assert_eq!(list.get("files").expect("files readable"), read);
+        assert_eq!(list.get("file_count"), Ok(CapabilityValue::UInt(3)));
+    }
+
+    #[test]
+    fn file_list_multi_selection_keeps_every_clicked_row() {
+        let mut list = file_list();
+        list.set_selection_mode(crate::widget::view_widgets::list_view::SelectionMode::Multi);
+        list.select_index(0);
+        list.select_index(2);
+        assert_eq!(list.selected_paths(), vec!["src/a.rs", "src/c.rs"]);
+        list.select_index(0);
+        assert_eq!(list.selected_paths(), vec!["src/c.rs"]);
     }
 
     /// The Myers trace is bounded by bytes, and an over-deep comparison is reported as such.

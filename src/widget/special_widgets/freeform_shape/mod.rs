@@ -28,5 +28,5 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-pub use shape::FreeformShapeWidget;
+pub use shape::{FreeformShapeWidget, ShapeCanvas};
 pub use types::{BubbleTailDirection, PathSegment, ShapePath};

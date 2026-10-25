@@ -61,6 +61,31 @@ pub trait TreeTableModel: Send + Sync {
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         None
     }
+
+    /// Whether more children can be fetched below `path`.
+    ///
+    /// `child_count` describes what the model already knows; a lazily loaded model uses this to
+    /// answer "there may be more here". The default is `false`, which is the honest answer for an
+    /// eager in-memory model and leaves existing models unchanged.
+    fn can_fetch_more(&self, path: &[usize]) -> bool {
+        let _ = path;
+        false
+    }
+
+    /// Asks the model to load more children below `path`, returning whether its child count grew.
+    ///
+    /// **Synchronous and host-driven.** The crate does not own an async runtime, a thread pool or
+    /// a timer: this hook is called on the UI thread by
+    /// [`TreeTable::fetch_more`](super::tree_table::TreeTable::fetch_more), and a model that
+    /// cannot answer immediately returns `false` and later raises its `data_changed` signal when
+    /// the work completes. `&self` rather than `&mut self` is deliberate: the control holds the
+    /// model in an `Arc<dyn TreeTableModel>`, so a model that mutates must own its storage behind
+    /// interior mutability (a `Mutex` or an atomic) — exactly the shape a host's background
+    /// loader already has.
+    fn fetch_more(&self, path: &[usize]) -> bool {
+        let _ = path;
+        false
+    }
 }
 
 /// A single-column, flat model used by [`TreeTable::set_rows`].
@@ -250,6 +275,29 @@ pub struct TreeTable {
     header_labels: Vec<String>,
     /// Emitted with the visible row a double-click activated.
     row_activated: Signal1<usize>,
+    /// Whether expanding a branch asks the model for more children.
+    ///
+    /// Off by default, so an eager model keeps the historical expand-and-show behaviour. A host
+    /// that binds a lazy model sets this and implements
+    /// [`TreeTableModel::can_fetch_more`]/[`TreeTableModel::fetch_more`].
+    lazy_loading: bool,
+    /// Whether the loading placeholder row is painted.
+    ///
+    /// `fetch_more` maintains it, but it is also settable so a host that completes a fetch on its
+    /// own thread can keep the placeholder up until it raises `data_changed`.
+    loading_indicator_visible: bool,
+    /// Advisory ceiling, in milliseconds, for a host-driven fetch.
+    ///
+    /// The control never starts a timer (there is no async runtime here), so this value is
+    /// published for the host's loader: a loader that exceeds it should report failure through
+    /// [`TreeTable::finish_fetch`] rather than leaving the placeholder up forever.
+    fetch_timeout_ms: u32,
+    /// Paths whose children are currently being fetched.
+    loading_paths: Vec<Vec<usize>>,
+    /// Emitted when [`TreeTable::fetch_more`] asks the model for `path`.
+    pub fetch_started: Signal1<Vec<usize>>,
+    /// Emitted when a fetch for `path` finishes; the `bool` is whether the model grew.
+    pub fetch_finished: Signal1<(Vec<usize>, bool)>,
 }
 
 impl TreeTable {
@@ -287,6 +335,12 @@ impl TreeTable {
             middle_click_expands: true,
             header_labels: Vec::new(),
             row_activated: Signal1::new(),
+            lazy_loading: false,
+            loading_indicator_visible: false,
+            fetch_timeout_ms: 5000,
+            loading_paths: Vec::new(),
+            fetch_started: Signal1::new(),
+            fetch_finished: Signal1::new(),
         }
     }
 
@@ -434,7 +488,10 @@ impl TreeTable {
         let Some(path) = self.row_path(row).map(ToOwned::to_owned) else {
             return false;
         };
-        if !self.path_has_children(&path) {
+        // A lazy branch is expandable before its children exist: that is the whole point of
+        // `can_fetch_more`. An eager branch keeps the historical "only with children" rule.
+        let fetchable = self.lazy_loading && self.can_fetch_more(&path);
+        if !self.path_has_children(&path) && !fetchable {
             return false;
         }
         if !self.expanded_paths.insert(path.clone()) {
@@ -447,9 +504,101 @@ impl TreeTable {
         if !self.insert_expanded_rows(row, &path) {
             self.rebuild_projection();
         }
+        if fetchable {
+            // Host-driven and synchronous; see `TreeTableModel::fetch_more`.
+            let _ = self.fetch_more(&path);
+        }
         self.base.request_layout();
         self.base.request_redraw();
         true
+    }
+
+    /// Whether expanding a branch asks the model for more children.
+    pub fn lazy_loading(&self) -> bool {
+        self.lazy_loading
+    }
+
+    /// Enables or disables fetch-on-expand.
+    pub fn set_lazy_loading(&mut self, enabled: bool) {
+        if self.lazy_loading == enabled {
+            return;
+        }
+        self.lazy_loading = enabled;
+        self.base.request_redraw();
+    }
+
+    /// Whether the loading placeholder row is being painted.
+    pub fn loading_indicator_visible(&self) -> bool {
+        self.loading_indicator_visible
+    }
+
+    /// Shows or hides the loading placeholder row.
+    pub fn set_loading_indicator_visible(&mut self, visible: bool) {
+        if self.loading_indicator_visible == visible {
+            return;
+        }
+        self.loading_indicator_visible = visible;
+        self.base.request_redraw();
+    }
+
+    /// The advisory fetch ceiling, in milliseconds. See the field docs for why it is advisory.
+    pub fn fetch_timeout_ms(&self) -> u32 {
+        self.fetch_timeout_ms
+    }
+
+    /// Sets the advisory fetch ceiling.
+    pub fn set_fetch_timeout_ms(&mut self, timeout_ms: u32) {
+        self.fetch_timeout_ms = timeout_ms;
+    }
+
+    /// Paths whose children are currently being fetched.
+    pub fn loading_paths(&self) -> &[Vec<usize>] {
+        &self.loading_paths
+    }
+
+    /// Whether the model can load more children below `path`.
+    ///
+    /// False while [`Self::lazy_loading`] is off: the flag is the host's statement that the model
+    /// is lazy, and a control that fetched anyway would surprise an eager model.
+    pub fn can_fetch_more(&self, path: &[usize]) -> bool {
+        self.lazy_loading && self.model.as_ref().is_some_and(|model| model.can_fetch_more(path))
+    }
+
+    /// Asks the model for more children below `path` and reports the outcome.
+    ///
+    /// **Synchronous and host-driven.** `fetch_started` is emitted before the model is called and
+    /// `fetch_finished` after it returns, so a subscriber sees a complete pair even when the
+    /// model answers immediately. A model that cannot answer synchronously returns `false` here
+    /// (announcing a failed fetch), keeps the path pending, and calls [`Self::finish_fetch`] when
+    /// its background work completes — the control does not start an async runtime for it.
+    pub fn fetch_more(&mut self, path: &[usize]) -> bool {
+        if !self.can_fetch_more(path) {
+            return false;
+        }
+        if !self.loading_paths.iter().any(|pending| pending == path) {
+            self.loading_paths.push(path.to_vec());
+        }
+        self.loading_indicator_visible = true;
+        self.fetch_started.emit(path.to_vec());
+        let changed = self.model.as_ref().is_some_and(|model| model.fetch_more(path));
+        self.finish_fetch(path, changed);
+        changed
+    }
+
+    /// Completes a fetch the host performed on its own schedule.
+    ///
+    /// Removes `path` from [`Self::loading_paths`], hides the placeholder once the last pending
+    /// path finishes, and emits `fetch_finished`. `changed` says whether the model grew, so a
+    /// successful background load rebuilds the visible projection exactly once.
+    pub fn finish_fetch(&mut self, path: &[usize], changed: bool) {
+        self.loading_paths.retain(|pending| pending != path);
+        self.loading_indicator_visible = !self.loading_paths.is_empty();
+        if changed {
+            self.rebuild_projection();
+            self.base.request_layout();
+        }
+        self.fetch_finished.emit((path.to_vec(), changed));
+        self.base.request_redraw();
     }
 
     /// Collapses row.
@@ -1122,6 +1271,31 @@ impl Widget for TreeTable {
                     ]))
                 }))
             }
+            "fetch_started" => {
+                Some(EventSignalRef::mapped("fetch_started", &self.fetch_started, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(
+                        v.iter()
+                            .map(|item| {
+                                crate::widget::capability::CapabilityValue::UInt(*item as u64)
+                            })
+                            .collect(),
+                    )
+                }))
+            }
+            "fetch_finished" => {
+                Some(EventSignalRef::mapped("fetch_finished", &self.fetch_finished, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Tuple(
+                            v.0.iter()
+                                .map(|item| {
+                                    crate::widget::capability::CapabilityValue::UInt(*item as u64)
+                                })
+                                .collect(),
+                        ),
+                        crate::widget::capability::CapabilityValue::Bool(v.1),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }
@@ -1156,6 +1330,11 @@ impl WidgetProperties for TreeTable {
             "projection_strategy" => Ok(CapabilityValue::String(
                 projection_strategy_to_str(self.projection_strategy()).to_string(),
             )),
+            "lazy_loading" => Ok(CapabilityValue::Bool(self.lazy_loading())),
+            "loading_indicator_visible" => {
+                Ok(CapabilityValue::Bool(self.loading_indicator_visible()))
+            }
+            "fetch_timeout_ms" => Ok(CapabilityValue::UInt(self.fetch_timeout_ms() as u64)),
             "projection_state" => {
                 let selected = match self.selected_row() {
                     Some(row) => format!("Some({row})"),
@@ -1224,6 +1403,18 @@ impl WidgetProperties for TreeTable {
                 self.set_projection_strategy(expect_projection_strategy(value)?);
                 Ok(())
             }
+            "lazy_loading" => {
+                self.set_lazy_loading(expect_bool(value)?);
+                Ok(())
+            }
+            "loading_indicator_visible" => {
+                self.set_loading_indicator_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "fetch_timeout_ms" => {
+                self.set_fetch_timeout_ms(crate::widget::capability::coercion::expect_u32(value)?);
+                Ok(())
+            }
             // Derived counts and the projection summary are computed from the
             // model, so they are refused as read-only rather than reported as
             // names this control does not know.
@@ -1248,6 +1439,9 @@ impl WidgetProperties for TreeTable {
             "sort_role",
             "case_sensitive",
             "projection_strategy",
+            "lazy_loading",
+            "loading_indicator_visible",
+            "fetch_timeout_ms",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1427,6 +1621,40 @@ impl Draw for TreeTable {
                         &cell_text,
                         cell_font,
                         ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
+        }
+
+        // The loading placeholder occupies the row immediately below the branch being fetched,
+        // which is where its first child will appear. Without it an expanded lazy branch is
+        // indistinguishable from an empty one until the host's fetch completes.
+        if self.loading_indicator_visible {
+            if let Some(path) = self.loading_paths.first() {
+                let slot = match self.visible_rows.iter().position(|row| &row.path == path) {
+                    Some(row) if row >= self.scroll_row => (row - self.scroll_row + 1) as i32,
+                    Some(_) => 0,
+                    None => self.visible_rows.len().saturating_sub(self.scroll_row) as i32,
+                };
+                let y = top + slot * row_h;
+                if y + row_h <= rect.y + rect.height as i32 {
+                    let band = Rect::new(rect.x, y, rect.width, self.row_height);
+                    context.fill_rect(band, surface.blend(&accent, 0.06));
+                    context.draw_rect(band, cell_border);
+                    let indent = path.len() as i32 * self.indent as i32;
+                    let text_x = rect.x + 4 + indent;
+                    let text_band = Rect::new(
+                        text_x,
+                        y,
+                        (rect.right() - text_x).max(0) as u32,
+                        self.row_height,
+                    );
+                    context.draw_text_fitted_cow(
+                        context.text_line(text_band, cell_font),
+                        "Loading...",
+                        cell_font,
+                        ink.with_alpha_f32(0.65),
                         HorizontalAlignment::Left,
                     );
                 }
@@ -2057,5 +2285,91 @@ mod tests {
         });
         tree.handle_event(&Event::ContextMenu { pos: crate::core::Point::new(40, 60) });
         assert!(context.lock().map(|slot| slot.is_some()).unwrap_or(false));
+    }
+
+    /// A lazy model: child_count reports nothing until `fetch_more` loads the children. The
+    /// model owns its storage behind a `Mutex`, which is the shape `&self` fetch hooks require.
+    struct LazyTreeTableModel {
+        loaded: std::sync::Mutex<bool>,
+    }
+
+    impl TreeTableModel for LazyTreeTableModel {
+        fn root_count(&self) -> usize {
+            1
+        }
+
+        fn child_count(&self, path: &[usize]) -> usize {
+            match path {
+                [0] if *self.loaded.lock().expect("lazy lock") => 2,
+                _ => 0,
+            }
+        }
+
+        fn column_count(&self) -> usize {
+            1
+        }
+
+        fn data(&self, path: &[usize], _column: usize) -> Option<String> {
+            Some(path.iter().map(|part| part.to_string()).collect::<Vec<_>>().join("/"))
+        }
+
+        fn can_fetch_more(&self, path: &[usize]) -> bool {
+            path == [0] && !*self.loaded.lock().expect("lazy lock")
+        }
+
+        fn fetch_more(&self, path: &[usize]) -> bool {
+            if path != [0] {
+                return false;
+            }
+            let mut loaded = self.loaded.lock().expect("lazy lock");
+            if *loaded {
+                return false;
+            }
+            *loaded = true;
+            true
+        }
+    }
+
+    #[test]
+    fn lazy_fetch_more_expands_signals_and_properties_are_wired() {
+        use crate::widget::capability::types::CapabilityValue;
+        use crate::widget::capability::WidgetProperties;
+
+        let model =
+            std::sync::Arc::new(LazyTreeTableModel { loaded: std::sync::Mutex::new(false) });
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 120));
+        tree.set_model(model.clone());
+
+        let started = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<usize>>::new()));
+        let finished = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(Vec<usize>, bool)>::new()));
+        let started_sink = std::sync::Arc::clone(&started);
+        let finished_sink = std::sync::Arc::clone(&finished);
+        tree.fetch_started.connect(move |path| {
+            if let Ok(mut seen) = started_sink.lock() {
+                seen.push(path.as_ref().clone());
+            }
+        });
+        tree.fetch_finished.connect(move |payload| {
+            if let Ok(mut seen) = finished_sink.lock() {
+                seen.push((*payload).clone());
+            }
+        });
+
+        assert!(!tree.can_fetch_more(&[0]), "lazy loading is off by default");
+        tree.set("lazy_loading", CapabilityValue::Bool(true)).expect("writable");
+        assert!(tree.lazy_loading());
+        assert!(tree.can_fetch_more(&[0]));
+
+        assert_eq!(tree.row_count(), 1, "the root is the only known row");
+        assert!(tree.expand_row(0), "a fetchable branch is expandable before its children exist");
+        assert_eq!(tree.row_count(), 3, "the fetch revealed the two children");
+        assert_eq!(*started.lock().expect("started lock"), vec![vec![0]]);
+        assert_eq!(*finished.lock().expect("finished lock"), vec![(vec![0], true)]);
+        assert!(!tree.loading_indicator_visible(), "a synchronous fetch settles immediately");
+        assert!(tree.loading_paths().is_empty());
+
+        assert_eq!(tree.fetch_timeout_ms(), 5000);
+        tree.set("fetch_timeout_ms", CapabilityValue::UInt(1500)).expect("writable");
+        assert_eq!(tree.fetch_timeout_ms(), 1500);
     }
 }

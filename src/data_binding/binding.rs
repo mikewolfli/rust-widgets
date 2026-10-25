@@ -72,6 +72,12 @@ pub struct Binding<T: Clone + Send + 'static> {
     /// exactly like a successful edit. Keeping the signal on the source binding makes the failure
     /// observable wherever the pipeline is used.
     validation_failed: Signal1<String>,
+    /// Emitted with the property name after a widget/binding synchronization completed.
+    ///
+    /// A push and a pull are different directions but the same fact for a host: the control and
+    /// the model now agree. Carrying the property name lets one subscriber watch several bound
+    /// properties without a separate signal per control.
+    binding_synced: Signal1<String>,
 }
 
 struct BindingInner<T: Clone + Send + 'static> {
@@ -115,12 +121,29 @@ impl<T: Clone + Send + 'static> BindingInner<T> {
     }
 }
 
+impl<T: Clone + Send + 'static> Clone for Binding<T> {
+    /// A second handle to the same value and the same report signals.
+    ///
+    /// The state is behind an `Arc`, so a clone is a reference to one binding, not a copy of the
+    /// value. Controls store a clone so a later write can announce back to the model; that is why
+    /// the two signals are cloned too — a subscriber that attached to the original must see the
+    /// announcement made through the handle the control holds.
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            validation_failed: self.validation_failed.clone(),
+            binding_synced: self.binding_synced.clone(),
+        }
+    }
+}
+
 impl<T: Clone + Send + 'static> Binding<T> {
     /// Create a new binding with an initial value.
     pub fn new(value: T) -> Self {
         Self {
             inner: Arc::new(Mutex::new(BindingInner::new(value))),
             validation_failed: Signal1::new(),
+            binding_synced: Signal1::new(),
         }
     }
 
@@ -340,6 +363,23 @@ impl<T: Clone + Send + 'static> Binding<T> {
     /// A subscriber receives the [`ValidationError::message`] the formatter or validator produced.
     pub fn validation_failed_signal(&self) -> &Signal1<String> {
         &self.validation_failed
+    }
+
+    /// The signal that reports a completed widget/binding synchronization.
+    ///
+    /// The payload is the property name the synchronization covered. Emitted by the bridge in
+    /// [`crate::data_binding::bind_widget_property`] and by controls that write a bound value
+    /// back, so a host can observe agreement without polling either side.
+    pub fn binding_synced_signal(&self) -> &Signal1<String> {
+        &self.binding_synced
+    }
+
+    /// Announces that `property` is now synchronized.
+    ///
+    /// Public so a control that pushed its own value into a bound model can report the same fact
+    /// the bridge reports when it pushes in the other direction.
+    pub fn announce_synced(&self, property: &str) {
+        self.binding_synced.emit(String::from(property));
     }
 
     /// Validates `value` and then stores it.

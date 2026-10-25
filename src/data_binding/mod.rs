@@ -149,15 +149,20 @@ pub fn bind_widget_property(
 ) {
     let property = crate::compat::String::from(property);
     let observed_property = property.clone();
+    let synced = binding.clone();
     binding.observe(key, move |value| {
-        let _ = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+        let applied = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
             crate::widget::widget_property_set(widget, &observed_property, value.clone())
         });
+        if matches!(applied, Some(Ok(()))) {
+            synced.announce_synced(&observed_property);
+        }
     });
     let initial = binding.get();
     let _ = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
         crate::widget::widget_property_set(widget, &property, initial)
     });
+    binding.announce_synced(&property);
 }
 
 /// Copies one mounted widget property back into the binding.
@@ -176,6 +181,7 @@ pub fn pull_widget_property(
     match value {
         Some(Ok(value)) => {
             binding.set(value);
+            binding.announce_synced(property);
             true
         }
         _ => false,

@@ -389,6 +389,7 @@ impl Widget for OtpInput {
                 CapabilityValue::String(v.clone())
             })),
             "cancelled" => Some(EventSignalRef::unit("cancelled", &self.cancelled)),
+            // W-19 compatibility spelling.
             _ => None,
         }
     }

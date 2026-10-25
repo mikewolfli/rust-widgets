@@ -104,6 +104,38 @@ impl ActionDefinition {
     }
 }
 
+/// The presentable state of one command, shared between every host showing it.
+///
+/// # Why a shared cell rather than a query in `draw`
+///
+/// A signal callback cannot borrow the host widget, so a menu row that wanted to repaint on
+/// `action_toggled` had nowhere to write. The cell is that place: the callback writes here, and
+/// the host applies the snapshot when it next refreshes. One cell per `(action, host)` pair, not
+/// one global table, so a host can be dropped without leaving a subscriber pointing at it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionLiveState {
+    /// The label the command currently carries.
+    pub text: String,
+    /// Whether the command can be triggered.
+    pub enabled: bool,
+    /// Whether a checkable command is checked.
+    pub checkable: bool,
+    /// The current checked state.
+    pub checked: bool,
+}
+
+impl ActionLiveState {
+    /// Captures the state a definition declares.
+    pub fn from_definition(definition: &ActionDefinition) -> Self {
+        Self {
+            text: definition.text.clone(),
+            enabled: definition.enabled,
+            checkable: definition.checkable,
+            checked: definition.checked,
+        }
+    }
+}
+
 impl Action {
     /// Serializes this command's own state.
     ///

@@ -254,7 +254,25 @@ pub fn find_event_schema<'a>(
     if let Some(schema) = capability.events.iter().find(|schema| schema.name == name) {
         return Some(schema);
     }
-    capability.events.iter().find(|schema| same_key(schema.name, name))
+    if let Some(schema) = capability.events.iter().find(|schema| same_key(schema.name, name)) {
+        return Some(schema);
+    }
+    // Compatibility aliases (W-19/W-20/W-21): a spelling that differs by more than separators
+    // (`cancelled` vs `canceled`) reaches the same published row. The pair is checked in both
+    // directions, so the finder does not need a second row saying the reverse.
+    for row in EVENT_ALIASES {
+        if row.alias != name && row.canonical != name {
+            continue;
+        }
+        if let Some(schema) = capability
+            .events
+            .iter()
+            .find(|schema| schema.name == row.alias || schema.name == row.canonical)
+        {
+            return Some(schema);
+        }
+    }
+    None
 }
 
 /// A normalised-name index over one capability's property table.
@@ -691,7 +709,12 @@ pub struct AliasRow {
     /// The second spelling, as the census and `factory.create(..)` spell it.
     pub alias: &'static str,
     /// The control the alias spells — the row whose capability the same struct serves.
-    pub canonical: &'static str,
+    ///
+    /// Named `alias_of` rather than `canonical` because every consumer of this table (the census
+    /// generator, the converted-control validator and the designer manifest) writes the relation
+    /// into its own artifact under that key. One field name is what lets those three artifacts be
+    /// compared without a translation table.
+    pub alias_of: &'static str,
     /// The Rust type both names construct.
     pub implementation: &'static str,
     /// The file holding that type's `impl Widget`, relative to the crate root.
@@ -706,45 +729,54 @@ pub struct AliasRow {
 pub static ALIAS_OF: &[AliasRow] = &[
     AliasRow {
         alias: "context_menu",
-        canonical: "menu",
+        alias_of: "menu",
         implementation: "Menu",
         file: "src/widget/menu_toolbar/menu.rs",
     },
     AliasRow {
         alias: "email_input",
-        canonical: "line_edit",
+        alias_of: "line_edit",
         implementation: "LineEdit",
         file: "src/widget/input_widgets/lineedit.rs",
     },
     AliasRow {
         alias: "password_edit",
-        canonical: "line_edit",
+        alias_of: "line_edit",
         implementation: "LineEdit",
         file: "src/widget/input_widgets/lineedit.rs",
     },
     AliasRow {
         alias: "phone_input",
-        canonical: "line_edit",
+        alias_of: "line_edit",
         implementation: "LineEdit",
         file: "src/widget/input_widgets/lineedit.rs",
     },
     AliasRow {
         alias: "split_layout",
-        canonical: "splitter",
+        alias_of: "splitter",
         implementation: "Splitter",
         file: "src/widget/container_widgets/splitter.rs",
     },
     AliasRow {
         alias: "time_picker",
-        canonical: "time_edit",
+        alias_of: "time_edit",
         implementation: "TimeEdit",
         file: "src/widget/advanced_widgets/time_edit.rs",
     },
 ];
 
 /// The control `name` is a second spelling of, or `None` when `name` is its own control.
+pub fn resolve(name: &str) -> Option<&'static str> {
+    ALIAS_OF.iter().find(|row| row.alias == name).map(|row| row.alias_of)
+}
+
+/// Compatibility spelling of [`resolve`].
+///
+/// Kept as a separate name rather than replaced: existing readers ask the question in the
+/// canonical direction (`canonical_of(alias)`), while the designer manifest writes the answer
+/// under the `alias_of` key. Both read the same table, so the two names cannot disagree.
 pub fn canonical_of(name: &str) -> Option<&'static str> {
-    ALIAS_OF.iter().find(|row| row.alias == name).map(|row| row.canonical)
+    resolve(name)
 }
 
 /// Every alias spelling of `canonical`, in table order. Empty when the name has no alias.
@@ -754,7 +786,84 @@ pub fn canonical_of(name: &str) -> Option<&'static str> {
 /// struct serves. A `context_menu` row cannot be an entry in `menu`'s `aliases` list — a name may
 /// not be both an alias and a canonical row — which is why the relationship needs its own table.
 pub fn aliases_of(canonical: &str) -> impl Iterator<Item = &'static str> + '_ {
-    ALIAS_OF.iter().filter(move |row| row.canonical == canonical).map(|row| row.alias)
+    ALIAS_OF.iter().filter(move |row| row.alias_of == canonical).map(|row| row.alias)
+}
+
+/// One compatibility spelling of a published event name.
+///
+/// # Why aliases are data rather than extra schema rows
+///
+/// The published-name table is generated from signal declarations, and two spellings of one
+/// signal cannot both be declared on it. A row here is the resolution rule instead: either side
+/// of the pair reaches the control's one published schema, so an old document keeps working while
+/// the canonical spelling is what the designer lists first. `note` records which side is preferred
+/// and why, so a reader can tell a spelling fix from a semantic rename.
+pub struct EventAlias {
+    /// The spelling kept for compatibility.
+    pub alias: &'static str,
+    /// The spelling new documents should use.
+    pub canonical: &'static str,
+    /// Why the pair exists and which side is authoritative.
+    pub note: &'static str,
+}
+
+/// Every compatibility spelling the event layer accepts.
+///
+/// The table is intentionally small and explicit: an alias is a published promise, so it is not
+/// derived from string similarity (that would make `selected_changed` and `selection_changed`
+/// collide even though their payloads differ).
+pub static EVENT_ALIASES: &[EventAlias] = &[
+    EventAlias {
+        alias: "cancelled",
+        canonical: "canceled",
+        note: "W-19: the US spelling is canonical; the double-l form stays subscribable",
+    },
+    EventAlias {
+        alias: "edit_cancelled",
+        canonical: "edit_canceled",
+        note: "W-19: spelling variant of the same edit-canceled event",
+    },
+    EventAlias {
+        alias: "current_index_changed",
+        canonical: "current_changed",
+        note:
+            "W-20: a single current item uses `current_changed`; the older index spelling resolves",
+    },
+    EventAlias {
+        alias: "selected_changed",
+        canonical: "current_changed",
+        note: "W-20: single-selection current item; multi-selection keeps `selection_changed`",
+    },
+    EventAlias {
+        alias: "hovered_point_changed",
+        canonical: "point_hover_changed",
+        note: "W-21: hover names are `X_hovered` / `X_hover_changed`, subject first",
+    },
+    EventAlias {
+        alias: "hovered_glyph_changed",
+        canonical: "glyph_hover_changed",
+        note: "W-21: subject-first hover spelling",
+    },
+    EventAlias {
+        alias: "hovered_entry",
+        canonical: "entry_hovered",
+        note: "W-21: subject-first hover spelling; the old name was subject-last",
+    },
+    EventAlias {
+        alias: "hovered_changed",
+        canonical: "hover_changed",
+        note: "W-21: the subject is the control itself, so the template is `hover_changed`",
+    },
+];
+
+/// The canonical spelling for an alias, or `None` when `name` is already canonical.
+pub fn canonical_event_alias(name: &str) -> Option<&'static str> {
+    EVENT_ALIASES.iter().find(|row| row.alias == name).map(|row| row.canonical)
+}
+
+/// Every compatibility spelling of `canonical`.
+pub fn event_aliases_of(canonical: &str) -> impl Iterator<Item = &'static str> + '_ {
+    EVENT_ALIASES.iter().filter(move |row| row.canonical == canonical).map(|row| row.alias)
 }
 
 /// The struct and file that implement `name`, whether `name` is a canonical spelling or an alias.
@@ -764,7 +873,7 @@ pub fn aliases_of(canonical: &str) -> impl Iterator<Item = &'static str> + '_ {
 pub fn implementation_of(name: &str) -> Option<(&'static str, &'static str)> {
     ALIAS_OF
         .iter()
-        .find(|row| row.alias == name || row.canonical == name)
+        .find(|row| row.alias == name || row.alias_of == name)
         .map(|row| (row.implementation, row.file))
 }
 

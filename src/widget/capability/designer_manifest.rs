@@ -47,6 +47,8 @@ mod keys {
     pub(crate) const CONTROL: &str = "control";
     pub(crate) const NAME: &str = "name";
     pub(crate) const ALIASES: &str = "aliases";
+    /// The canonical control an alias row spells; empty for a canonical row.
+    pub(crate) const ALIAS_OF: &str = "alias_of";
     pub(crate) const PROPERTIES: &str = "properties";
     pub(crate) const EVENTS: &str = "events";
     pub(crate) const COMMANDS: &str = "commands";
@@ -112,7 +114,9 @@ mod keys {
 /// * `1` — control, aliases, properties, events, commands.
 /// * `2` — adds `protocol`, `library`, `profile` and `triple` (BLUE26 B26.01).
 /// * `3` — adds structured IconSpec property defaults (BLUE27 U5).
-pub const MANIFEST_PROTOCOL_VERSION: u32 = 3;
+/// * `4` — adds `alias_of` (COMP-27 alias identity). Absent in older documents and read as the
+///   empty string, which means "this row is canonical".
+pub const MANIFEST_PROTOCOL_VERSION: u32 = 4;
 
 /// The oldest protocol version this reader still accepts.
 ///
@@ -296,6 +300,12 @@ pub struct DesignerManifest {
     pub control: String,
     /// Every name the factory also accepts for this control.
     pub aliases: Vec<String>,
+    /// When this control is a second spelling of another, the canonical control it spells.
+    ///
+    /// Empty for a canonical row. Read from the crate's single `ALIAS_OF` registry so the
+    /// manifest, the census and the converted-control gate answer the identity question from one
+    /// table instead of three copies.
+    pub alias_of: String,
     /// The properties it publishes.
     pub properties: Vec<DesignerProperty>,
     /// The events it publishes, with payload types.
@@ -592,6 +602,10 @@ fn write_manifest(out: &mut String, manifest: &DesignerManifest) {
     push_json_string(out, keys::CONTROL);
     out.push_str(": ");
     push_json_string(out, &manifest.control);
+    out.push_str(",\n  ");
+    push_json_string(out, keys::ALIAS_OF);
+    out.push_str(": ");
+    push_json_string(out, &manifest.alias_of);
     out.push_str(",\n");
 
     push_array(
@@ -1549,9 +1563,10 @@ fn read_record_list(
 
 impl DesignerManifest {
     /// Reads a document written by [`capability_manifest_json`].    ///
-    /// Every key this writer emits is required, and an unknown key is an error: a document that
-    /// this reader half-understands is one whose next export would silently differ from its input,
-    /// which is exactly the failure the round-trip check exists to catch.
+    /// Every key this writer emits is required **except** `alias_of`, which was added in protocol 4
+    /// and defaults to the empty string so a protocol-3 document still reads. An unknown key is an
+    /// error: a document that this reader half-understands is one whose next export would silently
+    /// differ from its input, which is exactly the failure the round-trip check exists to catch.
     pub fn from_json(text: &str) -> Result<Self, ManifestParseError> {
         let mut reader = JsonReader::new(text);
         reader.expect(b'{', "expected `{` to start a document")?;
@@ -1566,6 +1581,7 @@ impl DesignerManifest {
         let mut triple = String::new();
         let mut control = None;
         let mut aliases = Vec::new();
+        let mut alias_of = String::new();
         let mut properties = Vec::new();
         let mut events = Vec::new();
         let mut commands = Vec::new();
@@ -1579,6 +1595,9 @@ impl DesignerManifest {
                 k if k == keys::TRIPLE => triple = reader.read_string()?,
                 k if k == keys::CONTROL => control = Some(reader.read_string()?),
                 k if k == keys::ALIASES => aliases = read_string_array(&mut reader)?,
+                // Optional so a document written before the identity field existed still reads:
+                // an absent `alias_of` means "this is a canonical row".
+                k if k == keys::ALIAS_OF => alias_of = reader.read_string()?,
                 k if k == keys::COMMANDS => {
                     reader.expect(b'[', "expected `[` to start the command list")?;
                     if !reader.peek(b']') {
@@ -1656,6 +1675,7 @@ impl DesignerManifest {
                 detail: "the document does not name its control".into(),
             })?,
             aliases,
+            alias_of,
             properties,
             events,
             commands,
@@ -1727,7 +1747,14 @@ pub fn designer_manifest(
 
     let mut aliases: Vec<String> =
         capability.aliases.iter().map(|alias| String::from(*alias)).collect();
+    // The capability's `aliases` list holds doc spellings (`btn` for `button`); the registry holds
+    // *capability rows* that share this struct (`context_menu` for `menu`). Both are names a
+    // designer can drop, so the manifest lists both. Source order does not matter — the list is
+    // sorted and de-duplicated below, which is what keeps the export byte-stable.
+    aliases
+        .extend(crate::widget::capability::aliases_of(capability.canonical_name).map(String::from));
     aliases.sort();
+    aliases.dedup();
 
     Ok(DesignerManifest {
         protocol: MANIFEST_PROTOCOL_VERSION,
@@ -1736,6 +1763,9 @@ pub fn designer_manifest(
         triple: String::from(crate::widget::capability::TargetSpec::current().triple),
         control: capability.canonical_name.into(),
         aliases,
+        alias_of: crate::widget::capability::resolve(capability.canonical_name)
+            .map(String::from)
+            .unwrap_or_default(),
         properties,
         events,
         commands,
@@ -1872,6 +1902,7 @@ mod tests {
             triple: String::from("aarch64-apple-darwin"),
             control: String::from("slider"),
             aliases: vec![String::from("range")],
+            alias_of: String::new(),
             properties: vec![DesignerProperty {
                 name: String::from("value"),
                 kind: PropertyValueKind::Int,

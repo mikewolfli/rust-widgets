@@ -179,6 +179,21 @@ pub trait TreeModel: Send + Sync {
         let _ = index;
         false
     }
+
+    /// Path-addressed form of [`Self::can_fetch_more`].
+    ///
+    /// A [`TreeView`] model is a flat node list, so a path's meaningful component is its last
+    /// element (the node index); a richer model can override this to interpret the full ancestor
+    /// chain. The default keeps the two entry points one implementation.
+    fn can_fetch_more_path(&self, path: &[usize]) -> bool {
+        path.last().is_some_and(|index| self.can_fetch_more(*index))
+    }
+
+    /// Path-addressed form of [`Self::fetch_more`]; synchronous and host-driven, like its
+    /// node-addressed counterpart.
+    fn fetch_more_path(&self, path: &[usize]) -> bool {
+        path.last().is_some_and(|index| self.fetch_more(*index))
+    }
 }
 /// In-memory tree model backed by a vector of nodes.
 pub struct VecTreeModel {
@@ -338,6 +353,18 @@ pub struct TreeView {
     /// Advanced by the model's `data_changed` signal, which a `&self` projection reader cannot
     /// observe by rebuilding. A mismatch makes the reader fall back to a bounded walk.
     data_generation: Arc<AtomicU64>,
+    /// Whether expanding a branch asks the model for more children.
+    lazy_loading: bool,
+    /// Whether the loading placeholder row is painted.
+    loading_indicator_visible: bool,
+    /// Advisory fetch ceiling for the host's loader; see the field docs on `TreeTable`.
+    fetch_timeout_ms: u32,
+    /// Paths whose children are currently being fetched.
+    loading_paths: Vec<Vec<usize>>,
+    /// Emitted when [`TreeView::fetch_more`] asks the model for `path`.
+    pub fetch_started: Signal1<Vec<usize>>,
+    /// Emitted when a fetch for `path` finishes; the `bool` is whether the model grew.
+    pub fetch_finished: Signal1<(Vec<usize>, bool)>,
 }
 impl TreeView {
     /// Creates an empty tree view.
@@ -369,6 +396,12 @@ impl TreeView {
             projection_valid: false,
             projection_generation: 0,
             data_generation: Arc::new(AtomicU64::new(0)),
+            lazy_loading: false,
+            loading_indicator_visible: false,
+            fetch_timeout_ms: 5000,
+            loading_paths: Vec::new(),
+            fetch_started: Signal1::new(),
+            fetch_finished: Signal1::new(),
         }
     }
     /// Binds an external tree model.
@@ -580,7 +613,8 @@ impl TreeView {
         let Some(node) = self.model.as_ref().and_then(|model| model.node(model_index)) else {
             return false;
         };
-        if !node.has_children {
+        let fetchable = self.lazy_loading && self.can_fetch_more(&[model_index]);
+        if !node.has_children && !fetchable {
             return false;
         }
         if self.is_expanded(model_index) == expanded {
@@ -591,6 +625,9 @@ impl TreeView {
             self.expanded.emit(model_index);
         } else {
             self.collapsed.emit(model_index);
+        }
+        if expanded && fetchable {
+            let _ = self.fetch_more(&[model_index]);
         }
         self.normalize_projection_state();
         self.rebuild_projection();
@@ -612,7 +649,8 @@ impl TreeView {
             .and_then(|model| model.node(model_index))
             .map(|node| node.has_children)
             .unwrap_or(false);
-        if !has_children {
+        let fetchable = expanded && self.lazy_loading && self.can_fetch_more(&[model_index]);
+        if !has_children && !fetchable {
             return false;
         }
         if self.is_expanded(model_index) == expanded {
@@ -624,6 +662,10 @@ impl TreeView {
             self.expanded.emit(model_index);
         } else {
             self.collapsed.emit(model_index);
+        }
+        if fetchable {
+            // Host-driven and synchronous; the fetch rebuilds the projection when the model grew.
+            let _ = self.fetch_more(&[model_index]);
         }
         // A collapse can hide the selected or focused node; the projection state has to follow, the
         // same way it follows a model swap.
@@ -754,28 +796,91 @@ impl TreeView {
         self.visible_row_count()
     }
 
-    /// Asks the model whether `model_index` can fetch more children.
-    pub fn can_fetch_more(&self, model_index: usize) -> bool {
-        self.model.as_ref().is_some_and(|model| model.can_fetch_more(model_index))
+    /// Whether expanding a branch asks the model for more children.
+    pub fn lazy_loading(&self) -> bool {
+        self.lazy_loading
     }
 
-    /// Asks the model to fetch more children for `model_index`.
+    /// Enables or disables fetch-on-expand.
+    pub fn set_lazy_loading(&mut self, enabled: bool) {
+        if self.lazy_loading == enabled {
+            return;
+        }
+        self.lazy_loading = enabled;
+        self.base.request_redraw();
+    }
+
+    /// Whether the loading placeholder row is being painted.
+    pub fn loading_indicator_visible(&self) -> bool {
+        self.loading_indicator_visible
+    }
+
+    /// Shows or hides the loading placeholder row.
+    pub fn set_loading_indicator_visible(&mut self, visible: bool) {
+        if self.loading_indicator_visible == visible {
+            return;
+        }
+        self.loading_indicator_visible = visible;
+        self.base.request_redraw();
+    }
+
+    /// The advisory fetch ceiling, in milliseconds.
+    pub fn fetch_timeout_ms(&self) -> u32 {
+        self.fetch_timeout_ms
+    }
+
+    /// Sets the advisory fetch ceiling.
+    pub fn set_fetch_timeout_ms(&mut self, timeout_ms: u32) {
+        self.fetch_timeout_ms = timeout_ms;
+    }
+
+    /// Paths whose children are currently being fetched.
+    pub fn loading_paths(&self) -> &[Vec<usize>] {
+        &self.loading_paths
+    }
+
+    /// Asks the model whether more children can be fetched below `path`.
     ///
-    /// Returns whether the model changed. A successful fetch is followed by a layout/redraw
-    /// request, because the visible projection may have grown.
-    pub fn fetch_more(&mut self, model_index: usize) -> bool {
-        let Some(model) = self.model.as_ref() else {
-            return false;
-        };
-        if !model.fetch_more(model_index) {
+    /// `TreeModel` is a flat node protocol, so a path's meaningful component is its last element;
+    /// a model that overrides [`TreeModel::can_fetch_more_path`] can interpret the full chain.
+    /// False while [`Self::lazy_loading`] is off, which keeps an eager model's behaviour unchanged.
+    pub fn can_fetch_more(&self, path: &[usize]) -> bool {
+        self.lazy_loading
+            && self.model.as_ref().is_some_and(|model| model.can_fetch_more_path(path))
+    }
+
+    /// Asks the model for more children below `path` and reports the outcome.
+    ///
+    /// **Synchronous and host-driven.** `fetch_started` is emitted before the model is called and
+    /// `fetch_finished` after it returns. A model that cannot answer immediately returns `false`
+    /// and calls [`Self::finish_fetch`] when its background work completes; the control never
+    /// starts an async runtime on the model's behalf.
+    pub fn fetch_more(&mut self, path: &[usize]) -> bool {
+        if !self.can_fetch_more(path) {
             return false;
         }
-        // A successful fetch can add children without raising the model's change signal, so the
-        // cached projection is stale even though the generation did not move.
-        self.rebuild_projection();
-        self.base.request_layout();
+        if !self.loading_paths.iter().any(|pending| pending == path) {
+            self.loading_paths.push(path.to_vec());
+        }
+        self.loading_indicator_visible = true;
+        self.fetch_started.emit(path.to_vec());
+        let changed = self.model.as_ref().is_some_and(|model| model.fetch_more_path(path));
+        self.finish_fetch(path, changed);
+        changed
+    }
+
+    /// Completes a fetch the host performed on its own schedule.
+    pub fn finish_fetch(&mut self, path: &[usize], changed: bool) {
+        self.loading_paths.retain(|pending| pending != path);
+        self.loading_indicator_visible = !self.loading_paths.is_empty();
+        if changed {
+            // A successful fetch can add children without raising the model's change signal, so
+            // the cached projection is stale even though the generation did not move.
+            self.rebuild_projection();
+            self.base.request_layout();
+        }
+        self.fetch_finished.emit((path.to_vec(), changed));
         self.base.request_redraw();
-        true
     }
 
     /// The first visible row.
@@ -1217,6 +1322,31 @@ impl Widget for TreeView {
                 &self.node_double_clicked,
                 |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
             )),
+            "fetch_started" => {
+                Some(EventSignalRef::mapped("fetch_started", &self.fetch_started, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(
+                        v.iter()
+                            .map(|item| {
+                                crate::widget::capability::CapabilityValue::UInt(*item as u64)
+                            })
+                            .collect(),
+                    )
+                }))
+            }
+            "fetch_finished" => {
+                Some(EventSignalRef::mapped("fetch_finished", &self.fetch_finished, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Tuple(
+                            v.0.iter()
+                                .map(|item| {
+                                    crate::widget::capability::CapabilityValue::UInt(*item as u64)
+                                })
+                                .collect(),
+                        ),
+                        crate::widget::capability::CapabilityValue::Bool(v.1),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }
@@ -1255,6 +1385,11 @@ impl WidgetProperties for TreeView {
                 Some(node) => Ok(CapabilityValue::UInt(node as u64)),
                 None => Ok(CapabilityValue::Null),
             },
+            "lazy_loading" => Ok(CapabilityValue::Bool(self.lazy_loading())),
+            "loading_indicator_visible" => {
+                Ok(CapabilityValue::Bool(self.loading_indicator_visible()))
+            }
+            "fetch_timeout_ms" => Ok(CapabilityValue::UInt(self.fetch_timeout_ms() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -1286,6 +1421,18 @@ impl WidgetProperties for TreeView {
             "selected_node" => Err(CapabilityAccessError::ReadOnlyProperty),
             "has_delegate" => Err(CapabilityAccessError::ReadOnlyProperty),
             "expanded_focused_node" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "lazy_loading" => {
+                self.set_lazy_loading(expect_bool(value)?);
+                Ok(())
+            }
+            "loading_indicator_visible" => {
+                self.set_loading_indicator_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "fetch_timeout_ms" => {
+                self.set_fetch_timeout_ms(crate::widget::capability::coercion::expect_u32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1299,6 +1446,9 @@ impl WidgetProperties for TreeView {
             "has_delegate",
             "expansion_animated",
             "expanded_focused_node",
+            "lazy_loading",
+            "loading_indicator_visible",
+            "fetch_timeout_ms",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1498,6 +1648,41 @@ impl Draw for TreeView {
                         row_ink,
                         HorizontalAlignment::Left,
                     );
+                }
+            }
+
+            // The loading placeholder sits immediately below the branch being fetched, where its
+            // first child will appear. An expanded lazy branch is otherwise indistinguishable
+            // from an empty one until the host's fetch completes.
+            if self.loading_indicator_visible {
+                if let Some(path) = self.loading_paths.first() {
+                    let pending = path.last().copied().unwrap_or(0);
+                    let visible = self.visible_indices().iter().position(|index| *index == pending);
+                    let slot = match visible {
+                        Some(row) if row >= self.scroll_row => row - self.scroll_row + 1,
+                        Some(_) => 0,
+                        None => self.visible_row_count().saturating_sub(self.scroll_row),
+                    };
+                    let y = content.y + slot as i32 * TREE_ROW_HEIGHT;
+                    if y + TREE_ROW_HEIGHT <= content.bottom() {
+                        let band = Rect::new(content.x, y, content.width, TREE_ROW_HEIGHT as u32);
+                        context.fill_rect(band, surface.blend(&accent, 0.06));
+                        let indent = TREE_INDENT.saturating_mul(path.len() as i32 + 1);
+                        let text_x = band.x + indent;
+                        let text_band = Rect::new(
+                            text_x,
+                            y,
+                            (band.right() - text_x).max(0) as u32,
+                            TREE_ROW_HEIGHT as u32,
+                        );
+                        context.draw_text_fitted_cow(
+                            context.text_line(text_band, font),
+                            "Loading...",
+                            font,
+                            ink.with_alpha_f32(0.65),
+                            HorizontalAlignment::Left,
+                        );
+                    }
                 }
             }
         }
@@ -2194,5 +2379,98 @@ mod tests {
         let _ = crate::widget::svg::render_to_svg(&mut view);
         assert!(!view.tick(10_000), "a long step settles the fade");
         assert_eq!(view.expansion_progress(), 1.0);
+    }
+
+    /// A flat lazy model: index 0 starts with no children (`has_children == false`) and can be
+    /// fetched. Its storage lives behind a `Mutex`, the shape the `&self` fetch hook requires.
+    struct LazyTreeModel {
+        loaded: std::sync::Mutex<bool>,
+    }
+
+    impl TreeModel for LazyTreeModel {
+        fn node_count(&self) -> usize {
+            if *self.loaded.lock().expect("lazy lock") {
+                3
+            } else {
+                1
+            }
+        }
+
+        fn node_path(&self, index: usize) -> Option<String> {
+            match index {
+                0 => Some("root".to_string()),
+                1 => Some("root/child-a".to_string()),
+                2 => Some("root/child-b".to_string()),
+                _ => None,
+            }
+        }
+
+        fn node(&self, index: usize) -> Option<NodeView> {
+            let mut node = self.node_path(index).map(NodeView::leaf)?;
+            if index == 0 {
+                // A lazy branch starts collapsed; `NodeView::leaf` defaults to expanded.
+                node.expanded = false;
+            } else {
+                node.depth = 1;
+            }
+            Some(node)
+        }
+
+        fn can_fetch_more(&self, index: usize) -> bool {
+            index == 0 && !*self.loaded.lock().expect("lazy lock")
+        }
+
+        fn fetch_more(&self, index: usize) -> bool {
+            if index != 0 {
+                return false;
+            }
+            let mut loaded = self.loaded.lock().expect("lazy lock");
+            if *loaded {
+                return false;
+            }
+            *loaded = true;
+            true
+        }
+    }
+
+    #[test]
+    fn lazy_fetch_more_expands_signals_and_properties_are_wired() {
+        use crate::widget::capability::types::CapabilityValue;
+        use crate::widget::capability::WidgetProperties;
+
+        let mut view = TreeView::new(Rect::new(0, 0, 220, 200));
+        view.set_model(Arc::new(LazyTreeModel { loaded: std::sync::Mutex::new(false) }));
+
+        let started = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<usize>>::new()));
+        let finished = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(Vec<usize>, bool)>::new()));
+        let started_sink = std::sync::Arc::clone(&started);
+        let finished_sink = std::sync::Arc::clone(&finished);
+        view.fetch_started.connect(move |path| {
+            if let Ok(mut seen) = started_sink.lock() {
+                seen.push(path.as_ref().clone());
+            }
+        });
+        view.fetch_finished.connect(move |payload| {
+            if let Ok(mut seen) = finished_sink.lock() {
+                seen.push((*payload).clone());
+            }
+        });
+
+        assert!(!view.can_fetch_more(&[0]), "lazy loading is off by default");
+        view.set("lazy_loading", CapabilityValue::Bool(true)).expect("writable");
+        assert!(view.lazy_loading());
+        assert!(view.can_fetch_more(&[0]));
+
+        assert_eq!(view.node_count(), 1);
+        assert!(view.expand(0), "a fetchable branch is expandable before its children exist");
+        assert_eq!(view.node_count(), 3, "the fetch revealed the two children");
+        assert_eq!(*started.lock().expect("started lock"), vec![vec![0]]);
+        assert_eq!(*finished.lock().expect("finished lock"), vec![(vec![0], true)]);
+        assert!(!view.loading_indicator_visible());
+        assert!(view.loading_paths().is_empty());
+
+        assert_eq!(view.fetch_timeout_ms(), 5000);
+        view.set("fetch_timeout_ms", CapabilityValue::UInt(2500)).expect("writable");
+        assert_eq!(view.fetch_timeout_ms(), 2500);
     }
 }

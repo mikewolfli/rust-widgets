@@ -8,7 +8,7 @@ use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -41,6 +41,15 @@ pub struct ColorPicker {
     pub color_changed: Signal1<Color>,
     /// Emitted when hex text changes.
     pub hex_changed: Signal1<String>,
+    /// Emitted when a colour is committed through [`ColorPicker::pick`].
+    ///
+    /// This is the panel-facing commit signal: a host such as `color_well` applies the colour
+    /// once it sees this, while `color_changed` still reports every intermediate value.
+    pub color_committed: Signal1<Color>,
+    /// Emitted for every live HSVA edit (palette sweep, rail drag, keyboard nudge).
+    pub color_previewed: Signal1<Color>,
+    /// Emitted when the panel session is cancelled with [`ColorPicker::cancel`].
+    pub cancelled: GenericSignal,
 }
 
 /// The rail a colour-picker drag is currently editing.
@@ -78,6 +87,9 @@ impl ColorPicker {
             ],
             color_changed: Signal1::new(),
             hex_changed: Signal1::new(),
+            color_committed: Signal1::new(),
+            color_previewed: Signal1::new(),
+            cancelled: GenericSignal::new(),
         };
         picker.sync_color_from_hsva();
         picker
@@ -90,6 +102,41 @@ impl ColorPicker {
 
     /// Sets current color directly.
     pub fn set_color(&mut self, color: Color) {
+        self.apply_color_quietly(color);
+        self.color_changed.emit(self.color);
+        self.hex_changed.emit(self.color.to_hex_rgba());
+    }
+
+    /// Applies a colour the user chose and publishes the panel-facing commit.
+    ///
+    /// This is the method a host panel calls from its OK affordance. It reports both the
+    /// per-value change (`color_changed`) and the commit (`color_committed`), so an observer
+    /// that only wants the final choice subscribes to the latter.
+    pub fn pick(&mut self, color: Color) {
+        self.set_color(color);
+        self.color_committed.emit(color);
+    }
+
+    /// Sets the value the panel opens with, without publishing a change.
+    ///
+    /// An initial value is not a user choice, so this deliberately emits neither
+    /// `color_changed` nor `color_previewed`: a host that seeds a freshly opened panel does not
+    /// want its own value handler to run before the user has touched anything.
+    pub fn set_initial(&mut self, color: Color) {
+        self.apply_color_quietly(color);
+    }
+
+    /// Cancels the panel session, resetting transient edit state and emitting `cancelled`.
+    pub fn cancel(&mut self) {
+        self.hex_editing = false;
+        self.hex_buffer.clear();
+        self.drag_target = None;
+        self.base.request_redraw();
+        self.cancelled.emit();
+    }
+
+    /// Updates the colour and HSV cache without emitting any signal.
+    fn apply_color_quietly(&mut self, color: Color) {
         self.color = color;
         self.alpha = color.a;
         let (h, s, v) = color_to_hsv(color);
@@ -99,8 +146,6 @@ impl ColorPicker {
         }
         self.saturation = s;
         self.value = v;
-        self.color_changed.emit(self.color);
-        self.hex_changed.emit(self.color.to_hex_rgba());
         self.base.request_redraw();
     }
 
@@ -334,6 +379,9 @@ impl ColorPicker {
         self.color = hsv_to_color(self.hue, self.saturation, self.value, self.alpha);
         self.color_changed.emit(self.color);
         self.hex_changed.emit(self.color.to_hex_rgba());
+        // Every HSVA writer is a live edit (palette, rails, keyboard nudge), so preview and
+        // change always describe the same value.
+        self.color_previewed.emit(self.color);
         self.base.request_redraw();
     }
 
@@ -414,6 +462,17 @@ impl Widget for ColorPicker {
             "hex_changed" => Some(EventSignalRef::mapped("hex_changed", &self.hex_changed, |v| {
                 CapabilityValue::String(v.clone())
             })),
+            "color_committed" => {
+                Some(EventSignalRef::mapped("color_committed", &self.color_committed, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "color_previewed" => {
+                Some(EventSignalRef::mapped("color_previewed", &self.color_previewed, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "cancelled" => Some(EventSignalRef::unit("cancelled", &self.cancelled)),
             _ => None,
         }
     }
@@ -862,7 +921,24 @@ fn hsv_to_color(h: u8, s: u8, v: u8, a: u8) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    /// Records a colour signal into a shared vector.
+    fn record_colors(signal: &Signal1<Color>) -> Arc<Mutex<Vec<Color>>> {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let handle = Arc::clone(&sink);
+        signal.connect(move |color: Arc<Color>| {
+            if let Ok(mut guard) = handle.lock() {
+                guard.push(*color);
+            }
+        });
+        sink
+    }
+
+    fn colours(sink: &Arc<Mutex<Vec<Color>>>) -> Vec<Color> {
+        sink.lock().map(|guard| guard.clone()).unwrap_or_default()
+    }
 
     #[test]
     fn hsva_red_maps_to_red_color() {
@@ -978,5 +1054,49 @@ mod tests {
 
         picker.set("hue_degrees", CapabilityValue::UInt(240)).expect("writable");
         assert!((i32::from(picker.hue_degrees()) - 240).abs() <= 1);
+    }
+
+    #[test]
+    fn pick_commits_the_chosen_colour() {
+        let mut picker = ColorPicker::new(Rect::new(0, 0, 260, 220));
+        let committed = record_colors(&picker.color_committed);
+        let chosen = Color::rgb(12, 34, 56);
+        picker.pick(chosen);
+        assert_eq!(picker.color(), chosen);
+        assert_eq!(colours(&committed), vec![chosen]);
+    }
+
+    #[test]
+    fn set_initial_is_silent() {
+        let mut picker = ColorPicker::new(Rect::new(0, 0, 260, 220));
+        let committed = record_colors(&picker.color_committed);
+        let previewed = record_colors(&picker.color_previewed);
+        let initial = Color::rgb(9, 9, 9);
+        picker.set_initial(initial);
+        assert_eq!(picker.color(), initial);
+        assert!(colours(&committed).is_empty());
+        assert!(colours(&previewed).is_empty());
+    }
+
+    #[test]
+    fn cancel_emits_cancelled_and_clears_edit_state() {
+        let mut picker = ColorPicker::new(Rect::new(0, 0, 260, 220));
+        picker.set_hex_editing(true);
+        let cancelled = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&cancelled);
+        picker.cancelled.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        picker.cancel();
+        assert_eq!(cancelled.load(Ordering::SeqCst), 1);
+        assert!(!picker.is_hex_editing());
+    }
+
+    #[test]
+    fn live_hsva_edit_emits_preview() {
+        let mut picker = ColorPicker::new(Rect::new(0, 0, 260, 220));
+        let previewed = record_colors(&picker.color_previewed);
+        picker.set_hsva(0, 255, 255, 255);
+        assert_eq!(colours(&previewed).len(), 1);
     }
 }

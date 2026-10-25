@@ -688,6 +688,27 @@ fn event_is_published(widget: &str, event: &str) -> bool {
         .is_some()
 }
 
+/// Whether the control itself resolves `event` through `event_signal_dyn`.
+///
+/// # Why the capability check alone was the wrong half
+///
+/// The capability table says a name is **published**; it does not say the control has an arm for
+/// it. The two are different facts, and W-01..W-07 were exactly the gap between them: the name was
+/// in the table, the generator reported a clean document, and the emitted program failed at
+/// `connect_event` or wired a name that never fired. The reverse check asks the control the same
+/// question the runtime will ask it, so the report names both failures — an unpublished name and a
+/// published one with no arm — before the program is compiled.
+///
+/// A control the factory cannot construct is reported by the availability check above, so `None`
+/// here means "could not ask", which is not evidence of a missing arm. Treating it as resolved
+/// keeps the two gaps separate rather than reporting the same unsupported control twice.
+fn event_resolves_dynamically(widget: &str, event: &str) -> Option<bool> {
+    let factory = WidgetFactory::shared();
+    let canonical = factory.canonical_name(widget);
+    let probe = factory.create(&canonical, crate::core::Rect::new(0, 0, 1, 1), "")?;
+    Some(probe.event_signal_dyn(event).is_some())
+}
+
 fn emit_node(
     project: &JsonProject,
     request: &GenerationRequest,
@@ -1044,14 +1065,21 @@ fn emit_node(
         // a program that reported a clean run and failed at `connect_event`. The capability table
         // is the same published-name source the loader consults, so this check cannot drift from
         // what the runtime accepts.
-        if !event_is_published(&node.widget, &key) {
+        let published = event_is_published(&node.widget, &key);
+        let resolves = event_resolves_dynamically(&node.widget, &key);
+        if !published || resolves == Some(false) {
+            let detail = if !published {
+                "is not a published event, so `event_signal_dyn` cannot resolve it"
+            } else {
+                "is published but the control has no `event_signal_dyn` arm for it, so the wire \
+                 would be accepted and never fire"
+            };
             report.unsupported.push(GenerationGap {
                 path: path.to_vec(),
                 widget: node.widget.clone(),
                 reason: format!(
-                    "{}: `events.{key}` on {} is not a published event, so `event_signal_dyn` \
-                     cannot resolve it and the generated wire `{handler}` would be refused at run \
-                     time",
+                    "{}: `events.{key}` on {} {detail} and the generated wire `{handler}` would \
+                     be refused at run time",
                     GenerationGapReason::UnresolvableEvent.token(),
                     node_label(path, &node.widget)
                 ),

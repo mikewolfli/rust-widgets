@@ -1021,6 +1021,16 @@ impl Draw for MapView {
     }
 }
 
+// The four companions live in a sibling file so this one stays under the
+// 2000-line production limit (principle #9). Re-exporting keeps their public
+// path unchanged: `map_view::TileLoader` and friends still resolve.
+#[path = "map_view_companions.rs"]
+mod companions;
+pub use companions::{
+    Compass, ScaleBar, ScaleBarStyle, ScaleUnits, TileKey, TileLoadError, TileLoader, TileRequest,
+    TileViewport, ZoomButton, ZoomControl, MAX_TILE_ZOOM,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1357,5 +1367,251 @@ mod tests {
         assert!(map.hit_marker_index(Point::new(210, 120)).is_some());
         assert!(map.set_marker_style("big", MarkerStyle::new(Color::rgb(1, 2, 3), 6)));
         assert!(map.hit_marker_index(Point::new(210, 120)).is_none());
+    }
+
+    // ── COMP-13: map companions ────────────────────────────────────────────
+
+    #[test]
+    fn tile_loader_validates_zoom_and_world_bounds() {
+        let mut loader = TileLoader::new(Rect::new(0, 0, 160, 24));
+        assert_eq!(TileLoader::new(Rect::new(0, 0, 1, 1)).max_zoom(), 19);
+        assert_eq!(loader.load_tile(25, 0, 0), Err(TileLoadError::ZoomOutOfRange));
+        // At zoom 2 the world is 4x4, so column 4 is outside it.
+        assert_eq!(loader.load_tile(2, 4, 0), Err(TileLoadError::TileOutOfWorld));
+        assert_eq!(loader.load_tile(2, 0, 4), Err(TileLoadError::TileOutOfWorld));
+        assert!(loader.load_tile(2, 3, 3).is_ok());
+
+        loader.set_zoom_range(5, 3);
+        assert_eq!((loader.min_zoom(), loader.max_zoom()), (5, 5));
+    }
+
+    #[test]
+    fn tile_loader_formats_urls_and_reports_cache_hits() {
+        let mut loader = TileLoader::new(Rect::new(0, 0, 160, 24));
+        loader.set_url_template("https://example.test/{z}/{x}/{y}.png");
+
+        let first = loader.load_tile(2, 1, 3).expect("zoom 2 is in range");
+        assert_eq!(first.url, "https://example.test/2/1/3.png");
+        assert!(!first.cached);
+
+        let second = loader.load_tile(2, 1, 3).expect("repeat request");
+        assert!(second.cached, "a pending tile is not requested twice");
+        assert_eq!(loader.cache_len(), 1);
+        assert!(!loader.is_cached(second.key));
+
+        let loaded = Arc::new(Mutex::new(Vec::<TileKey>::new()));
+        let sink = loaded.clone();
+        loader.tile_loaded.connect(move |key| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*key);
+            }
+        });
+        assert!(loader.deliver_tile(second.key, vec![1, 2, 3]));
+        assert!(loader.is_cached(second.key));
+        assert_eq!(
+            loaded.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![TileKey::new(2, 1, 3)]
+        );
+
+        // An answer for an address never requested is refused.
+        assert!(!loader.deliver_tile(TileKey::new(2, 0, 0), vec![0]));
+    }
+
+    #[test]
+    fn tile_loader_reports_failures_and_clears_the_cache() {
+        let mut loader = TileLoader::new(Rect::new(0, 0, 160, 24));
+        let failed = Arc::new(Mutex::new(Vec::<TileKey>::new()));
+        let sink = failed.clone();
+        loader.tile_failed.connect(move |key| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*key);
+            }
+        });
+        let request = loader.load_tile(1, 0, 0).expect("zoom 1 is in range");
+        assert!(loader.reject_tile(request.key));
+        assert_eq!(
+            failed.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![TileKey::new(1, 0, 0)]
+        );
+        assert_eq!(loader.cache_len(), 0);
+        assert!(!loader.reject_tile(request.key));
+
+        let _ = loader.load_tile(1, 1, 1);
+        loader.clear_cache();
+        assert_eq!(loader.cache_len(), 0);
+    }
+
+    #[test]
+    fn tile_loader_evicts_oldest_beyond_the_limit() {
+        let mut loader = TileLoader::new(Rect::new(0, 0, 160, 24));
+        loader.set_cache_limit(2);
+        assert!(!loader.load_tile(2, 0, 0).expect("in range").cached);
+        assert!(!loader.load_tile(2, 1, 0).expect("in range").cached);
+        assert!(!loader.load_tile(2, 2, 0).expect("in range").cached);
+        assert_eq!(loader.cache_len(), 2);
+        // Asking again reveals which tiles survived: a cached answer means the
+        // address is still remembered, a fresh one means it was evicted.
+        assert!(loader.load_tile(2, 1, 0).expect("in range").cached);
+        assert!(!loader.load_tile(2, 0, 0).expect("in range").cached, "oldest evicted");
+        assert!(loader.load_tile(2, 2, 0).expect("in range").cached);
+    }
+
+    #[test]
+    fn tile_loader_prefetch_covers_the_viewport() {
+        let mut loader = TileLoader::new(Rect::new(0, 0, 160, 24));
+        loader.set_tile_size(256);
+        // A 256 px window whose top-left sits half a tile into the world crosses
+        // both tile boundaries, so four tiles are touched.
+        let requests = loader.prefetch(TileViewport::new(2, 0.5, 0.5, 256, 256));
+        assert_eq!(requests.len(), 4);
+        assert!(requests.iter().all(|request| request.key.zoom == 2));
+        let mut keys: Vec<(u32, u32)> =
+            requests.iter().map(|request| (request.key.x, request.key.y)).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
+
+        // A window starting past the world edge requests only what exists.
+        assert!(loader.prefetch(TileViewport::new(2, 4.0, 4.0, 256, 256)).is_empty());
+        assert!(loader.prefetch(TileViewport::new(2, 0.0, 0.0, 0, 256)).is_empty());
+    }
+
+    #[test]
+    fn tile_loader_properties_round_trip() {
+        let mut loader = TileLoader::new(Rect::new(0, 0, 160, 24));
+        loader
+            .set("url_template", CapabilityValue::String("t/{z}/{x}/{y}".into()))
+            .expect("string template");
+        loader.set("tile_size", CapabilityValue::UInt(512)).expect("size");
+        loader.set("cache_limit", CapabilityValue::UInt(4)).expect("limit");
+        assert_eq!(
+            loader.get("url_template").unwrap(),
+            CapabilityValue::String("t/{z}/{x}/{y}".into())
+        );
+        assert_eq!(loader.get("tile_size").unwrap(), CapabilityValue::UInt(512));
+        assert_eq!(loader.get("cache_limit").unwrap(), CapabilityValue::UInt(4));
+        assert!(loader.set("cache_size", CapabilityValue::UInt(1)).is_err());
+        assert!(loader.command("set_tile_size").is_err(), "a command carries no payload");
+        assert!(loader.command("clear_cache").is_ok());
+    }
+
+    #[test]
+    fn zoom_control_steps_and_reports() {
+        let mut control = ZoomControl::new(Rect::new(0, 0, 96, 28));
+        let requested = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let sink = requested.clone();
+        control.zoom_requested.connect(move |level| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*level);
+            }
+        });
+
+        assert!(control.zoom_in());
+        assert!((control.zoom_level() - 2.0).abs() < f32::EPSILON);
+        assert!(control.zoom_out());
+        assert!((control.zoom_level() - 1.0).abs() < f32::EPSILON);
+        assert!(control.set_zoom(4.0));
+        assert!(control.reset());
+        assert!((control.zoom_level() - 1.0).abs() < f32::EPSILON);
+        assert!(!control.reset(), "resetting an unchanged level is a no-op");
+        assert!(!control.set_zoom(f32::NAN), "non-finite levels are refused");
+
+        let got = requested.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got, vec![2.0, 1.0, 4.0, 1.0]);
+    }
+
+    #[test]
+    fn zoom_control_clamps_level_to_its_range() {
+        let mut control = ZoomControl::new(Rect::new(0, 0, 96, 28));
+        control.set_zoom(100.0);
+        assert!((control.zoom_level() - 8.0).abs() < f32::EPSILON);
+        control.set_zoom(0.01);
+        assert!((control.zoom_level() - 0.25).abs() < f32::EPSILON);
+
+        control.set_min(1.0);
+        assert!((control.min() - 1.0).abs() < f32::EPSILON);
+        control.set_max(0.5);
+        assert!((control.max() - 1.0).abs() < f32::EPSILON, "the range never inverts");
+        assert!((control.zoom_level() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn zoom_control_buttons_are_hit_and_do_their_jobs() {
+        let mut control = ZoomControl::new(Rect::new(0, 0, 96, 28));
+        assert!(matches!(control.hit_button(Point::new(5, 14)), Some(ZoomButton::Out)));
+        assert!(matches!(control.hit_button(Point::new(48, 14)), Some(ZoomButton::Reset)));
+        assert!(matches!(control.hit_button(Point::new(92, 14)), Some(ZoomButton::In)));
+        assert!(control.hit_button(Point::new(200, 14)).is_none());
+
+        control.handle_event(&Event::mouse_press(92, 14, 1));
+        assert!((control.zoom_level() - 2.0).abs() < f32::EPSILON);
+        control.handle_event(&Event::mouse_press(5, 14, 1));
+        assert!((control.zoom_level() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn scale_bar_picks_a_round_distance() {
+        let mut bar = ScaleBar::new(Rect::new(0, 0, 400, 28));
+        bar.set_scale(10.0);
+        // 400 - 2*8 = 384 px * 10 m = 3840 m, rounded down to 2 km.
+        assert!((bar.bar_distance(384.0) - 2000.0).abs() < f64::EPSILON);
+        assert_eq!(bar.label(), "2 km");
+        assert_eq!(bar.bar_pixels(), 200);
+
+        bar.set_units(ScaleUnits::Imperial);
+        assert!(bar.label().ends_with("ft") || bar.label().ends_with("mi"));
+
+        bar.set_scale(0.0);
+        assert!((bar.meters_per_pixel() - 10.0).abs() < f64::EPSILON, "invalid scales are ignored");
+        bar.set_scale(f64::NAN);
+        assert!((bar.meters_per_pixel() - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn scale_bar_properties_round_trip() {
+        let mut bar = ScaleBar::new(Rect::new(0, 0, 200, 28));
+        bar.set("meters_per_pixel", CapabilityValue::Float(2.5)).expect("scale");
+        bar.set("units", CapabilityValue::String("imperial".into())).expect("units");
+        bar.set("style", CapabilityValue::String("boxed".into())).expect("style");
+        assert_eq!(bar.units(), ScaleUnits::Imperial);
+        assert_eq!(bar.style(), ScaleBarStyle::Boxed);
+        assert!((bar.meters_per_pixel() - 2.5).abs() < f64::EPSILON);
+        assert!(bar.set("units", CapabilityValue::String("nautical".into())).is_err());
+    }
+
+    #[test]
+    fn compass_emits_a_reset_request_only_when_clickable() {
+        let mut compass = Compass::new(Rect::new(0, 0, 48, 48));
+        let resets = Arc::new(Mutex::new(0usize));
+        let sink = resets.clone();
+        compass.reset_north_requested.connect(move || {
+            if let Ok(mut guard) = sink.lock() {
+                *guard += 1;
+            }
+        });
+
+        compass.handle_event(&Event::mouse_press(24, 24, 1));
+        assert_eq!(resets.lock().map(|guard| *guard).unwrap_or(0), 1);
+        assert!((compass.bearing_deg() - 0.0).abs() < f32::EPSILON, "the host owns the bearing");
+
+        compass.set_clickable(false);
+        compass.handle_event(&Event::mouse_press(24, 24, 1));
+        assert_eq!(resets.lock().map(|guard| *guard).unwrap_or(0), 1);
+
+        compass.set_clickable(true);
+        compass.handle_event(&Event::mouse_press(-50, -50, 1));
+        assert_eq!(resets.lock().map(|guard| *guard).unwrap_or(0), 1, "outside the dial");
+    }
+
+    #[test]
+    fn compass_normalises_its_bearing() {
+        let mut compass = Compass::new(Rect::new(0, 0, 48, 48));
+        compass.set_bearing(-90.0);
+        assert!((compass.bearing_deg() - 270.0).abs() < 0.001);
+        compass.set_bearing(450.0);
+        assert!((compass.bearing_deg() - 90.0).abs() < 0.001);
+        compass.set_bearing(f32::NAN);
+        assert!((compass.bearing_deg() - 90.0).abs() < 0.001);
+        compass.set("bearing_deg", CapabilityValue::Float(180.0)).expect("bearing property");
+        assert!((compass.bearing_deg() - 180.0).abs() < 0.001);
     }
 }

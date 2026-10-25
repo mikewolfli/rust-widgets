@@ -5,6 +5,8 @@
 #[cfg(full_widgets)]
 use crate::compat::Vec;
 use crate::compat::{format, RefCell, String, ToString};
+#[cfg(full_widgets)]
+use crate::compat::{lock, Arc, Mutex};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 #[cfg(full_widgets)]
 use crate::event::key_codes;
@@ -215,6 +217,15 @@ pub struct Button {
     /// completed activation from an abandoned one — the distinction the shared table draws
     /// by reporting a cancel rather than an activation.
     pub canceled: GenericSignal,
+    /// The registry command this button presents, when it was resolved from `ActionManager`.
+    ///
+    /// The id is what a host routes a `clicked` to; the live cell beside it is the state the
+    /// command's own signals update, so a second host of the same command stays in step.
+    #[cfg(full_widgets)]
+    action_id: Option<String>,
+    /// Live state cell subscribed to the linked command, when one is bound.
+    #[cfg(full_widgets)]
+    live_action: Option<Arc<Mutex<crate::action::ActionLiveState>>>,
 }
 impl Button {
     /// Creates a button with initial text and geometry.
@@ -262,7 +273,77 @@ impl Button {
             released_signal: GenericSignal::new(),
             state_changed: Signal1::new(),
             canceled: GenericSignal::new(),
+            #[cfg(full_widgets)]
+            action_id: None,
+            #[cfg(full_widgets)]
+            live_action: None,
         }
+    }
+
+    /// Links this button to a command in the action registry.
+    ///
+    /// The text and enabled state are read from the definition, the host binding is recorded, and
+    /// a live cell subscribes to the command's signals. This is the button half of COMP-25; the
+    /// click itself still emits [`Button::clicked`], which a host routes to
+    /// `ActionManager::trigger_action` (or to [`Self::trigger_linked_action`]).
+    #[cfg(full_widgets)]
+    pub fn bind_action(
+        &mut self,
+        manager: &mut crate::action::ActionManager,
+        action_id: &str,
+    ) -> bool {
+        let Some(definition) = manager.action_definition(action_id) else {
+            return false;
+        };
+        if !manager.bind_action_to_button(definition.id.clone(), self.base.id()) {
+            return false;
+        }
+        self.set_text(definition.text);
+        self.set_enabled(definition.enabled);
+        self.live_action = manager.watch_action(&definition.id);
+        self.action_id = Some(definition.id);
+        self.base.request_redraw();
+        true
+    }
+
+    /// The registry command this button presents, if any.
+    #[cfg(full_widgets)]
+    pub fn action_id(&self) -> Option<&str> {
+        self.action_id.as_deref()
+    }
+
+    /// Applies the linked command's live state to this button.
+    ///
+    /// Called explicitly because a signal callback cannot borrow the widget; a host calls it from
+    /// its event or paint path. Returns whether the button changed.
+    #[cfg(full_widgets)]
+    pub fn refresh_action_state(&mut self, manager: &crate::action::ActionManager) -> bool {
+        let Some(action_id) = self.action_id.clone() else {
+            return false;
+        };
+        let live = self.live_action.as_ref().map(|state| lock(state).clone());
+        let definition = manager.action_definition(&action_id);
+        let (text, enabled) = match (live, definition) {
+            (Some(state), _) => (state.text, state.enabled),
+            (None, Some(definition)) => (definition.text, definition.enabled),
+            (None, None) => return false,
+        };
+        let mut changed = false;
+        if self.text != text {
+            self.set_text(text);
+            changed = true;
+        }
+        if self.base.is_enabled() != enabled {
+            self.set_enabled(enabled);
+            changed = true;
+        }
+        changed
+    }
+
+    /// Triggers the linked command through the registry, reporting whether one fired.
+    #[cfg(full_widgets)]
+    pub fn trigger_linked_action(&self, manager: &mut crate::action::ActionManager) -> bool {
+        self.action_id.as_deref().is_some_and(|id| manager.trigger_action(id))
     }
     /// Returns button text.
     pub fn text(&self) -> &str {
@@ -1318,6 +1399,8 @@ impl Widget for Button {
             // distinct event from `released`: the button did not activate, so a host that
             // wants to run 「the press was abandoned」 logic needs its own subscription.
             "canceled" => Some(EventSignalRef::unit("canceled", &self.canceled)),
+            // W-19 compatibility spelling. It declares its own name so a subscriber that used the
+            // old spelling is attached to a reference that answers for exactly that spelling.
             // An enum payload travels as its token spelling, which is the same representation the
             // property side uses for `PropertyValueKind::Enum` — one spelling, not two.
             "state_changed" => {

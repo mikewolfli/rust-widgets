@@ -35,7 +35,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconRef, IconSource, Widget, WidgetKind};
 /// File dialog mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileDialogMode {
@@ -89,6 +89,9 @@ pub struct FileEntry {
     /// The entry's name, without its directory prefix.
     pub name: String,
     /// Whether the entry is a directory.
+    ///
+    /// This is the navigation fact (a press opens it and the dialog descends into it). The
+    /// details view's *type* column reads [`Self::kind`], which can say more than two things.
     pub is_directory: bool,
     /// The entry's size in bytes, when the host knows it.
     ///
@@ -98,12 +101,20 @@ pub struct FileEntry {
     pub size: Option<u64>,
     /// The entry's modification time as seconds since the Unix epoch, when known.
     pub modified: Option<u64>,
+    /// What the entry is, as the details view's type column spells it.
+    pub kind: FileKind,
+    /// The icon the listing paints beside the name, when the host supplies one.
+    pub icon: Option<IconSource>,
 }
 
 impl FileEntry {
     /// Builds a listing row with no size or modification time.
+    ///
+    /// The kind follows `is_directory`; use [`Self::with_kind`] to replace it with a finer
+    /// classification (a symlink, an unknown host entry).
     pub fn new(name: impl Into<String>, is_directory: bool) -> Self {
-        Self { name: name.into(), is_directory, size: None, modified: None }
+        let kind = if is_directory { FileKind::Directory } else { FileKind::File };
+        Self { name: name.into(), is_directory, size: None, modified: None, kind, icon: None }
     }
 
     /// Adds the metadata a details view paints, leaving the name and type unchanged.
@@ -111,6 +122,68 @@ impl FileEntry {
         self.size = size;
         self.modified = modified;
         self
+    }
+
+    /// Replaces the entry's classification without changing its navigation flag.
+    pub fn with_kind(mut self, kind: FileKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Attaches the icon painted beside the name.
+    pub fn with_icon(mut self, icon: IconSource) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+}
+
+/// How a [`FileEntry`] is classified in the details view's type column.
+///
+/// Separate from [`FileEntry::is_directory`] because the type column is a *description* while the
+/// flag is a navigation decision: a host can report a symlink to a directory without making the
+/// dialog descend into it, and an unknown entry still needs a word in the column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileKind {
+    /// A directory.
+    Directory,
+    /// A regular file.
+    File,
+    /// A symbolic link.
+    Symlink,
+    /// The host did not classify the entry.
+    #[default]
+    Unknown,
+}
+
+impl FileKind {
+    /// The stable property spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FileKind::Directory => "directory",
+            FileKind::File => "file",
+            FileKind::Symlink => "symlink",
+            FileKind::Unknown => "unknown",
+        }
+    }
+
+    /// The word the type column paints.
+    pub fn label(self) -> &'static str {
+        match self {
+            FileKind::Directory => "Folder",
+            FileKind::File => "File",
+            FileKind::Symlink => "Link",
+            FileKind::Unknown => "Unknown",
+        }
+    }
+
+    /// The type-column sort rank: directories first, then files, links and unknowns.
+    fn sort_rank(self) -> u8 {
+        match self {
+            FileKind::Directory => 0,
+            FileKind::File => 1,
+            FileKind::Symlink => 2,
+            FileKind::Unknown => 3,
+        }
     }
 }
 
@@ -152,8 +225,20 @@ pub enum SortColumn {
     Size,
     /// The reported modification time; entries with none sort last.
     Modified,
-    /// Directory before file, then by name.
+    /// The entry kind, directories first, then name.
     Type,
+}
+
+impl SortColumn {
+    /// The stable property spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SortColumn::Name => "name",
+            SortColumn::Size => "size",
+            SortColumn::Modified => "modified",
+            SortColumn::Type => "type",
+        }
+    }
 }
 
 /// How a pointer press combines with the existing selection.
@@ -225,6 +310,11 @@ pub struct FileDialog {
     pub files_selected: Signal1<Vec<String>>,
     /// Emitted by [`FileDialog::select_file`] with the newly chosen path.
     pub file_selected: Signal1<String>,
+    /// Emitted by [`FileDialog::sort_by`] with the new column and whether the order is descending.
+    ///
+    /// The current sort is always ascending, so the flag is `false` today; it is carried so a host
+    /// that grows a descending toggle does not need a second signal.
+    pub sort_changed: Signal1<(SortColumn, bool)>,
     /// Emitted when the file under the cursor changes.
     ///
     /// The dialog has no file list of its own, so nothing here moves a cursor: a
@@ -295,6 +385,7 @@ impl FileDialog {
             modal: true,
             files_selected: Signal1::new(),
             file_selected: Signal1::new(),
+            sort_changed: Signal1::new(),
             current_changed: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
@@ -508,11 +599,16 @@ impl FileDialog {
                 SortColumn::Modified => {
                     a.modified.unwrap_or(u64::MAX).cmp(&b.modified.unwrap_or(u64::MAX))
                 }
-                SortColumn::Type => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                SortColumn::Type => a
+                    .kind
+                    .sort_rank()
+                    .cmp(&b.kind.sort_rank())
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
             }
         });
         self.selected_rows =
             selected_paths.iter().filter_map(|path| self.row_for_path(path)).collect();
+        self.sort_changed.emit((column, false));
         self.base.request_redraw();
     }
 
@@ -936,6 +1032,14 @@ impl Widget for FileDialog {
             "focus_changed" => {
                 Some(EventSignalRef::mapped("focus_changed", &self.focus_changed, |v| {
                     CapabilityValue::UInt(*v)
+                }))
+            }
+            "sort_changed" => {
+                Some(EventSignalRef::mapped("sort_changed", &self.sort_changed, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::String(v.0.as_str().to_string()),
+                        CapabilityValue::Bool(v.1),
+                    ]))
                 }))
             }
             _ => None,
@@ -1647,7 +1751,30 @@ impl Draw for FileDialog {
                     context.fill_rect(row, accent.with_alpha_f32(0.18));
                 }
                 let Some(entry) = self.entries.get(index) else { continue };
-                let band = Rect::new(row.x + 6, row.y, row.width.saturating_sub(12), row.height);
+                // The host's icon occupies the row's leading gutter; the name starts after it, so
+                // an icon and a name cannot overlap. A row without an icon keeps the historical
+                // text position exactly.
+                let icon_pad = match entry.icon {
+                    Some(source) => {
+                        const ICON: u32 = 16;
+                        let slot = Rect::new(
+                            row.x + 4,
+                            row.y + row.height.saturating_sub(ICON) as i32 / 2,
+                            ICON,
+                            ICON,
+                        );
+                        let _ =
+                            crate::widget::paint_icon(context, IconRef::from(source), slot, ink);
+                        ICON
+                    }
+                    None => 0,
+                };
+                let band = Rect::new(
+                    row.x + 6 + icon_pad as i32,
+                    row.y,
+                    row.width.saturating_sub(12 + icon_pad),
+                    row.height,
+                );
                 let line = context.text_line(band, font);
                 let text_band = Rect::new(band.x, line.y, band.width.max(1), line.height.max(1));
                 match self.view_mode {
@@ -1667,6 +1794,14 @@ impl Draw for FileDialog {
                         let columns = Self::detail_columns(row);
                         match columns {
                             Some((name_col, size_col, modified_col, type_col)) => {
+                                // The name column loses the icon gutter, so the icon never overlaps
+                                // the name it belongs to.
+                                let name_col = Rect::new(
+                                    name_col.x,
+                                    name_col.y,
+                                    name_col.width.saturating_sub(icon_pad),
+                                    name_col.height,
+                                );
                                 context.draw_text_fitted_cow(
                                     Rect::new(
                                         name_col.x,
@@ -1682,7 +1817,7 @@ impl Draw for FileDialog {
                                 let size = entry.size.map(format_size).unwrap_or_default();
                                 let modified =
                                     entry.modified.map(format_modified).unwrap_or_default();
-                                let kind = if entry.is_directory { "Folder" } else { "File" };
+                                let kind = entry.kind.label();
                                 context.draw_text_fitted_cow(
                                     Rect::new(
                                         size_col.x,
@@ -2335,5 +2470,57 @@ mod tests {
         });
         dialog.handle_event(&Event::key_press(key_codes::TAB, 0));
         assert_eq!(seen.lock().expect("lock").len(), 1, "Tab must move the ring");
+    }
+
+    /// The details model carries a kind and an icon, the type column sorts by kind, and the sort
+    /// announces the column it applied.
+    #[test]
+    fn file_entries_carry_kind_and_icon_and_sort_type_is_announced() {
+        struct KindedSource;
+        impl FileEntrySource for KindedSource {
+            fn entries(&self, _directory: &str) -> Vec<FileEntry> {
+                vec![
+                    FileEntry::new("z.txt", false)
+                        .with_kind(FileKind::Symlink)
+                        .with_icon(IconSource::Builtin(crate::widget::IconName::File)),
+                    FileEntry::new("dir", true),
+                    FileEntry::new("a.txt", false).with_kind(FileKind::File),
+                ]
+            }
+        }
+
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 320));
+        dialog.set_source(Box::new(KindedSource));
+        assert_eq!(dialog.entries()[0].kind, FileKind::Symlink);
+        assert!(dialog.entries()[0].icon.is_some(), "the host's icon is retained");
+        assert_eq!(dialog.entries()[1].kind, FileKind::Directory);
+
+        let seen = Arc::new(Mutex::new(Vec::<(SortColumn, bool)>::new()));
+        let sink = Arc::clone(&seen);
+        dialog.sort_changed.connect(move |payload| {
+            sink.lock().expect("sort lock").push(*payload);
+        });
+        dialog.sort_by(SortColumn::Type);
+
+        let names: Vec<&str> = dialog.entries().iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, ["dir", "a.txt", "z.txt"], "directories, files, then links");
+        assert_eq!(*seen.lock().expect("sort lock"), vec![(SortColumn::Type, false)]);
+
+        // The details view paints the kind column and the icon; rendering it must not panic, and
+        // it adds the metadata text runs the list view does not have. Text is rendered as path
+        // geometry, so the labels themselves are asserted on the enum rather than in the SVG.
+        assert_eq!(FileKind::Directory.label(), "Folder");
+        assert_eq!(FileKind::Symlink.label(), "Link");
+        let list_svg = {
+            dialog.set_view_mode(ViewMode::List);
+            crate::widget::svg::render_to_svg(&mut dialog)
+        };
+        dialog.set_view_mode(ViewMode::Details);
+        let details_svg = crate::widget::svg::render_to_svg(&mut dialog);
+        assert!(
+            crate::widget::svg::text_subpath_count(&details_svg)
+                > crate::widget::svg::text_subpath_count(&list_svg),
+            "the details view paints the type column as extra text runs"
+        );
     }
 }

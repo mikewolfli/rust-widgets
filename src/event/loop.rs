@@ -29,6 +29,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Type alias for event dispatch function.
 pub type EventDispatchFn = Arc<dyn Fn(ObjectId, &Event) + Send + Sync>;
 
+/// Type alias for the accelerator hook that runs before normal dispatch.
+///
+/// Returning `true` means the event was consumed as a shortcut, so the focused control does not
+/// see it. The hook exists so the crate's one shortcut path (`ActionRouter::dispatch_event`) can
+/// be driven by the loop rather than by every host's hand-written key handler.
+pub type EventShortcutFn = Arc<dyn Fn(&Event) -> bool + Send + Sync>;
+
 /// The idle-task id [`EventLoop::install_reactive_idle_pump`] registers under.
 ///
 /// A fixed id gives the registration replace-on-re-register semantics (the same id removes the
@@ -371,6 +378,11 @@ pub struct EventLoop {
     thread_handle: Option<()>,
     /// Optional dispatch callback invoked for each event.
     dispatch_fn: Option<EventDispatchFn>,
+    /// Optional accelerator hook, consulted for every key press before normal dispatch.
+    ///
+    /// This is the event-loop half of W-14/W-15: one entry point asks the shortcut registry (the
+    /// only conflict judge) and triggers the command through `ActionManager`.
+    shortcut_dispatch: Option<EventShortcutFn>,
     /// Resolves a control's parent, enabling capture/bubble propagation.
     ///
     /// # Why propagation is opt-in
@@ -477,6 +489,7 @@ impl EventLoop {
             running: Arc::new(Mutex::new(false)),
             thread_handle: None,
             dispatch_fn: None,
+            shortcut_dispatch: None,
             parent_lookup: None,
             timer_manager,
             next_anim_frame_id: AtomicU64::new(1),
@@ -538,6 +551,7 @@ impl EventLoop {
         let running = Arc::clone(&self.running);
         let queue = Arc::clone(&self.queue);
         let dispatch_fn = self.dispatch_fn.clone();
+        let shortcut_dispatch = self.shortcut_dispatch.clone();
         let parent_lookup = self.parent_lookup.clone();
         #[cfg(feature = "touch")]
         let mut gesture_engines = GestureRegistry::new();
@@ -612,6 +626,7 @@ impl EventLoop {
                     // copy that can drift from the other). It borrows the gesture registry and the
                     // cancellation state; the phase loops below own only their event buffers.
                     let dispatch_fn_ref = &dispatch_fn;
+                    let shortcut_ref = shortcut_dispatch.as_ref();
                     let cancelled_ref = &cancelled_anim_frames;
                     #[cfg(feature = "touch")]
                     let gesture_ref = &mut gesture_engines;
@@ -629,6 +644,16 @@ impl EventLoop {
                         };
                         if skip {
                             return;
+                        }
+
+                        // The accelerator hook runs before the focused control sees the key.
+                        // A consumed key press must not also be delivered as text/activation:
+                        // the host asked the shortcut path to own it. Non-key events are
+                        // untouched, so the hook has exactly one trigger condition.
+                        if let Some(shortcut) = shortcut_ref {
+                            if matches!(event, Event::KeyPress { .. }) && shortcut(event) {
+                                return;
+                            }
                         }
 
                         // One measured delta per animation frame, before dispatch, so an
@@ -869,6 +894,13 @@ impl EventLoop {
             // The frame was cancelled: treat it as consumed work, not a dispatch.
             return true;
         }
+        if matches!(event, Event::KeyPress { .. }) {
+            if let Some(shortcut) = self.shortcut_dispatch.as_ref() {
+                if shortcut(&event) {
+                    return true;
+                }
+            }
+        }
         deliver_event(self.dispatch_fn.as_ref(), self.parent_lookup.as_ref(), target, &event);
         true
     }
@@ -983,6 +1015,16 @@ impl EventLoop {
     /// Sets the dispatch callback invoked for each dequeued event.
     pub fn set_dispatch_fn(&mut self, f: EventDispatchFn) {
         self.dispatch_fn = Some(f);
+    }
+
+    /// Installs the accelerator hook consulted for every key press.
+    ///
+    /// Must be called before [`Self::start`] (or before the first `pump_once`), because the
+    /// threaded loop captures the callback when it spawns. The intended argument is the closure
+    /// form of `ActionRouter::dispatch_event`; installing it is what puts the shortcut registry on
+    /// the event path instead of leaving it host-driven.
+    pub fn set_shortcut_dispatch(&mut self, f: EventShortcutFn) {
+        self.shortcut_dispatch = Some(f);
     }
 
     /// Installs a parent resolver, which turns on capture/target/bubble propagation.

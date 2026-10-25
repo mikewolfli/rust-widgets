@@ -10,7 +10,9 @@
 
 use crate::action::ActionManager;
 use crate::compat::String;
+use crate::event::Event;
 use crate::shortcut::Key;
+use crate::shortcut::Modifiers;
 use crate::shortcut::PlatformShortcutStyle;
 use crate::shortcut::Shortcut;
 
@@ -41,7 +43,13 @@ impl<'a> ActionRouter<'a> {
         if !self.action_mgr.register_action(action_id.clone(), text) {
             return false;
         }
+        // `ShortcutManager` is the single conflict judge: ask it before registering so the reason
+        // for a refusal can be reported through the action registry's observation signal.
+        let existing = self.shortcut_mgr.get_action(&shortcut).cloned();
         if !self.shortcut_mgr.register(action_id.clone(), shortcut.clone(), "") {
+            if let Some(existing) = existing {
+                self.action_mgr.report_shortcut_conflict(action_id.clone(), existing);
+            }
             self.action_mgr.unregister_action(&action_id);
             return false;
         }
@@ -124,7 +132,11 @@ impl<'a> ActionRouter<'a> {
         if self.action_mgr.action(&action_id).is_none() {
             return false;
         }
+        let existing = self.shortcut_mgr.get_action(&shortcut).cloned();
         if !self.shortcut_mgr.register(action_id.clone(), shortcut.clone(), "") {
+            if let Some(existing) = existing {
+                self.action_mgr.report_shortcut_conflict(action_id.clone(), existing);
+            }
             return false;
         }
         if self.action_mgr.bind_shortcut_type(&shortcut, action_id.clone()) {
@@ -138,5 +150,31 @@ impl<'a> ActionRouter<'a> {
     /// Designed to be called from `ShortcutManager::shortcut_triggered` signal.
     pub fn route_action_id(&mut self, action_id: &str) -> bool {
         self.action_mgr.trigger_action(action_id)
+    }
+
+    /// The one keyboard dispatch path: registry match, then command trigger.
+    ///
+    /// `None` means no enabled action owns the chord. A match is triggered here rather than left
+    /// to the caller, so a host cannot accept a shortcut and forget to run its command — the two
+    /// halves of "the accelerator fired" are one call.
+    pub fn dispatch_key(&mut self, key: Key, modifiers: Modifiers) -> Option<String> {
+        let action_id = self.shortcut_mgr.dispatch_shortcut(key, modifiers)?;
+        self.action_mgr.trigger_action(&action_id);
+        Some(action_id)
+    }
+
+    /// Dispatches a framework event when it is a key press.
+    ///
+    /// This is the event-loop entry point: [`crate::event::EventLoop`] offers every key press
+    /// here before the focused control sees it, so a global accelerator does not depend on the
+    /// focus tree. A non-key event is not a shortcut and reports `false`.
+    pub fn dispatch_event(&mut self, event: &Event) -> bool {
+        let Event::KeyPress { key, modifiers } = event else {
+            return false;
+        };
+        let Some(key) = Key::from_key_code(*key) else {
+            return false;
+        };
+        self.dispatch_key(key, Modifiers::from_event_bits(*modifiers)).is_some()
     }
 }

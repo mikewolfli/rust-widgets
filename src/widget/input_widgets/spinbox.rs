@@ -19,7 +19,7 @@
 //! [`SpinBox::down_button`]) keep their names and their meaning: they report the derivation's
 //! answer rather than a second copy of it, so the paint path, the hit test and the tests all read
 //! one geometry.
-use crate::compat::{format, Box, String, ToString};
+use crate::compat::{format, Box, Rc, String, ToString};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
@@ -43,6 +43,9 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 use super::input_validator::{InputValidator, ValidationState, Validator};
+use super::lineedit::LineEdit;
+use crate::data_binding::{Formatter, ValidationError, Validator as ValueValidator};
+use crate::widget::display_widgets::slider::{LinkMode, NumericLinkSlot};
 
 /// Upper bound on [`SpinBox::decimals`], matching the widest precision the default
 /// display grammar can print. A larger precision would render digits that are pure
@@ -152,16 +155,21 @@ pub struct SpinBox {
     step_type: SpinBoxStepType,
     /// Whether the user is typing a value into the field.
     editing: bool,
-    /// The text typed since the edit began.
-    entry_buffer: String,
-    /// The entry's insertion point, in bytes from the start of the buffer.
+    /// The text entry's editing engine.
     ///
-    /// Kept beside the buffer rather than derived from its length, because the caret is part of
-    /// the edit state: a select-all plus a keystroke has to replace the selected run, and a
-    /// backspace has to delete the character *before* the caret.
-    entry_cursor: usize,
-    /// The other end of the entry selection, in bytes. `None` means no selection.
-    entry_selection_start: Option<usize>,
+    /// # Why the entry is a real `LineEdit` rather than a character buffer
+    ///
+    /// The previous entry was a `String` plus a cursor and a selection anchor maintained here:
+    /// it accepted digits through `insert_entry_char`, deleted one byte at a time, and had no
+    /// clipboard, no IME commit and no word-wise navigation. [`LineEdit`] already owns every one
+    /// of those behaviours (and the event gating the rest of the crate trusts it for), so the
+    /// spin box hosts one and asks it what the text and caret are. The numeric stepping below is
+    /// unchanged; only the *text* half of an edit is delegated.
+    ///
+    /// The field is hosted rather than registered as a tree child because a `SpinBox` is
+    /// constructed before it has a window or a registry; its rectangle is written by
+    /// [`SpinBox::place_entry`] from the same `editable_rect` the paint path uses.
+    entry: LineEdit,
     /// The rule the typed entry is checked against, or `None` for a free numeric field.
     ///
     /// A spin box bounds its value but has no opinion about the *text* being assembled: a
@@ -183,8 +191,25 @@ pub struct SpinBox {
     pending_value_emit: bool,
     /// Which step button is held down, for auto-repeat: `Some(true)` is the up button.
     held_step: Option<bool>,
+    /// Emitted with the formatter/validator message when a typed value is refused.
+    ///
+    /// A spin box used to end the edit silently on an unparsable buffer. The value was left
+    /// alone, which is correct, but the user got no reason and a host could not distinguish
+    /// "cancelled" from "rejected". The signal is the missing half.
+    pub validation_failed: Signal1<String>,
+    /// The reactive model value this control consumes through the property bridge.
+    binding: Option<crate::data_binding::Binding<CapabilityValue>>,
     /// Milliseconds accumulated while a step button is held.
     repeat_elapsed: u32,
+    /// A value-level rule from `data_binding`, applied when a typed entry is committed.
+    ///
+    /// Distinct from [`Self::validator`], which inspects the *text* as it is typed. This one sees
+    /// the parsed `f64` and may clamp or refuse it; the trait is public, so it is exposed through
+    /// [`Self::set_numeric_validator`] (the name `set_validator` is already taken by the text
+    /// grammar setter and adding a second method of the same name is not possible in Rust).
+    numeric_validator: Option<Box<dyn crate::data_binding::Validator<f64>>>,
+    /// The shared value/range link the slider publishes while a pair is bound.
+    numeric_link: NumericLinkSlot,
 }
 
 /// How a spin box chooses the distance of one step.
@@ -208,7 +233,93 @@ struct ValueTextCache {
     special: Option<String>,
     text: String,
 }
+/// The number ↔ text half of the spin box's display grammar.
+///
+/// # Why this is a `Formatter` and not two private helpers
+///
+/// The control's own formatting and parsing used to be separate: `formatted_value` printed with
+/// one rule and `commit_edit` parsed with `str::parse::<f64>`, so a value with a prefix, a
+/// suffix or a non-default precision could be shown but not typed back. One trait with both
+/// directions is what makes the round trip a property of the grammar rather than of two call
+/// sites that happen to agree.
+struct SpinBoxNumberFormatter {
+    decimals: u32,
+}
+
+impl Formatter<f64> for SpinBoxNumberFormatter {
+    fn format(&self, value: &f64) -> String {
+        match self.decimals {
+            0 => format!("{}", round_to_i32(*value)),
+            n => format!("{:.*}", n as usize, value),
+        }
+    }
+
+    fn parse(&self, text: &str) -> Result<f64, ValidationError> {
+        text.trim().parse::<f64>().ok().filter(|value| value.is_finite()).ok_or_else(|| {
+            ValidationError::new(format!("`{}` is not a finite number", text.trim()))
+        })
+    }
+}
+
+/// Clamps and rounds a value to the spin box's range and precision.
+///
+/// `Validator` is allowed to return a repaired value (`Ok(clamped)`) rather than reject, which is
+/// exactly the range rule: a number outside the bounds is moved to the bound, not refused. NaN is
+/// the one value that is rejected, because it has no position in an ordered range.
+struct SpinBoxRangeValidator {
+    minimum: f64,
+    maximum: f64,
+    decimals: u32,
+}
+
+impl ValueValidator<f64> for SpinBoxRangeValidator {
+    fn validate(&self, value: f64) -> Result<f64, ValidationError> {
+        if value.is_nan() {
+            return Err(ValidationError::new(String::from(
+                "NaN has no position in a numeric range",
+            )));
+        }
+        let clamped = ordered_clamp_f64(value, self.minimum, self.maximum);
+        Ok(round_to_decimals(clamped, self.decimals))
+    }
+}
+
 impl SpinBox {
+    /// Binds this control's `value` property to a reactive model value.
+    ///
+    /// The initial model value is applied immediately, and (when the control is mounted) later
+    /// model changes are written through the property contract. The reverse direction is
+    /// [`Self::sync_to_binding`].
+    pub fn bind_value(&mut self, binding: &crate::data_binding::Binding<CapabilityValue>) {
+        self.binding = Some(binding.clone());
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.base.id()) {
+                crate::data_binding::bind_widget_property(binding, "spin_box.value", id, "value");
+                return;
+            }
+        }
+        if let CapabilityValue::Int(value) = binding.get() {
+            self.set_value_f64(value as f64);
+            binding.announce_synced("value");
+        }
+    }
+
+    /// Pushes the current numeric value into the bound model, reporting whether one is bound.
+    pub fn sync_to_binding(&mut self) -> bool {
+        let Some(binding) = self.binding.clone() else {
+            return false;
+        };
+        binding.set(CapabilityValue::Int(i64::from(self.value())));
+        binding.announce_synced("value");
+        true
+    }
+
+    /// The reactive value this control consumes, if it is bound.
+    pub fn bound_value(&self) -> Option<&crate::data_binding::Binding<CapabilityValue>> {
+        self.binding.as_ref()
+    }
+
     /// The band the whole control is painted in: full width, one text field tall, centred.
     ///
     /// # Why the control is not its own rectangle
@@ -315,6 +426,19 @@ impl SpinBox {
         )
     }
 
+    /// Hands the hosted [`LineEdit`] the value box it edits.
+    ///
+    /// The field must sit in exactly the rectangle the paint path draws the value into, or a
+    /// click's caret and the glyphs under it disagree. It is written at construction-equivalent
+    /// points (`set_geometry`, a direction/alignment change, the start of an edit) rather than
+    /// every frame; `editable_rect` is the single derivation both sides read.
+    fn place_entry(&mut self) {
+        let rect = self.editable_rect();
+        if self.entry.geometry() != rect {
+            self.entry.set_geometry(rect);
+        }
+    }
+
     /// The value's and the step column's widths for a band `band_width` wide.
     ///
     /// # The two cases
@@ -369,6 +493,7 @@ impl SpinBox {
             return;
         }
         self.direction = direction;
+        self.place_entry();
         self.base.request_redraw();
         self.base.request_layout();
     }
@@ -414,16 +539,53 @@ impl SpinBox {
             editing_finished: GenericSignal::new(),
             step_type: SpinBoxStepType::SingleStep,
             editing: false,
-            entry_buffer: String::new(),
-            entry_cursor: 0,
-            entry_selection_start: None,
+            entry: LineEdit::new(Rect::new(0, 0, 0, 0)),
             validator: None,
             validation_state: ValidationState::Acceptable,
             validation_message: "",
             keyboard_tracking: true,
             pending_value_emit: false,
             held_step: None,
+            validation_failed: Signal1::new(),
+            binding: None,
             repeat_elapsed: 0,
+            numeric_validator: None,
+            numeric_link: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    /// The shared link slot this spin box publishes while a slider is bound.
+    pub(crate) fn numeric_link_slot(&self) -> NumericLinkSlot {
+        Rc::clone(&self.numeric_link)
+    }
+
+    /// Whether a slider is currently bound to this spin box.
+    pub fn is_linked(&self) -> bool {
+        self.numeric_link.borrow().as_ref().is_some_and(|link| link.is_attached())
+    }
+
+    /// The direction values cross the current link in, or `None` when unbound.
+    pub fn link_mode(&self) -> Option<LinkMode> {
+        self.numeric_link
+            .borrow()
+            .as_ref()
+            .filter(|link| link.is_attached())
+            .map(|link| link.mode())
+    }
+
+    /// The value every reader sees: the link's when bound, this control's own otherwise.
+    fn current_value(&self) -> f64 {
+        match &*self.numeric_link.borrow() {
+            Some(link) => link.spin_value(),
+            None => self.value,
+        }
+    }
+
+    /// Publishes a value to the bound link and refreshes its bounds snapshot.
+    fn publish_to_link(&self, value: f64) {
+        if let Some(link) = self.numeric_link.borrow().as_ref() {
+            link.set_spin_value(value);
+            link.set_bounds(self.minimum, self.maximum, self.decimals);
         }
     }
     /// Returns the current value, as an integer.
@@ -432,11 +594,11 @@ impl SpinBox {
     /// value as an integer" is `3`, and truncation would also turn `-2.7` into `-2`, an
     /// error that grows with magnitude. The exact value is [`Self::value_f64`].
     pub fn value(&self) -> i32 {
-        round_to_i32(self.value)
+        round_to_i32(self.current_value())
     }
     /// Returns the current value at full precision.
     pub fn value_f64(&self) -> f64 {
-        self.value
+        self.current_value()
     }
     /// Sets the value, clamped to the range and rounded to [`Self::decimals`].
     pub fn set_value(&mut self, value: i32) {
@@ -459,17 +621,21 @@ impl SpinBox {
     /// the deferred notification separately: `keyboard_tracking == false` moves the value
     /// now and publishes it when the edit ends.
     fn apply_value_f64(&mut self, value: f64) -> bool {
-        if value.is_nan() {
+        let rule = SpinBoxRangeValidator {
+            minimum: self.minimum,
+            maximum: self.maximum,
+            decimals: self.decimals,
+        };
+        let Ok(rounded) = rule.validate(value) else {
             return false;
-        }
-        let clamped = ordered_clamp_f64(value, self.minimum, self.maximum);
-        let rounded = round_to_decimals(clamped, self.decimals);
+        };
         // `==` on two f64s that both passed through the same rounding is exact: this is
         // not approximate comparison, it is "did the write change anything".
-        if self.value == rounded {
+        if self.current_value() == rounded {
             return false;
         }
         self.value = rounded;
+        self.publish_to_link(rounded);
         self.revalidate();
         self.base.request_redraw();
         true
@@ -524,7 +690,8 @@ impl SpinBox {
         if self.maximum < self.minimum {
             self.maximum = self.minimum;
         }
-        self.set_value_f64(self.value); // Re-clamp
+        self.publish_to_link(self.current_value());
+        self.set_value_f64(self.current_value()); // Re-clamp
         self.base.request_redraw();
     }
     /// Returns maximum value, as an integer.
@@ -548,7 +715,8 @@ impl SpinBox {
         if self.minimum > self.maximum {
             self.minimum = self.maximum;
         }
-        self.set_value_f64(self.value); // Re-clamp
+        self.publish_to_link(self.current_value());
+        self.set_value_f64(self.current_value()); // Re-clamp
         self.base.request_redraw();
     }
     /// Sets both minimum and maximum in one call.
@@ -569,7 +737,8 @@ impl SpinBox {
         }
         self.minimum = minimum.min(maximum);
         self.maximum = minimum.max(maximum);
-        self.set_value_f64(self.value); // Re-clamp
+        self.publish_to_link(self.current_value());
+        self.set_value_f64(self.current_value()); // Re-clamp
         self.base.request_redraw();
     }
     /// Returns the number of digits shown after the decimal separator.
@@ -590,7 +759,8 @@ impl SpinBox {
             return;
         }
         self.decimals = decimals;
-        self.value = round_to_decimals(self.value, decimals);
+        self.value = round_to_decimals(self.current_value(), decimals);
+        self.publish_to_link(self.value);
         self.revalidate();
         self.base.request_redraw();
     }
@@ -676,7 +846,7 @@ impl SpinBox {
     }
     /// Increments value by single step.
     pub fn step_up(&mut self) {
-        let mut new_value = self.value + self.step_amount();
+        let mut new_value = self.current_value() + self.step_amount();
         if new_value > self.maximum {
             if self.wrapping {
                 new_value = self.minimum;
@@ -688,7 +858,7 @@ impl SpinBox {
     }
     /// Decrements value by single step.
     pub fn step_down(&mut self) {
-        let mut new_value = self.value - self.step_amount();
+        let mut new_value = self.current_value() - self.step_amount();
         if new_value < self.minimum {
             if self.wrapping {
                 new_value = self.maximum;
@@ -704,7 +874,7 @@ impl SpinBox {
         match self.step_type {
             SpinBoxStepType::SingleStep => self.single_step,
             SpinBoxStepType::AdaptiveDecimalStep => {
-                let magnitude = self.value.abs();
+                let magnitude = self.current_value().abs();
                 if magnitude < 10.0 {
                     return self.single_step;
                 }
@@ -730,12 +900,12 @@ impl SpinBox {
 
     /// Whether the value can be incremented without wrapping.
     pub fn can_step_up(&self) -> bool {
-        self.wrapping || self.value < self.maximum
+        self.wrapping || self.current_value() < self.maximum
     }
 
     /// Whether the value can be decremented without wrapping.
     pub fn can_step_down(&self) -> bool {
-        self.wrapping || self.value > self.minimum
+        self.wrapping || self.current_value() > self.minimum
     }
 
     /// Whether the user is currently typing a value into the field.
@@ -744,17 +914,25 @@ impl SpinBox {
     }
 
     /// The text typed since the current edit began.
+    ///
+    /// Delegates to the hosted [`LineEdit`]. When no edit is open the entry is empty, which is
+    /// the same answer the previous character-buffer implementation gave.
     pub fn entry_text(&self) -> &str {
-        &self.entry_buffer
+        self.entry.text()
+    }
+
+    /// The hosted text editor, so a host can inspect the text, caret and selection engine this
+    /// control is now built on.
+    pub fn line_edit(&self) -> &LineEdit {
+        &self.entry
     }
 
     /// The entry's insertion point, in bytes from the start of [`Self::entry_text`].
     ///
-    /// Meaningful while [`Self::is_editing`] is true; an idle field reports the end of the
-    /// empty buffer (zero). The unit is bytes for the same reason [`crate::widget::LineEdit`]'s
-    /// caret uses bytes: it is what `String::insert` and slicing take.
+    /// The unit is bytes because that is what [`crate::widget::LineEdit`]'s caret uses; the value
+    /// is meaningful while [`Self::is_editing`] is true and is what the paint path draws.
     pub fn entry_cursor_position(&self) -> usize {
-        self.entry_cursor
+        self.entry.cursor_position()
     }
 
     /// Places the entry's caret, clamped to the buffer and snapped to a character boundary.
@@ -766,26 +944,13 @@ impl SpinBox {
         if !self.editing {
             return;
         }
-        let position = self.entry_boundary(position);
-        if self.entry_cursor == position && self.entry_selection_start.is_none() {
-            return;
-        }
-        self.entry_cursor = position;
-        self.entry_selection_start = None;
+        self.entry.set_cursor_position(position);
         self.base.request_redraw();
     }
 
     /// The selected run of the entry as ordered `(start, end)` byte offsets, or `None`.
     pub fn entry_selection_range(&self) -> Option<(usize, usize)> {
-        let anchor = self.entry_selection_start?;
-        if anchor == self.entry_cursor {
-            return None;
-        }
-        Some(if anchor < self.entry_cursor {
-            (anchor, self.entry_cursor)
-        } else {
-            (self.entry_cursor, anchor)
-        })
+        self.entry.selection_range()
     }
 
     /// Selects the whole entry, starting an edit when the field is idle.
@@ -797,8 +962,7 @@ impl SpinBox {
         if !self.editing {
             self.begin_edit();
         }
-        self.entry_selection_start = Some(0);
-        self.entry_cursor = self.entry_buffer.len();
+        self.entry.select_all();
         self.base.request_redraw();
     }
 
@@ -839,6 +1003,45 @@ impl SpinBox {
         self.base.request_redraw();
     }
 
+    /// Installs a text predicate as the entry's rule.
+    ///
+    /// This is the fallback the issue asks for when a `set_validator(Validator<f64>)` cannot be
+    /// spelled: the name `set_validator` already publishes the text-grammar setter, and Rust has
+    /// no method overloading. The predicate is the same three-way check every [`Validator`] is,
+    /// with the outcome collapsed to `Acceptable` / `Invalid`; `Intermediate` is unreachable
+    /// because a boolean predicate has no "not finished yet" answer. Use
+    /// [`Self::set_dyn_validator`] when that distinction matters.
+    pub fn set_text_validator<F>(&mut self, predicate: F)
+    where
+        F: Fn(&str) -> bool + Send + Sync + 'static,
+    {
+        self.set_dyn_validator(Some(Box::new(PredicateValidator::new(predicate))));
+    }
+
+    /// The value-level rule applied when a typed entry is committed.
+    pub fn numeric_validator(&self) -> Option<&dyn crate::data_binding::Validator<f64>> {
+        self.numeric_validator.as_deref()
+    }
+
+    /// Installs a [`crate::data_binding::Validator`] over the parsed value.
+    ///
+    /// # Why the name is not `set_validator`
+    ///
+    /// The issue asks for `set_validator(Validator)` if the `data_binding` trait is public (it
+    /// is). This control already publishes `set_validator(Option<InputValidator>)`, the text
+    /// grammar setter every field in the crate shares, and Rust cannot overload one name with a
+    /// second generic method. Renaming the existing setter would be a breaking change to a
+    /// published vocabulary for no behavioural gain, so the value rule is exposed here under its
+    /// own name. A refusal keeps the edit open and marks the field invalid rather than silently
+    /// discarding what the user typed.
+    pub fn set_numeric_validator(
+        &mut self,
+        validator: Option<Box<dyn crate::data_binding::Validator<f64>>>,
+    ) {
+        self.numeric_validator = validator;
+        self.base.request_redraw();
+    }
+
     /// Whether the current entry text satisfies the rule (true without a validator).
     pub fn is_valid(&self) -> bool {
         self.validation_state.is_acceptable()
@@ -863,7 +1066,8 @@ impl SpinBox {
     /// the end and the commit still parses it, so a repair is visible to the user rather than
     /// silently replacing the value under them.
     pub fn fixup(&mut self) -> bool {
-        let text = if self.editing { self.entry_buffer.clone() } else { self.formatted_value() };
+        let text =
+            if self.editing { self.entry.text().to_string() } else { self.formatted_value() };
         let Some(repaired) = self.validator.as_deref().and_then(|validator| validator.fixup(&text))
         else {
             return false;
@@ -872,9 +1076,9 @@ impl SpinBox {
             return false;
         }
         if self.editing {
-            self.entry_buffer = repaired;
-            self.entry_cursor = self.entry_buffer.len();
-            self.entry_selection_start = None;
+            self.entry.set_text(repaired);
+            let end = self.entry.text().len();
+            self.entry.set_cursor_position(end);
             self.revalidate();
             self.base.request_redraw();
             return true;
@@ -882,9 +1086,9 @@ impl SpinBox {
         let Ok(value) = repaired.trim().parse::<f64>() else {
             return false;
         };
-        let before = self.value;
+        let before = self.current_value();
         self.set_value_f64(value);
-        self.value != before
+        self.current_value() != before
     }
 
     /// Whether a step reports `value_changed` while an edit is open.
@@ -927,7 +1131,8 @@ impl SpinBox {
             self.validation_message = "";
             return;
         }
-        let text = if self.editing { self.entry_buffer.clone() } else { self.formatted_value() };
+        let text =
+            if self.editing { self.entry.text().to_string() } else { self.formatted_value() };
         let (state, message) = match self.validator.as_deref() {
             Some(validator) => {
                 let state = validator.state(&text);
@@ -940,146 +1145,69 @@ impl SpinBox {
         self.validation_message = message;
     }
 
-    /// The nearest character boundary at or before `position` in the entry.
-    fn entry_boundary(&self, position: usize) -> usize {
-        crate::widget::text_utils::floor_char_boundary(&self.entry_buffer, position)
-    }
-
-    /// Removes the selected run, leaving the caret at its start. Returns whether it removed anything.
-    fn delete_entry_selection(&mut self) -> bool {
-        let Some((start, end)) = self.entry_selection_range() else {
-            return false;
-        };
-        self.entry_buffer.replace_range(start..end, "");
-        self.entry_cursor = start;
-        self.entry_selection_start = None;
-        true
-    }
-
-    /// Inserts a typed character at the caret, replacing any selection first.
-    ///
-    /// The installed validator's `filter` runs first, so a grammar can drop characters the
-    /// field can never represent; a character the filter removes does not reach the buffer and
-    /// therefore does not change the value text.
-    fn insert_entry_char(&mut self, ch: char) {
-        let mut accepted = ch;
-        if let Some(validator) = self.validator.as_deref() {
-            let filtered = validator.filter(&ch.to_string());
-            let mut kept = filtered.chars();
-            match (kept.next(), kept.next()) {
-                (Some(only), None) => accepted = only,
-                _ => {
-                    // The filter refused the character outright.
-                    self.revalidate();
-                    self.base.request_redraw();
-                    return;
-                }
-            }
-        }
-        self.delete_entry_selection();
-        let position = self.entry_boundary(self.entry_cursor);
-        self.entry_buffer.insert(position, accepted);
-        self.entry_cursor = position + accepted.len_utf8();
-        self.revalidate();
-        self.base.request_redraw();
-    }
-
-    /// Deletes the selection, or the character before the caret.
-    fn backspace_entry(&mut self) {
-        if self.delete_entry_selection() {
-            self.revalidate();
-            self.base.request_redraw();
-            return;
-        }
-        let position = self.entry_boundary(self.entry_cursor);
-        let Some((previous, _)) = self.entry_buffer[..position].char_indices().next_back() else {
-            return;
-        };
-        self.entry_buffer.replace_range(previous..position, "");
-        self.entry_cursor = previous;
-        self.revalidate();
-        self.base.request_redraw();
-    }
-
-    /// Deletes the selection, or the character at the caret.
-    fn delete_entry_forward(&mut self) {
-        if self.delete_entry_selection() {
-            self.revalidate();
-            self.base.request_redraw();
-            return;
-        }
-        let position = self.entry_boundary(self.entry_cursor);
-        let Some((_, ch)) = self.entry_buffer[position..].char_indices().next() else {
-            return;
-        };
-        let end = position + ch.len_utf8();
-        self.entry_buffer.replace_range(position..end, "");
-        self.revalidate();
-        self.base.request_redraw();
-    }
-
-    /// Moves the entry caret one character, or extends the selection under Shift.
-    fn move_entry_cursor(&mut self, delta: isize, extend: bool) {
-        let position = self.entry_boundary(self.entry_cursor);
-        let target = if delta < 0 {
-            self.entry_buffer[..position].char_indices().next_back().map_or(0, |(i, _)| i)
-        } else {
-            let step = self.entry_buffer[position..].chars().next().map_or(0, char::len_utf8);
-            position + step
-        };
-        self.move_entry_cursor_to(target, extend);
-    }
-
-    /// Moves the entry caret to `target`, keeping the anchor under Shift.
-    fn move_entry_cursor_to(&mut self, target: usize, extend: bool) {
-        let target = self.entry_boundary(target);
-        if extend {
-            if self.entry_selection_start.is_none() {
-                self.entry_selection_start = Some(self.entry_cursor);
-            }
-        } else {
-            self.entry_selection_start = None;
-        }
-        self.entry_cursor = target;
-        if self.entry_selection_start == Some(target) {
-            self.entry_selection_start = None;
-        }
-        self.base.request_redraw();
-    }
-
-    /// Starts a typed edit, seeded with the current value's text.
+    /// Starts a typed edit, seeded with the current value's text and a caret at its end.
     pub fn begin_edit(&mut self) {
         if self.editing {
             return;
         }
-        let current_text = self.value_text_cached().to_string();
+        let current_text = self.formatted_value();
+        self.entry.set_text(current_text);
+        let end = self.entry.text().len();
+        self.entry.set_cursor_position(end);
         self.editing = true;
-        self.entry_cursor = current_text.len();
-        self.entry_selection_start = None;
-        self.entry_buffer = current_text;
+        self.place_entry();
         self.revalidate();
         self.base.request_redraw();
     }
 
-    /// Commits the typed buffer, parsing it into the value.
+    /// Commits the typed text, parsing it into the value.
     ///
-    /// Returns whether a value was parsed. An unparsable buffer leaves the value alone
-    /// rather than silently resetting it, and the edit still ends so the field cannot get
-    /// stuck in a state the user cannot leave.
+    /// Returns whether a value was parsed and accepted. An unparsable buffer — or one a
+    /// [`Self::set_numeric_validator`] rule refuses — leaves the value alone rather than silently
+    /// resetting it. A refused value keeps the edit open so the user can correct it; an
+    /// unparsable buffer ends the edit, so the field cannot get stuck in a state the user cannot
+    /// leave.
     pub fn commit_edit(&mut self) -> bool {
         if !self.editing {
             return false;
         }
-        let parsed = self.entry_buffer.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        let formatter = SpinBoxNumberFormatter { decimals: self.decimals };
+        let range = SpinBoxRangeValidator {
+            minimum: self.minimum,
+            maximum: self.maximum,
+            decimals: self.decimals,
+        };
+        let parsed =
+            match formatter.parse(self.entry.text()).and_then(|value| range.validate(value)) {
+                Ok(value) => match self.numeric_validator.as_deref() {
+                    Some(rule) => match rule.validate(value) {
+                        Ok(value) => Some(value),
+                        Err(reason) => {
+                            // The rule refuses this number: keep the text so the user can fix it.
+                            self.validation_state = ValidationState::Invalid;
+                            self.validation_message = "the value is not accepted";
+                            self.validation_failed.emit(reason.message.clone());
+                            self.base.request_redraw();
+                            return false;
+                        }
+                    },
+                    None => Some(value),
+                },
+                Err(error) => {
+                    // The text is not a number in this field's grammar. Report why, then end the edit
+                    // so the field cannot get stuck; the value itself is left untouched.
+                    self.validation_failed.emit(error.message.clone());
+                    None
+                }
+            };
         self.editing = false;
-        self.entry_buffer.clear();
-        self.entry_cursor = 0;
-        self.entry_selection_start = None;
+        self.entry.set_text(String::new());
+        self.entry.set_cursor_position(0);
         let mut reported = false;
         if let Some(value) = parsed {
-            let before = self.value;
+            let before = self.current_value();
             self.set_value_f64(value);
-            reported = self.value != before;
+            reported = self.current_value() != before;
         }
         self.revalidate();
         self.flush_pending_value(reported);
@@ -1088,15 +1216,14 @@ impl SpinBox {
         parsed.is_some()
     }
 
-    /// Abandons the typed buffer without changing the value.
+    /// Abandons the typed text without changing the value.
     pub fn cancel_edit(&mut self) {
         if !self.editing {
             return;
         }
         self.editing = false;
-        self.entry_buffer.clear();
-        self.entry_cursor = 0;
-        self.entry_selection_start = None;
+        self.entry.set_text(String::new());
+        self.entry.set_cursor_position(0);
         self.revalidate();
         self.flush_pending_value(false);
         self.editing_finished.emit();
@@ -1147,10 +1274,9 @@ impl SpinBox {
     /// Trailing zeros are kept, because dropping them would make a two-decimal spin box
     /// look like it had accepted `1.5` when it holds `1.50`.
     pub fn formatted_value(&self) -> String {
-        match self.decimals {
-            0 => format!("{}", round_to_i32(self.value)),
-            n => format!("{:.*}", n as usize, self.value),
-        }
+        // One grammar for display and for parsing: the same `Formatter` instance is what
+        // `commit_edit` parses with, so a shown value is always a value that types back.
+        SpinBoxNumberFormatter { decimals: self.decimals }.format(&self.current_value())
     }
     /// Returns display text: the special value text, or prefix + number + suffix.
     ///
@@ -1165,7 +1291,7 @@ impl SpinBox {
     /// See [`crate::widget::decorations`] for the full argument.
     pub fn display_text(&self) -> String {
         if let Some(special) = &self.special_value_text {
-            if self.value == self.minimum {
+            if self.current_value() == self.minimum {
                 return special.clone();
             }
         }
@@ -1177,7 +1303,7 @@ impl SpinBox {
     /// The slots are **excluded**, which is what makes the value's origin independent of them.
     fn value_text(&self) -> String {
         if let Some(special) = &self.special_value_text {
-            if self.value == self.minimum {
+            if self.current_value() == self.minimum {
                 return special.clone();
             }
         }
@@ -1189,7 +1315,7 @@ impl SpinBox {
     /// The returned `Ref` lets the paint path borrow the string without a per-frame allocation;
     /// `value_text` remains the value-returning form the property contract uses.
     fn value_text_cached(&self) -> Ref<'_, str> {
-        let value_bits = self.value.to_bits();
+        let value_bits = self.current_value().to_bits();
         let minimum_bits = self.minimum.to_bits();
         let stale = match self.value_text_cache.borrow().as_ref() {
             Some(cache) => {
@@ -1258,7 +1384,7 @@ fn round_to_i32(value: f64) -> i32 {
 /// input never stored; that would require carrying the value as decimal text instead of
 /// `f64`, which is a much larger change than this setting. The invariant guaranteed here is
 /// the one that matters: **the stored value equals the number the widget prints.**
-fn round_to_decimals(value: f64, decimals: u32) -> f64 {
+pub(crate) fn round_to_decimals(value: f64, decimals: u32) -> f64 {
     if decimals == 0 {
         let rounded = value.round();
         // `-0.0` and `0.0` compare equal but format differently (`-0`), and a value of
@@ -1272,6 +1398,50 @@ fn round_to_decimals(value: f64, decimals: u32) -> f64 {
     text.parse::<f64>().unwrap_or(value)
 }
 // Implement Widget trait
+
+/// A boolean text predicate adapted to the field's three-way [`Validator`] contract.
+///
+/// Kept private: the public entry point is [`SpinBox::set_text_validator`], which boxes the
+/// predicate here so the field consults one rule box like every other grammar.
+struct PredicateValidator {
+    predicate: Box<dyn Fn(&str) -> bool + Send + Sync>,
+}
+
+impl PredicateValidator {
+    fn new<F>(predicate: F) -> Self
+    where
+        F: Fn(&str) -> bool + Send + Sync + 'static,
+    {
+        Self { predicate: Box::new(predicate) }
+    }
+}
+
+impl core::fmt::Debug for PredicateValidator {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("PredicateValidator")
+    }
+}
+
+impl Validator for PredicateValidator {
+    fn state(&self, text: &str) -> ValidationState {
+        if (self.predicate)(text) {
+            ValidationState::Acceptable
+        } else {
+            ValidationState::Invalid
+        }
+    }
+
+    fn message(&self) -> &'static str {
+        "the text is not accepted"
+    }
+
+    fn filter(&self, text: &str) -> String {
+        // A predicate judges a whole string, so it cannot filter a single character without
+        // inventing a context. The field revalidates after every change instead.
+        text.to_string()
+    }
+}
+
 impl Widget for SpinBox {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -1281,6 +1451,13 @@ impl Widget for SpinBox {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        // The hosted entry is positioned by the same boxes the paint path uses, so a resize or a
+        // move must carry it along rather than leaving it at the old value box.
+        self.place_entry();
     }
 
     fn size_hint(&self) -> Size {
@@ -1342,6 +1519,11 @@ impl Widget for SpinBox {
             }
             "editing_finished" => {
                 Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
+            }
+            "validation_failed" => {
+                Some(EventSignalRef::mapped("validation_failed", &self.validation_failed, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
             }
             _ => None,
         }
@@ -1555,40 +1737,72 @@ impl EventHandler for SpinBox {
                         self.repeat_elapsed = 0;
                         self.handle_button_click(*pos);
                     } else if self.editable_rect().contains_point(*pos) {
-                        // A press in the value box starts a typed edit rather than stepping.
-                        self.begin_edit();
+                        // A press in the value box starts a typed edit rather than stepping, and
+                        // the hosted field places the caret where the pointer landed — the same
+                        // gesture every other text field in the crate performs.
+                        if !self.editing {
+                            self.begin_edit();
+                        }
+                        self.place_entry();
+                        self.entry.handle_event(event);
                     }
                 }
             }
-            Event::MouseRelease { .. } => self.stop_repeat(),
+            Event::MouseDoubleClick { pos, .. } | Event::MouseMove { pos }
+                if self.editing && self.editable_rect().contains_point(*pos) =>
+            {
+                self.entry.handle_event(event);
+            }
+            Event::MouseRelease { .. } => {
+                if self.editing {
+                    self.entry.handle_event(event);
+                }
+                self.stop_repeat();
+            }
             Event::MouseLeave { .. } => self.stop_repeat(),
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
                 self.handle_button_click(*pos);
             }
-            Event::KeyPress { key, modifiers } => {
-                let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
-                    .contains(crate::shortcut::Modifiers::SHIFT);
+            // Platform-committed text (a printable character or an IME commit) is the input a
+            // touch keyboard and an input method actually deliver. The hosted field already
+            // owns that path, so the spin box only has to start an edit and pass it on.
+            Event::TextInput { .. } | Event::ImeCommit { .. } | Event::ImePreedit { .. } => {
+                let started = !self.editing;
+                if started {
+                    self.begin_edit();
+                    // The first typed character replaces the seeded value rather than appending
+                    // to it, which is what a user typing into a populated numeric field expects.
+                    self.entry.select_all();
+                }
+                self.place_entry();
+                self.entry.handle_event(event);
+                self.revalidate();
+                self.base.request_redraw();
+            }
+            Event::KeyPress { key, .. } => {
                 if self.editing {
                     match *key {
-                        48..=57 | 46 | 45 => {
-                            if let Some(ch) = char::from_u32(*key) {
-                                self.insert_entry_char(ch);
-                            }
-                        }
-                        // Backspace deletes the selection, or the character behind the caret.
-                        8 => self.backspace_entry(),
-                        127 => self.delete_entry_forward(),
-                        // Arrow keys move the entry caret; Shift extends the selection.
-                        37 => self.move_entry_cursor(-1, shift),
-                        39 => self.move_entry_cursor(1, shift),
-                        36 => self.move_entry_cursor_to(0, shift),
-                        35 => self.move_entry_cursor_to(self.entry_buffer.len(), shift),
+                        // Enter commits and Escape abandons: the spin box owns the numeric
+                        // contract, while every other key goes to the hosted field (caret,
+                        // selection, clipboard and undo included).
                         13 => {
                             self.commit_edit();
                         }
                         27 => self.cancel_edit(),
-                        _ => {}
+                        // The legacy forward-delete code the old buffer accepted; `LineEdit`
+                        // spells the same operation as key 46.
+                        127 => {
+                            self.entry.delete();
+                            self.revalidate();
+                            self.base.request_redraw();
+                        }
+                        _ => {
+                            self.place_entry();
+                            self.entry.handle_event(event);
+                            self.revalidate();
+                            self.base.request_redraw();
+                        }
                     }
                     return;
                 }
@@ -1603,12 +1817,14 @@ impl EventHandler for SpinBox {
                     }
                     33 => {
                         // Page Up takes a larger step (ten single steps).
-                        let target = (self.value + self.single_step * 10.0).min(self.maximum);
+                        let target =
+                            (self.current_value() + self.single_step * 10.0).min(self.maximum);
                         self.step_to(target);
                     }
                     34 => {
                         // Page Down.
-                        let target = (self.value - self.single_step * 10.0).max(self.minimum);
+                        let target =
+                            (self.current_value() - self.single_step * 10.0).max(self.minimum);
                         self.step_to(target);
                     }
                     36 => self.set_value_f64(self.minimum),
@@ -1623,11 +1839,13 @@ impl EventHandler for SpinBox {
                         // that had not happened.
                     }
                     48..=57 | 46 | 45 => {
-                        // A printable numeric key starts an edit from the current value.
+                        // A printable numeric key starts an edit from the current value, with the
+                        // seeded value selected so the typed digit replaces rather than appends.
                         self.begin_edit();
-                        if let Some(ch) = char::from_u32(*key) {
-                            self.insert_entry_char(ch);
-                        }
+                        self.entry.select_all();
+                        self.place_entry();
+                        self.entry.handle_event(event);
+                        self.revalidate();
                     }
                     // Unknown key; ignore
                     _ => {}
@@ -1774,7 +1992,7 @@ impl Draw for SpinBox {
             &slots,
         );
         let value_text = if self.editing {
-            self.entry_buffer.clone()
+            self.entry.text().to_string()
         } else {
             self.value_text_cached().to_string()
         };
@@ -1813,7 +2031,7 @@ impl Draw for SpinBox {
         if let Some(origin) = entry_origin {
             // The insertion point, from the same origin and prefix measurement as the band and
             // clipped to the value's box.
-            let caret = self.entry_boundary(self.entry_cursor).min(value_text.len());
+            let caret = self.entry.cursor_position().min(value_text.len());
             let caret_x = origin.x + context.measure_text(&value_text[..caret], font).width as i32;
             let caret_x = caret_x
                 .clamp(value_box.x, value_box.x + value_box.width as i32 - 1)
@@ -2806,5 +3024,115 @@ mod tests {
         spin.set_value_f64(0.0);
         let at_min = crate::widget::svg::render_to_svg(&mut spin);
         assert_ne!(at_max, at_min, "a bound must be visible in the arrow column");
+    }
+
+    // ── COMP-03: the LineEdit-backed entry ─────────────────────────────────
+
+    /// Typed text reaches the hosted `LineEdit`, and Enter parses it into the value.
+    #[test]
+    fn text_input_edits_the_hosted_line_edit_and_commit_parses() {
+        use crate::compat::Arc;
+        use core::sync::atomic::{AtomicU32, Ordering};
+
+        let mut spin = SpinBox::new(Rect::new(0, 0, 200, 40));
+        spin.set_range_f64(0.0, 999.0);
+        let finished = Arc::new(AtomicU32::new(0));
+        let counter = Arc::clone(&finished);
+        spin.editing_finished.connect(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        spin.begin_edit();
+        spin.select_all();
+        spin.handle_event(&Event::TextInput { text: "42".into() });
+        assert_eq!(spin.entry_text(), "42", "the hosted field owns the entry text");
+        assert_eq!(spin.line_edit().text(), "42");
+        assert_eq!(spin.value(), 0, "nothing is committed while the entry is open");
+
+        spin.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(spin.value(), 42);
+        assert!(!spin.is_editing());
+        assert_eq!(finished.load(Ordering::SeqCst), 1, "one commit is one finish");
+    }
+
+    /// Selection and caret are the hosted field's, not a second buffer's.
+    #[test]
+    fn selection_and_caret_come_from_the_hosted_line_edit() {
+        let mut spin = SpinBox::new(Rect::new(0, 0, 200, 40));
+        spin.set_value(7);
+        spin.select_all();
+        let len = spin.entry_text().len();
+        assert_eq!(spin.entry_selection_range(), Some((0, len)));
+        assert_eq!(spin.entry_cursor_position(), len);
+
+        spin.set_entry_cursor_position(0);
+        assert_eq!(spin.entry_cursor_position(), 0);
+        assert_eq!(spin.entry_selection_range(), None, "placing the caret drops the selection");
+        assert_eq!(spin.line_edit().cursor_position(), 0);
+    }
+
+    /// The keyboard path reaches the field, so a shifted selection really extends.
+    #[test]
+    fn navigation_keys_move_the_hosted_fields_caret() {
+        let mut spin = SpinBox::new(Rect::new(0, 0, 200, 40));
+        spin.set_value(123);
+        spin.begin_edit();
+        spin.set_entry_cursor_position(0);
+        spin.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        assert_eq!(spin.entry_cursor_position(), 1);
+        // Shift+Right extends from the caret rather than moving it alone.
+        spin.handle_event(&Event::KeyPress { key: 39, modifiers: 1 });
+        assert_eq!(spin.entry_selection_range(), Some((1, 2)));
+    }
+
+    /// A boolean text predicate is exposed and is consulted as the entry is typed.
+    #[test]
+    fn a_text_validator_predicate_marks_the_entry() {
+        let mut spin = SpinBox::new(Rect::new(0, 0, 200, 40));
+        spin.set_text_validator(|text| text.parse::<f64>().is_ok_and(|value| value % 2.0 == 0.0));
+        spin.begin_edit();
+        spin.select_all();
+        spin.handle_event(&Event::TextInput { text: "3".into() });
+        assert!(!spin.is_valid(), "3 is not an even number by the installed rule");
+        assert!(!spin.validation_message().is_empty());
+        spin.select_all();
+        spin.handle_event(&Event::TextInput { text: "4".into() });
+        assert!(spin.is_valid());
+    }
+
+    /// A `data_binding::Validator` sees the parsed value and may repair it.
+    #[test]
+    fn a_numeric_validator_repairs_the_committed_value() {
+        #[derive(Debug)]
+        struct ClampAtTen;
+        impl crate::data_binding::Validator<f64> for ClampAtTen {
+            fn validate(&self, value: f64) -> Result<f64, crate::data_binding::ValidationError> {
+                Ok(value.min(10.0))
+            }
+        }
+
+        let mut spin = SpinBox::new(Rect::new(0, 0, 200, 40));
+        spin.set_range_f64(0.0, 100.0);
+        spin.set_numeric_validator(Some(Box::new(ClampAtTen)));
+        spin.begin_edit();
+        spin.select_all();
+        spin.handle_event(&Event::TextInput { text: "50".into() });
+        assert!(spin.commit_edit());
+        assert_eq!(spin.value(), 10, "the rule repaired the parsed value");
+
+        // A refusing rule keeps the edit open so the user can correct the text.
+        #[derive(Debug)]
+        struct RefuseAll;
+        impl crate::data_binding::Validator<f64> for RefuseAll {
+            fn validate(&self, value: f64) -> Result<f64, crate::data_binding::ValidationError> {
+                Err(crate::data_binding::ValidationError::new(format!("refused {value}")))
+            }
+        }
+        spin.set_numeric_validator(Some(Box::new(RefuseAll)));
+        spin.begin_edit();
+        spin.select_all();
+        spin.handle_event(&Event::TextInput { text: "5".into() });
+        assert!(!spin.commit_edit());
+        assert!(spin.is_editing(), "a refused value stays editable");
     }
 }

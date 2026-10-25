@@ -13,7 +13,7 @@
 //! has a fixed height the control owns, so the layout only rediscovered constants — on each draw,
 //! which is once per frame while the popup reveals.
 
-use crate::compat::{Rc, RefCell, Vec};
+use crate::compat::{lock, Arc, Mutex, Rc, RefCell, Vec};
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -570,6 +570,12 @@ pub struct Menu {
     /// Off by default: a menu that never asks paints its labels exactly as before, so
     /// wiring the accelerator parser changed no pixels.
     show_mnemonics: bool,
+    /// Live state cells for rows built from [`crate::action::ActionManager`].
+    ///
+    /// Each cell is subscribed to the command's own `toggled` / `enabled_changed` signals, so a
+    /// change made through the registry is visible without the menu polling it. The row keeps its
+    /// `action_id`; this is the state half of that link.
+    live_actions: Vec<(String, Arc<Mutex<crate::action::ActionLiveState>>)>,
 }
 impl Menu {
     /// Creates a menu titled `title`, initially **hidden**.
@@ -605,6 +611,7 @@ impl Menu {
             tearoff: false,
             tearoff_requested: GenericSignal::new(),
             show_mnemonics: false,
+            live_actions: Vec::new(),
         };
         // A menu is a popup, so it starts hidden. `BaseWidget` defaults to visible,
         // which is right for a control that owns part of the surface but wrong for
@@ -969,10 +976,21 @@ impl Menu {
         }
         let index = self.items.len();
         self.items.push(entry);
+        if let Some(state) = manager.watch_action(&definition.id) {
+            self.live_actions.push((definition.id.clone(), state));
+        }
         self.touch_items();
         self.clamp_scroll();
         self.base.request_redraw();
         Some(index)
+    }
+
+    /// The live state cell for `action_id`, if this menu has a row linked to it.
+    pub fn live_action_state(&self, action_id: &str) -> Option<crate::action::ActionLiveState> {
+        self.live_actions
+            .iter()
+            .find(|(id, _)| id == action_id)
+            .map(|(_, state)| lock(state).clone())
     }
 
     /// Re-reads every linked row from `manager`.
@@ -985,23 +1003,37 @@ impl Menu {
             let Some(action_id) = item.action_id().map(String::from) else {
                 continue;
             };
+            // Prefer the live cell: it is the snapshot the action's own signals updated, so a
+            // state change made through the registry is observed without a second lookup. Fall
+            // back to the registry for a row that was linked before this cell existed.
+            let live = self
+                .live_actions
+                .iter()
+                .find(|(id, _)| id == &action_id)
+                .map(|(_, state)| lock(state).clone());
             let Some(definition) = manager.action_definition(&action_id) else {
                 continue;
             };
-            if item.text() != definition.text {
-                item.set_text(definition.text);
+            let (text, enabled, checkable, checked) = match live {
+                Some(state) => (state.text, state.enabled, state.checkable, state.checked),
+                None => {
+                    (definition.text, definition.enabled, definition.checkable, definition.checked)
+                }
+            };
+            if item.text() != text {
+                item.set_text(text);
                 changed = true;
             }
-            if item.is_enabled() != definition.enabled {
-                item.set_enabled(definition.enabled);
+            if item.is_enabled() != enabled {
+                item.set_enabled(enabled);
                 changed = true;
             }
-            if item.is_checkable() != definition.checkable {
-                item.set_checkable(definition.checkable);
+            if item.is_checkable() != checkable {
+                item.set_checkable(checkable);
                 changed = true;
             }
-            if definition.checkable && item.is_checked() != definition.checked {
-                item.set_checked(definition.checked);
+            if checkable && item.is_checked() != checked {
+                item.set_checked(checked);
                 changed = true;
             }
             if item.shortcut() != definition.shortcut {

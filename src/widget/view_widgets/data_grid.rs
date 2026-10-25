@@ -13,13 +13,16 @@ use crate::event::{Event, WheelScroll};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
-use crate::signal::{ConnectionScope, Signal1};
+use crate::signal::{ConnectionHandle, ConnectionScope, Signal1};
 use crate::widget::capability::access::{column_filters_to_string, sort_specs_to_string};
-use crate::widget::capability::coercion::{expect_column_filters, expect_sort_specs, expect_usize};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_column_filters, expect_sort_specs, expect_string_list, expect_usize,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{effective_font, ControlMetrics};
+use crate::widget::nav_widgets::pagination::Pagination;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 use super::data_source::{DataRole, IncrementalTableDataSource};
@@ -66,6 +69,7 @@ fn column_width_mode_to_str(mode: ColumnWidthMode) -> &'static str {
     match mode {
         ColumnWidthMode::Fixed => "fixed",
         ColumnWidthMode::Stretch => "stretch",
+        ColumnWidthMode::StretchLast => "stretch_last",
         ColumnWidthMode::Interactive => "interactive",
     }
 }
@@ -77,6 +81,7 @@ fn expect_column_width_mode(
     match crate::widget::capability::coercion::expect_string(value)?.to_ascii_lowercase().as_str() {
         "fixed" => Ok(ColumnWidthMode::Fixed),
         "stretch" => Ok(ColumnWidthMode::Stretch),
+        "stretch_last" | "stretchlast" => Ok(ColumnWidthMode::StretchLast),
         "interactive" => Ok(ColumnWidthMode::Interactive),
         _ => Err(CapabilityAccessError::TypeMismatch),
     }
@@ -252,8 +257,20 @@ pub struct DataGrid {
     resize_start_x: i32,
     /// The width the column had when the current resize drag began.
     resize_start_width: u32,
-    /// Labels supplied through [`DataGrid::set_header_labels`].
+    /// Labels supplied through [`DataGrid::set_header`] or `set_header_labels`.
     header_labels: Vec<String>,
+    /// The column specs a bound [`GridViewHeader`] contributed.
+    ///
+    /// Held as specs rather than as a header control because a widget cannot own a borrow of
+    /// another widget: the header is copied in at `set_header`, and its per-column capabilities
+    /// (sortable, filterable) keep driving this grid's header row afterwards.
+    header_columns: Vec<ColumnSpec>,
+    /// Whether filter glyphs are painted on the filterable header columns.
+    header_filter_visible: bool,
+    /// The pagination bar this grid is bound to, if any.
+    pagination: Option<PaginationBinding>,
+    /// The last page the binding applied, so polling twice does not re-emit.
+    pagination_applied_page: usize,
     /// Emitted when the selection changes; query [`DataGrid::selected_cells`] for the units.
     selection_changed: Signal1<()>,
     /// Emitted with the cell keyboard navigation moved to.
@@ -296,6 +313,8 @@ pub struct DataGrid {
     pub context_menu_requested: Signal1<Point>,
     /// Emitted with the new expression whenever the filter changes.
     pub filter_changed: Signal1<FilterExpr>,
+    /// Emitted with the zero-based page when a page from the bound [`Pagination`] is applied.
+    pub page_applied: Signal1<usize>,
 }
 
 /// How a data grid decides column widths.
@@ -306,6 +325,11 @@ pub enum ColumnWidthMode {
     Fixed,
     /// Columns divide the visible cells box equally.
     Stretch,
+    /// Every column keeps its width except the last, which takes whatever room is left.
+    ///
+    /// This is the classic table-header mode for a list whose final column is a note or action
+    /// column: stretching every column would move the one the reader is reading.
+    StretchLast,
     /// Columns use the fixed width until the caller resizes one (interactive mode).
     Interactive,
 }
@@ -333,6 +357,642 @@ impl EditTriggers {
     pub fn or(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
+}
+
+/// One column as a header describes it.
+///
+/// A header is shared by more than one table implementation, so this is deliberately the whole
+/// of a column's presentation: the title, its width, and the three capabilities a header row can
+/// offer. Nothing here refers to a cell's data, which is the table's own business.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnSpec {
+    /// Column title.
+    pub title: String,
+    /// Width in logical pixels when the header is not stretching the column.
+    pub width: u32,
+    /// Whether clicking the section cycles its sort order.
+    pub sortable: bool,
+    /// Whether the section shows a filter affordance.
+    pub filterable: bool,
+    /// Whether the section's right edge may be dragged.
+    pub resizable: bool,
+}
+
+impl ColumnSpec {
+    /// Creates a plain column: fixed width, no sort or filter affordance, resizable.
+    pub fn new(title: impl Into<String>, width: u32) -> Self {
+        Self {
+            title: title.into(),
+            width: width.max(1),
+            sortable: false,
+            filterable: false,
+            resizable: true,
+        }
+    }
+
+    /// Marks the column sortable.
+    pub fn with_sortable(mut self, sortable: bool) -> Self {
+        self.sortable = sortable;
+        self
+    }
+
+    /// Marks the column filterable.
+    pub fn with_filterable(mut self, filterable: bool) -> Self {
+        self.filterable = filterable;
+        self
+    }
+
+    /// Sets whether the column's edge may be dragged.
+    pub fn with_resizable(mut self, resizable: bool) -> Self {
+        self.resizable = resizable;
+        self
+    }
+
+    /// The published property spelling: `title|width|sortable|filterable|resizable`.
+    pub fn to_token(&self) -> String {
+        format!(
+            "{}|{}|{}|{}|{}",
+            self.title,
+            self.width,
+            u8::from(self.sortable),
+            u8::from(self.filterable),
+            u8::from(self.resizable)
+        )
+    }
+
+    /// Parses [`Self::to_token`]; flags are `0`/`1`.
+    pub fn from_token(token: &str) -> Option<Self> {
+        let mut parts = token.splitn(5, '|');
+        let title = parts.next()?.to_string();
+        let width = parts.next()?.trim().parse::<u32>().ok()?.max(1);
+        let flag = |text: Option<&str>| matches!(text.map(str::trim), Some("1" | "true"));
+        Some(Self {
+            title,
+            width,
+            sortable: flag(parts.next()),
+            filterable: flag(parts.next()),
+            resizable: parts.next().is_none_or(|text| !matches!(text.trim(), "0" | "false")),
+        })
+    }
+}
+
+/// Which way a column's sort runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortOrder {
+    /// Smallest first.
+    Ascending,
+    /// Largest first.
+    Descending,
+}
+
+impl SortOrder {
+    /// The token spelling published in `sort_columns`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ascending => "ascending",
+            Self::Descending => "descending",
+        }
+    }
+
+    /// Parses a published token spelling.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "ascending" | "asc" => Some(Self::Ascending),
+            "descending" | "desc" => Some(Self::Descending),
+            _ => None,
+        }
+    }
+
+    /// Whether the order is descending, the flag `DataGrid::set_sort_specs` takes.
+    pub fn is_descending(self) -> bool {
+        matches!(self, Self::Descending)
+    }
+
+    /// The order a click on an already-sorted section advances to.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Ascending => Self::Descending,
+            Self::Descending => Self::Ascending,
+        }
+    }
+}
+
+/// The height of a header strip: 28 px, one row of titles.
+const HEADER_STRIP_HEIGHT: u32 = 28;
+/// How close to a section's right edge a press must land to start a resize.
+const HEADER_RESIZE_GRAB: i32 = 4;
+/// The side of a sort arrow or filter glyph.
+const HEADER_ICON_SIDE: u32 = 10;
+
+/// A column header strip shared by the grid-family controls.
+///
+/// `DataGrid`, `GridTable` and `Pagination` each used to draw their own header, which is why
+/// one showed sort arrows without filter affordances and another the reverse. This control is
+/// the single implementation: it owns the section geometry, paints the arrows and filter glyphs,
+/// and reports the three gestures a header can receive (click, resize, filter).
+///
+/// It is **not** a data control: `set_sort_indicator` records what the table asked to show, and
+/// `section_clicked` says what the reader did. Sorting the rows remains the table's job.
+pub struct GridViewHeader {
+    base: BaseWidget,
+    columns: Vec<ColumnSpec>,
+    /// The order shown per section, `None` when unsorted.
+    sorts: Vec<Option<SortOrder>>,
+    /// Whether sort arrows are painted.
+    sort_indicator_visible: bool,
+    /// How section widths are decided.
+    resize_mode: ColumnWidthMode,
+    /// Whether filter glyphs are painted on filterable sections.
+    filter_icon_visible: bool,
+    /// The section the pointer is over.
+    hovered: Option<usize>,
+    /// The drag in progress: `(section, press x, width at the press)`.
+    resizing: Option<(usize, i32, u32)>,
+    /// Emitted with the section index when its body is clicked.
+    pub section_clicked: Signal1<usize>,
+    /// Emitted with `(section, width)` after a drag that changed a width.
+    pub section_resized: Signal1<(usize, u32)>,
+    /// Emitted with the section index when its filter glyph is clicked.
+    pub filter_clicked: Signal1<usize>,
+}
+
+impl GridViewHeader {
+    /// Creates an empty header.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Table, geometry, "GridViewHeader"),
+            columns: Vec::new(),
+            sorts: Vec::new(),
+            sort_indicator_visible: true,
+            resize_mode: ColumnWidthMode::Fixed,
+            filter_icon_visible: true,
+            hovered: None,
+            resizing: None,
+            section_clicked: Signal1::new(),
+            section_resized: Signal1::new(),
+            filter_clicked: Signal1::new(),
+        }
+    }
+
+    /// The configured columns.
+    pub fn columns(&self) -> &[ColumnSpec] {
+        &self.columns
+    }
+
+    /// Replaces the columns.
+    ///
+    /// Sort indicators survive for the sections that still exist; a section that is gone cannot
+    /// keep an arrow nothing paints.
+    pub fn set_columns(&mut self, columns: Vec<ColumnSpec>) {
+        let mut sorts = core::mem::take(&mut self.sorts);
+        sorts.resize(columns.len(), None);
+        self.sorts = sorts;
+        self.columns = columns;
+        self.hovered = None;
+        self.resizing = None;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Whether sort arrows are painted.
+    pub fn sort_indicator_visible(&self) -> bool {
+        self.sort_indicator_visible
+    }
+
+    /// Shows or hides sort arrows.
+    pub fn set_sort_indicator_visible(&mut self, visible: bool) {
+        if self.sort_indicator_visible == visible {
+            return;
+        }
+        self.sort_indicator_visible = visible;
+        self.base.request_redraw();
+    }
+
+    /// Whether filter glyphs are painted.
+    pub fn filter_icon_visible(&self) -> bool {
+        self.filter_icon_visible
+    }
+
+    /// Shows or hides the filter glyphs of filterable sections.
+    pub fn set_filter_icon_visible(&mut self, visible: bool) {
+        if self.filter_icon_visible == visible {
+            return;
+        }
+        self.filter_icon_visible = visible;
+        self.base.request_redraw();
+    }
+
+    /// How section widths are decided.
+    pub fn resize_mode(&self) -> ColumnWidthMode {
+        self.resize_mode
+    }
+
+    /// Sets how section widths are decided.
+    pub fn set_resize_mode(&mut self, mode: ColumnWidthMode) {
+        if self.resize_mode == mode {
+            return;
+        }
+        self.resize_mode = mode;
+        self.base.request_redraw();
+    }
+
+    /// The width painted for section `column`.
+    pub fn section_width(&self, column: usize) -> u32 {
+        let count = self.columns.len().max(1) as u32;
+        let fixed = |column: usize| self.columns.get(column).map_or(1, |spec| spec.width.max(1));
+        match self.resize_mode {
+            ColumnWidthMode::Fixed | ColumnWidthMode::Interactive => fixed(column),
+            ColumnWidthMode::Stretch => (self.geometry().width / count).max(1),
+            ColumnWidthMode::StretchLast => {
+                if column + 1 != count as usize {
+                    return fixed(column);
+                }
+                let used: u32 = (0..self.columns.len().saturating_sub(1)).map(fixed).sum();
+                self.geometry().width.saturating_sub(used).max(1)
+            }
+        }
+    }
+
+    /// The painted box of section `column`.
+    ///
+    /// Paint, hit-testing and the resize handle all read this one derivation, so a press can
+    /// never land in a section other than the one it is drawn in.
+    pub fn section_rect(&self, column: usize) -> Option<Rect> {
+        if column >= self.columns.len() {
+            return None;
+        }
+        let rect = self.geometry();
+        let x: i32 = (0..column).map(|index| self.section_width(index) as i32).sum();
+        let width = self.section_width(column);
+        let trimmed = width.min((rect.width as i32 - x).max(0) as u32);
+        (trimmed > 0).then(|| Rect::new(rect.x + x, rect.y, trimmed, rect.height))
+    }
+
+    /// The painted box of section `column`'s filter glyph, when it has one.
+    pub fn filter_rect(&self, column: usize) -> Option<Rect> {
+        if !self.filter_icon_visible {
+            return None;
+        }
+        if !self.columns.get(column).is_some_and(|spec| spec.filterable) {
+            return None;
+        }
+        let section = self.section_rect(column)?;
+        if section.width < HEADER_ICON_SIDE + 4 {
+            return None;
+        }
+        Some(Rect::new(
+            section.x + section.width as i32 - HEADER_ICON_SIDE as i32 - 3,
+            section.y + (section.height as i32 - HEADER_ICON_SIDE as i32) / 2,
+            HEADER_ICON_SIDE,
+            HEADER_ICON_SIDE,
+        ))
+    }
+
+    /// The order shown for section `column`.
+    pub fn sort_indicator(&self, column: usize) -> Option<SortOrder> {
+        self.sorts.get(column).copied().flatten()
+    }
+
+    /// Records the sort order to paint on section `column`.
+    ///
+    /// `None` clears the arrow. Returns `false` for a section that does not exist: a caller
+    /// asking to mark a column the header does not have has made a mistake worth reporting.
+    pub fn set_sort_indicator(&mut self, column: usize, order: Option<SortOrder>) -> bool {
+        if column >= self.columns.len() {
+            return false;
+        }
+        if self.sorts[column] == order {
+            return true;
+        }
+        self.sorts[column] = order;
+        self.base.request_redraw();
+        true
+    }
+
+    /// Cycles section `column` between ascending, descending and unsorted.
+    ///
+    /// Returns the order it landed on, or `None` when the section is not sortable or does not
+    /// exist — a header that reported a sort it never painted would be lying to its table.
+    pub fn toggle_sort(&mut self, column: usize) -> Option<SortOrder> {
+        let spec = self.columns.get(column)?;
+        if !spec.sortable {
+            return None;
+        }
+        let next = match self.sorts.get(column).copied().flatten() {
+            None => Some(SortOrder::Ascending),
+            Some(SortOrder::Ascending) => Some(SortOrder::Descending),
+            Some(SortOrder::Descending) => None,
+        };
+        let _ = self.set_sort_indicator(column, next);
+        next
+    }
+
+    /// The section under `pos`.
+    fn section_at(&self, pos: Point) -> Option<usize> {
+        (0..self.columns.len())
+            .find(|column| self.section_rect(*column).is_some_and(|rect| rect.contains_point(pos)))
+    }
+
+    /// The section whose right edge `pos` is on, when that section may be resized.
+    fn resize_handle_at(&self, pos: Point) -> Option<usize> {
+        let column = self.section_at(pos)?;
+        let spec = self.columns.get(column)?;
+        if !spec.resizable || !matches!(self.resize_mode, ColumnWidthMode::Interactive) {
+            return None;
+        }
+        let section = self.section_rect(column)?;
+        let right = section.x + section.width as i32;
+        ((pos.x - right).abs() <= HEADER_RESIZE_GRAB).then_some(column)
+    }
+
+    /// Sets one section's width, switching to interactive sizing.
+    pub fn set_section_width(&mut self, column: usize, width: u32) -> bool {
+        let Some(spec) = self.columns.get_mut(column) else {
+            return false;
+        };
+        let width = width.max(8);
+        if spec.width == width {
+            return true;
+        }
+        spec.width = width;
+        self.resize_mode = ColumnWidthMode::Interactive;
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+}
+
+impl Widget for GridViewHeader {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(320, HEADER_STRIP_HEIGHT)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+    /// Resolves the three header gestures; see `DiffViewer`'s note for why the arms are explicit.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "section_clicked" => {
+                Some(EventSignalRef::mapped("section_clicked", &self.section_clicked, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "section_resized" => {
+                Some(EventSignalRef::mapped("section_resized", &self.section_resized, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
+            "filter_clicked" => {
+                Some(EventSignalRef::mapped("filter_clicked", &self.filter_clicked, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl WidgetProperties for GridViewHeader {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "columns" => Ok(CapabilityValue::Tuple(
+                self.columns.iter().map(|spec| CapabilityValue::String(spec.to_token())).collect(),
+            )),
+            "column_count" => Ok(CapabilityValue::UInt(self.columns.len() as u64)),
+            "sort_indicator_visible" => Ok(CapabilityValue::Bool(self.sort_indicator_visible)),
+            "resize_mode" => {
+                Ok(CapabilityValue::String(column_width_mode_to_str(self.resize_mode).to_string()))
+            }
+            "filter_icon_visible" => Ok(CapabilityValue::Bool(self.filter_icon_visible)),
+            "sort_columns" => Ok(CapabilityValue::String(
+                self.sorts
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(column, order)| {
+                        order.map(|order| format!("{column}:{}", order.as_str()))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "columns" => {
+                let items = expect_string_list(value)?;
+                let mut columns = Vec::with_capacity(items.len());
+                for item in items {
+                    columns.push(
+                        ColumnSpec::from_token(&item).ok_or(CapabilityAccessError::TypeMismatch)?,
+                    );
+                }
+                self.set_columns(columns);
+                Ok(())
+            }
+            "column_count" | "sort_columns" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "sort_indicator_visible" => {
+                self.set_sort_indicator_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "resize_mode" => {
+                self.set_resize_mode(expect_column_width_mode(value)?);
+                Ok(())
+            }
+            "filter_icon_visible" => {
+                self.set_filter_icon_visible(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "columns",
+            "column_count",
+            "sort_indicator_visible",
+            "resize_mode",
+            "filter_icon_visible",
+            "sort_columns",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
+impl crate::event::EventHandler for GridViewHeader {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos, button: 1, .. } => {
+                if let Some(column) = self.resize_handle_at(*pos) {
+                    let width = self.section_width(column);
+                    self.resizing = Some((column, pos.x, width));
+                    return;
+                }
+                if let Some(column) = (0..self.columns.len()).rev().find(|column| {
+                    self.filter_rect(*column).is_some_and(|rect| rect.contains_point(*pos))
+                }) {
+                    self.filter_clicked.emit(column);
+                    return;
+                }
+                if let Some(column) = self.section_at(*pos) {
+                    let _ = self.toggle_sort(column);
+                    self.section_clicked.emit(column);
+                }
+            }
+            Event::MouseMove { pos } => {
+                if let Some((column, press_x, start_width)) = self.resizing {
+                    let width = (start_width as i32 + (pos.x - press_x)).max(8) as u32;
+                    if let Some(spec) = self.columns.get_mut(column) {
+                        if spec.width != width {
+                            spec.width = width;
+                            self.base.request_redraw();
+                        }
+                    }
+                    return;
+                }
+                let hovered = self.section_at(*pos);
+                if hovered != self.hovered {
+                    self.hovered = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseRelease { button: 1, .. } => {
+                if let Some((column, _, start_width)) = self.resizing.take() {
+                    let width = self.section_width(column);
+                    if width != start_width {
+                        self.section_resized.emit((column, width));
+                    }
+                    self.base.request_redraw();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Draw for GridViewHeader {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.geometry();
+        let style = self.base.style();
+        let theme = crate::style::resolved_theme_style_shared("data_grid");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| surface.blend(&ink, 0.20));
+        let font = effective_font(style);
+
+        context.face_with_gradient(
+            rect,
+            surface.blend(&ink, 0.06),
+            self.style().background_gradient.as_ref(),
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
+        context.draw_rect(rect, border);
+
+        for column in 0..self.columns.len() {
+            let Some(section) = self.section_rect(column) else {
+                continue;
+            };
+            if self.hovered == Some(column) {
+                context.fill_rect(section, surface.blend(&ink, 0.03));
+            }
+            let spec = &self.columns[column];
+            let filter_slot = if self.filter_rect(column).is_some() { 12i32 } else { 0 };
+            let sort_slot = if self.sort_indicator_visible && self.sort_indicator(column).is_some()
+            {
+                12
+            } else {
+                0
+            };
+            let title_width =
+                section.width.saturating_sub(8 + filter_slot.max(0) as u32 + sort_slot).max(8);
+            let label = crate::widget::text_utils::elide_end(
+                &spec.title,
+                (title_width as usize / 7).max(1),
+            );
+            context.draw_text(
+                Point::new(section.x + 4, section.y + (section.height as i32 - 12) / 2),
+                &label,
+                font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+            if self.sort_indicator_visible {
+                if let Some(order) = self.sort_indicator(column) {
+                    let icon = if order.is_descending() {
+                        crate::widget::IconName::ArrowDown
+                    } else {
+                        crate::widget::IconName::ArrowUp
+                    };
+                    let icon_rect = Rect::new(
+                        section.x + section.width as i32
+                            - filter_slot
+                            - HEADER_ICON_SIDE as i32
+                            - 3,
+                        section.y + (section.height as i32 - HEADER_ICON_SIDE as i32) / 2,
+                        HEADER_ICON_SIDE,
+                        HEADER_ICON_SIDE,
+                    );
+                    crate::widget::draw_icon_at(context, icon_rect, ink, icon);
+                }
+            }
+            if let Some(filter_rect) = self.filter_rect(column) {
+                crate::widget::draw_icon_at(
+                    context,
+                    filter_rect,
+                    ink.blend(&surface, 0.25),
+                    crate::widget::IconName::Filter,
+                );
+            }
+            context.draw_line(
+                Point::new(section.x + section.width as i32 - 1, section.y),
+                Point::new(section.x + section.width as i32 - 1, section.y + section.height as i32),
+                surface.blend(&ink, 0.12),
+            );
+        }
+    }
+}
+
+/// The live link between a [`DataGrid`] and a [`Pagination`] bar.
+///
+/// A widget cannot hold a borrow of another widget, so the link is the pagination's
+/// `page_changed` slot plus the shared cell it writes. [`DataGrid::poll_pagination`] reads that
+/// cell, which is what keeps a page click from requiring the host to forward it by hand.
+struct PaginationBinding {
+    /// The page the bound bar most recently reported.
+    page: Arc<AtomicU64>,
+    /// Items per page, copied when the bar was bound.
+    page_size: usize,
+    /// The subscription, dropped with the binding so a rebound grid leaves no slot behind.
+    _connection: ConnectionHandle,
 }
 
 impl DataGrid {
@@ -369,6 +1029,10 @@ impl DataGrid {
             resize_start_x: 0,
             resize_start_width: 0,
             header_labels: Vec::new(),
+            header_columns: Vec::new(),
+            header_filter_visible: false,
+            pagination: None,
+            pagination_applied_page: 0,
             selection_changed: Signal1::new(),
             current_changed: Signal1::new(),
             cell_clicked: Signal1::new(),
@@ -388,7 +1052,158 @@ impl DataGrid {
             edit_requested: Signal1::new(),
             context_menu_requested: Signal1::new(),
             filter_changed: Signal1::new(),
+            page_applied: Signal1::new(),
         }
+    }
+
+    /// Sets the column titles the grid paints, without binding a header control.
+    pub fn set_header_labels(&mut self, labels: &[&str]) {
+        self.header_labels = labels.iter().map(|label| (*label).to_string()).collect();
+        self.base.request_redraw();
+    }
+
+    /// The column specs contributed by the last [`Self::set_header`], or empty.
+    pub fn header_columns(&self) -> &[ColumnSpec] {
+        &self.header_columns
+    }
+
+    /// Adopts `header`'s columns and presentation settings.
+    ///
+    /// The header is copied, not borrowed: a widget cannot hold a reference to another widget, and
+    /// a table must keep painting correctly whether or not the host that installed the header is
+    /// still alive. What carries over is everything the header is authoritative for — titles,
+    /// widths, sort arrows, filter affordances and the resize mode — and what does **not** carry
+    /// over is the row data's sorting, which this grid derives from the same indicator rules it
+    /// always used.
+    pub fn set_header(&mut self, header: &GridViewHeader) {
+        self.header_columns = header.columns().to_vec();
+        self.header_labels = header.columns().iter().map(|spec| spec.title.clone()).collect();
+        self.header_filter_visible = header.filter_icon_visible();
+        self.sort_indicator_visible = header.sort_indicator_visible();
+        // The header's `Fixed` means "each section fixed at its own spec width"; the grid's
+        // `Fixed` means "every column the same width". Per-column widths can only be expressed by
+        // `Interactive`, so that is what a fixed header maps onto.
+        self.column_width_mode = match header.resize_mode() {
+            ColumnWidthMode::Fixed => ColumnWidthMode::Interactive,
+            mode => mode,
+        };
+        self.column_widths.clear();
+        self.sort_specs.clear();
+        for (column, spec) in self.header_columns.iter().enumerate() {
+            // Every spec width is stored, not only the resizable ones: `resizable` gates the drag
+            // handle, while the width is what the header actually draws.
+            self.column_widths.insert(column, spec.width.max(1));
+            if let Some(order) = header.sort_indicator(column) {
+                self.sort_specs.push(SortSpec { column, descending: order.is_descending() });
+            }
+        }
+        self.clear_cache();
+        self.full_projection_cache = None;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Binds `pagination` to this grid.
+    ///
+    /// Binding does three things and each one is needed for the pair to be usable: the bar learns
+    /// the grid's row count, the grid adopts the bar's page size and current page, and the bar's
+    /// `page_changed` stream is subscribed so a page click reaches [`Self::poll_pagination`].
+    ///
+    /// The bar's page size is authoritative at bind time. Changing it afterwards needs a second
+    /// `set_pagination`, because a widget cannot hold a borrow of another and so cannot re-read a
+    /// value it was never signalled about.
+    pub fn set_pagination(&mut self, pagination: &mut Pagination) {
+        pagination.set_total(self.row_count());
+        let page_size = pagination.page_size().max(1);
+        let page = pagination.page();
+        let shared = Arc::new(AtomicU64::new(page as u64));
+        let slot = Arc::clone(&shared);
+        let connection = pagination.page_changed.connect(move |page| {
+            slot.store(*page as u64, Ordering::Relaxed);
+        });
+        self.pagination =
+            Some(PaginationBinding { page: shared, page_size, _connection: connection });
+        self.scroll_to_page(page);
+        self.pagination_applied_page = page;
+    }
+
+    /// Applies a page the bound bar reported since the last poll.
+    ///
+    /// Called from `draw` and `handle_event`, so a click on the bar is picked up on the next frame
+    /// or the next interaction without the host forwarding it. Returns the page that was applied.
+    pub fn poll_pagination(&mut self) -> Option<usize> {
+        let page = self.pagination.as_ref()?.page.load(Ordering::Relaxed) as usize;
+        if page == self.pagination_applied_page {
+            return None;
+        }
+        self.apply_page(page);
+        Some(page)
+    }
+
+    /// Applies `page` to the scroll position and emits `page_applied`.
+    ///
+    /// Returns whether the visible rows moved. The signal fires even when the page was already
+    /// current: a caller that asked to go to page 3 wants the acknowledgement, not silence.
+    pub fn apply_page(&mut self, page: usize) -> bool {
+        let moved = self.scroll_to_page(page);
+        self.pagination_applied_page = page;
+        self.page_applied.emit(page);
+        moved
+    }
+
+    /// Scrolls so `page`'s first row is at the top, without emitting.
+    fn scroll_to_page(&mut self, page: usize) -> bool {
+        let page_size = self
+            .pagination
+            .as_ref()
+            .map_or_else(|| self.visible_row_capacity().max(1), |binding| binding.page_size.max(1));
+        let first_row = page.saturating_mul(page_size);
+        let clamped = first_row.min(self.row_count().saturating_sub(1));
+        if self.scroll_row == clamped {
+            return false;
+        }
+        self.set_scroll_row(clamped);
+        true
+    }
+
+    /// Pushes the grid's current page and row count back into `pagination`.
+    ///
+    /// This is the other half of the binding: `set_pagination` is bar-to-grid, this is
+    /// grid-to-bar. Returns whether the bar's page changed.
+    pub fn sync_pagination(&mut self, pagination: &mut Pagination) -> bool {
+        let Some(binding) = self.pagination.as_ref() else {
+            return false;
+        };
+        let page_size = binding.page_size.max(1);
+        let page = self.scroll_row / page_size;
+        pagination.set_total(self.row_count());
+        let before = pagination.page();
+        pagination.set_page(page);
+        binding.page.store(page as u64, Ordering::Relaxed);
+        self.pagination_applied_page = page;
+        before != page
+    }
+
+    /// The bound page and page size, when a pagination bar is bound.
+    pub fn pagination_state(&self) -> Option<(usize, usize)> {
+        self.pagination.as_ref().map(|binding| (self.pagination_applied_page, binding.page_size))
+    }
+
+    /// A one-line overview of the grid's data state.
+    ///
+    /// Row count, selection count and whether a filter is active — the three facts a status strip
+    /// below a table needs, written once here rather than re-derived by every host.
+    pub fn summary_text(&self) -> String {
+        let rows = self.row_count();
+        let mut text = format!("{rows} rows");
+        let selected = self.selected_indexes().len();
+        if selected > 0 {
+            text.push_str(&format!(" \u{00b7} {selected} selected"));
+        }
+        if !self.filters.is_empty() {
+            text.push_str(" \u{00b7} filtered");
+        }
+        text
     }
 
     /// Binds incremental source.
@@ -981,6 +1796,9 @@ impl DataGrid {
                 let count = self.column_count().max(1) as u32;
                 (self.cells_box().width / count).max(1)
             }
+            // Only the final column stretches, so the nominal width is the honest estimate for
+            // the rest; the capacity helpers that read this do not need the last column's share.
+            ColumnWidthMode::StretchLast => self.column_width,
         }
     }
 
@@ -1051,6 +1869,18 @@ impl DataGrid {
             }
             ColumnWidthMode::Stretch => {
                 (self.cells_box().width / self.column_count().max(1) as u32).max(1)
+            }
+            ColumnWidthMode::StretchLast => {
+                let count = self.column_count().max(1);
+                if column + 1 != count {
+                    return self.column_widths.get(&column).copied().unwrap_or(self.column_width);
+                }
+                let used: u32 = (0..count - 1)
+                    .map(|index| {
+                        self.column_widths.get(&index).copied().unwrap_or(self.column_width)
+                    })
+                    .sum();
+                self.cells_box().width.saturating_sub(used).max(1)
             }
         }
     }
@@ -1730,6 +2560,11 @@ impl Widget for DataGrid {
                     crate::widget::capability::CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "page_applied" => {
+                Some(EventSignalRef::mapped("page_applied", &self.page_applied, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
             "sort_changed" => {
                 Some(EventSignalRef::mapped("sort_changed", &self.sort_changed, |v| {
                     crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
@@ -1790,12 +2625,14 @@ impl WidgetProperties for DataGrid {
                 Some((row, column)) => Ok(CapabilityValue::String(format!("{row},{column}"))),
                 None => Ok(CapabilityValue::Null),
             },
+            "summary_text" => Ok(CapabilityValue::String(self.summary_text())),
             _ => base_property_get(self, name),
         }
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
+            "summary_text" => Err(CapabilityAccessError::ReadOnlyProperty),
             "scroll_row" => {
                 self.set_scroll_row(expect_usize(value)?);
                 Ok(())
@@ -1870,6 +2707,7 @@ impl WidgetProperties for DataGrid {
             "sort_indicator_visible",
             "section_resize_mode",
             "current_cell",
+            "summary_text",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1894,6 +2732,8 @@ impl WidgetProperties for DataGrid {
 
 impl Draw for DataGrid {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Drain a page the bound bar reported, so the paint shows the page the reader asked for.
+        self.poll_pagination();
         let rect = self.base.geometry();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
@@ -1988,14 +2828,22 @@ impl Draw for DataGrid {
                     .or_else(|| source.column_name(column));
                 if let Some(name) = name {
                     let name = crate::widget::text_utils::elide_end(&name, 24);
-                    // Leave room for the sort arrow before fitting the label.
-                    let arrow = if self.sort_indicator_visible
+                    // Leave room for the sort arrow and the filter glyph before fitting the label.
+                    let filter_slot = if self.header_filter_visible
+                        && self.header_columns.get(column).is_some_and(|spec| spec.filterable)
+                    {
+                        12
+                    } else {
+                        0
+                    };
+                    let sort_slot = if self.sort_indicator_visible
                         && self.sort_specs.iter().any(|spec| spec.column == column)
                     {
                         12
                     } else {
                         0
                     };
+                    let arrow = filter_slot + sort_slot;
                     let text_band = Rect::new(
                         band.x + 2,
                         band.y,
@@ -2013,8 +2861,15 @@ impl Draw for DataGrid {
                 if self.sort_indicator_visible {
                     if let Some(spec) = self.sort_specs.iter().find(|spec| spec.column == column) {
                         let icon_side = band.height.min(10);
+                        let filter_slot = if self.header_filter_visible
+                            && self.header_columns.get(column).is_some_and(|spec| spec.filterable)
+                        {
+                            12
+                        } else {
+                            0
+                        };
                         let icon_rect = Rect::new(
-                            band.x + band.width as i32 - icon_side as i32 - 3,
+                            band.x + band.width as i32 - filter_slot - icon_side as i32 - 3,
                             band.y + (band.height as i32 - icon_side as i32) / 2,
                             icon_side,
                             icon_side,
@@ -2026,6 +2881,25 @@ impl Draw for DataGrid {
                         };
                         crate::widget::draw_icon_at(context, icon_rect, ink, icon_name);
                     }
+                }
+                // A filterable column advertises the affordance its header spec declares; the
+                // glyph is the same one the standalone `GridViewHeader` paints.
+                if self.header_filter_visible
+                    && self.header_columns.get(column).is_some_and(|spec| spec.filterable)
+                {
+                    let icon_side = band.height.min(10);
+                    let icon_rect = Rect::new(
+                        band.x + band.width as i32 - icon_side as i32 - 3,
+                        band.y + (band.height as i32 - icon_side as i32) / 2,
+                        icon_side,
+                        icon_side,
+                    );
+                    crate::widget::draw_icon_at(
+                        context,
+                        icon_rect,
+                        ink.blend(&surface, 0.3),
+                        crate::widget::IconName::Filter,
+                    );
                 }
             }
         }
@@ -2176,6 +3050,9 @@ impl Draw for DataGrid {
 
 impl crate::event::EventHandler for DataGrid {
     fn handle_event(&mut self, event: &Event) {
+        // A page click on the bound bar is a shared-cell write, so it is drained here before the
+        // event is routed: the frame that follows the click already shows the new page.
+        self.poll_pagination();
         // The base keeps the control-level hover/press facts and answers `widget_state()`. This
         // handler did not forward to it, so `"data_grid:hover"` could never fire.
         self.base.handle_event(event);
@@ -2379,6 +3256,148 @@ mod tests {
         fn data(&self, row: usize, column: usize) -> Option<String> {
             self.data.get(row).and_then(|line| line.get(column)).cloned()
         }
+    }
+
+    fn static_grid(rows: usize, cols: usize) -> DataGrid {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 600, 300));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows,
+            cols,
+            data: (0..rows).map(|r| (0..cols).map(|c| format!("{r}:{c}")).collect()).collect(),
+        }));
+        grid
+    }
+
+    #[test]
+    fn header_sections_split_by_width_and_report_clicks() {
+        let mut header = GridViewHeader::new(Rect::new(0, 0, 300, 28));
+        header.set_columns(vec![
+            ColumnSpec::new("Name", 100).with_sortable(true),
+            ColumnSpec::new("Size", 100).with_filterable(true),
+            ColumnSpec::new("Owner", 100),
+        ]);
+        let clicked = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = clicked.clone();
+        header.section_clicked.connect(move |index| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*index);
+            }
+        });
+
+        assert_eq!(header.section_rect(1), Some(Rect::new(100, 0, 100, 28)));
+        let middle = header.section_rect(1).expect("section 1");
+        header.handle_event(&Event::mouse_press(middle.x + 10, middle.y + 10, 1));
+        assert_eq!(*clicked.lock().expect("clicked lock"), vec![1]);
+    }
+
+    #[test]
+    fn header_sort_indicator_cycles_and_reports_the_order() {
+        let mut header = GridViewHeader::new(Rect::new(0, 0, 200, 28));
+        header.set_columns(vec![
+            ColumnSpec::new("Name", 100).with_sortable(true),
+            ColumnSpec::new("Fixed", 100),
+        ]);
+        assert!(header.set_sort_indicator(0, Some(SortOrder::Ascending)));
+        assert_eq!(header.sort_indicator(0), Some(SortOrder::Ascending));
+        assert_eq!(header.toggle_sort(0), Some(SortOrder::Descending));
+        assert_eq!(header.toggle_sort(0), None);
+        assert_eq!(header.sort_indicator(0), None);
+        assert_eq!(header.toggle_sort(1), None, "an unsortable section never sorts");
+        assert!(!header.set_sort_indicator(5, None), "there is no section 5");
+    }
+
+    #[test]
+    fn header_resize_emits_the_new_width() {
+        let mut header = GridViewHeader::new(Rect::new(0, 0, 300, 28));
+        header.set_columns(vec![ColumnSpec::new("Name", 100)]);
+        header.set_resize_mode(ColumnWidthMode::Interactive);
+        let resized = Arc::new(Mutex::new(Vec::<(usize, u32)>::new()));
+        let sink = resized.clone();
+        header.section_resized.connect(move |pair| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*pair);
+            }
+        });
+
+        header.handle_event(&Event::mouse_press(99, 10, 1));
+        header.handle_event(&Event::mouse_move(139, 10));
+        header.handle_event(&Event::mouse_release(139, 10, 1));
+
+        assert_eq!(header.section_width(0), 140);
+        assert_eq!(*resized.lock().expect("resized lock"), vec![(0, 140)]);
+    }
+
+    #[test]
+    fn set_header_adopts_titles_widths_and_arrows() {
+        let mut grid = static_grid(3, 3);
+        let mut header = GridViewHeader::new(Rect::new(0, 0, 400, 28));
+        header.set_columns(vec![
+            ColumnSpec::new("Alpha", 90).with_sortable(true),
+            ColumnSpec::new("Beta", 110).with_filterable(true),
+            ColumnSpec::new("Gamma", 120),
+        ]);
+        header.set_sort_indicator(1, Some(SortOrder::Descending));
+
+        grid.set_header(&header);
+
+        assert_eq!(grid.header_columns().len(), 3);
+        assert_eq!(grid.header_columns()[0].title, "Alpha");
+        assert_eq!(grid.column_width_at(1), 110);
+        assert_eq!(grid.sort_specs().len(), 1);
+        assert_eq!(grid.sort_specs()[0], SortSpec { column: 1, descending: true });
+        assert_eq!(grid.get("summary_text"), Ok(CapabilityValue::String("3 rows".to_string())));
+    }
+
+    #[test]
+    fn a_page_click_on_the_bound_bar_reaches_the_grid() {
+        let mut grid = static_grid(100, 2);
+        let mut pagination =
+            crate::widget::nav_widgets::pagination::Pagination::new(Rect::new(0, 0, 300, 32));
+        pagination.set_page_size(10);
+        grid.set_pagination(&mut pagination);
+        assert_eq!(pagination.total(), 100, "the bar learns the row count");
+        assert_eq!(grid.pagination_state(), Some((0, 10)));
+
+        let applied = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = applied.clone();
+        grid.page_applied.connect(move |page| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*page);
+            }
+        });
+
+        assert!(pagination.next_page());
+        assert_eq!(grid.poll_pagination(), Some(1));
+        assert_eq!(grid.scroll_row(), 10);
+        assert_eq!(*applied.lock().expect("applied lock"), vec![1]);
+        assert_eq!(grid.poll_pagination(), None, "an unchanged page is not re-applied");
+
+        // Pushing the grid's page back into the bar is the other half of the binding.
+        grid.set_scroll_row(30);
+        assert!(grid.sync_pagination(&mut pagination));
+        assert_eq!(pagination.page(), 3);
+    }
+
+    #[test]
+    fn summary_text_reports_rows_selection_and_filter() {
+        let mut grid = static_grid(10, 2);
+        assert_eq!(grid.summary_text(), "10 rows");
+        grid.set_current_cell(0, 0);
+        assert!(grid.summary_text().contains("selected"));
+        grid.set_filters(vec![ColumnFilter { column: 0, query: "1".to_string() }]);
+        assert!(grid.summary_text().contains("filtered"));
+    }
+
+    #[test]
+    fn stretch_last_gives_the_remaining_room_to_the_last_column() {
+        let mut grid = static_grid(3, 3);
+        grid.set_column_width_mode(ColumnWidthMode::StretchLast);
+        let width = grid.column_width_at(2);
+        assert!(width > 0);
+        // The first two columns keep the base width, so the last takes the rest.
+        assert_eq!(grid.column_width_at(0), grid.column_width());
+        assert_eq!(grid.column_width_at(1), grid.column_width());
+        assert_eq!(width as i32, grid.cells_box().width as i32 - 2 * grid.column_width() as i32);
     }
 
     /// A cell's box must be a pure function of its own projected indices.

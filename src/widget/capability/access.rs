@@ -581,6 +581,7 @@ pub fn default_widget_property_default_value(
             "display_format" => CapabilityValue::String("yyyy-MM-dd".to_string()),
             "calendar_popup" => CapabilityValue::Bool(false),
             "alignment" => CapabilityValue::String("left".to_string()),
+            "calendar_first_day" => CapabilityValue::String("sun".to_string()),
             _ => return None,
         },
         WidgetKind::TimePicker => match property_name {
@@ -661,6 +662,9 @@ pub fn default_widget_property_default_value(
             // `Null` rather than `false`: a fresh tree has no focused branch, and "no branch" is not
             // the same fact as "the branch is collapsed".
             "expanded_focused_node" => CapabilityValue::Null,
+            "lazy_loading" => CapabilityValue::Bool(false),
+            "loading_indicator_visible" => CapabilityValue::Bool(false),
+            "fetch_timeout_ms" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::TreeTable => match property_name {
@@ -677,6 +681,9 @@ pub fn default_widget_property_default_value(
             "row_height" => CapabilityValue::UInt(20),
             "column_width" => CapabilityValue::UInt(140),
             "projection_state" => CapabilityValue::String("rows=0,selected=None".to_string()),
+            "lazy_loading" => CapabilityValue::Bool(false),
+            "loading_indicator_visible" => CapabilityValue::Bool(false),
+            "fetch_timeout_ms" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::Table => match property_name {
@@ -713,11 +720,16 @@ pub fn default_widget_property_default_value(
             "change_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
             "view_mode" => CapabilityValue::String("side_by_side".to_string()),
+            "word_granularity" => CapabilityValue::Bool(false),
             "fold_unchanged" => CapabilityValue::Bool(false),
             "fold_threshold" => CapabilityValue::UInt(8),
             "fold_context_lines" => CapabilityValue::UInt(0),
             "unified_changed_pair" => CapabilityValue::Bool(true),
             "whitespace_mode" => CapabilityValue::String("show".to_string()),
+            "lazy_loading" => CapabilityValue::Bool(false),
+            "loading_indicator_visible" => CapabilityValue::Bool(false),
+            "fetch_timeout_ms" => CapabilityValue::UInt(0),
+            "summary_text" => CapabilityValue::String(String::new()),
             _ => return None,
         },
         WidgetKind::DataView => match property_name {
@@ -892,6 +904,7 @@ pub fn default_widget_property_default_value(
             "preset_index" => CapabilityValue::UInt(1),
             "show_hex_input" | "show_presets" | "show_hue_rail" => CapabilityValue::Bool(false),
             "custom_color_count" => CapabilityValue::UInt(0),
+            "show_screen_picker" => CapabilityValue::Bool(false),
             _ => return None,
         },
         // `ColorPicker` declares its own kind since BLUE16 phase E-6. The defaults
@@ -1504,6 +1517,7 @@ pub fn default_widget_property_default_value(
             "minimum" => CapabilityValue::Null,
             "maximum" => CapabilityValue::Null,
             "alignment" => CapabilityValue::String("left".to_string()),
+            "calendar_first_day" => CapabilityValue::String("sun".to_string()),
             _ => return None,
         },
         // ── Group A widgets (non-mini) ─────────────────────

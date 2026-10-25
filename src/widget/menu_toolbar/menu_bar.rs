@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Menu bar widget.
+use crate::compat::{lock, Arc, Mutex, String, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -199,6 +200,12 @@ pub struct MenuBar {
     actions: Vec<Action>,
     /// The host bridge installed by [`MenuBar::set_platform_bridge`], if any.
     platform_bridge: Option<Box<dyn NativeMenuBridge>>,
+    /// Live state cells for actions resolved from [`crate::action::ActionManager`].
+    ///
+    /// The action's `command_id` is the registry id, so one row answers both "which command" and
+    /// "which state cell". Keeping the cell here is what makes a registry change visible without
+    /// the bar polling the manager.
+    live_actions: Vec<(String, Arc<Mutex<crate::action::ActionLiveState>>)>,
 }
 impl MenuBar {
     /// Creates an empty bar with no active or hovered entry.
@@ -220,6 +227,7 @@ impl MenuBar {
             native_menu_bar: false,
             actions: Vec::new(),
             platform_bridge: None,
+            live_actions: Vec::new(),
         }
     }
     /// Returns the entries in visual order.
@@ -435,6 +443,81 @@ impl MenuBar {
         self.actions.push(action);
         self.sync_platform_bridge();
         index
+    }
+
+    /// Resolves a command from the registry and registers it with this bar.
+    ///
+    /// This is the menu-bar half of COMP-25: the action carries the registry id, the bar records
+    /// the host binding, and the state cell subscribes to the command's signals. A bar built this
+    /// way is a view of the registry rather than a second declaration of the same commands.
+    pub fn add_action_from_manager(
+        &mut self,
+        manager: &mut crate::action::ActionManager,
+        action_id: &str,
+    ) -> Option<usize> {
+        let definition = manager.action_definition(action_id)?;
+        if !manager.bind_action_to_menu(definition.id.clone(), self.base.id()) {
+            return None;
+        }
+        let action = Action::from_definition(&definition, self.base.geometry());
+        let id = definition.id.clone();
+        let index = self.add_action(action);
+        if let Some(state) = manager.watch_action(&id) {
+            self.live_actions.push((id, state));
+        }
+        Some(index)
+    }
+
+    /// The live state cell for `action_id`, if this bar presents it.
+    pub fn live_action_state(&self, action_id: &str) -> Option<crate::action::ActionLiveState> {
+        self.live_actions
+            .iter()
+            .find(|(id, _)| id == action_id)
+            .map(|(_, state)| lock(state).clone())
+    }
+
+    /// Applies registry state to every command this bar presents.
+    pub fn refresh_action_states(&mut self, manager: &crate::action::ActionManager) {
+        let mut changed = false;
+        for action in &mut self.actions {
+            let Some(action_id) = action.command_id().map(String::from) else {
+                continue;
+            };
+            let Some(definition) = manager.action_definition(&action_id) else {
+                continue;
+            };
+            let live = self
+                .live_actions
+                .iter()
+                .find(|(id, _)| id == &action_id)
+                .map(|(_, state)| lock(state).clone());
+            let (text, enabled, checkable, checked) = match live {
+                Some(state) => (state.text, state.enabled, state.checkable, state.checked),
+                None => {
+                    (definition.text, definition.enabled, definition.checkable, definition.checked)
+                }
+            };
+            if action.text() != text {
+                action.set_text(text);
+                changed = true;
+            }
+            if action.is_checkable() != checkable {
+                action.set_checkable(checkable);
+                changed = true;
+            }
+            if checkable && action.is_checked() != checked {
+                action.set_checked(checked);
+                changed = true;
+            }
+            if action.cmd().is_enabled() != enabled {
+                action.cmd_mut().set_enabled(enabled);
+                changed = true;
+            }
+        }
+        if changed {
+            self.base.request_redraw();
+            self.sync_platform_bridge();
+        }
     }
 
     /// The live actions registered with this bar, in registration order.

@@ -1314,6 +1314,15 @@ impl Draw for GanttWidget {
     }
 }
 
+// The two companions live in a sibling file so this one stays under the
+// 2000-line production limit (principle #9). Re-exporting keeps their public
+// path unchanged: `gantt_widget::TimelineAxis` and friends still resolve.
+#[path = "gantt_companions.rs"]
+mod companions;
+pub use companions::{
+    DateFormat, Dependency, DependencyEditor, TimelineAxis, AXIS_MAX_ZOOM, AXIS_MIN_ZOOM,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1779,5 +1788,207 @@ mod tests {
         gantt.set_tasks(vec![GanttTask::new("only", "Only", 0, 5, 0)]);
         assert_eq!(gantt.id_index.get("t3"), None);
         assert_eq!(gantt.id_index.get("only").copied(), Some(0));
+    }
+
+    // ── COMP-14: gantt companions ──────────────────────────────────────────
+
+    #[test]
+    fn axis_pixel_and_date_round_trip() {
+        let axis = TimelineAxis::new(Rect::new(0, 0, 320, 24));
+        for date in [0, 25, 50, 75, 100] {
+            let x = axis.date_to_pixel(date);
+            assert_eq!(axis.pixel_to_date(x), date, "date {date} round-trips through x={x}");
+        }
+        // A pixel round-trip is limited by the axis resolution: one pixel can stand
+        // for more than one unit, so the value may move by at most one pixel.
+        for x in [8, 84, 160, 236, 312] {
+            let date = axis.pixel_to_date(x);
+            assert!((axis.date_to_pixel(date) - x).abs() <= 1, "x={x} drifted");
+        }
+        // Outside the track clamps to the ends.
+        assert_eq!(axis.pixel_to_date(-100), 0);
+        assert_eq!(axis.pixel_to_date(10_000), 100);
+    }
+
+    #[test]
+    fn axis_zoom_changes_the_range_and_reports_it() {
+        let mut axis = TimelineAxis::new(Rect::new(0, 0, 320, 24));
+        let ranges = Arc::new(Mutex::new(Vec::<(i64, i64)>::new()));
+        let sink = ranges.clone();
+        axis.scale_changed.connect(move |range| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*range);
+            }
+        });
+
+        assert!(axis.set_zoom_level(2.0));
+        assert_eq!(axis.range(), (25, 75));
+        assert!((axis.zoom_level() - 2.0).abs() < f32::EPSILON);
+        assert!(!axis.set_zoom_level(2.0), "an unchanged level is a no-op");
+        assert!(!axis.set_zoom_level(f32::NAN), "non-finite levels are refused");
+
+        assert!(axis.set_zoom_level(0.0));
+        assert!((axis.zoom_level() - AXIS_MIN_ZOOM).abs() < f32::EPSILON);
+        assert_eq!(axis.range(), (-150, 250));
+
+        assert!(axis.set_zoom_level(1000.0));
+        assert!((axis.zoom_level() - AXIS_MAX_ZOOM).abs() < f32::EPSILON);
+
+        // `set_range` is the explicit path and returns to 1:1.
+        axis.set_range(10, 20);
+        assert_eq!(axis.range(), (10, 20));
+        assert!((axis.zoom_level() - 1.0).abs() < f32::EPSILON);
+
+        let got = ranges.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(
+            got,
+            vec![(25, 75), (-150, 250), (49, 51), (10, 20)],
+            "each committed change reports its range once"
+        );
+    }
+
+    #[test]
+    fn axis_formats_numeric_and_iso_labels() {
+        let mut axis = TimelineAxis::new(Rect::new(0, 0, 320, 24));
+        assert_eq!(axis.format_tick(42), "42");
+        assert_eq!(axis.date_format(), DateFormat::Numeric);
+
+        axis.set_date_format(DateFormat::IsoDate);
+        assert_eq!(axis.format_tick(0), "1970-01-01");
+        assert_eq!(axis.format_tick(31), "1970-02-01");
+        assert_eq!(axis.format_tick(-1), "1969-12-31");
+
+        axis.set("date_format", CapabilityValue::String("numeric".into()))
+            .expect("numeric is a published token");
+        assert_eq!(axis.date_format(), DateFormat::Numeric);
+        assert!(axis.set("date_format", CapabilityValue::String("strftime".into())).is_err());
+    }
+
+    #[test]
+    fn axis_ticks_cover_the_range_with_the_requested_density() {
+        let mut axis = TimelineAxis::new(Rect::new(0, 0, 320, 24));
+        axis.set_tick_density(4);
+        let ticks = axis.ticks();
+        assert_eq!(ticks.len(), 5);
+        assert_eq!(ticks.first().map(|(value, _)| *value), Some(0));
+        assert_eq!(ticks.last().map(|(value, _)| *value), Some(100));
+        assert!(ticks.windows(2).all(|pair| pair[0].1 < pair[1].1), "left to right");
+
+        // A span smaller than the density collapses duplicate ticks instead of
+        // painting several labels on one pixel.
+        axis.set_range(0, 2);
+        axis.set_tick_density(8);
+        assert!(axis.ticks().len() <= 3);
+    }
+
+    #[test]
+    fn axis_properties_round_trip() {
+        let mut axis = TimelineAxis::new(Rect::new(0, 0, 320, 24));
+        axis.set("tick_density", CapabilityValue::UInt(3)).expect("density");
+        axis.set("range_end", CapabilityValue::Int(60)).expect("range end");
+        assert_eq!(axis.range(), (0, 60));
+        assert_eq!(axis.get("tick_density").unwrap(), CapabilityValue::UInt(3));
+        assert_eq!(axis.get("range_end").unwrap(), CapabilityValue::Int(60));
+        assert!(axis.set("range", CapabilityValue::Int(1)).is_err());
+
+        axis.set("zoom_level", CapabilityValue::Float(2.0)).expect("zoom");
+        assert_eq!(axis.range(), (15, 45));
+        assert!((axis.zoom_level() - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn dependency_editor_adds_rejects_and_removes() {
+        let mut editor = DependencyEditor::new(Rect::new(0, 0, 260, 160));
+        let added = Arc::new(Mutex::new(Vec::<Dependency>::new()));
+        let sink = added.clone();
+        editor.dependency_added.connect(move |dependency| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(dependency.as_ref().clone());
+            }
+        });
+        let removed = Arc::new(Mutex::new(Vec::<Dependency>::new()));
+        let sink = removed.clone();
+        editor.dependency_removed.connect(move |dependency| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(dependency.as_ref().clone());
+            }
+        });
+
+        assert!(editor.add_dependency(Dependency::new("a", "b")));
+        assert!(editor.add_dependency(Dependency::new("b", "c")));
+        assert!(!editor.add_dependency(Dependency::new("b", "c")), "duplicates are refused");
+        assert!(!editor.add_dependency(Dependency::new("a", "a")), "self-edges are refused");
+        assert_eq!(editor.dependencies().len(), 2);
+
+        assert!(editor.remove_dependency(&Dependency::new("a", "b")));
+        assert!(!editor.remove_dependency(&Dependency::new("a", "b")));
+        assert_eq!(editor.dependencies().to_vec(), vec![Dependency::new("b", "c")]);
+
+        let added = added.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(added, vec![Dependency::new("a", "b"), Dependency::new("b", "c")]);
+        let removed = removed.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(removed, vec![Dependency::new("a", "b")]);
+    }
+
+    #[test]
+    fn dependency_editor_set_dependencies_sanitises_the_list() {
+        let mut editor = DependencyEditor::new(Rect::new(0, 0, 260, 160));
+        editor.set_dependencies(vec![
+            Dependency::new("a", "b"),
+            Dependency::new("a", "b"),
+            Dependency::new("c", "c"),
+            Dependency::new("b", "c"),
+        ]);
+        assert_eq!(
+            editor.dependencies().to_vec(),
+            vec![Dependency::new("a", "b"), Dependency::new("b", "c")]
+        );
+    }
+
+    #[test]
+    fn dependency_editor_hit_tests_rows_and_reports_selection() {
+        let mut editor = DependencyEditor::new(Rect::new(0, 0, 260, 160));
+        assert!(editor.add_dependency(Dependency::new("a", "b")));
+        assert!(editor.add_dependency(Dependency::new("b", "c")));
+
+        let (start, end) = editor.link_geometry(0).expect("row 0 is visible");
+        let midpoint = Point::new((start.x + end.x) / 2, start.y);
+        assert_eq!(editor.hit_link(midpoint), Some(0));
+        let second = editor.link_geometry(1).expect("row 1 is visible");
+        assert_eq!(editor.hit_link(Point::new(second.0.x, second.0.y)), Some(1));
+        assert_eq!(editor.hit_link(Point::new(5, 5)), None);
+        assert_eq!(editor.link_geometry(2), None);
+
+        let selected = Arc::new(Mutex::new(Vec::<Dependency>::new()));
+        let sink = selected.clone();
+        editor.link_selected.connect(move |dependency| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(dependency.as_ref().clone());
+            }
+        });
+
+        editor.handle_event(&Event::mouse_press(midpoint.x, midpoint.y, 1));
+        assert_eq!(
+            selected.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![Dependency::new("a", "b")]
+        );
+
+        editor.set_editable(false);
+        editor.handle_event(&Event::mouse_press(midpoint.x, midpoint.y, 1));
+        assert_eq!(
+            selected.lock().ok().map(|guard| guard.clone()).unwrap_or_default().len(),
+            1,
+            "a read-only editor does not select"
+        );
+    }
+
+    #[test]
+    fn dependency_editor_properties_round_trip() {
+        let mut editor = DependencyEditor::new(Rect::new(0, 0, 260, 160));
+        assert_eq!(editor.get("editable").unwrap(), CapabilityValue::Bool(true));
+        editor.set("editable", CapabilityValue::Bool(false)).expect("editable");
+        assert!(!editor.editable());
+        assert!(editor.set("dependencies", CapabilityValue::UInt(0)).is_err());
+        assert_eq!(editor.get("dependencies").unwrap(), CapabilityValue::UInt(0));
     }
 }

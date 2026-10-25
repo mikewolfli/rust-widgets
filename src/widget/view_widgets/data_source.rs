@@ -358,6 +358,27 @@ pub trait IncrementalTableDataSource: Send + Sync {
         false
     }
 
+    /// Whether more rows can be fetched *below* `path` in a hierarchical projection.
+    ///
+    /// A flat source cannot address a node, so the default defers to the source-wide
+    /// [`Self::can_fetch_more`]. The path form is a distinct name rather than an overload because
+    /// Rust has no method overloading and the zero-argument form is a published API: renaming it
+    /// would break every existing implementor for no behavioural gain.
+    fn can_fetch_more_path(&self, path: &[usize]) -> bool {
+        let _ = path;
+        self.can_fetch_more()
+    }
+
+    /// Asks the source to load more rows below `path`.
+    ///
+    /// **Synchronous and host-driven.** There is no async runtime here: a source that must wait
+    /// returns immediately and reports completion through its revision/change signal. `&mut self`
+    /// matches [`Self::insert_row`] and the other editors; a source behind an `Arc<dyn …>` that
+    /// needs interior mutation can guard it internally.
+    fn fetch_more(&mut self, path: &[usize]) {
+        let _ = path;
+    }
+
     /// Whether the source accepts [`Self::insert_row`].
     fn can_insert_rows(&self) -> bool {
         false
@@ -949,5 +970,41 @@ mod tests {
         assert_eq!(capped.parent, Some(18));
         assert_eq!(capped.path().last().copied(), Some(19));
         assert_eq!(capped.depth(), super::MODEL_INDEX_MAX_DEPTH + 1);
+    }
+
+    /// A minimal flat source that opts into the source-wide fetch flag.
+    struct FlatSource {
+        can_fetch: bool,
+    }
+
+    impl IncrementalTableDataSource for FlatSource {
+        fn row_count(&self) -> usize {
+            1
+        }
+
+        fn column_count(&self) -> usize {
+            1
+        }
+
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            (row == 0 && column == 0).then(|| "cell".to_string())
+        }
+
+        fn can_fetch_more(&self) -> bool {
+            self.can_fetch
+        }
+    }
+
+    #[test]
+    fn path_fetch_defaults_follow_the_source_wide_flag() {
+        let finite = FlatSource { can_fetch: false };
+        assert!(!finite.can_fetch_more_path(&[0]));
+
+        let mut streaming = FlatSource { can_fetch: true };
+        assert!(streaming.can_fetch_more_path(&[0]));
+        // The default is a documented no-op, not a fabricated success: a source that does not
+        // override it accepts the call and reports completion through its own change signal.
+        streaming.fetch_more(&[0]);
+        assert_eq!(streaming.row_count(), 1);
     }
 }

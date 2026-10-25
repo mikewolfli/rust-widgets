@@ -62,6 +62,51 @@ OUT = SRC / "widget/capability/event_payloads.rs"
 # the table against it.
 CENSUS = REPO / "tools/event_published_census.txt"
 
+# The single alias-identity registry, read out of the crate instead of restated here.
+#
+# `ALIAS_OF` is the table the crate itself resolves aliases through (`resolve` / `aliases_of`),
+# so the census generator, the converted-control gate and the designer manifest all read one
+# source. Before that, this file kept its own `PRODUCER_ELSEWHERE` copy of the same identities and
+# the copies were free to drift.
+ALIAS_SOURCE = SRC / "widget/capability.rs"
+ALIAS_MARKER = "ALIAS_OF: &[AliasRow]"
+ALIAS_ROW_RE = re.compile(r"AliasRow\s*\{(.*?)\}", re.S)
+ALIAS_FIELD_RE = re.compile(r'(\w+)\s*:\s*"([^"]*)"')
+
+
+def read_alias_registry() -> dict[str, dict[str, str]]:
+    """alias -> {alias_of, implementation, file}, from `ALIAS_OF` in `capability.rs`.
+
+    A missing table, an incomplete row or a duplicated alias is reported rather than tolerated:
+    every one of those would make the alias annotations below silently empty, and an empty answer
+    prints the same green line as a complete one.
+    """
+    source = ALIAS_SOURCE.read_text()
+    start = source.find(ALIAS_MARKER)
+    if start == -1:
+        raise SystemExit(f"{ALIAS_SOURCE.name}: no `{ALIAS_MARKER}` table to read")
+    end = source.find("];", start)
+    if end == -1:
+        raise SystemExit(f"{ALIAS_SOURCE.name}: `{ALIAS_MARKER}` is not closed by `];`")
+    rows: dict[str, dict[str, str]] = {}
+    for body in ALIAS_ROW_RE.findall(source[start:end]):
+        fields = dict(ALIAS_FIELD_RE.findall(body))
+        missing = {"alias", "alias_of", "implementation", "file"} - fields.keys()
+        if missing:
+            raise SystemExit(
+                f"{ALIAS_SOURCE.name}: an AliasRow is missing {', '.join(sorted(missing))}"
+            )
+        alias = fields["alias"]
+        if alias in rows:
+            raise SystemExit(f"{ALIAS_SOURCE.name}: `{alias}` appears in two AliasRows")
+        rows[alias] = fields
+    if not rows:
+        raise SystemExit(f"{ALIAS_SOURCE.name}: `{ALIAS_MARKER}` yielded no parsable row")
+    return rows
+
+
+ALIAS_REGISTRY = read_alias_registry()
+
 # ── Capability -> emitting struct ───────────────────────────────────────────────────
 # The cases the `canonical_name` -> `PascalCase` convention does not reach. The emit gate
 # (`check_capability_events_are_emitted.py`) keeps its own copy of the same corrections, so a
@@ -75,17 +120,9 @@ PRODUCER_ELSEWHERE: dict[str, str] = {
     "fab": "FAB",
     "key_sequence_editor": "KeySequenceEdit",
     "lcd_number": "LCDNumber",
-    # The three grammar fields are `LineEdit` in a different echo/validator mode.
-    "password_edit": "LineEdit",
-    "phone_input": "LineEdit",
-    "email_input": "LineEdit",
-    # The two-pane spelling of the splitter: one control under two names, as
-    # `table_widget` / `table` is.
-    "split_layout": "Splitter",
-    # The time field's kind spelling: one control under two names.
-    "time_picker": "TimeEdit",
-    # The menu's role spelling: one control under two names.
-    "context_menu": "Menu",
+    # Alias rows (`password_edit`, `split_layout`, `time_picker`, `context_menu`, ...) are resolved
+    # from the crate's `ALIAS_OF` registry in `resolve_owner`, so they are deliberately absent here:
+    # one identity, one source.
 }
 
 # Capabilities served by one struct whose name the convention does not reach.
@@ -125,7 +162,22 @@ MANUAL: dict[tuple[str, str], tuple[str, str]] = {
     ("key_sequence_editor", "conflict_detected"): ("Some(K::String)", "Some(S::Scalar)"),
     # A unit signal carries no payload.
     ("key_sequence_editor", "editing_finished"): ("None", "None"),
+    # A sort column is an enum token plus the ascending flag.
+    ("file_dialog", "sort_changed"): ("Some(K::String)", "Some(S::Mixed)"),
 }
+
+# Compatibility spellings published alongside their canonical name (kept in step with the
+# crate's `EVENT_ALIASES` table). A published alias borrows the payload of the signal it names.
+EVENT_ALIAS_PAIRS: list[tuple[str, str]] = [
+    ("cancelled", "canceled"),
+    ("edit_cancelled", "edit_canceled"),
+    ("current_index_changed", "current_changed"),
+    ("selected_changed", "current_changed"),
+    ("hovered_point_changed", "point_hover_changed"),
+    ("hovered_glyph_changed", "glyph_hover_changed"),
+    ("hovered_entry", "entry_hovered"),
+    ("hovered_changed", "hover_changed"),
+]
 
 # ── Rust payload type -> declared kind ──────────────────────────────────────────────
 # The tokens are Rust path segments: `K::Int` is `PropertyValueKind::Int` and `S::Tuple2` is
@@ -365,12 +417,16 @@ def classify(payload: str) -> tuple[str, str]:
 def resolve_owner(capability: str, aliases: dict[str, str]) -> str:
     """The struct whose declarations define this capability's events.
 
-    Three sources, in order: an explicit correction, the shared-producer table, and finally the
-    crate's own `canonical_name` -> `PascalCase` convention with type aliases followed. Kept as a
-    module-level function because the gate must resolve owners **the same way** the generator does:
-    two copies of this rule would eventually disagree about which struct an event belongs to, and
-    the disagreement would show up as a payload failure rather than as the lookup bug it is.
+    Four sources, in order: the crate's alias registry (`ALIAS_OF`), an explicit correction, the
+    shared-producer table, and finally the crate's own `canonical_name` -> `PascalCase` convention
+    with type aliases followed. Kept as a module-level function because the gate must resolve
+    owners **the same way** the generator does: two copies of this rule would eventually disagree
+    about which struct an event belongs to, and the disagreement would show up as a payload
+    failure rather than as the lookup bug it is.
     """
+    alias_row = ALIAS_REGISTRY.get(capability)
+    if alias_row is not None:
+        return alias_row["implementation"]
     if capability in PRODUCER_ELSEWHERE:
         return PRODUCER_ELSEWHERE[capability]
     if capability in SHARED_PRODUCERS:
@@ -441,17 +497,33 @@ def write_census(published: dict[str, list[str]]) -> None:
 
     A plain text file rather than JSON because its job is to be read and diffed by a human as much
     as by these scripts — an event added or removed shows up as one changed line in review.
+
+    A control that is a second spelling of another carries `[alias_of=<canonical>]` on its line.
+    The annotation is written here from `ALIAS_OF`, so the census the designer reads and the
+    registry the runtime resolves through cannot disagree about which name answers for which
+    struct.
     """
     lines = [
         "# Published capability events, one control per line: control: name, name, ...",
+        "# A row that is a second spelling of another control ends with [alias_of=<canonical>].",
         "# Generated from src/widget/capability/properties.rs by tools/derive_event_payloads.py.",
         "# This file is the census the event payload table is derived from; edit it to publish or",
         "# withdraw a name, and re-run the tool.",
     ]
     for capability in sorted(published):
         names = published[capability]
-        lines.append(f"{capability}:" + ("" if not names else " " + ", ".join(names)))
+        row = f"{capability}:" + ("" if not names else " " + ", ".join(names))
+        alias_row = ALIAS_REGISTRY.get(capability)
+        if alias_row is not None:
+            row += f"  [alias_of={alias_row['alias_of']}]"
+        lines.append(row)
     CENSUS.write_text("\n".join(lines) + "\n")
+
+
+def strip_alias_annotation(line: str) -> str:
+    """The event half of a census line, with any `[alias_of=...]` annotation removed."""
+    annotation = line.find("[")
+    return line if annotation == -1 else line[:annotation]
 
 
 def read_census() -> dict[str, list[str]]:
@@ -460,7 +532,7 @@ def read_census() -> dict[str, list[str]]:
     for line in CENSUS.read_text().splitlines():
         if not line or line.startswith("#"):
             continue
-        capability, _, rest = line.partition(":")
+        capability, _, rest = strip_alias_annotation(line).partition(":")
         published[capability.strip()] = [name.strip() for name in rest.split(",") if name.strip()]
     return published
 
@@ -529,6 +601,17 @@ def main() -> int:
             if (capability, event) in MANUAL:
                 continue
             declaration = resolve_declaration(struct, event, fields, accessors, fallback)
+            if declaration is None:
+                # A published compatibility spelling resolves through the signal of the name it
+                # aliases, in either direction (`cancelled`/`canceled`, `current_changed`/
+                # `selected_changed`, subject-first hover names).
+                for first, second in EVENT_ALIAS_PAIRS:
+                    other = second if event == first else first if event == second else None
+                    if other is None:
+                        continue
+                    declaration = resolve_declaration(struct, other, fields, accessors, fallback)
+                    if declaration is not None:
+                        break
             if declaration is None:
                 unresolved.append((capability, event, f"no signal named `{event}` on `{struct}`"))
                 continue

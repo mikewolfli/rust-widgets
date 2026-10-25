@@ -12,7 +12,7 @@
 //! the 2026-10-21 scan. The items all share one fixed advance, so the same boxes are now computed
 //! directly: `item_bands` is one pass of integer additions, and nothing is mounted to measure it.
 
-use crate::compat::{String, ToString, Vec};
+use crate::compat::{lock, Arc, Mutex, String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -384,6 +384,12 @@ pub struct ToolBar {
     /// A host that re-lays out its window around a floating toolbar subscribes here; the signal
     /// carries the new floating state so the re-layout does not have to read the control back.
     pub float_changed: Signal1<bool>,
+    /// Live state cells for items built from [`crate::action::ActionManager`].
+    ///
+    /// The item id is the action id, so one lookup answers both "which item" and "which
+    /// command". `action_links` carries the widget-level connection; this carries the registry
+    /// state that a second host of the same command also observes.
+    live_actions: Vec<(String, Arc<Mutex<crate::action::ActionLiveState>>)>,
 }
 impl ToolBar {
     /// Creates a horizontal toolbar with a default icon size of 24 pixels, and
@@ -414,6 +420,7 @@ impl ToolBar {
             top_level_changed: Signal1::new(),
             visibility_changed: Signal1::new(),
             float_changed: Signal1::new(),
+            live_actions: Vec::new(),
         }
     }
     /// The direction items are laid out in.
@@ -877,6 +884,7 @@ impl ToolBar {
         if !manager.bind_action_to_toolbar(definition.id.clone(), self.base.id()) {
             return None;
         }
+        let action_id = definition.id.clone();
         let index = self.add_action(definition.id, definition.text);
         if let Some(item) = self.items.get_mut(index) {
             item.set_enabled(definition.enabled);
@@ -885,7 +893,63 @@ impl ToolBar {
                 item.set_checked(definition.checked);
             }
         }
+        if let Some(state) = manager.watch_action(&action_id) {
+            self.live_actions.push((action_id, state));
+        }
         Some(index)
+    }
+
+    /// The live state cell for `action_id`, if this bar has an item linked to it.
+    pub fn live_action_state(&self, action_id: &str) -> Option<crate::action::ActionLiveState> {
+        self.live_actions
+            .iter()
+            .find(|(id, _)| id == action_id)
+            .map(|(_, state)| lock(state).clone())
+    }
+
+    /// Applies registry state to every linked item.
+    ///
+    /// The live cell is preferred when present, so a state change observed through the action's
+    /// signals is what the strip shows; the registry is the fallback for an item that has no
+    /// cell (for example one restored from `restore_state`).
+    pub fn refresh_action_states(&mut self, manager: &crate::action::ActionManager) {
+        let mut changed = false;
+        for item in &mut self.items {
+            let action_id = String::from(item.id());
+            let Some(definition) = manager.action_definition(&action_id) else {
+                continue;
+            };
+            let live = self
+                .live_actions
+                .iter()
+                .find(|(id, _)| id == &action_id)
+                .map(|(_, state)| lock(state).clone());
+            let (text, enabled, checkable, checked) = match live {
+                Some(state) => (state.text, state.enabled, state.checkable, state.checked),
+                None => {
+                    (definition.text, definition.enabled, definition.checkable, definition.checked)
+                }
+            };
+            if item.text() != text {
+                item.set_text(text);
+                changed = true;
+            }
+            if item.is_enabled() != enabled {
+                item.set_enabled(enabled);
+                changed = true;
+            }
+            if item.is_checkable() != checkable {
+                item.set_checkable(checkable);
+                changed = true;
+            }
+            if checkable && item.is_checked() != checked {
+                item.set_checked(checked);
+                changed = true;
+            }
+        }
+        if changed {
+            self.base.request_redraw();
+        }
     }
     /// Appends a visual divider.
     ///

@@ -312,6 +312,16 @@ def main() -> int:
                 continue
             declaration = derive.resolve_declaration(struct, name, fields, accessors, fallback)
             if declaration is None:
+                for first, second in derive.EVENT_ALIAS_PAIRS:
+                    other = second if name == first else first if name == second else None
+                    if other is None:
+                        continue
+                    declaration = derive.resolve_declaration(
+                        struct, other, fields, accessors, fallback
+                    )
+                    if declaration is not None:
+                        break
+            if declaration is None:
                 failures.append(f"{control}.{name}: no signal named `{name}` on `{struct}`")
                 continue
             payload = derive.payload_of(declaration)

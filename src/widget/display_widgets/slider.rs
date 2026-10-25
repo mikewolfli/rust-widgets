@@ -4,11 +4,11 @@
 //! Slider widget.
 use core::fmt::Write as _;
 
-use crate::compat::{String, ToString, Vec};
+use crate::compat::{Arc, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Orientation, Point, Rect, Size};
 use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{GenericSignal, Signal1};
+use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{
     expect_bool, expect_i64, expect_orientation, orientation_to_str,
@@ -22,6 +22,251 @@ use crate::widget::metrics::{
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Which direction a slider ↔ spin box link carries values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LinkMode {
+    /// The slider drives the spin box. A spin-box edit stays local to the spin box, so a display
+    /// field cannot silently move the control the user is dragging.
+    #[default]
+    OneWay,
+    /// Either control drives the other. A value arriving from the spin box is rounded to the
+    /// nearest integer on the slider side; the conversion rule is stated on
+    /// [`Slider::bind_to_spin_box`].
+    TwoWay,
+}
+
+/// The shared slot a spin box publishes its current link through.
+///
+/// `Rc` rather than `Arc`: the two widgets and the link all live on one GUI thread, and the
+/// slot only exists so [`Slider::unbind`] can clear the peer side from a `&SpinBox` reference.
+pub(crate) type NumericLinkSlot =
+    crate::compat::Rc<crate::compat::RefCell<Option<Arc<NumericLink>>>>;
+
+/// Converts an `f64` bound to the nearest representable `i32`, saturating rather than wrapping.
+fn clamp_f64_to_i32(value: f64) -> i32 {
+    if value.is_nan() {
+        0
+    } else if value >= i32::MAX as f64 {
+        i32::MAX
+    } else if value <= i32::MIN as f64 {
+        i32::MIN
+    } else {
+        value as i32
+    }
+}
+
+/// The mutable half of a link, under one lock so a read of `(mode, value)` sees one snapshot.
+#[derive(Clone, Copy)]
+struct NumericLinkState {
+    mode: LinkMode,
+    decimals: u32,
+    spin_value: f64,
+    spin_minimum: f64,
+    spin_maximum: f64,
+    slider_value: i32,
+    /// Set while one side is propagating, so the peer's signal cannot start a second pass.
+    syncing: bool,
+    /// Cleared by [`Slider::unbind`]; a detached link is read for its last value but carries
+    /// nothing in either direction.
+    attached: bool,
+}
+
+/// The shared value a [`Slider`] and a spin box read when they are linked.
+///
+/// # Why the link owns the value rather than one widget pushing into the other
+///
+/// A `Signal` callback is `Send + Sync + 'static` and cannot borrow either control, so a push
+/// model would need one of the two to poll a mailbox. Putting the value in a shared cell makes
+/// both readers (`Slider::value`, spin-box `value`) and both writers agree by construction. The
+/// signals are still emitted in both directions, so a host listening to either control hears a
+/// change made on the other side.
+pub(crate) struct NumericLink {
+    state: crate::compat::Mutex<NumericLinkState>,
+    /// A clone of the spin box's `value_changed`, so a slider-driven change reaches its
+    /// subscribers.
+    spin_changed: Signal1<i32>,
+    /// A clone of the slider's `value_changed`, so a spin-box-driven change reaches its
+    /// subscribers.
+    slider_changed: Signal1<i32>,
+    /// Disconnects the spin-box listener when the last link reference drops.
+    scope: ConnectionScope,
+}
+
+impl NumericLink {
+    fn new(
+        mode: LinkMode,
+        decimals: u32,
+        spin_value: f64,
+        spin_minimum: f64,
+        spin_maximum: f64,
+        slider_value: i32,
+        spin_changed: Signal1<i32>,
+        slider_changed: Signal1<i32>,
+    ) -> Self {
+        Self {
+            state: crate::compat::Mutex::new(NumericLinkState {
+                mode,
+                decimals,
+                spin_value,
+                spin_minimum,
+                spin_maximum,
+                slider_value,
+                syncing: false,
+                attached: true,
+            }),
+            spin_changed,
+            slider_changed,
+            scope: ConnectionScope::new(),
+        }
+    }
+
+    fn snapshot(&self) -> NumericLinkState {
+        *crate::compat::lock(&self.state)
+    }
+
+    pub(crate) fn mode(&self) -> LinkMode {
+        self.snapshot().mode
+    }
+
+    /// Whether values still cross this link in either direction.
+    pub(crate) fn is_attached(&self) -> bool {
+        self.snapshot().attached
+    }
+
+    /// Stops both directions while keeping the last value readable.
+    pub(crate) fn detach(&self) {
+        crate::compat::lock(&self.state).attached = false;
+    }
+
+    pub(crate) fn set_mode(&self, mode: LinkMode) {
+        crate::compat::lock(&self.state).mode = mode;
+    }
+
+    pub(crate) fn set_decimals(&self, decimals: u32) {
+        crate::compat::lock(&self.state).decimals = decimals;
+    }
+
+    pub(crate) fn set_bounds(&self, minimum: f64, maximum: f64, decimals: u32) {
+        let mut state = crate::compat::lock(&self.state);
+        state.spin_minimum = minimum;
+        state.spin_maximum = maximum;
+        state.decimals = decimals;
+    }
+
+    /// The spin box's `(minimum, maximum, decimals)` as of its last bounds write.
+    pub(crate) fn bounds(&self) -> (f64, f64, u32) {
+        let state = self.snapshot();
+        (state.spin_minimum, state.spin_maximum, state.decimals)
+    }
+
+    pub(crate) fn spin_value(&self) -> f64 {
+        self.snapshot().spin_value
+    }
+
+    fn slider_value(&self) -> i32 {
+        self.snapshot().slider_value
+    }
+
+    /// Stores a spin-box-side change and returns the slider value it maps to.
+    ///
+    /// The caller (the spin box) emits its own `value_changed`; the listener installed by the
+    /// slider then reads this state and, in [`LinkMode::TwoWay`], publishes the slider side.
+    pub(crate) fn set_spin_value(&self, value: f64) {
+        crate::compat::lock(&self.state).spin_value = value;
+    }
+
+    /// The spin box's value, rounded to the nearest integer for the slider's `i32` payload.
+    ///
+    /// The spin's precision is applied first so the number that crosses is the number the spin
+    /// *shows*; the slider then cannot carry a fraction, so the last step is the nearest whole
+    /// number. At `decimals == 0` this is the identity.
+    fn spin_to_slider(&self) -> i32 {
+        let state = self.snapshot();
+        let rounded = crate::widget::input_widgets::spinbox::round_to_decimals(
+            state.spin_value,
+            state.decimals,
+        );
+        let integer = rounded.round();
+        if integer >= i32::MAX as f64 {
+            i32::MAX
+        } else if integer <= i32::MIN as f64 {
+            i32::MIN
+        } else {
+            integer as i32
+        }
+    }
+
+    /// Adopts the spin box's value on the slider side without writing back to the spin box.
+    ///
+    /// This is the "read the peer" half used when the caller switches a link to `TwoWay` or
+    /// synchronises the range: pushing the rounded value back through `set_value` would overwrite
+    /// the spin box's decimal precision with the whole number the slider can represent.
+    pub(crate) fn pull_from_spin(&self) -> i32 {
+        let slider = self.spin_to_slider();
+        self.set_slider_value(slider);
+        slider
+    }
+
+    /// Writes the slider side without touching the spin box, emitting its signal when the value
+    /// actually moved.
+    pub(crate) fn set_slider_value(&self, value: i32) {
+        let changed = {
+            let mut state = crate::compat::lock(&self.state);
+            if state.slider_value == value {
+                false
+            } else {
+                state.slider_value = value;
+                true
+            }
+        };
+        if changed {
+            self.slider_changed.emit(value);
+        }
+    }
+
+    /// Applies a slider-driven value and publishes it on the spin box's signal.
+    ///
+    /// Returns the spin box's integer payload. The `syncing` flag is held across the emit, so the
+    /// spin-box listener recognises this as a value it has already seen and does not push back.
+    fn slider_drives_spin(&self, slider_value: i32) -> i32 {
+        let payload = {
+            let mut state = crate::compat::lock(&self.state);
+            state.slider_value = slider_value;
+            state.spin_value = f64::from(slider_value);
+            state.syncing = true;
+            state.spin_value as i32
+        };
+        self.spin_changed.emit(payload);
+        crate::compat::lock(&self.state).syncing = false;
+        payload
+    }
+
+    /// Handles a change published by the spin box's own `value_changed`.
+    ///
+    /// The value is read from the shared state rather than from the payload, because the payload
+    /// is the rounded `i32` and a decimal spin box has already stored the exact `f64`.
+    fn on_spin_changed(&self) {
+        let state = self.snapshot();
+        if state.syncing || !state.attached || state.mode != LinkMode::TwoWay {
+            return;
+        }
+        let slider = self.spin_to_slider();
+        {
+            let mut state = crate::compat::lock(&self.state);
+            if state.syncing {
+                return;
+            }
+            if state.slider_value == slider {
+                return;
+            }
+            state.slider_value = slider;
+            state.syncing = true;
+        }
+        self.slider_changed.emit(slider);
+        crate::compat::lock(&self.state).syncing = false;
+    }
+}
 /// Slider widget.
 pub struct Slider {
     base: BaseWidget,
@@ -71,6 +316,17 @@ pub struct Slider {
     /// [`Slider::slider_pressed`], so the widget's own press tracking decides
     /// when it fires rather than the pointer's position.
     pub slider_released: GenericSignal,
+    /// The value link to a spin box, while bound.
+    link: Option<Arc<NumericLink>>,
+    /// The spin box's link slot, kept so [`Slider::unbind`] clears the peer side too.
+    link_slot: Option<NumericLinkSlot>,
+    /// The reactive model value this control consumes through the property bridge.
+    ///
+    /// Present only after [`Slider::bind_value`]. The value is not pushed from `set_value`
+    /// automatically: doing so would re-enter the runtime while the widget is already borrowed
+    /// by the caller's setter. A host pushes with [`Slider::sync_to_binding`] after user
+    /// interaction, which is the point at which the borrow has ended.
+    binding: Option<crate::data_binding::Binding<CapabilityValue>>,
 }
 /// Tick mark position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -200,7 +456,186 @@ impl Slider {
             slider_moved: Signal1::new(),
             slider_pressed: GenericSignal::new(),
             slider_released: GenericSignal::new(),
+            link: None,
+            link_slot: None,
+            binding: None,
         }
+    }
+
+    /// Binds this slider's `value` property to a reactive model value.
+    ///
+    /// The initial model value is applied immediately, and (when the slider is mounted) every
+    /// later model change is written through the widget's own property contract. This is the
+    /// control-side half of W-17: the bridge already existed, but no control consumed it.
+    ///
+    /// The reverse direction is [`Self::sync_to_binding`], called by the host after an
+    /// interaction. The two directions are separate on purpose: the setter path already runs
+    /// inside the widget borrow, so pushing there would re-enter the runtime.
+    pub fn bind_value(&mut self, binding: &crate::data_binding::Binding<CapabilityValue>) {
+        self.binding = Some(binding.clone());
+        // The mounted path needs the widget registry, which a sized profile does not compile.
+        // The fallback below works in every profile: it applies the initial value directly and
+        // leaves later pushes to the host (or to a rebuild), which is the honest limit of a build
+        // with no mounted-widget registry.
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.base.id()) {
+                crate::data_binding::bind_widget_property(binding, "slider.value", id, "value");
+                return;
+            }
+        }
+        let _ = crate::widget::widget_property_set(self, "value", binding.get());
+        binding.announce_synced("value");
+    }
+
+    /// Pushes this slider's current value into the bound model, reporting whether one is bound.
+    pub fn sync_to_binding(&mut self) -> bool {
+        let Some(binding) = self.binding.clone() else {
+            return false;
+        };
+        binding.set(CapabilityValue::Int(i64::from(self.value())));
+        binding.announce_synced("value");
+        true
+    }
+
+    /// The reactive value this slider consumes, if it is bound.
+    pub fn bound_value(&self) -> Option<&crate::data_binding::Binding<CapabilityValue>> {
+        self.binding.as_ref()
+    }
+
+    /// Binds this slider to `spin` so the two present one numeric value.
+    ///
+    /// # What is bound
+    ///
+    /// The value, in the direction [`LinkMode`] selects (the default is [`LinkMode::OneWay`],
+    /// slider → spin box), and the range through an explicit [`Self::sync_range`]. The link also
+    /// makes `value_changed` fire on **both** controls for a change made on either side, because
+    /// a host commonly subscribes to only one of the pair.
+    ///
+    /// # The conversion rule (i32 ↔ f64)
+    ///
+    /// The two controls publish different payloads — `Slider` is `i32`, `SpinBox` stores `f64` —
+    /// so the link states the conversion once:
+    ///
+    /// * **slider → spin**: the `i32` widens exactly to `f64`; the spin box then rounds to its
+    ///   own `decimals`, which is a no-op at the default `decimals == 0`.
+    /// * **spin → slider**: the `f64` is first rounded to the spin box's `decimals` (so the number
+    ///   that crosses is the number the spin box *shows*), then rounded to the nearest whole
+    ///   number because the slider's payload cannot carry a fraction. With `decimals > 0` the
+    ///   slider therefore tracks the nearest integer, and precision below one unit is not
+    ///   representable on it.
+    ///
+    /// Binding replaces any previous link; call [`Self::unbind`] first if the old peer must be
+    /// released explicitly. The re-entrancy guard lives in the shared link, so a value pushed by
+    /// one side cannot be pushed straight back by the other.
+    pub fn bind_to_spin_box(&mut self, spin: &crate::widget::SpinBox) {
+        let decimals = spin.decimals();
+        let current = spin.value_f64();
+        let slider_value = self.value();
+        let mode = self.link.as_ref().map_or(LinkMode::OneWay, |link| link.mode());
+        let link = Arc::new(NumericLink::new(
+            mode,
+            decimals,
+            current,
+            spin.minimum_f64(),
+            spin.maximum_f64(),
+            slider_value,
+            spin.value_changed.clone(),
+            self.value_changed.clone(),
+        ));
+
+        // The spin box's own changes reach the slider only in `TwoWay`; `on_spin_changed` checks
+        // the mode. The weak reference keeps the link from holding itself alive through the
+        // signal it holds.
+        let weak = Arc::downgrade(&link);
+        link.spin_changed.connect_scoped(&link.scope, move |_value: Arc<i32>| {
+            if let Some(link) = weak.upgrade() {
+                link.on_spin_changed();
+            }
+        });
+
+        self.link_slot = Some(spin.numeric_link_slot());
+        let slot = spin.numeric_link_slot();
+        if let Some(previous) = slot.borrow().as_ref() {
+            // A second bind supersedes the first rather than leaving two live links on one spin
+            // box.
+            previous.detach();
+        }
+        *slot.borrow_mut() = Some(Arc::clone(&link));
+        self.link = Some(Arc::clone(&link));
+        // The two controls start from one value. The slider is the control being bound, so its
+        // current value is the one written through; `slider_drives_spin` publishes it on the
+        // spin box's signal with the re-entrancy guard held.
+        link.slider_drives_spin(slider_value);
+        self.value = slider_value;
+        self.slider_position = slider_value;
+        self.base.request_redraw();
+    }
+
+    /// Removes the link and stops it carrying values.
+    ///
+    /// The spin box keeps the link's last value as its own (clearing the slot would rewind it to
+    /// the value it had when the pair was bound), but a detached link carries nothing: neither
+    /// side's `value_changed` reaches the other after this call.
+    pub fn unbind(&mut self) {
+        if let Some(link) = &self.link {
+            link.detach();
+        }
+        self.link = None;
+    }
+
+    /// Whether this slider is currently bound to a spin box.
+    pub fn linked(&self) -> bool {
+        self.link.is_some()
+    }
+
+    /// The direction values cross the current link in; [`LinkMode::OneWay`] when unbound.
+    pub fn link_mode(&self) -> LinkMode {
+        self.link.as_ref().map_or(LinkMode::OneWay, |link| link.mode())
+    }
+
+    /// Sets the direction values cross the current link in.
+    pub fn set_link_mode(&mut self, mode: LinkMode) {
+        if let Some(link) = &self.link {
+            link.set_mode(mode);
+            // Switching to `TwoWay` must adopt the peer's value now rather than at its next edit.
+            if mode == LinkMode::TwoWay {
+                let value = link.pull_from_spin();
+                self.value = value;
+                self.slider_position = value;
+                self.base.request_redraw();
+            }
+        }
+    }
+
+    /// Copies the spin box's bounds, precision and step onto this slider.
+    ///
+    /// # Why the bounds are rounded outward
+    ///
+    /// The spin box may bound a decimal range (`0.5 .. 9.5`), which an `i32` slider cannot
+    /// express. The floor is applied to the lower bound and the ceiling to the upper one, so the
+    /// slider's reachable range never exceeds what the spin box would accept. The current value
+    /// is re-clamped afterwards and, when linked, pushed back through the same conversion rule
+    /// [`Self::bind_to_spin_box`] documents.
+    pub fn sync_range(&mut self) {
+        let Some(link) = &self.link else {
+            return;
+        };
+        let (spin_minimum, spin_maximum, decimals) = link.bounds();
+        // The floor is applied to the lower bound and the ceiling to the upper one, so the
+        // slider's reachable range never exceeds what the spin box accepts.
+        let minimum = clamp_f64_to_i32(spin_minimum.ceil());
+        let maximum = clamp_f64_to_i32(spin_maximum.floor()).max(minimum);
+        link.set_decimals(decimals);
+        self.minimum = minimum;
+        self.maximum = maximum;
+        // Adopt the spin box's value on the slider side; pushing it back would replace a decimal
+        // value with the whole number the slider can carry.
+        let value = link.spin_to_slider().clamp(minimum, maximum);
+        link.set_slider_value(value);
+        self.value = value;
+        self.slider_position = value;
+        self.base.request_redraw();
     }
     /// Returns minimum value.
     pub fn minimum(&self) -> i32 {
@@ -213,10 +648,10 @@ impl Slider {
         if self.maximum < self.minimum {
             self.maximum = self.minimum;
         }
-        self.set_value(self.value); // Re-clamp
-                                    // `draw` derives the tick marks from the bounds, so moving a bound moves ink. `set_value`
-                                    // above only repaints when the *value* had to be re-clamped, which it may well not have —
-                                    // so a bounds-only change was invisible.
+        self.set_value(self.value()); // Re-clamp
+                                      // `draw` derives the tick marks from the bounds, so moving a bound moves ink. `set_value`
+                                      // above only repaints when the *value* had to be re-clamped, which it may well not have —
+                                      // so a bounds-only change was invisible.
         if changed {
             self.base.request_redraw();
         }
@@ -232,7 +667,7 @@ impl Slider {
         if self.minimum > self.maximum {
             self.minimum = self.maximum;
         }
-        self.set_value(self.value); // Re-clamp
+        self.set_value(self.value()); // Re-clamp
         if changed {
             self.base.request_redraw();
         }
@@ -243,24 +678,29 @@ impl Slider {
         let changed = self.minimum != minimum || self.maximum != maximum.max(minimum);
         self.minimum = minimum;
         self.maximum = maximum.max(minimum);
-        self.set_value(self.value); // Re-clamp
+        self.set_value(self.value()); // Re-clamp
         if changed {
             self.base.request_redraw();
         }
     }
     /// Returns current value.
     pub fn value(&self) -> i32 {
-        self.value
+        self.link.as_ref().map_or(self.value, |link| link.slider_value())
     }
     /// Sets value, clamped to valid range.
     pub fn set_value(&mut self, value: i32) {
         let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
-        if self.value == clamped {
+        if self.value() == clamped {
             return;
+        }
+        // The link's shared value is written before the signal so a listener that reads
+        // `value()` sees the value being announced rather than the previous one.
+        if let Some(link) = &self.link {
+            link.slider_drives_spin(clamped);
         }
         self.value = clamped;
         self.slider_position = clamped;
-        self.value_changed.emit(self.value);
+        self.value_changed.emit(self.value());
         self.base.request_redraw();
     }
     /// Returns single step value.
@@ -452,7 +892,11 @@ impl Slider {
     }
     /// Returns slider position.
     pub fn slider_position(&self) -> i32 {
-        self.slider_position
+        if self.link.is_some() {
+            self.value()
+        } else {
+            self.slider_position
+        }
     }
     /// Sets slider position (without emitting signals).
     pub fn set_slider_position(&mut self, position: i32) {
@@ -474,16 +918,16 @@ impl Slider {
         // wrapped value instead of stopping at the bound.
         match action {
             SliderAction::SliderSingleStepAdd => {
-                self.set_value(self.value.saturating_add(self.single_step));
+                self.set_value(self.value().saturating_add(self.single_step));
             }
             SliderAction::SliderSingleStepSub => {
-                self.set_value(self.value.saturating_sub(self.single_step));
+                self.set_value(self.value().saturating_sub(self.single_step));
             }
             SliderAction::SliderPageStepAdd => {
-                self.set_value(self.value.saturating_add(self.page_step));
+                self.set_value(self.value().saturating_add(self.page_step));
             }
             SliderAction::SliderPageStepSub => {
-                self.set_value(self.value.saturating_sub(self.page_step));
+                self.set_value(self.value().saturating_sub(self.page_step));
             }
             SliderAction::SliderToMinimum => {
                 self.set_value(self.minimum);
@@ -657,12 +1101,12 @@ impl Slider {
     /// value", and a host drawing an overlay (a value bubble, a custom groove) needs to agree with
     /// the slider about it rather than recompute the mapping and drift.
     pub fn handle_centre_x(&self) -> f32 {
-        self.value_to_pixel_pos(self.value)
+        self.value_to_pixel_pos(self.value())
     }
 
     /// The y coordinate the handle is centred on for the current value, for a vertical slider.
     pub fn handle_centre_y(&self) -> f32 {
-        self.value_to_pixel_pos(self.value)
+        self.value_to_pixel_pos(self.value())
     }
 
     /// The value a pointer at `x` selects, in the slider's own geometry.
@@ -695,7 +1139,7 @@ impl Slider {
         let radius = (SLIDER_SIZE / 2.0) as u32;
         let side = radius * 2;
         let disc = ControlMetrics::centered_disc(self.geometry(), side);
-        let centre = self.value_to_pixel_pos(self.value) as i32;
+        let centre = self.value_to_pixel_pos(self.value()) as i32;
         match self.orientation {
             Orientation::Horizontal => Rect::new(centre - radius as i32, disc.y, side, side),
             Orientation::Vertical => Rect::new(disc.x, centre - radius as i32, side, side),
@@ -933,7 +1377,7 @@ impl EventHandler for Slider {
                 self.mouse_pressed = false;
                 self.slider_released.emit();
                 if !self.tracking {
-                    self.set_value(self.slider_position);
+                    self.set_value(self.slider_position());
                 }
             }
             // A press whose release lands outside the widget never reaches the arm
@@ -946,7 +1390,7 @@ impl EventHandler for Slider {
                 self.mouse_pressed = false;
                 self.slider_released.emit();
                 if !self.tracking {
-                    self.set_value(self.slider_position);
+                    self.set_value(self.slider_position());
                 }
             }
             #[cfg(feature = "touch")]
@@ -954,7 +1398,7 @@ impl EventHandler for Slider {
                 self.mouse_pressed = false;
                 self.slider_released.emit();
                 if !self.tracking {
-                    self.set_value(self.slider_position);
+                    self.set_value(self.slider_position());
                 }
             }
             Event::MouseMove { pos } if self.mouse_pressed => {
@@ -971,7 +1415,7 @@ impl EventHandler for Slider {
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
                 if scroll.lines_y != 0 {
                     let step = (scroll.lines_y as i64) * (self.single_step as i64);
-                    let next = (self.value as i64 + step).clamp(i32::MIN as i64, i32::MAX as i64);
+                    let next = (self.value() as i64 + step).clamp(i32::MIN as i64, i32::MAX as i64);
                     self.set_value(next as i32);
                 }
             }
@@ -1055,7 +1499,7 @@ impl Draw for Slider {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
         let rect = self.geometry();
-        let slider_pos = self.value_to_pixel_pos(self.value);
+        let slider_pos = self.value_to_pixel_pos(self.value());
 
         // Resolve the label face once, outside the tick loop, and refresh the cached
         // labels before the style is borrowed for the rest of the draw.
@@ -2595,5 +3039,130 @@ mod tests {
             crate::widget::svg::text_subpath_count(&labelled) > 0,
             "each major tick must carry its value: {labelled}"
         );
+    }
+
+    // ── COMP-04: the slider ↔ spin box link ────────────────────────────────
+
+    fn paired() -> (Slider, crate::widget::SpinBox) {
+        let mut slider = Slider::new(Rect::new(0, 0, 200, 30));
+        slider.set_range(0, 100);
+        let mut spin = crate::widget::SpinBox::new(Rect::new(0, 0, 80, 24));
+        spin.set_range(0, 100);
+        (slider, spin)
+    }
+
+    /// The default direction is slider → spin; a spin-box edit stays local.
+    #[test]
+    fn a_one_way_link_drives_the_spin_box_only() {
+        let (mut slider, mut spin) = paired();
+        slider.bind_to_spin_box(&spin);
+        assert!(slider.linked());
+        assert_eq!(slider.link_mode(), LinkMode::OneWay);
+
+        slider.set_value(40);
+        assert_eq!(spin.value(), 40, "the slider drives the spin box");
+
+        spin.set_value(70);
+        assert_eq!(spin.value(), 70);
+        assert_eq!(slider.value(), 40, "a one-way link does not carry spin edits back");
+    }
+
+    /// `TwoWay` carries both directions, including a typed spin-box value.
+    #[test]
+    fn a_two_way_link_carries_both_directions() {
+        let (mut slider, mut spin) = paired();
+        slider.bind_to_spin_box(&spin);
+        slider.set_link_mode(LinkMode::TwoWay);
+
+        slider.set_value(25);
+        assert_eq!(spin.value(), 25);
+
+        spin.set_value(75);
+        assert_eq!(slider.value(), 75, "the spin box drives the slider too");
+        assert_eq!(slider.link_mode(), LinkMode::TwoWay);
+    }
+
+    /// A decimal spin box crosses as the number it shows, then rounds for the i32 slider.
+    #[test]
+    fn a_decimal_spin_box_value_crosses_through_its_precision() {
+        let (mut slider, mut spin) = paired();
+        spin.set_decimals(1);
+        spin.set_range_f64(0.0, 100.0);
+        slider.bind_to_spin_box(&spin);
+        slider.set_link_mode(LinkMode::TwoWay);
+
+        spin.set_value_f64(2.4);
+        assert_eq!(slider.value(), 2, "2.4 rounds down to the slider's grid");
+        spin.set_value_f64(2.6);
+        assert_eq!(slider.value(), 3, "2.6 rounds up");
+        assert!((spin.value_f64() - 2.6).abs() < 1e-9, "the spin keeps its precision");
+    }
+
+    /// `unbind` stops the traffic in both directions.
+    #[test]
+    fn unbinding_stops_synchronisation() {
+        let (mut slider, mut spin) = paired();
+        slider.bind_to_spin_box(&spin);
+        assert!(spin.is_linked());
+        slider.set_value(30);
+        assert_eq!(spin.value(), 30);
+
+        slider.unbind();
+        assert!(!slider.linked());
+        assert!(!spin.is_linked(), "the peer side is cleared too");
+        slider.set_value(60);
+        assert_eq!(spin.value(), 30, "an unbound slider no longer drives the spin box");
+        spin.set_value(10);
+        assert_eq!(slider.value(), 60);
+    }
+
+    /// `sync_range` copies the spin box's bounds, rounded outward to whole numbers.
+    #[test]
+    fn sync_range_copies_the_spin_boxes_bounds() {
+        let (mut slider, mut spin) = paired();
+        spin.set_decimals(1);
+        spin.set_range_f64(2.5, 9.5);
+        slider.bind_to_spin_box(&spin);
+        slider.sync_range();
+
+        assert_eq!(slider.minimum(), 3, "a fractional lower bound is rounded up");
+        assert_eq!(slider.maximum(), 9, "a fractional upper bound is rounded down");
+        assert!(
+            slider.value() >= 3 && slider.value() <= 9,
+            "the adopted value must land in the copied range: {} not in 3..=9",
+            slider.value()
+        );
+    }
+
+    /// A two-way link emits each side's signal once per change and never loops.
+    #[test]
+    fn a_two_way_link_does_not_loop() {
+        use crate::compat::Arc;
+        use core::sync::atomic::{AtomicU32, Ordering};
+
+        let (mut slider, mut spin) = paired();
+        slider.bind_to_spin_box(&spin);
+        slider.set_link_mode(LinkMode::TwoWay);
+
+        let slider_hits = Arc::new(AtomicU32::new(0));
+        let spin_hits = Arc::new(AtomicU32::new(0));
+        let s = Arc::clone(&slider_hits);
+        slider.value_changed.connect(move |_| {
+            s.fetch_add(1, Ordering::SeqCst);
+        });
+        let p = Arc::clone(&spin_hits);
+        spin.value_changed.connect(move |_| {
+            p.fetch_add(1, Ordering::SeqCst);
+        });
+
+        slider.set_value(50);
+        assert_eq!(slider_hits.load(Ordering::SeqCst), 1, "one slider change, one signal");
+        assert_eq!(spin_hits.load(Ordering::SeqCst), 1, "and the spin box hears it once");
+        assert_eq!(spin.value(), 50);
+
+        spin.set_value(80);
+        assert_eq!(spin_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(slider_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(slider.value(), 80);
     }
 }

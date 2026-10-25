@@ -291,6 +291,91 @@ impl JsonProject {
             .collect();
         Some((kind, placed))
     }
+
+    /// The `actions` section as a standalone JSON array.
+    ///
+    /// The same bytes [`actions_to_json`] writes for the slice, so a project's commands can be
+    /// saved to a file and read back without inventing a second document shape.
+    pub fn actions_json(&self) -> String {
+        actions_to_json(&self.actions)
+    }
+
+    /// Writes this project's `actions` section to `path`.
+    pub fn save_actions_to(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        save_actions_to_file(path, &self.actions)
+    }
+
+    /// Reads a command list written by [`save_actions_to_file`].
+    pub fn load_actions_from(
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Vec<crate::action::ActionDefinition>, String> {
+        load_actions_from_file(path)
+    }
+}
+
+/// Serializes commands as a standalone JSON array.
+///
+/// # Why the action section has a file form of its own
+///
+/// A designer document is one widget plus its tree; commands are project-wide, and a host that
+/// only persists the command registry (a keymap file, a preferences file) should not have to
+/// invent a dummy widget tree to carry them. The array is the same shape `JsonProject` reads from
+/// a root's `actions` key, written by the same [`crate::action::ActionDefinition`] spelling.
+pub fn actions_to_json(actions: &[crate::action::ActionDefinition]) -> String {
+    let mut out = String::from("[");
+    for (index, action) in actions.iter().enumerate() {
+        if index != 0 {
+            out.push(',');
+        }
+        out.push_str(&action.to_json());
+    }
+    out.push(']');
+    out
+}
+
+/// Reads the array written by [`actions_to_json`].
+///
+/// Each entry is read through [`crate::action::ActionDefinition::from_json`], so the file spelling
+/// and the runtime type cannot drift. A non-array value is an error rather than an empty list:
+/// a typo that silently dropped every command is the failure a designer must see.
+pub fn actions_from_json(text: &str) -> Result<Vec<crate::action::ActionDefinition>, String> {
+    let value: Value = serde_json::from_str(text).map_err(|error| {
+        format!("actions JSON ({} bytes) could not be parsed: {error}", text.len())
+    })?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| String::from("actions JSON must be an array of command objects"))?;
+    let mut actions = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        if !item.is_object() {
+            return Err(format!("`actions[{index}]` must be an object"));
+        }
+        actions.push(
+            crate::action::ActionDefinition::from_json(&item.to_string())
+                .map_err(|reason| format!("`actions[{index}]` is invalid: {reason}"))?,
+        );
+    }
+    Ok(actions)
+}
+
+/// Writes `actions` to `path`, creating no parent directories.
+///
+/// The caller owns the directory policy (principle #44 keeps OS config locations in `dirs`), so
+/// this helper writes exactly the file it is given and leaves directory creation explicit.
+pub fn save_actions_to_file(
+    path: impl AsRef<std::path::Path>,
+    actions: &[crate::action::ActionDefinition],
+) -> std::io::Result<()> {
+    std::fs::write(path, actions_to_json(actions))
+}
+
+/// Reads a command list from `path`, reporting both I/O and document failures as text.
+pub fn load_actions_from_file(
+    path: impl AsRef<std::path::Path>,
+) -> Result<Vec<crate::action::ActionDefinition>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("could not read actions file: {error}"))?;
+    actions_from_json(&text)
 }
 
 /// The depth bound, matching the loader's.

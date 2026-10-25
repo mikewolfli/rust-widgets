@@ -212,6 +212,12 @@ pub struct LineEdit {
     /// advances are pure functions of the text, the font, the echo mode and the DPI scale, so the
     /// cache reuses them until one of those inputs changes.
     text_advances: RefCell<TextAdvanceCache>,
+    /// The reactive model value this field consumes through the property bridge.
+    ///
+    /// Present only after [`LineEdit::bind_text`]. The reverse direction is explicit
+    /// ([`LineEdit::sync_to_binding`]) because the setter path runs inside the widget borrow, so
+    /// writing to the model there would re-enter the runtime.
+    binding: Option<crate::data_binding::Binding<CapabilityValue>>,
 }
 
 /// Which of the field's two strings an advance is measured from.
@@ -339,7 +345,43 @@ impl LineEdit {
             text_revision: 0,
             text_advances: RefCell::new(TextAdvanceCache::default()),
             last_press_ms: 0,
+            binding: None,
         }
+    }
+
+    /// Binds this field's `text` property to a reactive model value.
+    ///
+    /// The initial model value is applied immediately, and (when the field is mounted) later
+    /// model changes are written through the property contract. Both the slider and the field are
+    /// the two low-risk controls COMP-26 names as the first consumers of the bridge.
+    pub fn bind_text(&mut self, binding: &crate::data_binding::Binding<CapabilityValue>) {
+        self.binding = Some(binding.clone());
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.base.id()) {
+                crate::data_binding::bind_widget_property(binding, "line_edit.text", id, "text");
+                return;
+            }
+        }
+        if let CapabilityValue::String(value) = binding.get() {
+            self.set_text(value);
+            binding.announce_synced("text");
+        }
+    }
+
+    /// Pushes this field's current text into the bound model, reporting whether one is bound.
+    pub fn sync_to_binding(&mut self) -> bool {
+        let Some(binding) = self.binding.clone() else {
+            return false;
+        };
+        binding.set(CapabilityValue::String(self.text.clone()));
+        binding.announce_synced("text");
+        true
+    }
+
+    /// The reactive value this field consumes, if it is bound.
+    pub fn bound_text(&self) -> Option<&crate::data_binding::Binding<CapabilityValue>> {
+        self.binding.as_ref()
     }
     /// Returns current text.
     pub fn text(&self) -> &str {

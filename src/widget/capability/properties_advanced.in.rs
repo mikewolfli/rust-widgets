@@ -69,6 +69,7 @@ macro_rules! impl_properties_advanced {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated("calendar_first_day", true, true, &["mon","tue","wed","thu","fri","sat","sun"]),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -133,6 +134,7 @@ macro_rules! impl_properties_advanced {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated("calendar_first_day", true, true, &["mon","tue","wed","thu","fri","sat","sun"]),
         ];
     };
 }

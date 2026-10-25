@@ -364,8 +364,10 @@ impl Draw for MaterialSnackbar {
 
         let bar_height = 48u32;
         // The entrance/exit slide moves the bar off its resting slot; at rest the fraction is 1.0 and
-        // the bar is exactly where it always was.
-        let slide = self.slide.value().clamp(0.0, 1.0);
+        // the bar is exactly where it always was. A hidden snackbar paints its resting slot (at
+        // reduced presence, below), not the off-screen end of the slide: the census draws every
+        // control inside its own box, and an off-screen pill would otherwise escape it.
+        let slide = if self.base.is_visible() { self.slide.value().clamp(0.0, 1.0) } else { 1.0 };
         let bar_y = rect.y + rect.height as i32 - bar_height as i32 - 16
             + ((1.0 - slide) * (bar_height + 16) as f32) as i32;
 

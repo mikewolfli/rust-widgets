@@ -59,6 +59,13 @@ pub mod capability;
 // "a device profile *and* an unstripped widget set" (principle #47), not a hand-written
 // `not(any(mini, embedded))` which is true for a `--no-default-features --features gpu`
 // build that has no factory either.
+/// Reusable partner controls: swatch grid, filter row, legend, chart tooltip, tooltip
+/// pipeline, zoom/pan controller and toast queue.
+///
+/// Declared under `full_widgets` because the controls publish property contracts and are
+/// built by the factory's profile (principle #47).
+#[cfg(full_widgets)]
+pub mod companions;
 #[cfg(full_widgets)]
 pub mod composite;
 pub mod draw;
@@ -423,6 +430,13 @@ pub use nav_widgets::pagination::Pagination;
 pub use nav_widgets::tab_view::TabPage;
 #[cfg(full_widgets)]
 pub use nav_widgets::tab_view::TabView;
+// Re-export companion controls
+#[cfg(full_widgets)]
+pub use companions::{
+    ChartTooltip, FilterRow, HostedToast, Legend, LegendEntry, LegendOrientation, LegendPosition,
+    Swatch, ToastAnchor, ToastHost, ToastOverflowPolicy, ToastStackingDirection, TooltipLine,
+    TooltipManager, ZoomMode, ZoomPanController,
+};
 // Re-export chart widgets
 #[cfg(full_widgets)]
 pub use chart_widgets::bar_chart::{BarChart, BarEntry};

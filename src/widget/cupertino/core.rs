@@ -304,6 +304,7 @@ impl Widget for CupertinoAlertDialog {
         match name {
             "confirmed" => Some(EventSignalRef::unit("confirmed", &self.confirmed)),
             "cancelled" => Some(EventSignalRef::unit("cancelled", &self.cancelled)),
+            // W-19 compatibility spelling.
             _ => None,
         }
     }

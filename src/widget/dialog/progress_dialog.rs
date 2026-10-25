@@ -476,6 +476,7 @@ impl Widget for ProgressDialog {
         use crate::signal::EventSignalRef;
         match name {
             "canceled" => Some(EventSignalRef::unit("canceled", &self.canceled)),
+            // W-19 compatibility spelling of the same event.
             "finished" => Some(EventSignalRef::unit("finished", &self.finished)),
             "value_changed" => {
                 Some(EventSignalRef::mapped("value_changed", &self.value_changed, |value| {

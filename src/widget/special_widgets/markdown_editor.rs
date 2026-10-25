@@ -11,7 +11,9 @@ use crate::shortcut::Key;
 use crate::signal::Signal1;
 use crate::style::animation::CursorBlink;
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
-use crate::widget::capability::coercion::{expect_bool, expect_usize};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_string, expect_string_list, expect_usize,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -645,6 +647,41 @@ impl MarkdownEditor {
             self.base.request_layout();
             self.base.request_redraw();
         }
+    }
+
+    /// Points a [`FindBar`] at this editor's document.
+    ///
+    /// The bar keeps a snapshot of the text its byte offsets address, and it cannot observe an
+    /// edit, so this is the call that keeps the two in step. The editor's own in-place find state
+    /// is untouched: the bar is a second, reusable view over the same bytes.
+    pub fn sync_find_bar(&self, bar: &mut FindBar) {
+        bar.set_text(&self.text);
+    }
+
+    /// Applies a [`FindBar`] replacement request as one undo step.
+    ///
+    /// Returns how many ranges were replaced. A request whose ranges are out of order, overlap, or
+    /// fall outside the document applies **nothing** and returns zero: a partial application would
+    /// leave the text in a state neither the reader nor the bar asked for. Valid ranges are
+    /// spliced from the end backwards so every earlier offset stays meaningful.
+    pub fn apply_replace_request(&mut self, request: &ReplaceRequest) -> usize {
+        let len = self.text.len();
+        let mut last_start = len;
+        for &(start, end) in request.ranges.iter().rev() {
+            if start > end || end > len || end > last_start {
+                return 0;
+            }
+            last_start = start;
+        }
+        if request.ranges.is_empty() {
+            return 0;
+        }
+        let mut next = self.text.clone();
+        for &(start, end) in request.ranges.iter().rev() {
+            next.replace_range(start..end, &request.text);
+        }
+        self.commit_text(next);
+        request.ranges.len()
     }
 
     /// Advances the caret's blink by `delta_ms` and reports whether another frame is owed.
@@ -2481,6 +2518,1069 @@ fn draw_preview_run(
     }
 }
 
+/// Row height of one outline entry.
+const OUTLINE_ROW_HEIGHT: i32 = 20;
+/// How far each heading level indents its title.
+const OUTLINE_INDENT: i32 = 12;
+
+/// A document-outline side panel for a [`MarkdownEditor`].
+///
+/// The editor already computes its headings ([`MarkdownEditor::outline`]) and can navigate to
+/// one ([`MarkdownEditor::goto_outline`]); what it never had was a control that *shows* them. This
+/// panel is that view: it holds a copy of the heading list (refreshed by
+/// [`Self::sync_with_editor`]), paints it as an indented list, and reports the row the reader
+/// activated.
+///
+/// Selection and navigation are deliberately separate. `goto` selects a row and reports the line
+/// it addresses; moving the editor's caret is the host's call, made through the editor method it
+/// already has. That keeps the panel usable beside a document it did not open.
+pub struct MarkdownOutlinePanel {
+    base: BaseWidget,
+    entries: Vec<MarkdownOutlineEntry>,
+    /// The row painted as current, as an index into `entries`.
+    active_index: Option<usize>,
+    /// The width this panel prefers, reported through `size_hint`.
+    width: u32,
+    /// The first row the viewport paints.
+    first_visible: usize,
+    /// Emitted with the outline index when a row is activated.
+    pub entry_selected: Signal1<usize>,
+}
+
+impl MarkdownOutlinePanel {
+    /// Creates an empty panel 180 px wide.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ListView, geometry, "MarkdownOutlinePanel"),
+            entries: Vec::new(),
+            active_index: None,
+            width: 180,
+            first_visible: 0,
+            entry_selected: Signal1::new(),
+        }
+    }
+
+    /// The headings this panel shows.
+    pub fn entries(&self) -> &[MarkdownOutlineEntry] {
+        &self.entries
+    }
+
+    /// Replaces the entries, dropping an active index that no longer exists.
+    pub fn set_entries(&mut self, entries: Vec<MarkdownOutlineEntry>) {
+        self.entries = entries;
+        if self.active_index.is_some_and(|index| index >= self.entries.len()) {
+            self.active_index = None;
+        }
+        self.clamp_scroll();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Copies `editor`'s outline into this panel.
+    ///
+    /// The active row follows the editor's caret: the last heading at or before the caret's line,
+    /// which is the heading the reader is currently "inside". Without a preceding heading the
+    /// first row is used so a document that starts with body text still has a current row.
+    pub fn sync_with_editor(&mut self, editor: &MarkdownEditor) {
+        let entries = editor.outline();
+        let caret = editor.cursor_line();
+        let active = entries
+            .iter()
+            .rposition(|entry| entry.line <= caret)
+            .or_else(|| (!entries.is_empty()).then_some(0));
+        self.entries = entries;
+        self.active_index = active;
+        self.clamp_scroll();
+        self.base.request_redraw();
+    }
+
+    /// The row painted as current.
+    pub fn active_index(&self) -> Option<usize> {
+        self.active_index
+    }
+
+    /// Marks `index` as current without emitting `entry_selected`.
+    ///
+    /// This is the editor-to-panel direction (a caret move), which is not a reader action and must
+    /// not be reported as one.
+    pub fn set_active_index(&mut self, index: Option<usize>) {
+        let next = index.filter(|index| *index < self.entries.len());
+        if self.active_index == next {
+            return;
+        }
+        self.active_index = next;
+        if let Some(index) = next {
+            self.reveal(index);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Activates `index`, returning the document line it addresses.
+    ///
+    /// Returns `None` for a row that does not exist: a caller told about a line it cannot address
+    /// would ask the editor to jump somewhere arbitrary.
+    pub fn goto(&mut self, index: usize) -> Option<usize> {
+        let line = self.entries.get(index)?.line;
+        if self.active_index != Some(index) {
+            self.active_index = Some(index);
+            self.reveal(index);
+            self.base.request_redraw();
+        }
+        self.entry_selected.emit(index);
+        Some(line)
+    }
+
+    /// The preferred width reported through `size_hint`.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Sets the preferred width.
+    pub fn set_width(&mut self, width: u32) {
+        let width = width.max(40);
+        if self.width == width {
+            return;
+        }
+        self.width = width;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Rows the viewport can paint.
+    fn visible_rows(&self) -> usize {
+        ((self.geometry().height as i32 / OUTLINE_ROW_HEIGHT).max(1)) as usize
+    }
+
+    /// The painted box of row `index`, when it is visible.
+    pub fn row_rect(&self, index: usize) -> Option<Rect> {
+        if index >= self.entries.len() {
+            return None;
+        }
+        let row = index.checked_sub(self.first_visible)?;
+        if row >= self.visible_rows() {
+            return None;
+        }
+        let rect = self.geometry();
+        Some(Rect::new(
+            rect.x,
+            rect.y + row as i32 * OUTLINE_ROW_HEIGHT,
+            rect.width,
+            OUTLINE_ROW_HEIGHT as u32,
+        ))
+    }
+
+    /// The deepest indent the panel may draw, so a narrow panel keeps its titles readable.
+    fn max_level_indent(&self) -> i32 {
+        ((self.geometry().width as i32 - 40) / OUTLINE_INDENT).max(0)
+    }
+
+    /// Scrolls so `index` is visible.
+    fn reveal(&mut self, index: usize) {
+        let rows = self.visible_rows();
+        if index < self.first_visible {
+            self.first_visible = index;
+        } else if index >= self.first_visible + rows {
+            self.first_visible = index + 1 - rows;
+        }
+        self.clamp_scroll();
+    }
+
+    /// Keeps the scroll offset inside the entry list.
+    fn clamp_scroll(&mut self) {
+        let max_first = self.entries.len().saturating_sub(self.visible_rows());
+        self.first_visible = self.first_visible.min(max_first);
+    }
+
+    /// The entry index under `pos`.
+    fn entry_at(&self, pos: Point) -> Option<usize> {
+        let rect = self.geometry();
+        if !rect.contains_point(pos) {
+            return None;
+        }
+        let row = (pos.y - rect.y) / OUTLINE_ROW_HEIGHT;
+        if row < 0 {
+            return None;
+        }
+        let index = self.first_visible + row as usize;
+        (index < self.entries.len()).then_some(index)
+    }
+}
+
+impl Widget for MarkdownOutlinePanel {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(self.width, 240)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+    /// Resolves `entry_selected`; see `DiffViewer`'s note for why the arms are explicit.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "entry_selected" => {
+                Some(EventSignalRef::mapped("entry_selected", &self.entry_selected, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl WidgetProperties for MarkdownOutlinePanel {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "entries" => Ok(CapabilityValue::Tuple(
+                self.entries
+                    .iter()
+                    .map(|entry| {
+                        CapabilityValue::String(format!(
+                            "{}|{}|{}",
+                            entry.level, entry.title, entry.line
+                        ))
+                    })
+                    .collect(),
+            )),
+            "active_index" => Ok(match self.active_index {
+                Some(index) => CapabilityValue::UInt(index as u64),
+                None => CapabilityValue::Null,
+            }),
+            "width" => Ok(CapabilityValue::UInt(self.width as u64)),
+            "entry_count" => Ok(CapabilityValue::UInt(self.entries.len() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "entries" => {
+                let items = expect_string_list(value)?;
+                let mut entries = Vec::with_capacity(items.len());
+                for item in items {
+                    let mut parts = item.splitn(3, '|');
+                    let level = parts
+                        .next()
+                        .and_then(|text| text.trim().parse::<u8>().ok())
+                        .ok_or(CapabilityAccessError::TypeMismatch)?;
+                    let title = parts.next().unwrap_or_default().to_string();
+                    let line = parts
+                        .next()
+                        .and_then(|text| text.trim().parse::<usize>().ok())
+                        .ok_or(CapabilityAccessError::TypeMismatch)?;
+                    entries.push(MarkdownOutlineEntry { line, level: level.clamp(1, 6), title });
+                }
+                self.set_entries(entries);
+                Ok(())
+            }
+            "active_index" => match value {
+                CapabilityValue::Null => {
+                    self.set_active_index(None);
+                    Ok(())
+                }
+                CapabilityValue::UInt(index) => {
+                    let index =
+                        usize::try_from(index).map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                    if index >= self.entries.len() {
+                        return Err(CapabilityAccessError::OutOfRange);
+                    }
+                    self.set_active_index(Some(index));
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "width" => {
+                let width = u32::try_from(expect_usize(value)?)
+                    .map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                self.set_width(width);
+                Ok(())
+            }
+            "entry_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["entries", "active_index", "width", "entry_count", BASE_PROPERTY_NAMES]
+    }
+}
+
+impl EventHandler for MarkdownOutlinePanel {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos, button: 1, .. } => {
+                if let Some(index) = self.entry_at(*pos) {
+                    let _ = self.goto(index);
+                }
+            }
+            Event::KeyPress { key, .. } => {
+                let current = self.active_index.unwrap_or(0);
+                match *key {
+                    38 => {
+                        if !self.entries.is_empty() {
+                            let _ = self.goto(current.saturating_sub(1));
+                        }
+                    }
+                    40 => {
+                        if !self.entries.is_empty() {
+                            let _ = self.goto((current + 1).min(self.entries.len() - 1));
+                        }
+                    }
+                    13 if !self.entries.is_empty() => {
+                        let _ = self.goto(current.min(self.entries.len() - 1));
+                    }
+                    _ => { /* Other keys are not relevant */ }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Draw for MarkdownOutlinePanel {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.geometry();
+        let style = self.base.style();
+        let theme = crate::style::resolved_theme_style_shared("markdown_editor");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| crate::core::Color::border_of(surface));
+        let accent =
+            crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(Color::BLUE);
+        let font = effective_font(style);
+
+        context.face_with_gradient(
+            rect,
+            surface,
+            self.style().background_gradient.as_ref(),
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
+        context.draw_rect(rect, border);
+
+        let rows = self.visible_rows();
+        for offset in 0..rows {
+            let index = self.first_visible + offset;
+            let Some(entry) = self.entries.get(index) else {
+                break;
+            };
+            let Some(row) = self.row_rect(index) else {
+                break;
+            };
+            if self.active_index == Some(index) {
+                context.fill_rect(row, surface.blend(&accent, 0.20));
+            }
+            let indent = (entry.level.saturating_sub(1) as i32 * OUTLINE_INDENT)
+                .min(self.max_level_indent());
+            let title = crate::widget::text_utils::elide_end(
+                &entry.title,
+                ((row.width as i32 - indent - 8) / 7).max(1) as usize,
+            );
+            context.draw_text(
+                Point::new(row.x + 6 + indent, row.y + 4),
+                &title,
+                font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
+    }
+}
+
+/// One replacement the host is asked to apply.
+///
+/// Ranges are byte offsets into the document the bar was told about through
+/// [`FindBar::set_text`], in document order. A host applies them back-to-front so an earlier
+/// replacement does not shift a later range; `all` highlights are carried in one request rather
+/// than one signal per match, because a signal has no way to say "and three more".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaceRequest {
+    /// Byte ranges to replace, in ascending document order.
+    pub ranges: Vec<(usize, usize)>,
+    /// Replacement text for every range.
+    pub text: String,
+}
+
+/// Which field of a [`FindBar`] has focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum FindFocus {
+    /// The query field; the default.
+    #[default]
+    Query,
+    /// The replacement field.
+    Replace,
+}
+
+/// Height of one field row in the find bar.
+const FIND_ROW_HEIGHT: i32 = 26;
+/// Side of a toggle cell (`Aa`, `W`).
+const FIND_TOGGLE_SIDE: i32 = 18;
+
+/// A reusable find/replace bar.
+///
+/// It is a control, not a dialog: it owns the query, the matching policy and the match list for a
+/// document **snapshot** the host hands it, and reports navigation and replacement requests. It
+/// does not own the document. That split is why [`Self::replace`] emits a
+/// [`ReplaceRequest`] instead of mutating text it never received: a bar that edited a copy would
+/// report success for an edit the document never saw.
+pub struct FindBar {
+    base: BaseWidget,
+    visible: bool,
+    query: String,
+    replacement: String,
+    case_sensitive: bool,
+    whole_word: bool,
+    /// Whether the replacement row is painted.
+    replace_visible: bool,
+    /// The document snapshot the matches address.
+    haystack: String,
+    /// Every match, in document order.
+    matches: Vec<(usize, usize)>,
+    /// The active match, as an index into `matches`.
+    current: Option<usize>,
+    /// Which field typing goes to.
+    focus: FindFocus,
+    /// Emitted with the active match's byte range, or `(0, 0)` when there is no match.
+    pub search_changed: Signal1<(usize, usize)>,
+    /// Emitted when the reader asks for a replacement.
+    pub replace_requested: Signal1<ReplaceRequest>,
+}
+
+impl FindBar {
+    /// Creates a closed find bar.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Panel, geometry, "FindBar"),
+            visible: false,
+            query: String::new(),
+            replacement: String::new(),
+            case_sensitive: false,
+            whole_word: false,
+            replace_visible: false,
+            haystack: String::new(),
+            matches: Vec::new(),
+            current: None,
+            focus: FindFocus::Query,
+            search_changed: Signal1::new(),
+            replace_requested: Signal1::new(),
+        }
+    }
+
+    /// Whether the bar is showing.
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Shows the bar and focuses the query field.
+    pub fn open(&mut self) {
+        self.visible = true;
+        self.focus = FindFocus::Query;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Hides the bar without touching the document or the active match.
+    pub fn close(&mut self) {
+        if !self.visible {
+            return;
+        }
+        self.visible = false;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Points the bar at `text` and recomputes the match list.
+    ///
+    /// The bar keeps the snapshot rather than a live handle because it has no way to observe a
+    /// document edit; the host calls this after every change, which is also the moment the
+    /// replacement it applied becomes visible to the next search.
+    pub fn set_text(&mut self, text: &str) {
+        self.haystack.clear();
+        self.haystack.push_str(text);
+        self.recompute_matches();
+    }
+
+    /// The document snapshot the matches address.
+    pub fn text(&self) -> &str {
+        &self.haystack
+    }
+
+    /// The current query.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// Replaces the query and recomputes the matches.
+    pub fn set_query(&mut self, query: impl Into<String>) {
+        self.query = query.into();
+        self.recompute_matches();
+        self.base.request_redraw();
+    }
+
+    /// Whether matching is case-sensitive.
+    pub fn case_sensitive(&self) -> bool {
+        self.case_sensitive
+    }
+
+    /// Sets the case-sensitivity policy.
+    pub fn set_case_sensitive(&mut self, sensitive: bool) {
+        if self.case_sensitive == sensitive {
+            return;
+        }
+        self.case_sensitive = sensitive;
+        self.recompute_matches();
+        self.base.request_redraw();
+    }
+
+    /// Whether matches must be whole words.
+    pub fn whole_word(&self) -> bool {
+        self.whole_word
+    }
+
+    /// Sets the whole-word policy.
+    pub fn set_whole_word(&mut self, whole_word: bool) {
+        if self.whole_word == whole_word {
+            return;
+        }
+        self.whole_word = whole_word;
+        self.recompute_matches();
+        self.base.request_redraw();
+    }
+
+    /// The replacement text.
+    pub fn replace_text(&self) -> &str {
+        &self.replacement
+    }
+
+    /// Sets the replacement text.
+    pub fn set_replace_text(&mut self, text: impl Into<String>) {
+        self.replacement = text.into();
+        self.base.request_redraw();
+    }
+
+    /// Whether the replacement row is painted.
+    pub fn replace_visible(&self) -> bool {
+        self.replace_visible
+    }
+
+    /// Shows or hides the replacement row.
+    pub fn set_replace_visible(&mut self, visible: bool) {
+        if self.replace_visible == visible {
+            return;
+        }
+        self.replace_visible = visible;
+        if !visible {
+            self.focus = FindFocus::Query;
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// How many matches the current query has.
+    pub fn match_count(&self) -> usize {
+        self.matches.len()
+    }
+
+    /// The active match's byte range, when one is selected.
+    pub fn current_range(&self) -> Option<(usize, usize)> {
+        self.current.and_then(|index| self.matches.get(index).copied())
+    }
+
+    /// Selects the next match, wrapping at the end.
+    ///
+    /// Returns whether a match was selected; an empty match list reports `false` and emits the
+    /// "no match" range, so a subscriber is told the search came up empty rather than left with
+    /// the previous result.
+    pub fn find_next(&mut self) -> bool {
+        if self.matches.is_empty() {
+            self.current = None;
+            self.search_changed.emit((0, 0));
+            return false;
+        }
+        let next = match self.current {
+            Some(index) => (index + 1) % self.matches.len(),
+            None => 0,
+        };
+        self.select_match(next);
+        true
+    }
+
+    /// Selects the previous match, wrapping at the start.
+    pub fn find_previous(&mut self) -> bool {
+        if self.matches.is_empty() {
+            self.current = None;
+            self.search_changed.emit((0, 0));
+            return false;
+        }
+        let next = match self.current {
+            Some(0) => self.matches.len() - 1,
+            Some(index) => index - 1,
+            None => self.matches.len() - 1,
+        };
+        self.select_match(next);
+        true
+    }
+
+    /// Selects match `index` and reports its range.
+    fn select_match(&mut self, index: usize) {
+        self.current = Some(index);
+        if let Some(range) = self.current_range() {
+            self.search_changed.emit(range);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Recomputes `matches` and keeps the active match when it still exists.
+    fn recompute_matches(&mut self) {
+        let previous = self.current.and_then(|index| self.matches.get(index).copied());
+        self.matches =
+            find_matches(&self.haystack, &self.query, self.case_sensitive, self.whole_word);
+        self.current = previous.and_then(|range| self.matches.iter().position(|hit| *hit == range));
+        // Nothing is selected automatically: a query the reader is still typing is not yet a
+        // navigation, and starting a match early would make the first `find_next` skip it.
+    }
+
+    /// Asks the host to replace the active match.
+    ///
+    /// Returns whether a request was emitted. The match list is left alone: the text it addresses
+    /// has not changed yet, and a bar that renumbered its matches before the document did would
+    /// point the next request at the wrong bytes.
+    pub fn replace(&mut self) -> bool {
+        let Some(range) = self.current_range() else {
+            return false;
+        };
+        self.replace_requested
+            .emit(ReplaceRequest { ranges: vec![range], text: self.replacement.clone() });
+        true
+    }
+
+    /// Asks the host to replace every match in one request.
+    pub fn replace_all(&mut self) -> bool {
+        if self.matches.is_empty() {
+            return false;
+        }
+        self.replace_requested
+            .emit(ReplaceRequest { ranges: self.matches.clone(), text: self.replacement.clone() });
+        true
+    }
+
+    /// The first row's box.
+    fn query_band(&self) -> Rect {
+        let rect = self.geometry();
+        Rect::new(rect.x, rect.y, rect.width, FIND_ROW_HEIGHT.min(rect.height as i32) as u32)
+    }
+
+    /// The replacement row's box, when it is shown.
+    fn replace_band(&self) -> Option<Rect> {
+        if !self.replace_visible {
+            return None;
+        }
+        let rect = self.geometry();
+        let top = rect.y + FIND_ROW_HEIGHT;
+        let height = rect.height as i32 - FIND_ROW_HEIGHT;
+        (height > 0).then(|| Rect::new(rect.x, top, rect.width, height as u32))
+    }
+
+    /// The `Aa` toggle box.
+    fn case_toggle_rect(&self) -> Rect {
+        let band = self.query_band();
+        Rect::new(
+            band.x + band.width as i32 - 2 * FIND_TOGGLE_SIDE - 6,
+            band.y + (band.height as i32 - FIND_TOGGLE_SIDE) / 2,
+            FIND_TOGGLE_SIDE as u32,
+            FIND_TOGGLE_SIDE as u32,
+        )
+    }
+
+    /// The whole-word toggle box.
+    fn word_toggle_rect(&self) -> Rect {
+        let band = self.query_band();
+        Rect::new(
+            band.x + band.width as i32 - FIND_TOGGLE_SIDE - 3,
+            band.y + (band.height as i32 - FIND_TOGGLE_SIDE) / 2,
+            FIND_TOGGLE_SIDE as u32,
+            FIND_TOGGLE_SIDE as u32,
+        )
+    }
+
+    /// The box the query text occupies, between the left inset and the toggles.
+    fn query_text_rect(&self) -> Rect {
+        let band = self.query_band();
+        let right = band.width as i32 - 2 * FIND_TOGGLE_SIDE - 12;
+        Rect::new(band.x + 6, band.y, right.max(8) as u32, band.height)
+    }
+}
+
+/// Case- and word-aware, non-overlapping literal search.
+///
+/// A literal search is what a find bar offers: the regex-capable editor has its own matcher, and
+/// a second engine here would be a second set of semantics to keep in step. Offsets are byte
+/// offsets into `hay`, so a host can splice the ranges directly.
+fn find_matches(
+    hay: &str,
+    needle: &str,
+    case_sensitive: bool,
+    whole_word: bool,
+) -> Vec<(usize, usize)> {
+    if needle.is_empty() || hay.is_empty() {
+        return Vec::new();
+    }
+    let hay_chars: Vec<(usize, char)> = hay.char_indices().collect();
+    let needle_chars: Vec<char> = needle.chars().collect();
+    let len = needle_chars.len();
+    if len == 0 {
+        return Vec::new();
+    }
+    let same = |a: char, b: char| {
+        if case_sensitive {
+            a == b
+        } else {
+            a.to_lowercase().eq(b.to_lowercase())
+        }
+    };
+    let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+    let mut matches = Vec::new();
+    let mut index = 0usize;
+    while index + len <= hay_chars.len() {
+        let hit = (0..len).all(|offset| same(hay_chars[index + offset].1, needle_chars[offset]));
+        if hit {
+            let starts_word = !whole_word || index == 0 || !is_word(hay_chars[index - 1].1);
+            let ends_word =
+                !whole_word || index + len == hay_chars.len() || !is_word(hay_chars[index + len].1);
+            if starts_word && ends_word {
+                let start = hay_chars[index].0;
+                let end = hay_chars.get(index + len).map_or(hay.len(), |(offset, _)| *offset);
+                matches.push((start, end));
+                index += len;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    matches
+}
+
+impl Widget for FindBar {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+    fn size_hint(&self) -> crate::core::Size {
+        let height = if self.replace_visible {
+            (FIND_ROW_HEIGHT * 2) as u32
+        } else {
+            FIND_ROW_HEIGHT as u32
+        };
+        crate::core::Size::new(360, height)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+    /// Resolves the bar's two events; see `DiffViewer`'s note for why the arms are explicit.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "search_changed" => {
+                Some(EventSignalRef::mapped("search_changed", &self.search_changed, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
+            "replace_requested" => {
+                Some(EventSignalRef::mapped("replace_requested", &self.replace_requested, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::Tuple(
+                            v.ranges
+                                .iter()
+                                .map(|range| {
+                                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                                        CapabilityValue::UInt(range.0 as u64),
+                                        CapabilityValue::UInt(range.1 as u64),
+                                    ]))
+                                })
+                                .collect(),
+                        ),
+                        CapabilityValue::String(v.text.clone()),
+                    ]))
+                }))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl WidgetProperties for FindBar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "query" => Ok(CapabilityValue::String(self.query.clone())),
+            "case_sensitive" => Ok(CapabilityValue::Bool(self.case_sensitive)),
+            "whole_word" => Ok(CapabilityValue::Bool(self.whole_word)),
+            "replace_text" => Ok(CapabilityValue::String(self.replacement.clone())),
+            "visible" => Ok(CapabilityValue::Bool(self.visible)),
+            "replace_visible" => Ok(CapabilityValue::Bool(self.replace_visible)),
+            "match_count" => Ok(CapabilityValue::UInt(self.matches.len() as u64)),
+            "current_range" => Ok(match self.current_range() {
+                Some((start, end)) => CapabilityValue::String(format!("{start},{end}")),
+                None => CapabilityValue::Null,
+            }),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "query" => {
+                self.set_query(expect_string(value)?);
+                Ok(())
+            }
+            "case_sensitive" => {
+                self.set_case_sensitive(expect_bool(value)?);
+                Ok(())
+            }
+            "whole_word" => {
+                self.set_whole_word(expect_bool(value)?);
+                Ok(())
+            }
+            "replace_text" => {
+                self.set_replace_text(expect_string(value)?);
+                Ok(())
+            }
+            "visible" => {
+                if expect_bool(value)? {
+                    self.open();
+                } else {
+                    self.close();
+                }
+                Ok(())
+            }
+            "replace_visible" => {
+                self.set_replace_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "match_count" | "current_range" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "query",
+            "case_sensitive",
+            "whole_word",
+            "replace_text",
+            "visible",
+            "replace_visible",
+            "match_count",
+            "current_range",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
+impl EventHandler for FindBar {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.base.is_enabled() || !self.visible {
+            return;
+        }
+        match event {
+            Event::MousePress { pos, button: 1, .. } => {
+                if self.case_toggle_rect().contains_point(*pos) {
+                    self.set_case_sensitive(!self.case_sensitive);
+                    return;
+                }
+                if self.word_toggle_rect().contains_point(*pos) {
+                    self.set_whole_word(!self.whole_word);
+                    return;
+                }
+                if self.replace_band().is_some_and(|band| band.contains_point(*pos)) {
+                    self.focus = FindFocus::Replace;
+                    self.base.request_redraw();
+                    return;
+                }
+                if self.query_band().contains_point(*pos) {
+                    self.focus = FindFocus::Query;
+                    self.base.request_redraw();
+                }
+            }
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                let target = match self.focus {
+                    FindFocus::Query => &mut self.query,
+                    FindFocus::Replace => &mut self.replacement,
+                };
+                target.extend(text.chars().filter(|character| !character.is_control()));
+                if matches!(self.focus, FindFocus::Query) {
+                    self.recompute_matches();
+                }
+                self.base.request_redraw();
+            }
+            Event::KeyPress { key, modifiers } => {
+                let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                    .contains(crate::shortcut::Modifiers::SHIFT);
+                match *key {
+                    crate::event::key_codes::ESCAPE => self.close(),
+                    crate::event::key_codes::TAB => {
+                        if self.replace_visible {
+                            self.focus = match self.focus {
+                                FindFocus::Query => FindFocus::Replace,
+                                FindFocus::Replace => FindFocus::Query,
+                            };
+                            self.base.request_redraw();
+                        }
+                    }
+                    crate::event::key_codes::ENTER => {
+                        if shift {
+                            self.find_previous();
+                        } else {
+                            self.find_next();
+                        }
+                    }
+                    crate::event::key_codes::BACKSPACE => {
+                        let target = match self.focus {
+                            FindFocus::Query => &mut self.query,
+                            FindFocus::Replace => &mut self.replacement,
+                        };
+                        target.pop();
+                        if matches!(self.focus, FindFocus::Query) {
+                            self.recompute_matches();
+                        }
+                        self.base.request_redraw();
+                    }
+                    _ => { /* Other keys are not relevant */ }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Draw for FindBar {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let style = self.base.style();
+        let theme = crate::style::resolved_theme_style_shared("markdown_editor");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| crate::core::Color::border_of(surface));
+        let accent =
+            crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(Color::BLUE);
+        let font = effective_font(style);
+
+        context.face_with_gradient(
+            rect,
+            surface,
+            self.style().background_gradient.as_ref(),
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
+        context.draw_rect(rect, border);
+
+        let query_band = self.query_band();
+        let text_rect = self.query_text_rect();
+        let counter = if self.matches.is_empty() {
+            "0/0".to_string()
+        } else {
+            format!("{}/{}", self.current.map_or(0, |index| index + 1), self.matches.len())
+        };
+        let counter_width = context.measure_text(&counter, font).width as i32;
+        context.draw_text(
+            Point::new(text_rect.x, text_rect.y + 7),
+            &crate::widget::text_utils::elide_end(
+                &self.query,
+                ((text_rect.width as i32 - counter_width - 8) / 7).max(1) as usize,
+            ),
+            font,
+            if self.query.is_empty() { ink.with_alpha(120) } else { ink },
+            HorizontalAlignment::Left,
+        );
+        context.draw_text(
+            Point::new(
+                query_band.x + query_band.width as i32 - 2 * FIND_TOGGLE_SIDE - 12 - counter_width,
+                query_band.y + 7,
+            ),
+            &counter,
+            font,
+            ink.blend(&surface, 0.35),
+            HorizontalAlignment::Left,
+        );
+
+        for (box_rect, label, active) in [
+            (self.case_toggle_rect(), "Aa", self.case_sensitive),
+            (self.word_toggle_rect(), "W", self.whole_word),
+        ] {
+            if active {
+                context.fill_rounded_rect(box_rect, 3, surface.blend(&accent, 0.30));
+                context.draw_rect(box_rect, accent);
+            }
+            context.draw_text(
+                Point::new(box_rect.x + 4, box_rect.y + 3),
+                label,
+                font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
+
+        if let Some(band) = self.replace_band() {
+            context.draw_line(
+                Point::new(band.x, band.y),
+                Point::new(band.x + band.width as i32, band.y),
+                border,
+            );
+            context.draw_text(
+                Point::new(band.x + 6, band.y + 7),
+                &crate::widget::text_utils::elide_end(
+                    &self.replacement,
+                    (band.width as i32 / 7).max(1) as usize,
+                ),
+                font,
+                if self.replacement.is_empty() { ink.with_alpha(120) } else { ink },
+                HorizontalAlignment::Left,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3003,6 +4103,99 @@ mod tests {
         assert_eq!(editor.selected_text().as_deref(), Some("beta"));
         editor.handle_event(&Event::key_press(27, 0));
         assert!(!editor.find_bar_visible());
+    }
+
+    #[test]
+    fn outline_panel_follows_the_editor_caret() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("# One\ntext\n## Two\nmore");
+        let mut panel = MarkdownOutlinePanel::new(Rect::new(0, 0, 180, 200));
+        panel.sync_with_editor(&editor);
+        assert_eq!(panel.entries().len(), 2);
+        assert_eq!(panel.entries()[0].title, "One");
+        assert_eq!(panel.active_index(), Some(0));
+
+        assert!(editor.goto_line(2));
+        panel.sync_with_editor(&editor);
+        assert_eq!(panel.active_index(), Some(1), "the caret is inside the second heading");
+
+        let selected = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = selected.clone();
+        panel.entry_selected.connect(move |index| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*index);
+            }
+        });
+        assert_eq!(panel.goto(0), Some(0), "goto reports the line it addresses");
+        assert_eq!(*selected.lock().expect("selected lock"), vec![0]);
+        assert_eq!(panel.goto(9), None);
+    }
+
+    #[test]
+    fn find_bar_navigates_case_and_whole_word_matches() {
+        let mut bar = FindBar::new(Rect::new(0, 0, 360, 26));
+        bar.set_text("Alpha alpha alphabet alpha");
+        bar.set_query("alpha");
+        assert_eq!(bar.match_count(), 4, "case-insensitive by default, substrings included");
+        assert!(bar.find_next());
+        assert_eq!(bar.current_range(), Some((0, 5)));
+        assert!(bar.find_next());
+        assert_eq!(bar.current_range(), Some((6, 11)));
+
+        bar.set_whole_word(true);
+        assert_eq!(bar.match_count(), 3);
+        bar.set_case_sensitive(true);
+        assert_eq!(bar.match_count(), 2, "only the lowercase, whole-word hits remain");
+        bar.set_query("zzz");
+        assert!(!bar.find_next(), "an empty match list reports no match");
+    }
+
+    #[test]
+    fn find_bar_replace_request_reaches_the_editor_and_is_undoable() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("cat dog cat");
+        let mut bar = FindBar::new(Rect::new(0, 0, 360, 52));
+        bar.set_replace_visible(true);
+        bar.set_replace_text("fox");
+        editor.sync_find_bar(&mut bar);
+        bar.set_query("cat");
+        assert_eq!(bar.match_count(), 2);
+
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::<ReplaceRequest>::new()));
+        let sink = requests.clone();
+        bar.replace_requested.connect(move |request| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push((*request).clone());
+            }
+        });
+        assert!(bar.replace_all());
+        let request = requests.lock().expect("requests lock")[0].clone();
+        assert_eq!(request.ranges, vec![(0, 3), (8, 11)]);
+
+        assert_eq!(editor.apply_replace_request(&request), 2);
+        assert_eq!(editor.text(), "fox dog fox");
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "cat dog cat");
+    }
+
+    #[test]
+    fn find_bar_properties_round_trip() {
+        let mut bar = FindBar::new(Rect::new(0, 0, 360, 26));
+        bar.set("query", CapabilityValue::String("a".to_string())).expect("query writable");
+        bar.set("case_sensitive", CapabilityValue::Bool(true)).expect("case writable");
+        bar.set("whole_word", CapabilityValue::Bool(true)).expect("word writable");
+        bar.set("replace_text", CapabilityValue::String("b".to_string()))
+            .expect("replace writable");
+        bar.set("visible", CapabilityValue::Bool(true)).expect("visible writable");
+        assert!(bar.is_visible());
+        assert_eq!(bar.get("query"), Ok(CapabilityValue::String("a".to_string())));
+        assert_eq!(bar.get("case_sensitive"), Ok(CapabilityValue::Bool(true)));
+        assert_eq!(bar.get("whole_word"), Ok(CapabilityValue::Bool(true)));
+        assert_eq!(bar.get("replace_text"), Ok(CapabilityValue::String("b".to_string())));
+        assert_eq!(
+            bar.set("match_count", CapabilityValue::UInt(0)),
+            Err(CapabilityAccessError::ReadOnlyProperty)
+        );
     }
 
     /// The undo depth is a constructor argument and a property.

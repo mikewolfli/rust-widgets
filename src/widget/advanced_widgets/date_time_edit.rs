@@ -26,9 +26,11 @@ use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
+use crate::widget::advanced_widgets::calendar::Calendar;
 use crate::widget::advanced_widgets::{date_edit::Date, time_edit::Time};
+use crate::widget::capability::access::weekday_to_str;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_datetime, expect_horizontal_alignment, expect_string,
+    expect_bool, expect_datetime, expect_horizontal_alignment, expect_string, expect_weekday,
     horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -38,6 +40,7 @@ use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use chrono::Weekday;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -211,6 +214,14 @@ pub struct DateTimeEdit {
     calendar_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal,
     /// Text painted instead of the value at the minimum.
     special_value_text: Option<String>,
+    /// The embedded [`Calendar`] that owns the popup's month grid.
+    calendar: Calendar,
+    /// The first column of the popup's month grid.
+    calendar_first_day: Weekday,
+    /// Emitted after the embedded calendar becomes visible.
+    pub calendar_opened: GenericSignal,
+    /// Emitted after the embedded calendar is dismissed.
+    pub calendar_closed: GenericSignal,
 }
 impl DateTimeEdit {
     /// Creates a date-time editor occupying `geometry`.
@@ -245,6 +256,14 @@ impl DateTimeEdit {
             spin_buttons: false,
             calendar_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal::new(false),
             special_value_text: None,
+            calendar: {
+                let mut calendar = Calendar::new(super::date_edit::calendar_popup_rect(geometry));
+                calendar.set_first_day_of_week(Weekday::Sun);
+                calendar
+            },
+            calendar_first_day: Weekday::Sun,
+            calendar_opened: GenericSignal::new(),
+            calendar_closed: GenericSignal::new(),
         }
     }
     /// Returns the current combined value.
@@ -432,9 +451,17 @@ impl DateTimeEdit {
         if self.calendar_open == open {
             return;
         }
+        if open {
+            self.sync_calendar_open_state();
+        }
         self.calendar_open = open;
         self.calendar_reveal.set_open(open);
         self.popup_visibility_changed.emit(open);
+        if open {
+            self.calendar_opened.emit();
+        } else {
+            self.calendar_closed.emit();
+        }
         self.base.request_redraw();
     }
 
@@ -445,6 +472,94 @@ impl DateTimeEdit {
         if self.calendar_popup {
             self.set_calendar_open(!self.calendar_open);
         }
+    }
+
+    /// The embedded calendar instance that draws the popup's month grid.
+    pub fn calendar(&self) -> &Calendar {
+        &self.calendar
+    }
+
+    /// Mutably borrows the embedded calendar.
+    ///
+    /// The field still owns the selected date: the next open re-syncs the calendar's selection,
+    /// range and displayed page from this field.
+    pub fn calendar_mut(&mut self) -> &mut Calendar {
+        &mut self.calendar
+    }
+
+    /// Replaces the embedded calendar instance.
+    ///
+    /// The instance is positioned and synchronised on the next open or draw, so a replacement
+    /// does not have to know the field's geometry. Exposing the instance as a *method* rather
+    /// than a property is deliberate: `CapabilityValue` has no variant that can carry a widget.
+    pub fn set_calendar(&mut self, mut calendar: Calendar) {
+        calendar.set_first_day_of_week(self.calendar_first_day);
+        self.calendar = calendar;
+        if self.calendar_open {
+            self.sync_calendar_open_state();
+        }
+        self.base.request_redraw();
+    }
+
+    /// The first column of the popup's month grid.
+    pub fn calendar_first_day(&self) -> Weekday {
+        self.calendar_first_day
+    }
+
+    /// Sets the first column of the popup's month grid.
+    pub fn set_calendar_first_day(&mut self, weekday: Weekday) {
+        if self.calendar_first_day == weekday {
+            return;
+        }
+        self.calendar_first_day = weekday;
+        self.calendar.set_first_day_of_week(weekday);
+        self.base.request_redraw();
+    }
+
+    /// Opens the calendar popup, synchronising the embedded calendar first.
+    pub fn open_calendar(&mut self) {
+        if !self.calendar_popup || self.calendar_open {
+            return;
+        }
+        self.set_calendar_open(true);
+    }
+
+    /// Dismisses the calendar popup without changing the value.
+    pub fn close_calendar(&mut self) {
+        if self.calendar_open {
+            self.set_calendar_open(false);
+        }
+    }
+
+    /// Copies the field's date facts into the embedded calendar.
+    fn sync_calendar_open_state(&mut self) {
+        self.sync_calendar_page();
+        self.calendar.set_first_day_of_week(self.calendar_first_day);
+        if let Some(date) = super::date_edit::date_to_naive(self.datetime.date) {
+            self.calendar.set_display_month(date);
+            self.calendar.set_selected_date(date);
+        }
+    }
+
+    /// Keeps the embedded calendar's geometry and range in step without moving its page.
+    fn sync_calendar_page(&mut self) {
+        let popup = super::date_edit::calendar_popup_rect(self.geometry());
+        self.calendar.set_geometry(popup);
+        if let Some(minimum) = super::date_edit::date_to_naive(self.minimum.date) {
+            self.calendar.set_minimum_date(minimum);
+        }
+        if let Some(maximum) = super::date_edit::date_to_naive(self.maximum.date) {
+            self.calendar.set_maximum_date(maximum);
+        }
+    }
+
+    /// Takes the calendar's selected date as this field's date part and dismisses the popup.
+    fn commit_calendar_selection(&mut self) {
+        let selected = super::date_edit::naive_to_date(self.calendar.selected_date());
+        if selected != self.datetime.date {
+            self.set_date(selected);
+        }
+        self.close_calendar();
     }
 
     /// The section the user is editing, or `None` for whole-second stepping.
@@ -842,6 +957,12 @@ impl Widget for DateTimeEdit {
                 &self.popup_visibility_changed,
                 |v| CapabilityValue::Bool(*v),
             )),
+            "calendar_opened" => {
+                Some(EventSignalRef::unit("calendar_opened", &self.calendar_opened))
+            }
+            "calendar_closed" => {
+                Some(EventSignalRef::unit("calendar_closed", &self.calendar_closed))
+            }
             _ => None,
         }
     }
@@ -860,6 +981,9 @@ impl WidgetProperties for DateTimeEdit {
             "datetime" => Ok(CapabilityValue::String(self.datetime().to_string())),
             "display_format" => Ok(CapabilityValue::String(self.display_format().to_string())),
             "calendar_popup" => Ok(CapabilityValue::Bool(self.calendar_popup())),
+            "calendar_first_day" => {
+                Ok(CapabilityValue::String(weekday_to_str(self.calendar_first_day()).to_string()))
+            }
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
@@ -881,6 +1005,10 @@ impl WidgetProperties for DateTimeEdit {
                 self.set_calendar_popup(expect_bool(value)?);
                 Ok(())
             }
+            "calendar_first_day" => {
+                self.set_calendar_first_day(expect_weekday(value)?);
+                Ok(())
+            }
             "alignment" => {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
@@ -894,6 +1022,7 @@ impl WidgetProperties for DateTimeEdit {
             "datetime",
             "display_format",
             "calendar_popup",
+            "calendar_first_day",
             "alignment",
             BASE_PROPERTY_NAMES
         ]
@@ -905,6 +1034,12 @@ impl EventHandler for DateTimeEdit {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
+        }
+        // Pointer tracking inside the open popup belongs to the embedded calendar.
+        if self.calendar_open && matches!(event, Event::MouseMove { .. } | Event::MouseLeave { .. })
+        {
+            self.sync_calendar_page();
+            self.calendar.handle_event(event);
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
@@ -926,17 +1061,31 @@ impl EventHandler for DateTimeEdit {
                 {
                     self.toggle_calendar_popup();
                 } else if self.calendar_open {
-                    // The cell geometry is the same derivation `draw_month_grid` paints with.
-                    // `set_date` keeps the current time part, so a date pick cannot silently
-                    // reset the user's time.
-                    if let Some(day) =
-                        super::date_edit::calendar_day_at(field, &self.datetime.date, *pos)
-                    {
-                        self.set_date(day);
-                        self.set_calendar_open(false);
+                    // The popup is the embedded calendar's own rectangle; a press inside it is
+                    // forwarded there. `set_date` keeps the current time part, so a date pick
+                    // cannot silently reset the user's time.
+                    let popup = super::date_edit::calendar_popup_rect(field);
+                    if popup.contains_point(*pos) {
+                        self.sync_calendar_page();
+                        let before = self.calendar.selected_date();
+                        self.calendar.handle_event(event);
+                        let after = self.calendar.selected_date();
+                        if after != before {
+                            self.set_date(super::date_edit::naive_to_date(after));
+                            self.close_calendar();
+                        }
+                    } else {
+                        self.close_calendar();
                     }
                 } else if let Some(section) = self.section_at(*pos) {
                     self.set_current_section(Some(section));
+                }
+            }
+            Event::MouseDoubleClick { pos, .. } if self.calendar_open => {
+                if super::date_edit::calendar_popup_rect(self.geometry()).contains_point(*pos) {
+                    self.sync_calendar_page();
+                    self.calendar.handle_event(event);
+                    self.commit_calendar_selection();
                 }
             }
             Event::Wheel { delta, .. } => {
@@ -948,6 +1097,20 @@ impl EventHandler for DateTimeEdit {
             }
             Event::FocusLost => {
                 self.editing_finished.emit();
+            }
+            Event::KeyPress { key, .. } if self.calendar_open => {
+                // Escape closes the popup before any value navigation runs. Every other key
+                // belongs to the embedded calendar while it is open: arrows move its selection,
+                // Page Up/Down move its page, and Enter/Space commit.
+                if *key == 27 {
+                    self.close_calendar();
+                } else {
+                    self.sync_calendar_page();
+                    self.calendar.handle_event(event);
+                    if *key == 13 || *key == 32 {
+                        self.commit_calendar_selection();
+                    }
+                }
             }
             Event::KeyPress { key, modifiers } => match *key {
                 // Escape closes an open grid first, before any value navigation runs.
@@ -1145,41 +1308,13 @@ impl Draw for DateTimeEdit {
             if clipped {
                 context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
             }
-            self.draw_calendar_popup(context, rect, surface, border, ink);
+            // One month-grid implementation: the embedded calendar paints the popup.
+            self.sync_calendar_page();
+            self.calendar.draw(context);
             if clipped {
                 context.pop_clip();
             }
         }
-    }
-}
-
-impl DateTimeEdit {
-    /// Paints the month grid for the current value's month, below the field.
-    ///
-    /// # Why the grid is here and not a child widget
-    ///
-    /// It is a **function of the field's own state**: the month comes from `self.datetime.date`, the
-    /// muted cells from `self.minimum`/`self.maximum`, and the marked cell from the same date. A child
-    /// would have to be kept in step with all three at every mutation, and the flag is published as a
-    /// boolean, so there is nothing for a caller to hold anyway. Same shape as `date_edit`'s popup,
-    /// because the grid itself is the shared [`super::date_edit::draw_month_grid`].
-    fn draw_calendar_popup(
-        &self,
-        context: &mut RenderContext,
-        field: Rect,
-        surface: Color,
-        border: Color,
-        ink: Color,
-    ) {
-        super::date_edit::draw_month_grid(
-            context,
-            field,
-            super::date_edit::GridChrome { surface, border, ink },
-            &self.datetime.date,
-            &self.minimum.date,
-            &self.maximum.date,
-            effective_font(self.base.style()),
-        );
     }
 }
 
@@ -1502,6 +1637,27 @@ mod tests {
         );
     }
 
+    /// The centre of a day cell in the embedded calendar, derived from the calendar's documented
+    /// layout and the popup rectangle both the draw pass and the hit test use. Test-only.
+    fn calendar_day_center(editor: &DateTimeEdit, day: u32) -> Point {
+        use chrono::Datelike;
+        let popup = super::super::date_edit::calendar_popup_rect(editor.geometry());
+        let nav_h = 30_i32;
+        let header_h = 24_i32;
+        let grid_y = popup.y + nav_h + header_h;
+        let grid_h = popup.height as i32 - nav_h - header_h;
+        let cell_w = (popup.width / 7).max(1) as i32;
+        let cell_h = (grid_h / 6).max(1);
+        let date = editor.datetime.date;
+        let first = chrono::NaiveDate::from_ymd_opt(date.year(), date.month() as u32, 1)
+            .expect("the field's month always has a first day");
+        let slot = first.weekday().num_days_from_sunday() + day - 1;
+        Point::new(
+            popup.x + (slot % 7) as i32 * cell_w + cell_w / 2,
+            grid_y + (slot / 7) as i32 * cell_h + cell_h / 2,
+        )
+    }
+
     /// Choosing a day updates the date part and preserves the time part.
     #[test]
     fn selecting_a_day_updates_the_date_and_keeps_the_time() {
@@ -1510,18 +1666,46 @@ mod tests {
         editor.set_calendar_popup(true);
         editor.set_calendar_open(true);
 
-        let cell = super::super::date_edit::calendar_cell_rect(
-            editor.geometry(),
-            &editor.datetime.date,
-            15,
-        )
-        .expect("June 15 has a grid cell")
-        .center();
+        let cell = calendar_day_center(&editor, 15);
         editor.handle_event(&Event::mouse_press(cell.x, cell.y, 1));
 
         assert_eq!(editor.date(), Date::new(2026, 6, 15));
         assert_eq!(editor.time(), Time::new(14, 30, 15, 0), "the time part must survive");
         assert!(!editor.calendar_open(), "picking a day finishes the interaction");
+    }
+
+    /// The popup is the embedded `Calendar`, and the two new signals bracket its visibility.
+    #[test]
+    fn calendar_open_and_close_signals_bracket_the_embedded_calendar() {
+        let mut editor = DateTimeEdit::new(Rect::new(0, 0, 280, 30));
+        editor.set_datetime(DateTime::new(Date::new(2026, 6, 8), Time::new(14, 30, 15, 0)));
+        editor.set_calendar_popup(true);
+
+        let opened = Arc::new(Mutex::new(0_usize));
+        let closed = Arc::new(Mutex::new(0_usize));
+        let opened_sink = Arc::clone(&opened);
+        let closed_sink = Arc::clone(&closed);
+        editor.calendar_opened.connect(move || {
+            if let Ok(mut count) = opened_sink.lock() {
+                *count += 1;
+            }
+        });
+        editor.calendar_closed.connect(move || {
+            if let Ok(mut count) = closed_sink.lock() {
+                *count += 1;
+            }
+        });
+
+        editor.open_calendar();
+        assert!(editor.calendar_open());
+        assert_eq!(
+            editor.calendar().selected_date(),
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 8).unwrap()
+        );
+        editor.close_calendar();
+        assert!(!editor.calendar_open());
+        assert_eq!(*opened.lock().expect("opened lock"), 1);
+        assert_eq!(*closed.lock().expect("closed lock"), 1);
     }
 
     /// Escape closes an open grid before any value navigation runs.

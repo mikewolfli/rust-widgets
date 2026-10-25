@@ -913,6 +913,7 @@ impl Widget for WizardDialog {
         match name {
             "finished" => Some(EventSignalRef::unit("finished", &self.finished)),
             "cancelled" => Some(EventSignalRef::unit("cancelled", &self.cancelled)),
+            // W-19 compatibility spelling; the control's canonical published name stays `cancelled`.
             "step_changed" => {
                 Some(EventSignalRef::mapped("step_changed", &self.step_changed, |v| {
                     CapabilityValue::UInt(*v as u64)

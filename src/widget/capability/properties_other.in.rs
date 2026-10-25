@@ -365,6 +365,7 @@ macro_rules! impl_properties_other {
             PropertySchema::new("fold_context_lines", PropertyValueKind::UInt, true, true),
             PropertySchema::new("unified_changed_pair", PropertyValueKind::Bool, true, true),
             PropertySchema::enumerated("whitespace_mode", true, true, &["show", "ignore_eol", "ignore_all", "mark_blank_changes"]),
+            PropertySchema::new("word_granularity", PropertyValueKind::Bool, true, true),
         ];
 
         // `ToastStack` publishes the stack depth and the selected toast id. The

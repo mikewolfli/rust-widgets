@@ -12,11 +12,13 @@
 //! each bar is the strip the content leaves — so "the other bar shortens this one" is a consequence
 //! of the two bands' shared corner rather than a term repeated in two places.
 
-use crate::compat::{Rc, RefCell, ToString, Vec};
+use crate::compat::{Arc, Rc, RefCell, ToString, Vec};
 use crate::core::{Alignment, Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::ScrollBar;
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -122,6 +124,12 @@ pub struct ScrollArea {
     /// every level.
     #[cfg_attr(alloc_frugal, allow(dead_code))]
     content_descendants: Vec<ObjectId>,
+    /// The child-list length the flat descendant list was built from.
+    ///
+    /// A host may mount rows directly into the viewport after construction; comparing the live
+    /// child count against this is an O(1) way to notice that the cached list is stale, without
+    /// rebuilding it on every scroll step (C-24).
+    content_tree_children: usize,
     /// The total size of the content (for AsNeeded scroll bar calculation).
     content_size: Size,
     /// Optional shared registry for child widget forwarding.
@@ -137,7 +145,68 @@ pub struct ScrollArea {
     /// Remaining fling velocity in logical pixels per second.
     fling: (f32, f32),
     /// An in-progress scroll-bar thumb drag: the axis and the pressed point.
+    ///
+    /// Only used by the **fallback** path. A mounted [`ScrollBar`] owns its own drag session, so
+    /// the axis it occupies never reaches this field.
     thumb_drag: Option<(ScrollAxis, i32)>,
+    /// A real `ScrollBar` child mounted on the vertical axis, when the host supplied one.
+    ///
+    /// # The self-drawn chrome is the default, not the only path
+    ///
+    /// [`ScrollArea`] predates [`ScrollBar`] being reusable: its own `draw` painted the groove and
+    /// thumb and its own event handling ran the drag. That path is kept as the default so an area
+    /// that never mounts a bar renders exactly the pixels it always did. Mounting a bar here
+    /// replaces that axis' chrome with the real control: its geometry comes from the chrome band
+    /// this area already derived, its `value_changed` moves the scroll offset, and moving the
+    /// scroll offset writes its value — two directions, one source of truth (`scroll_position`).
+    vertical_scroll_bar: Option<ScrollBarChild>,
+    /// A real `ScrollBar` child mounted on the horizontal axis; see
+    /// [`ScrollArea::vertical_scroll_bar`] for the fallback rule.
+    horizontal_scroll_bar: Option<ScrollBarChild>,
+}
+
+/// A mounted [`ScrollBar`] and the mailbox its `value_changed` writes into.
+///
+/// # Why a mailbox rather than a callback that mutates the area
+///
+/// Signal callbacks are `Send + Sync + 'static`, so they cannot borrow the scroll area that owns
+/// the bar. The bar therefore publishes into an atomic mailbox and the area **drains** it at the
+/// next scroll-affine point (`handle_event`, `tick`, `sync_from_scroll_bars`). This is what makes
+/// the bar's `value_changed` an authentic producer instead of a signal the host has to relay.
+struct ScrollBarChild {
+    bar: ScrollBar,
+    /// The value carried by the most recent `value_changed`.
+    pending_value: Arc<AtomicI32>,
+    /// Set when `pending_value` holds a value the area has not applied yet.
+    pending: Arc<AtomicBool>,
+}
+
+impl ScrollBarChild {
+    /// Mounts `bar` and subscribes its `value_changed` to this child's mailbox.
+    fn new(bar: ScrollBar) -> Self {
+        let pending_value = Arc::new(AtomicI32::new(bar.value()));
+        let pending = Arc::new(AtomicBool::new(false));
+        let (value_out, pending_out) = (Arc::clone(&pending_value), Arc::clone(&pending));
+        bar.value_changed.connect_ref(move |value| {
+            value_out.store(*value, Ordering::SeqCst);
+            pending_out.store(true, Ordering::SeqCst);
+        });
+        Self { bar, pending_value, pending }
+    }
+
+    /// Takes the mailbox's value, or `None` when nothing arrived since the last drain.
+    fn take_pending(&self) -> Option<i32> {
+        if self.pending.swap(false, Ordering::SeqCst) {
+            Some(self.pending_value.load(Ordering::SeqCst))
+        } else {
+            None
+        }
+    }
+
+    /// Drops a value this area itself just wrote, so it cannot be mistaken for user input.
+    fn clear_pending(&self) {
+        self.pending.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Which scroll bar a thumb drag is travelling on.
@@ -245,6 +314,7 @@ impl ScrollArea {
             widget: None,
             corner_widget: None,
             content_descendants: Vec::new(),
+            content_tree_children: 0,
             content_size: Size::new(0, 0),
             registry: None,
             scroll_position: (0, 0),
@@ -253,6 +323,8 @@ impl ScrollArea {
             inertia: false,
             fling: (0.0, 0.0),
             thumb_drag: None,
+            vertical_scroll_bar: None,
+            horizontal_scroll_bar: None,
         }
     }
     /// Whether a swipe carries momentum.
@@ -363,9 +435,14 @@ impl ScrollArea {
     }
     /// Sets horizontal scroll bar policy.
     pub fn set_horizontal_scroll_bar_policy(&mut self, policy: ScrollBarPolicy) {
+        if self.horizontal_scroll_bar_policy == policy {
+            return;
+        }
         self.horizontal_scroll_bar_policy = policy;
         // A bar changes the viewport's extent, and the child is placed in that extent.
+        self.update_scroll_bars();
         self.place_content();
+        self.base.request_redraw();
     }
     /// Returns vertical scroll bar policy.
     pub fn vertical_scroll_bar_policy(&self) -> ScrollBarPolicy {
@@ -373,8 +450,229 @@ impl ScrollArea {
     }
     /// Sets vertical scroll bar policy.
     pub fn set_vertical_scroll_bar_policy(&mut self, policy: ScrollBarPolicy) {
+        if self.vertical_scroll_bar_policy == policy {
+            return;
+        }
         self.vertical_scroll_bar_policy = policy;
+        // A bar changes the viewport's extent, and the child is placed in that extent.
+        self.update_scroll_bars();
         self.place_content();
+        self.base.request_redraw();
+    }
+
+    /// The policy governing one axis.
+    ///
+    /// # The published vocabulary, and why the local name is kept
+    ///
+    /// The issue this implements asks for `Always` / `AsNeeded` / `Needed`; this crate's
+    /// [`ScrollBarPolicy`] already spells the same three states `AlwaysOn` / `AsNeeded` /
+    /// `AlwaysOff` and is the enum every existing caller and the capability table use. Renaming
+    /// it would be a second vocabulary for one fact (principle #54), so the mapping is stated
+    /// here instead: `Always` = [`ScrollBarPolicy::AlwaysOn`], `AsNeeded` =
+    /// [`ScrollBarPolicy::AsNeeded`], `Needed` (show only while the content overflows) is the
+    /// same `AsNeeded` state, and `AlwaysOff` is the explicit "never" the third slot has always
+    /// meant.
+    pub fn scroll_bar_policy(&self, axis: ScrollAxis) -> ScrollBarPolicy {
+        match axis {
+            ScrollAxis::Horizontal => self.horizontal_scroll_bar_policy,
+            ScrollAxis::Vertical => self.vertical_scroll_bar_policy,
+        }
+    }
+
+    /// Sets the policy governing one axis, re-deriving the chrome and the mounted bar's
+    /// visibility.
+    pub fn set_scroll_bar_policy(&mut self, axis: ScrollAxis, policy: ScrollBarPolicy) {
+        match axis {
+            ScrollAxis::Horizontal => self.set_horizontal_scroll_bar_policy(policy),
+            ScrollAxis::Vertical => self.set_vertical_scroll_bar_policy(policy),
+        }
+    }
+
+    /// Mounts (or clears, with `None`) a real [`ScrollBar`] on the vertical axis.
+    ///
+    /// # What changes when a bar is mounted
+    ///
+    /// * the band is the one [`Self::assemble_chrome`] already derives, written into the bar's
+    ///   own `geometry` — the child is placed by the same derivation the self-drawn bar used;
+    /// * the control's `draw` delegates that band to [`ScrollBar::draw`] instead of painting a
+    ///   groove and thumb itself;
+    /// * pointer events in the band go to the bar, whose own thumb drag becomes the gesture;
+    /// * `value_changed` moves [`Self::scroll_position`] and a scroll-position change writes the
+    ///   bar's value, so the two cannot drift.
+    ///
+    /// With no bar mounted the self-drawn path stays in charge, which is why an existing area's
+    /// pixels and tests are unaffected by this API existing.
+    pub fn set_vertical_scroll_bar(&mut self, bar: Option<ScrollBar>) {
+        self.vertical_scroll_bar = bar.map(ScrollBarChild::new);
+        self.update_scroll_bars();
+        self.base.request_redraw();
+    }
+
+    /// Mounts (or clears, with `None`) a real [`ScrollBar`] on the horizontal axis.
+    pub fn set_horizontal_scroll_bar(&mut self, bar: Option<ScrollBar>) {
+        self.horizontal_scroll_bar = bar.map(ScrollBarChild::new);
+        self.update_scroll_bars();
+        self.base.request_redraw();
+    }
+
+    /// Mounts (or clears) a bar on `axis`; the axis-explicit spelling of the two setters above.
+    pub fn set_scroll_bar(&mut self, axis: ScrollAxis, bar: Option<ScrollBar>) {
+        match axis {
+            ScrollAxis::Horizontal => self.set_horizontal_scroll_bar(bar),
+            ScrollAxis::Vertical => self.set_vertical_scroll_bar(bar),
+        }
+    }
+
+    /// The mounted bar on `axis`, if any.
+    pub fn scroll_bar(&self, axis: ScrollAxis) -> Option<&ScrollBar> {
+        match axis {
+            ScrollAxis::Horizontal => self.horizontal_scroll_bar.as_ref(),
+            ScrollAxis::Vertical => self.vertical_scroll_bar.as_ref(),
+        }
+        .map(|child| &child.bar)
+    }
+
+    /// The mounted bar on `axis`, mutably.
+    ///
+    /// A write through this reference (say `set_style`) is the host's own change and does not
+    /// reach the scroll position. A **value** write does: call [`Self::sync_from_scroll_bars`]
+    /// afterwards, which is also what the control does at the next event or tick.
+    pub fn scroll_bar_mut(&mut self, axis: ScrollAxis) -> Option<&mut ScrollBar> {
+        match axis {
+            ScrollAxis::Horizontal => self.horizontal_scroll_bar.as_mut(),
+            ScrollAxis::Vertical => self.vertical_scroll_bar.as_mut(),
+        }
+        .map(|child| &mut child.bar)
+    }
+
+    /// Whether a real bar is mounted on `axis`.
+    pub fn has_scroll_bar(&self, axis: ScrollAxis) -> bool {
+        match axis {
+            ScrollAxis::Horizontal => self.horizontal_scroll_bar.is_some(),
+            ScrollAxis::Vertical => self.vertical_scroll_bar.is_some(),
+        }
+    }
+
+    /// Applies any value the mounted bars' `value_changed` published since the last drain.
+    ///
+    /// Returns whether the scroll position moved. Called automatically by `handle_event`, `tick`
+    /// and [`Self::set_scroll_position`]'s own writers; exposed because a host that writes the bar
+    /// directly may want the result immediately rather than at the next event.
+    pub fn sync_from_scroll_bars(&mut self) -> bool {
+        let mut moved = false;
+        if let Some(value) =
+            self.vertical_scroll_bar.as_ref().and_then(ScrollBarChild::take_pending)
+        {
+            let before = self.scroll_position.1;
+            self.set_scroll_position(self.scroll_position.0, value);
+            moved |= self.scroll_position.1 != before;
+        }
+        if let Some(value) =
+            self.horizontal_scroll_bar.as_ref().and_then(ScrollBarChild::take_pending)
+        {
+            let before = self.scroll_position.0;
+            self.set_scroll_position(value, self.scroll_position.1);
+            moved |= self.scroll_position.0 != before;
+        }
+        moved
+    }
+
+    /// Writes the current scroll position into the mounted bars.
+    fn write_scroll_bar_values(&mut self) {
+        let (x, y) = self.scroll_position;
+        if let Some(child) = self.horizontal_scroll_bar.as_mut() {
+            child.bar.set_value(x);
+            child.clear_pending();
+        }
+        if let Some(child) = self.vertical_scroll_bar.as_mut() {
+            child.bar.set_value(y);
+            child.clear_pending();
+        }
+    }
+
+    /// Places each mounted bar in its chrome band, publishes its range and visibility.
+    ///
+    /// The band comes from [`Self::assemble_chrome`], so the child's geometry is the same
+    /// rectangle the fallback painter used — the two paths cannot disagree about where the bar
+    /// is. The bar's value domain is the scroll offset in pixels: `maximum` is the largest
+    /// reachable offset, `page_step` is one viewport so PageUp/PageDown and a trough click move a
+    /// page, and `single_step` is the wheel's line distance.
+    fn layout_scroll_bars(&mut self) {
+        let chrome = self.assemble_chrome(self.base.geometry());
+        let (x, y) = self.scroll_position;
+        let max_x = self.max_scroll_x();
+        let max_y = self.max_scroll_y();
+        let page_x = self.viewport.width.max(1) as i32;
+        let page_y = self.viewport.height.max(1) as i32;
+        if let Some(child) = self.horizontal_scroll_bar.as_mut() {
+            match chrome.horizontal {
+                Some(band) => {
+                    child.bar.base_mut().show();
+                    child.bar.set_orientation(crate::core::Orientation::Horizontal);
+                    child.bar.set_geometry(band);
+                }
+                None => child.bar.base_mut().hide(),
+            }
+            child.bar.set_range(0, max_x);
+            child.bar.set_page_step(page_x);
+            child.bar.set_single_step(WHEEL_PIXELS_PER_LINE);
+            child.bar.set_value(x);
+            child.clear_pending();
+        }
+        if let Some(child) = self.vertical_scroll_bar.as_mut() {
+            match chrome.vertical {
+                Some(band) => {
+                    child.bar.base_mut().show();
+                    child.bar.set_orientation(crate::core::Orientation::Vertical);
+                    child.bar.set_geometry(band);
+                }
+                None => child.bar.base_mut().hide(),
+            }
+            child.bar.set_range(0, max_y);
+            child.bar.set_page_step(page_y);
+            child.bar.set_single_step(WHEEL_PIXELS_PER_LINE);
+            child.bar.set_value(y);
+            child.clear_pending();
+        }
+    }
+
+    /// The largest horizontal scroll offset the content allows.
+    fn max_scroll_x(&self) -> i32 {
+        (self.content_size.width as i32 - self.viewport.width as i32).max(0)
+    }
+
+    /// The largest vertical scroll offset the content allows.
+    fn max_scroll_y(&self) -> i32 {
+        (self.content_size.height as i32 - self.viewport.height as i32).max(0)
+    }
+
+    /// Routes a pointer event to the mounted bars.
+    ///
+    /// Returns whether a visible bar's band owns the pointer, in which case this control must
+    /// not also start its own thumb drag. Movement and release are always offered to the bars —
+    /// a drag that leaves the band still has to hear its release.
+    fn dispatch_to_scroll_bars(&mut self, event: &Event) -> bool {
+        let pos = match event {
+            Event::MousePress { pos, .. }
+            | Event::MouseMove { pos }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseDoubleClick { pos, .. } => *pos,
+            _ => return false,
+        };
+        let mut owns_pointer = false;
+        if let Some(child) = self.horizontal_scroll_bar.as_mut() {
+            if child.bar.base().is_visible() {
+                child.bar.handle_event(event);
+                owns_pointer |= child.bar.geometry().contains_point(pos);
+            }
+        }
+        if let Some(child) = self.vertical_scroll_bar.as_mut() {
+            if child.bar.base().is_visible() {
+                child.bar.handle_event(event);
+                owns_pointer |= child.bar.geometry().contains_point(pos);
+            }
+        }
+        owns_pointer
     }
     /// Sets widget.
     ///
@@ -482,6 +780,7 @@ impl ScrollArea {
     /// changes the tree must call it once for the change to be reflected by the next scroll.
     pub fn refresh_content_tree(&mut self) {
         self.content_descendants.clear();
+        self.content_tree_children = self.base.children().len();
         // The mini profile holds no widget registry to descend, and it also does not translate
         // children on scroll (`move_content_children` is compiled out), so the flat list stays
         // empty there rather than being half-populated.
@@ -579,7 +878,9 @@ impl ScrollArea {
     /// Sets viewport rectangle.
     pub fn set_viewport(&mut self, viewport: Rect) {
         self.viewport = viewport;
+        self.update_scroll_bars();
         self.set_scroll_position(self.scroll_position.0, self.scroll_position.1);
+        self.place_content();
     }
     /// Returns the current scroll position.
     pub fn scroll_position(&self) -> (i32, i32) {
@@ -596,7 +897,15 @@ impl ScrollArea {
         let max_y = (content_h - view_h).max(0);
         let clamped = (x.clamp(0, max_x), y.clamp(0, max_y));
         if self.scroll_position == clamped {
+            // A mounted bar can be waiting on a value that matches the position; drain it so a
+            // stale mailbox cannot re-apply an old offset on the next event.
+            self.write_scroll_bar_values();
             return;
+        }
+        // A host may have mounted rows directly after the last rebuild; refresh before moving so
+        // the cached id list is not stale.
+        if self.base.children().len() != self.content_tree_children {
+            self.refresh_content_tree();
         }
         #[cfg(not(alloc_frugal))]
         let (dx, dy) = (clamped.0 - self.scroll_position.0, clamped.1 - self.scroll_position.1);
@@ -614,6 +923,7 @@ impl ScrollArea {
         #[cfg(not(alloc_frugal))]
         self.move_content_children(dx, dy);
         self.place_content();
+        self.write_scroll_bar_values();
         self.base.request_redraw();
     }
 
@@ -638,6 +948,9 @@ impl ScrollArea {
     /// Sets the total content size (used for AsNeeded scroll bar calculation).
     pub fn set_content_size(&mut self, size: Size) {
         self.content_size = size;
+        // The extent decides both bar visibility and the bars' ranges, so the chrome is re-derived
+        // before the (possibly unchanged) offset is clamped again.
+        self.update_scroll_bars();
         self.set_scroll_position(self.scroll_position.0, self.scroll_position.1);
         // `set_scroll_position` is a no-op when the clamped offset did not change, so the
         // placement cannot rely on it: a fixed-size child's frame is the declared extent.
@@ -758,10 +1071,12 @@ impl ScrollArea {
             ScrollBarPolicy::AsNeeded => self.content_size.height > self.viewport.height,
         }
     }
-    /// Updates scroll bars — redraws so scroll bar visibility changes take effect.
-    /// Note: Full scroll bar widget creation would require access to a widget factory
-    /// and is not yet implemented. Visual scroll bar drawing is handled in `Draw`.
+    /// Re-derives the mounted bars: placement, range, visibility and value.
+    ///
+    /// The self-drawn chrome remains the default path; this is the only writer of a mounted
+    /// bar's geometry, so the child and the `assemble_chrome` bands are one measurement.
     fn update_scroll_bars(&mut self) {
+        self.layout_scroll_bars();
         self.base.request_redraw();
     }
 
@@ -1074,10 +1389,20 @@ impl Widget for ScrollArea {
         Some(self.assemble_chrome(self.base.geometry()).content)
     }
 
-    /// Advances fling momentum after a swipe.
+    /// Advances fling momentum after a swipe, and any animation a mounted bar owns.
     fn tick(&mut self, delta_ms: u32) -> bool {
+        // A mounted bar's idle fade or released-thumb glide is driven by the same frame clock.
+        // Its value_changed is drained afterwards, so bar inertia scrolls the content too.
+        let mut bar_animating = false;
+        if let Some(child) = self.horizontal_scroll_bar.as_mut() {
+            bar_animating |= child.bar.tick(delta_ms);
+        }
+        if let Some(child) = self.vertical_scroll_bar.as_mut() {
+            bar_animating |= child.bar.tick(delta_ms);
+        }
+        self.sync_from_scroll_bars();
         if !self.inertia || (self.fling.0 == 0.0 && self.fling.1 == 0.0) {
-            return false;
+            return bar_animating;
         }
         let step = delta_ms as f32 / 1000.0;
         let dx = (self.fling.0 * step).round() as i32;
@@ -1097,6 +1422,8 @@ impl Widget for ScrollArea {
 
     fn is_animating(&self) -> bool {
         self.inertia && (self.fling.0 != 0.0 || self.fling.1 != 0.0)
+            || self.vertical_scroll_bar.as_ref().is_some_and(|child| child.bar.is_animating())
+            || self.horizontal_scroll_bar.as_ref().is_some_and(|child| child.bar.is_animating())
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -1228,11 +1555,22 @@ impl EventHandler for ScrollArea {
         if !self.base.is_enabled() {
             return;
         }
+        // A mounted bar is a real control: it gets the pointer first, and its value_changed is
+        // drained before this control decides whether it also has a gesture to run.
+        let bar_owns_pointer = self.dispatch_to_scroll_bars(event);
+        self.sync_from_scroll_bars();
+        if bar_owns_pointer {
+            return;
+        }
         // Handle scroll events (mouse wheel + touch swipe)
         match event {
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(axis) = self.bar_at(*pos) {
-                    if self.thumb_rect(axis).is_some_and(|thumb| thumb.contains_point(*pos)) {
+                    // A mounted bar owns its axis' drag; starting the fallback's drag here would
+                    // move the thumb twice for one pointer delta.
+                    if !self.has_scroll_bar(axis)
+                        && self.thumb_rect(axis).is_some_and(|thumb| thumb.contains_point(*pos))
+                    {
                         let coordinate = match axis {
                             ScrollAxis::Horizontal => pos.x,
                             ScrollAxis::Vertical => pos.y,
@@ -1448,36 +1786,50 @@ impl Draw for ScrollArea {
         // It was already resolved above to clip the content; reading it once rather than assembling
         // it twice is what keeps the clip and the bars from being measured from two assemblies.
         if let Some(h_band) = chrome.horizontal {
-            // The groove and the thumb both come from the resolved style, so the bar follows an
-            // appearance switch. They used to be three fixed greys, so a scroll area kept a pale
-            // bar in the middle of a dark window — the theme-blind family the rest of this file's
-            // siblings had already fixed.
-            context.fill_rect(h_band, track_color);
-            context.draw_rect(h_band, border_color);
-            let (thumb_width, thumb_dx) = Self::thumb_metrics(
-                h_band.width,
-                self.content_size.width,
-                self.viewport.width.max(1),
-                self.scroll_position.0,
-            );
-            context.fill_rect(
-                Rect::new(h_band.x + thumb_dx, h_band.y, thumb_width, h_band.height),
-                thumb_color,
-            );
+            // A mounted bar paints the band through its own draw pass; the self-drawn groove
+            // below is the fallback that keeps an area without a child rendering as it always did.
+            if let Some(child) = self.horizontal_scroll_bar.as_mut() {
+                if child.bar.base().is_visible() {
+                    child.bar.draw(context);
+                }
+            } else {
+                // The groove and the thumb both come from the resolved style, so the bar follows an
+                // appearance switch. They used to be three fixed greys, so a scroll area kept a pale
+                // bar in the middle of a dark window — the theme-blind family the rest of this file's
+                // siblings had already fixed.
+                context.fill_rect(h_band, track_color);
+                context.draw_rect(h_band, border_color);
+                let (thumb_width, thumb_dx) = Self::thumb_metrics(
+                    h_band.width,
+                    self.content_size.width,
+                    self.viewport.width.max(1),
+                    self.scroll_position.0,
+                );
+                context.fill_rect(
+                    Rect::new(h_band.x + thumb_dx, h_band.y, thumb_width, h_band.height),
+                    thumb_color,
+                );
+            }
         }
         if let Some(v_band) = chrome.vertical {
-            context.fill_rect(v_band, track_color);
-            context.draw_rect(v_band, border_color);
-            let (thumb_height, thumb_dy) = Self::thumb_metrics(
-                v_band.height,
-                self.content_size.height,
-                self.viewport.height.max(1),
-                self.scroll_position.1,
-            );
-            context.fill_rect(
-                Rect::new(v_band.x, v_band.y + thumb_dy, v_band.width, thumb_height),
-                thumb_color,
-            );
+            if let Some(child) = self.vertical_scroll_bar.as_mut() {
+                if child.bar.base().is_visible() {
+                    child.bar.draw(context);
+                }
+            } else {
+                context.fill_rect(v_band, track_color);
+                context.draw_rect(v_band, border_color);
+                let (thumb_height, thumb_dy) = Self::thumb_metrics(
+                    v_band.height,
+                    self.content_size.height,
+                    self.viewport.height.max(1),
+                    self.scroll_position.1,
+                );
+                context.fill_rect(
+                    Rect::new(v_band.x, v_band.y + thumb_dy, v_band.width, thumb_height),
+                    thumb_color,
+                );
+            }
         }
         // The corner between the two bars. An explicit corner widget owns this square; otherwise
         // the track-coloured grip is painted in it.
@@ -2141,5 +2493,100 @@ mod tests {
         assert!(sa.tick(16));
         assert!(sa.scroll_position().1 > scrolled, "the fling keeps scrolling");
         assert!(!sa.tick(10_000), "a long frame decays the velocity to rest");
+    }
+
+    // ── COMP-02: a real `ScrollBar` child ──────────────────────────────────
+
+    /// A mounted bar is placed by the same chrome derivation the self-drawn path used.
+    #[test]
+    fn a_mounted_bar_uses_the_derived_chrome_band_as_its_geometry() {
+        let mut area = ScrollArea::new(Rect::new(10, 20, 200, 100));
+        area.set_content_size(Size::new(600, 600));
+        area.set_vertical_scroll_bar(Some(ScrollBar::new(Rect::new(0, 0, 0, 0))));
+        area.set_horizontal_scroll_bar(Some(ScrollBar::new(Rect::new(0, 0, 0, 0))));
+
+        let chrome = area.assemble_chrome(area.geometry());
+        assert_eq!(
+            area.scroll_bar(ScrollAxis::Vertical).unwrap().geometry(),
+            chrome.vertical.unwrap()
+        );
+        assert_eq!(
+            area.scroll_bar(ScrollAxis::Horizontal).unwrap().geometry(),
+            chrome.horizontal.unwrap()
+        );
+        // The band is the *derived* strip, not the control's whole rectangle.
+        assert_ne!(area.scroll_bar(ScrollAxis::Vertical).unwrap().geometry(), area.geometry());
+    }
+
+    /// Moving the scroll position writes the bar, and moving the bar scrolls the content.
+    #[test]
+    fn a_mounted_bar_and_the_scroll_position_sync_both_ways() {
+        let mut area = ScrollArea::new(Rect::new(0, 0, 200, 100));
+        area.set_content_size(Size::new(600, 600));
+        area.set_vertical_scroll_bar(Some(ScrollBar::new(Rect::new(0, 0, 0, 0))));
+
+        // Area -> bar: the offset is the bar's value domain (pixels).
+        area.set_scroll_position(0, 120);
+        assert_eq!(area.scroll_bar(ScrollAxis::Vertical).unwrap().value(), 120);
+        assert_eq!(area.scroll_bar(ScrollAxis::Vertical).unwrap().maximum(), 500);
+        assert_eq!(area.scroll_bar(ScrollAxis::Vertical).unwrap().page_step(), 100);
+
+        // Bar -> area: `value_changed` lands in the mailbox and the drain applies it.
+        area.scroll_bar_mut(ScrollAxis::Vertical).unwrap().set_value(300);
+        assert!(area.sync_from_scroll_bars());
+        assert_eq!(area.scroll_position().1, 300);
+
+        // The horizontal axis is independent.
+        area.set_horizontal_scroll_bar(Some(ScrollBar::new(Rect::new(0, 0, 0, 0))));
+        area.scroll_bar_mut(ScrollAxis::Horizontal).unwrap().set_value(40);
+        assert!(area.sync_from_scroll_bars());
+        assert_eq!(area.scroll_position(), (40, 300));
+        assert_eq!(area.scroll_bar(ScrollAxis::Vertical).unwrap().value(), 300);
+    }
+
+    /// The policy decides whether a mounted bar is visible, and AlwaysOn wins over fitting content.
+    #[test]
+    fn the_policy_governs_the_mounted_bars_visibility() {
+        let mut area = ScrollArea::new(Rect::new(0, 0, 200, 100));
+        area.set_vertical_scroll_bar(Some(ScrollBar::new(Rect::new(0, 0, 0, 0))));
+
+        // AsNeeded with content that fits: no bar, no band.
+        area.set_content_size(Size::new(100, 50));
+        assert!(!area.vertical_scroll_bar_visible());
+        assert!(!area.scroll_bar(ScrollAxis::Vertical).unwrap().base().is_visible());
+        assert_eq!(area.assemble_chrome(area.geometry()).vertical, None);
+
+        // AsNeeded once it overflows: shown and placed.
+        area.set_content_size(Size::new(100, 600));
+        assert!(area.vertical_scroll_bar_visible());
+        assert!(area.scroll_bar(ScrollAxis::Vertical).unwrap().base().is_visible());
+        assert!(area.assemble_chrome(area.geometry()).vertical.is_some());
+
+        // AlwaysOn shows it even when the content fits.
+        area.set_content_size(Size::new(100, 50));
+        area.set_scroll_bar_policy(ScrollAxis::Vertical, ScrollBarPolicy::AlwaysOn);
+        assert!(area.scroll_bar(ScrollAxis::Vertical).unwrap().base().is_visible());
+
+        // AlwaysOff hides it even when the content overflows.
+        area.set_content_size(Size::new(100, 600));
+        area.set_scroll_bar_policy(ScrollAxis::Vertical, ScrollBarPolicy::AlwaysOff);
+        assert!(!area.scroll_bar(ScrollAxis::Vertical).unwrap().base().is_visible());
+        assert_eq!(area.assemble_chrome(area.geometry()).vertical, None);
+        assert_eq!(area.scroll_bar_policy(ScrollAxis::Vertical), ScrollBarPolicy::AlwaysOff);
+    }
+
+    /// The self-drawn path stays the default: no mounted bar means no child and unchanged chrome.
+    #[test]
+    fn the_self_drawn_path_remains_the_default() {
+        let mut area = ScrollArea::new(Rect::new(0, 0, 200, 100));
+        area.set_content_size(Size::new(600, 600));
+        assert!(!area.has_scroll_bar(ScrollAxis::Vertical));
+        assert!(!area.has_scroll_bar(ScrollAxis::Horizontal));
+        let chrome = area.assemble_chrome(area.geometry());
+        assert!(chrome.vertical.is_some() && chrome.horizontal.is_some());
+        // And the offset still reaches the bar domain when one is mounted later.
+        area.set_scroll_position(0, 50);
+        area.set_vertical_scroll_bar(Some(ScrollBar::new(Rect::new(0, 0, 0, 0))));
+        assert_eq!(area.scroll_bar(ScrollAxis::Vertical).unwrap().value(), 50);
     }
 }

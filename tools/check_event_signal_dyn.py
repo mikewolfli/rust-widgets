@@ -486,18 +486,25 @@ ALIAS_FIELD_RE = re.compile(r'(\w+)\s*:\s*"([^"]*)"')
 
 
 def read_census() -> dict[str, list[str]]:
-    """control -> published event names, from the same file the payload table is derived from."""
+    """control -> published event names, from the same file the payload table is derived from.
+
+    A census row may end with `[alias_of=<canonical>]`; the annotation describes the control's
+    identity, not a published name, so it is removed before the event list is split.
+    """
     published: dict[str, list[str]] = {}
     for line in CENSUS.read_text().splitlines():
         if not line or line.startswith("#"):
             continue
+        annotation = line.find("[")
+        if annotation != -1:
+            line = line[:annotation]
         control, _, rest = line.partition(":")
         published[control.strip()] = [name.strip() for name in rest.split(",") if name.strip()]
     return published
 
 
 def read_alias_registry() -> dict[str, dict[str, str]]:
-    """alias -> {canonical, implementation, file}, from `ALIAS_OF` in `capability.rs`.
+    """alias -> {alias_of, implementation, file}, from `ALIAS_OF` in `capability.rs`.
 
     The block is read up to its closing `];` first, so an `AliasRow` quoted in a doc comment
     elsewhere in the file cannot be mistaken for a row.
@@ -517,7 +524,7 @@ def read_alias_registry() -> dict[str, dict[str, str]]:
     rows: dict[str, dict[str, str]] = {}
     for body in ALIAS_ROW_RE.findall(source[start:end]):
         fields = dict(ALIAS_FIELD_RE.findall(body))
-        missing = {"alias", "canonical", "implementation", "file"} - fields.keys()
+        missing = {"alias", "alias_of", "implementation", "file"} - fields.keys()
         if missing:
             raise ValueError(
                 f"{ALIAS_SOURCE.name}: an AliasRow is missing {', '.join(sorted(missing))}"
@@ -627,7 +634,7 @@ def main() -> int:
     # no arm set to compare against, and an alias missing from `CONVERTED` would land in direction
     # 2 below — reported as a control nobody decided about, which is the exact gap W-08 recorded.
     for alias, row in sorted(aliases.items()):
-        canonical = row["canonical"]
+        canonical = row["alias_of"]
         if canonical not in CONVERTED:
             failures.append(
                 f"{alias}: the alias registry names `{canonical}` as its control, which is not "
@@ -754,7 +761,7 @@ def main() -> int:
         print(f"  {control}: {len(published.get(control, []))} published names")
     print(f"alias identities checked: {len(aliases)}")
     for alias in sorted(aliases):
-        print(f"  {alias} -> {aliases[alias]['canonical']} ({aliases[alias]['implementation']})")
+        print(f"  {alias} -> {aliases[alias]['alias_of']} ({aliases[alias]['implementation']})")
 
     if failures:
         print()

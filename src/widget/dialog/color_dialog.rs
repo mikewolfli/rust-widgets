@@ -32,6 +32,10 @@ pub enum ColorDialogOption {
     ShowPresetPalette,
     /// Paint a hue rail beside the saturation/value plane.
     ShowHueRail,
+    /// Offer a screen-sampling button. The dialog itself never captures the screen; a host with
+    /// that capability starts a pick through [`ColorDialog::pick_from_screen`] and reports the
+    /// sampled colour through [`ColorDialog::sample_screen_color`].
+    ShowScreenPicker,
 }
 
 /// The number of strips the two soft ramps are quantised into.
@@ -171,6 +175,10 @@ pub struct ColorDialog {
     show_presets: bool,
     /// Whether the hue rail is painted.
     show_hue_rail: bool,
+    /// Whether the screen-sampling button is painted and its press starts a pick.
+    show_screen_picker: bool,
+    /// Whether a host-side screen sampling session is waiting for a colour.
+    picking_from_screen: bool,
     /// The hue the picker plane is drawn at, in degrees.
     hue: f32,
     /// The caller's custom colors, drawn after the built-in presets.
@@ -198,6 +206,15 @@ pub struct ColorDialog {
     /// Emitted when Tab moves the focus ring; the payload is this dialog's own object id (the
     /// dialog is one `ObjectId`; its self-drawn buttons are not separate objects).
     pub focus_changed: Signal1<ObjectId>,
+    /// Emitted by [`ColorDialog::pick_from_screen`] when a sampling session starts.
+    ///
+    /// The host answers by installing its sampler and, when it has a colour, calling
+    /// [`ColorDialog::sample_screen_color`]; the dialog never queries the OS for pixels itself.
+    pub screen_pick_started: GenericSignal,
+    /// Emitted by [`ColorDialog::cancel_screen_pick`] (and by Escape while a pick is active).
+    pub screen_pick_canceled: GenericSignal,
+    /// Emitted with the sampled colour after the host reports it.
+    pub screen_color_sampled: Signal1<Color>,
     /// The action button the keyboard focus ring is on.
     focus: Option<usize>,
     /// Reused buffer for the labels this dialog translates while drawing.
@@ -302,6 +319,8 @@ impl ColorDialog {
             show_hex_input: false,
             show_presets: false,
             show_hue_rail: false,
+            show_screen_picker: false,
+            picking_from_screen: false,
             hue: 0.0,
             custom_colors: Vec::new(),
             hex_input: String::new(),
@@ -312,6 +331,9 @@ impl ColorDialog {
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
             focus_changed: Signal1::new(),
+            screen_pick_started: GenericSignal::new(),
+            screen_pick_canceled: GenericSignal::new(),
+            screen_color_sampled: Signal1::new(),
             focus: None,
             draw_text_buf: String::new(),
         }
@@ -400,6 +422,7 @@ impl ColorDialog {
             ColorDialogOption::ShowHexInput => self.show_hex_input,
             ColorDialogOption::ShowPresetPalette => self.show_presets,
             ColorDialogOption::ShowHueRail => self.show_hue_rail,
+            ColorDialogOption::ShowScreenPicker => self.show_screen_picker,
         }
     }
 
@@ -434,8 +457,102 @@ impl ColorDialog {
                 }
                 self.show_hue_rail = enabled;
             }
+            ColorDialogOption::ShowScreenPicker => {
+                if self.show_screen_picker == enabled {
+                    return;
+                }
+                self.show_screen_picker = enabled;
+                if !enabled && self.picking_from_screen {
+                    // Turning the feature off ends a session that its button no longer offers,
+                    // and says so rather than leaving the host's sampler installed.
+                    self.picking_from_screen = false;
+                    self.screen_pick_canceled.emit();
+                }
+            }
         }
         self.base.request_redraw();
+    }
+
+    /// Whether the screen-sampling button is offered.
+    pub fn show_screen_picker(&self) -> bool {
+        self.show_screen_picker
+    }
+
+    /// Enables or disables the screen-sampling button.
+    pub fn set_show_screen_picker(&mut self, enabled: bool) {
+        self.set_option(ColorDialogOption::ShowScreenPicker, enabled);
+    }
+
+    /// Whether a screen sampling session is waiting for the host's colour.
+    pub fn is_picking_from_screen(&self) -> bool {
+        self.picking_from_screen
+    }
+
+    /// Starts a screen sampling session, returning whether one started.
+    ///
+    /// This is the whole of the dialog's side of screen picking: it announces the intent and
+    /// waits. Sampling needs a display surface the dialog does not own, so the pixel is reported
+    /// back through [`Self::sample_screen_color`] by the host that has it — there is no platform
+    /// branch here and nothing is read from the screen. Returns `false` when the option is off
+    /// (the button is not offered, so an invisible entry point must not start a session) or when
+    /// a session is already active.
+    pub fn pick_from_screen(&mut self) -> bool {
+        if !self.show_screen_picker || self.picking_from_screen {
+            return false;
+        }
+        self.picking_from_screen = true;
+        self.screen_pick_started.emit();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Ends an active sampling session without changing the colour, returning whether one was
+    /// active.
+    pub fn cancel_screen_pick(&mut self) -> bool {
+        if !self.picking_from_screen {
+            return false;
+        }
+        self.picking_from_screen = false;
+        self.screen_pick_canceled.emit();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Accepts a colour sampled by the host, returning whether a session was waiting for it.
+    ///
+    /// The colour takes the same path as a preset or a picker click: it becomes the current
+    /// colour, emits `current_color_changed`, and then `screen_color_sampled`. A sample arriving
+    /// with no session active is refused — accepting it would silently overwrite the reader's
+    /// colour with a value they never asked to sample.
+    pub fn sample_screen_color(&mut self, color: Color) -> bool {
+        if !self.picking_from_screen {
+            return false;
+        }
+        self.picking_from_screen = false;
+        let alpha = if self.options_alpha { color.a } else { 255 };
+        let applied = Color::rgba(color.r, color.g, color.b, alpha);
+        self.set_current_color(applied);
+        // The signal carries the colour the dialog adopted, not the raw sample: with alpha disabled
+        // those differ, and a subscriber that repainted from the raw value would show an alpha the
+        // dialog does not offer.
+        self.screen_color_sampled.emit(applied);
+        self.base.request_redraw();
+        true
+    }
+
+    /// The painted box of the screen-sampling button, when the option is on.
+    ///
+    /// Draw and the press path both read it, so the visible button and the click target are the
+    /// same rectangle.
+    pub fn screen_picker_rect(&self) -> Option<Rect> {
+        if !self.show_screen_picker {
+            return None;
+        }
+        let rect = self.frame_rect();
+        if rect.width < 80 {
+            return None;
+        }
+        Some(Rect::new(rect.x + rect.width as i32 - 46, rect.y + 5, 40, 20))
     }
 
     /// The built-in palette, in display order.
@@ -776,6 +893,17 @@ impl Widget for ColorDialog {
             }
             "accepted" => Some(EventSignalRef::unit("accepted", &self.accepted)),
             "rejected" => Some(EventSignalRef::unit("rejected", &self.rejected)),
+            "screen_pick_started" => {
+                Some(EventSignalRef::unit("screen_pick_started", &self.screen_pick_started))
+            }
+            "screen_pick_canceled" => {
+                Some(EventSignalRef::unit("screen_pick_canceled", &self.screen_pick_canceled))
+            }
+            "screen_color_sampled" => Some(EventSignalRef::mapped(
+                "screen_color_sampled",
+                &self.screen_color_sampled,
+                |v| CapabilityValue::String(v.to_hex_rgba()),
+            )),
             _ => None,
         }
     }
@@ -812,6 +940,7 @@ impl WidgetProperties for ColorDialog {
             "show_hex_input" => Ok(CapabilityValue::Bool(self.show_hex_input)),
             "show_presets" => Ok(CapabilityValue::Bool(self.show_presets)),
             "show_hue_rail" => Ok(CapabilityValue::Bool(self.show_hue_rail)),
+            "show_screen_picker" => Ok(CapabilityValue::Bool(self.show_screen_picker)),
             "custom_color_count" => Ok(CapabilityValue::UInt(self.custom_colors.len() as u64)),
             _ => base_property_get(self, name),
         }
@@ -858,6 +987,10 @@ impl WidgetProperties for ColorDialog {
                 self.set_option(ColorDialogOption::ShowHueRail, expect_bool(value)?);
                 Ok(())
             }
+            "show_screen_picker" => {
+                self.set_option(ColorDialogOption::ShowScreenPicker, expect_bool(value)?);
+                Ok(())
+            }
             "custom_color_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             // The edited colour is not writable here: it changes through the picker
             // area and through `set_current_color`, both of which emit
@@ -878,6 +1011,7 @@ impl WidgetProperties for ColorDialog {
             "show_hex_input",
             "show_presets",
             "show_hue_rail",
+            "show_screen_picker",
             "custom_color_count",
             BASE_PROPERTY_NAMES
         ]
@@ -906,6 +1040,12 @@ impl EventHandler for ColorDialog {
 
         match event {
             Event::MousePress { pos, button: 1, .. } => {
+                // The screen-sampling button sits in the title band and shares it with nothing,
+                // but it is checked first so a press on it never reaches the picker plane.
+                if self.screen_picker_rect().is_some_and(|rect| Self::point_in_rect(*pos, rect)) {
+                    self.pick_from_screen();
+                    return;
+                }
                 // The buttons share the bottom band with nothing else, but the check comes
                 // first anyway: a press on a button must never fall through to the picker.
                 if !self.no_buttons {
@@ -967,6 +1107,12 @@ impl EventHandler for ColorDialog {
                 }
             }
             Event::KeyPress { key, .. } => {
+                if self.picking_from_screen && *key == key_codes::ESCAPE {
+                    // Escape ends the sampling session instead of rejecting the dialog: the reader
+                    // asked to abandon the pick, not the whole colour choice.
+                    self.cancel_screen_pick();
+                    return;
+                }
                 if *key == key_codes::TAB {
                     // Tab leaves a focused hex field before it moves the ring, so one key does
                     // not both commit the field and skip it.
@@ -1101,11 +1247,14 @@ impl Draw for ColorDialog {
         let title_line = context.text_line(title_bar_band, title_font);
         self.draw_text_buf.clear();
         crate::tr_into!("color_dialog.title", &mut self.draw_text_buf);
+        // The screen-picker button shares the title band, so its width is subtracted from the
+        // title's fitted line rather than letting a long title run underneath it.
+        let title_reserve = if self.show_screen_picker { 48 } else { 0 };
         context.draw_text_fitted_cow(
             Rect::new(
                 rect.x + 8,
                 title_line.y,
-                rect.width.saturating_sub(16),
+                rect.width.saturating_sub(16 + title_reserve),
                 title_line.height.max(1),
             ),
             &self.draw_text_buf,
@@ -1113,6 +1262,25 @@ impl Draw for ColorDialog {
             ink,
             HorizontalAlignment::Left,
         );
+        // The screen-sampling entry point lives in the title band so it is reachable whether or
+        // not the dialog is tall enough for a preview row. Its rect is the one the press path
+        // reads, so the visible button and the click target cannot differ.
+        if let Some(button) = self.screen_picker_rect() {
+            let fill = if self.picking_from_screen {
+                accent.blend(&surface, 0.45)
+            } else {
+                title_bar.blend(&ink, 0.10)
+            };
+            context.fill_rounded_rect(button, 4, fill);
+            context.draw_rounded_rect_stroke(button, 4, border, 1);
+            context.draw_text_fitted_cow(
+                button,
+                "PICK",
+                title_font,
+                if self.picking_from_screen { accent_ink } else { ink },
+                HorizontalAlignment::Center,
+            );
+        }
         // Color picker area (simplified)
         //
         // Both fills are left as literals: the swatch is the colour being edited and the
@@ -1283,6 +1451,80 @@ mod tests {
         let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
         dialog.handle_event(&Event::mouse_press(60, 80, 1));
         assert_ne!(dialog.current_color(), Color::rgb(255, 255, 255));
+    }
+
+    /// The screen picker only starts when its option is on, and the host's sample is the only
+    /// way a colour arrives.
+    #[test]
+    fn screen_picker_waits_for_a_host_sample() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
+        assert!(!dialog.show_screen_picker());
+        assert!(!dialog.pick_from_screen(), "the hidden entry point must not start a session");
+        assert!(!dialog.sample_screen_color(Color::rgb(1, 2, 3)));
+
+        let started = Arc::new(Mutex::new(0usize));
+        let canceled = Arc::new(Mutex::new(0usize));
+        let sampled = Arc::new(Mutex::new(Vec::<Color>::new()));
+        let s = Arc::clone(&started);
+        dialog.screen_pick_started.connect(move || {
+            if let Ok(mut n) = s.lock() {
+                *n += 1;
+            }
+        });
+        let c = Arc::clone(&canceled);
+        dialog.screen_pick_canceled.connect(move || {
+            if let Ok(mut n) = c.lock() {
+                *n += 1;
+            }
+        });
+        let p = Arc::clone(&sampled);
+        dialog.screen_color_sampled.connect(move |color| {
+            if let Ok(mut guard) = p.lock() {
+                guard.push(*color);
+            }
+        });
+
+        dialog.set_option(ColorDialogOption::ShowScreenPicker, true);
+        assert!(dialog.pick_from_screen());
+        assert!(!dialog.pick_from_screen(), "a second pick is not a second session");
+        assert!(dialog.is_picking_from_screen());
+        assert_eq!(*started.lock().expect("started lock"), 1);
+
+        assert!(dialog.sample_screen_color(Color::rgb(12, 34, 56)));
+        assert!(!dialog.is_picking_from_screen());
+        assert_eq!(dialog.current_color(), Color::rgb(12, 34, 56));
+        assert_eq!(*sampled.lock().expect("sampled lock"), vec![Color::rgb(12, 34, 56)]);
+        assert_eq!(*canceled.lock().expect("canceled lock"), 0);
+    }
+
+    #[test]
+    fn escape_cancels_a_screen_pick_instead_of_rejecting() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
+        dialog.set_option(ColorDialogOption::ShowScreenPicker, true);
+        dialog.show();
+        assert!(dialog.pick_from_screen());
+        let canceled = Arc::new(Mutex::new(0usize));
+        let c = Arc::clone(&canceled);
+        dialog.screen_pick_canceled.connect(move || {
+            if let Ok(mut n) = c.lock() {
+                *n += 1;
+            }
+        });
+
+        dialog.handle_event(&Event::key_press(crate::event::key_codes::ESCAPE, 0));
+        assert_eq!(*canceled.lock().expect("canceled lock"), 1);
+        assert!(!dialog.is_picking_from_screen());
+        assert!(dialog.is_visible(), "cancelling the pick must not close the dialog");
+    }
+
+    #[test]
+    fn the_screen_picker_button_is_the_click_target() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
+        dialog.set_option(ColorDialogOption::ShowScreenPicker, true);
+        let button = dialog.screen_picker_rect().expect("the button is offered");
+        dialog.handle_event(&Event::mouse_press(button.x + 2, button.y + 2, 1));
+        assert!(dialog.is_picking_from_screen());
+        assert_eq!(dialog.get("show_screen_picker"), Ok(CapabilityValue::Bool(true)));
     }
 
     #[test]

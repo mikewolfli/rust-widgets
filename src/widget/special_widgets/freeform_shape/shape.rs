@@ -4,11 +4,12 @@
 //! [`FreeformShapeWidget`] — the control that draws a [`ShapePath`](super::ShapePath).
 
 use super::types::{BubbleTailDirection, PathSegment, ShapePath};
-use crate::core::{Color, Point, Rect};
+use crate::core::{Color, ObjectId, Point, Rect};
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
-use crate::widget::capability::coercion::{expect_string, expect_u32};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -1451,5 +1452,659 @@ impl crate::event::EventHandler for FreeformShapeWidget {
             }
             _ => { /* Other events are not relevant */ }
         }
+    }
+}
+
+/// One shape hosted by a [`ShapeCanvas`].
+///
+/// The canvas owns the shape control rather than a copy of its path and geometry: a caller that
+/// already built a [`FreeformShapeWidget`] keeps its colours, stroke and undo history, and the
+/// canvas paints and hit-tests the very object that was added. There is no second representation
+/// to keep in step.
+struct CanvasShape {
+    id: ObjectId,
+    widget: FreeformShapeWidget,
+}
+
+/// A board that hosts several [`FreeformShapeWidget`]s with selection and z-order.
+///
+/// # Why the canvas is a separate control
+///
+/// `FreeformShapeWidget` is one shape: it hit-tests a single outline and reports that shape's
+/// clicks. A drawing surface needs the level above it — add/remove, a selection set, stacking
+/// order and a rectangular selection — and none of those describe one shape. Putting them on the
+/// shape would have made every shape carry a list of its siblings.
+///
+/// # Coordinates
+///
+/// Shapes keep their own geometry in the canvas's coordinate space, exactly as they were added.
+/// The canvas does not offset them into its own rectangle, so a shape added at `(20, 30)` is
+/// painted at `(20, 30)` whether it was added before or after the canvas moved.
+pub struct ShapeCanvas {
+    base: BaseWidget,
+    /// Hosted shapes in paint order: the last entry is painted on top and is hit first.
+    shapes: Vec<CanvasShape>,
+    /// Selected shape ids, in selection order.
+    selection: Vec<ObjectId>,
+    /// Whether the pointer may select, drag and marquee-select.
+    editable: bool,
+    /// Whether drags snap to a grid.
+    snap_to_grid: bool,
+    /// Grid pitch in pixels; zero disables snapping even when `snap_to_grid` is set.
+    grid_step: u32,
+    /// Id the next added shape receives.
+    next_id: ObjectId,
+    /// The drag in progress: the pointer at the press and each selected shape's geometry then.
+    drag: Option<(Point, Vec<(ObjectId, Rect)>)>,
+    /// The two corners of the rectangle being dragged out, while a marquee is in progress.
+    marquee: Option<(Point, Point)>,
+    /// Emitted with the new id after a shape is added.
+    pub shape_added: Signal1<ObjectId>,
+    /// Emitted with the removed id after a shape is removed.
+    pub shape_removed: Signal1<ObjectId>,
+    /// Emitted with the new selection whenever it changes.
+    pub shape_selected: Signal1<Vec<ObjectId>>,
+    /// Emitted with a shape's id after its geometry or stacking order changes.
+    pub shape_modified: Signal1<ObjectId>,
+}
+
+impl ShapeCanvas {
+    /// Creates an empty, non-editable canvas.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Canvas, geometry, "ShapeCanvas"),
+            shapes: Vec::new(),
+            selection: Vec::new(),
+            editable: false,
+            snap_to_grid: false,
+            grid_step: 8,
+            next_id: 1,
+            drag: None,
+            marquee: None,
+            shape_added: Signal1::new(),
+            shape_removed: Signal1::new(),
+            shape_selected: Signal1::new(),
+            shape_modified: Signal1::new(),
+        }
+    }
+
+    /// The hosted shape ids in paint order, bottom first.
+    pub fn shapes(&self) -> Vec<ObjectId> {
+        self.shapes.iter().map(|shape| shape.id).collect()
+    }
+
+    /// How many shapes the canvas hosts.
+    pub fn shape_count(&self) -> usize {
+        self.shapes.len()
+    }
+
+    /// The selected ids, in selection order.
+    pub fn selection(&self) -> &[ObjectId] {
+        &self.selection
+    }
+
+    /// The shape with `id`, for reading its path, colours or geometry.
+    pub fn shape(&self, id: ObjectId) -> Option<&FreeformShapeWidget> {
+        self.shapes.iter().find(|shape| shape.id == id).map(|shape| &shape.widget)
+    }
+
+    /// The shape with `id`, for a host that wants to change its path or colours in place.
+    pub fn shape_mut(&mut self, id: ObjectId) -> Option<&mut FreeformShapeWidget> {
+        self.shapes.iter_mut().find(|shape| shape.id == id).map(|shape| &mut shape.widget)
+    }
+
+    /// Adds `shape` on top and returns the id that names it from now on.
+    ///
+    /// The returned id is the only handle the caller gets, so it is also emitted through
+    /// `shape_added`; a host storing shapes by id can subscribe once and never infer ids from
+    /// insertion order.
+    pub fn add_shape(&mut self, shape: FreeformShapeWidget) -> ObjectId {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        self.shapes.push(CanvasShape { id, widget: shape });
+        self.shape_added.emit(id);
+        self.base.request_redraw();
+        id
+    }
+
+    /// Removes the shape with `id`, dropping it from the selection too.
+    pub fn remove_shape(&mut self, id: ObjectId) -> bool {
+        let Some(position) = self.shapes.iter().position(|shape| shape.id == id) else {
+            return false;
+        };
+        self.shapes.remove(position);
+        if self.selection.contains(&id) {
+            self.selection.retain(|selected| *selected != id);
+            self.shape_selected.emit(self.selection.clone());
+        }
+        self.shape_removed.emit(id);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Moves the shape one step up the stacking order, returning whether it moved.
+    pub fn raise(&mut self, id: ObjectId) -> bool {
+        let Some(position) = self.shapes.iter().position(|shape| shape.id == id) else {
+            return false;
+        };
+        if position + 1 >= self.shapes.len() {
+            return false;
+        }
+        self.shapes.swap(position, position + 1);
+        self.shape_modified.emit(id);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Moves the shape one step down the stacking order, returning whether it moved.
+    pub fn lower(&mut self, id: ObjectId) -> bool {
+        let Some(position) = self.shapes.iter().position(|shape| shape.id == id) else {
+            return false;
+        };
+        if position == 0 {
+            return false;
+        }
+        self.shapes.swap(position, position - 1);
+        self.shape_modified.emit(id);
+        self.base.request_redraw();
+        true
+    }
+
+    /// The topmost shape whose outline contains `point`.
+    ///
+    /// The test is the shape's own [`FreeformShapeWidget::contains`], so a point in a star's
+    /// transparent corner falls through to the shape behind it — the same rule the shape itself
+    /// uses, not a bounding-box approximation.
+    pub fn hit_test(&self, point: Point) -> Option<ObjectId> {
+        self.shapes.iter().rev().find(|shape| shape.widget.contains(point)).map(|shape| shape.id)
+    }
+
+    /// Selects every shape whose box intersects `rect`, replacing the selection.
+    pub fn select_in_rect(&mut self, rect: Rect) -> Vec<ObjectId> {
+        let ids: Vec<ObjectId> = self
+            .shapes
+            .iter()
+            .filter(|shape| shape.widget.base().geometry().intersects(&rect))
+            .map(|shape| shape.id)
+            .collect();
+        self.set_selection(ids.clone());
+        ids
+    }
+
+    /// Replaces the selection.
+    ///
+    /// Ids that name no hosted shape are dropped rather than stored, so a selection can never
+    /// include a shape the canvas cannot paint.
+    pub fn set_selection(&mut self, ids: Vec<ObjectId>) {
+        let mut next: Vec<ObjectId> = Vec::with_capacity(ids.len());
+        for id in ids {
+            if self.shapes.iter().any(|shape| shape.id == id) && !next.contains(&id) {
+                next.push(id);
+            }
+        }
+        if self.selection == next {
+            return;
+        }
+        self.selection = next;
+        self.shape_selected.emit(self.selection.clone());
+        self.base.request_redraw();
+    }
+
+    /// Empties the selection.
+    pub fn clear_selection(&mut self) {
+        self.set_selection(Vec::new());
+    }
+
+    /// Whether the pointer may select and drag shapes.
+    pub fn is_editable(&self) -> bool {
+        self.editable
+    }
+
+    /// Enables or disables pointer interaction.
+    pub fn set_editable(&mut self, editable: bool) {
+        if self.editable == editable {
+            return;
+        }
+        self.editable = editable;
+        self.drag = None;
+        self.marquee = None;
+        self.base.request_redraw();
+    }
+
+    /// Whether drags snap to the grid.
+    pub fn snap_to_grid(&self) -> bool {
+        self.snap_to_grid
+    }
+
+    /// Enables or disables grid snapping.
+    pub fn set_snap_to_grid(&mut self, snap: bool) {
+        if self.snap_to_grid == snap {
+            return;
+        }
+        self.snap_to_grid = snap;
+        self.base.request_redraw();
+    }
+
+    /// The grid pitch in pixels.
+    pub fn grid_step(&self) -> u32 {
+        self.grid_step
+    }
+
+    /// Sets the grid pitch; zero disables snapping while leaving the flag as the caller set it.
+    pub fn set_grid_step(&mut self, step: u32) {
+        if self.grid_step == step {
+            return;
+        }
+        self.grid_step = step;
+        self.base.request_redraw();
+    }
+
+    /// Snaps one coordinate to the grid when snapping is active.
+    fn snap(&self, value: i32) -> i32 {
+        if !self.snap_to_grid || self.grid_step == 0 {
+            return value;
+        }
+        let step = self.grid_step as i32;
+        (value as f32 / step as f32).round() as i32 * step
+    }
+
+    /// Sets a hosted shape's geometry without recording it in the shape's own undo history.
+    ///
+    /// A canvas drag is one canvas-level gesture; pushing every intermediate frame into the
+    /// shape's history would make one drag look like a hundred undo steps to a host that shares
+    /// the shape's stack.
+    fn place(&mut self, id: ObjectId, geometry: Rect) {
+        if let Some(shape) = self.shapes.iter_mut().find(|shape| shape.id == id) {
+            shape.widget.base_mut().set_geometry(geometry);
+        }
+    }
+}
+
+impl Widget for ShapeCanvas {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(320, 240)
+    }
+    impl_widget_property_hooks!();
+    /// Resolves the canvas-level event names; see `DiffViewer`'s note for why the arms are
+    /// explicit rather than derived.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "shape_added" => Some(EventSignalRef::mapped("shape_added", &self.shape_added, |v| {
+                CapabilityValue::UInt(*v)
+            })),
+            "shape_removed" => {
+                Some(EventSignalRef::mapped("shape_removed", &self.shape_removed, |v| {
+                    CapabilityValue::UInt(*v)
+                }))
+            }
+            "shape_selected" => {
+                Some(EventSignalRef::mapped("shape_selected", &self.shape_selected, |v| {
+                    CapabilityValue::Tuple(v.iter().map(|id| CapabilityValue::UInt(*id)).collect())
+                }))
+            }
+            "shape_modified" => {
+                Some(EventSignalRef::mapped("shape_modified", &self.shape_modified, |v| {
+                    CapabilityValue::UInt(*v)
+                }))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl WidgetProperties for ShapeCanvas {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "shapes" => Ok(CapabilityValue::Tuple(
+                self.shapes().into_iter().map(CapabilityValue::UInt).collect(),
+            )),
+            "shape_count" => Ok(CapabilityValue::UInt(self.shape_count() as u64)),
+            "selection" => Ok(CapabilityValue::Tuple(
+                self.selection.iter().map(|id| CapabilityValue::UInt(*id)).collect(),
+            )),
+            "editable" => Ok(CapabilityValue::Bool(self.editable)),
+            "snap_to_grid" => Ok(CapabilityValue::Bool(self.snap_to_grid)),
+            "grid_step" => Ok(CapabilityValue::UInt(self.grid_step as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            // The id list is a derived view of the hosted controls; add/remove are the writers.
+            "shapes" | "shape_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "selection" => match value {
+                CapabilityValue::Null => {
+                    self.clear_selection();
+                    Ok(())
+                }
+                CapabilityValue::Tuple(items) => {
+                    let mut ids = Vec::with_capacity(items.len());
+                    for item in items {
+                        let id = match item {
+                            CapabilityValue::UInt(id) => id,
+                            _ => return Err(CapabilityAccessError::TypeMismatch),
+                        };
+                        ids.push(id);
+                    }
+                    self.set_selection(ids);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "editable" => {
+                self.set_editable(expect_bool(value)?);
+                Ok(())
+            }
+            "snap_to_grid" => {
+                self.set_snap_to_grid(expect_bool(value)?);
+                Ok(())
+            }
+            "grid_step" => {
+                self.set_grid_step(expect_u32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "shapes",
+            "shape_count",
+            "selection",
+            "editable",
+            "snap_to_grid",
+            "grid_step",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
+impl EventHandler for ShapeCanvas {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos, button: 1, modifiers } if self.editable => {
+                let additive = crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                    .contains(crate::shortcut::Modifiers::PRIMARY);
+                match self.hit_test(*pos) {
+                    Some(id) => {
+                        if additive {
+                            let mut next = self.selection.clone();
+                            if let Some(position) = next.iter().position(|selected| *selected == id)
+                            {
+                                next.remove(position);
+                            } else {
+                                next.push(id);
+                            }
+                            self.set_selection(next);
+                        } else if !self.selection.contains(&id) {
+                            self.set_selection(vec![id]);
+                        }
+                        let starts: Vec<(ObjectId, Rect)> = self
+                            .selection
+                            .iter()
+                            .filter_map(|selected| {
+                                self.shape(*selected)
+                                    .map(|shape| (*selected, shape.base().geometry()))
+                            })
+                            .collect();
+                        self.drag = Some((*pos, starts));
+                    }
+                    None => {
+                        if !additive {
+                            self.clear_selection();
+                        }
+                        self.marquee = Some((*pos, *pos));
+                    }
+                }
+            }
+            Event::MouseMove { pos } => {
+                if let Some((origin, starts)) = self.drag.clone() {
+                    let dx = self.snap(pos.x) - self.snap(origin.x);
+                    let dy = self.snap(pos.y) - self.snap(origin.y);
+                    let mut changed = Vec::with_capacity(starts.len());
+                    for (id, geometry) in starts {
+                        let next = Rect::new(
+                            geometry.x + dx,
+                            geometry.y + dy,
+                            geometry.width,
+                            geometry.height,
+                        );
+                        if next != geometry {
+                            self.place(id, next);
+                            changed.push(id);
+                        }
+                    }
+                    for id in changed {
+                        self.shape_modified.emit(id);
+                    }
+                    self.base.request_redraw();
+                } else if let Some((origin, _)) = self.marquee {
+                    self.marquee = Some((origin, *pos));
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseRelease { button: 1, .. } => {
+                self.drag = None;
+                if let Some((start, end)) = self.marquee.take() {
+                    let rect = Rect::from_points(start, end);
+                    self.select_in_rect(rect);
+                }
+                self.base.request_redraw();
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Draw for ShapeCanvas {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.base.geometry();
+        let style = self.base.style();
+        let theme = crate::style::resolved_theme_style_shared("freeform_shape");
+        let background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| crate::core::Color::border_of(background));
+        let accent = crate::style::palette_shared()
+            .as_ref()
+            .map(|colors| colors.primary)
+            .unwrap_or(Color::PRIMARY);
+
+        context.face_with_gradient(
+            rect,
+            background,
+            self.style().background_gradient.as_ref(),
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
+        context.draw_rect(rect, border);
+
+        // The grid is drawn from the same `grid_step` a drag snaps to, so a shape can be placed
+        // exactly on a line the reader can see. A zero step (or a disabled flag) paints nothing.
+        if self.snap_to_grid && self.grid_step > 0 {
+            let step = self.grid_step as i32;
+            let grid = background.blend(&ink, 0.08);
+            let mut x = rect.x;
+            while x <= rect.x + rect.width as i32 {
+                context.draw_line(
+                    Point::new(x, rect.y),
+                    Point::new(x, rect.y + rect.height as i32),
+                    grid,
+                );
+                x += step;
+            }
+            let mut y = rect.y;
+            while y <= rect.y + rect.height as i32 {
+                context.draw_line(
+                    Point::new(rect.x, y),
+                    Point::new(rect.x + rect.width as i32, y),
+                    grid,
+                );
+                y += step;
+            }
+        }
+
+        for shape in &mut self.shapes {
+            shape.widget.draw(context);
+        }
+
+        // Selection outlines are painted after every shape so a selected shape underneath a
+        // later one still shows where it is.
+        let selected: Vec<Rect> = self
+            .selection
+            .iter()
+            .filter_map(|id| self.shape(*id).map(|shape| shape.base().geometry()))
+            .collect();
+        for box_rect in selected {
+            context.draw_rect(box_rect, accent);
+            context.draw_rect(
+                Rect::new(box_rect.x - 1, box_rect.y - 1, box_rect.width + 2, box_rect.height + 2),
+                accent.with_alpha(90),
+            );
+        }
+
+        if let Some((start, end)) = self.marquee {
+            let marquee = Rect::from_points(start, end);
+            context.draw_rect(marquee, accent);
+        }
+    }
+}
+
+#[cfg(test)]
+mod shape_canvas_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn box_shape(x: i32, y: i32, side: u32) -> FreeformShapeWidget {
+        FreeformShapeWidget::new(Rect::new(x, y, side, side), ShapePath::RoundedRect { radius: 4 })
+    }
+
+    #[test]
+    fn adding_a_shape_returns_an_id_and_emits_it() {
+        let mut canvas = ShapeCanvas::new(Rect::new(0, 0, 400, 300));
+        let added = Arc::new(Mutex::new(Vec::new()));
+        let sink = added.clone();
+        canvas.shape_added.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*id);
+            }
+        });
+
+        let first = canvas.add_shape(box_shape(10, 10, 40));
+        let second = canvas.add_shape(box_shape(60, 60, 40));
+
+        assert_ne!(first, second);
+        assert_eq!(canvas.shapes(), vec![first, second]);
+        assert_eq!(*added.lock().expect("added lock"), vec![first, second]);
+    }
+
+    #[test]
+    fn hit_test_picks_the_topmost_outline_not_the_box() {
+        let mut canvas = ShapeCanvas::new(Rect::new(0, 0, 400, 300));
+        let lower = canvas.add_shape(box_shape(0, 0, 100));
+        let upper = canvas.add_shape(box_shape(0, 0, 100));
+
+        assert_eq!(canvas.hit_test(Point::new(50, 50)), Some(upper));
+        assert!(canvas.raise(lower));
+        assert_eq!(canvas.hit_test(Point::new(50, 50)), Some(lower));
+        assert!(canvas.lower(lower));
+        assert_eq!(canvas.hit_test(Point::new(50, 50)), Some(upper));
+        assert_eq!(canvas.hit_test(Point::new(350, 250)), None);
+    }
+
+    #[test]
+    fn rect_selection_returns_every_touched_shape() {
+        let mut canvas = ShapeCanvas::new(Rect::new(0, 0, 400, 300));
+        let first = canvas.add_shape(box_shape(10, 10, 40));
+        let second = canvas.add_shape(box_shape(200, 10, 40));
+        let selected = canvas.select_in_rect(Rect::new(0, 0, 100, 100));
+        assert_eq!(selected, vec![first]);
+        assert_eq!(canvas.selection(), &[first]);
+
+        let both = canvas.select_in_rect(Rect::new(0, 0, 400, 300));
+        assert_eq!(both, vec![first, second]);
+    }
+
+    #[test]
+    fn dragging_a_selected_shape_moves_it_on_the_grid_and_reports_it() {
+        let mut canvas = ShapeCanvas::new(Rect::new(0, 0, 400, 300));
+        canvas.set_editable(true);
+        canvas.set_snap_to_grid(true);
+        canvas.set_grid_step(10);
+        let id = canvas.add_shape(box_shape(10, 10, 40));
+        let modified = Arc::new(Mutex::new(Vec::new()));
+        let sink = modified.clone();
+        canvas.shape_modified.connect(move |moved| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*moved);
+            }
+        });
+
+        canvas.handle_event(&Event::mouse_press(30, 30, 1));
+        assert_eq!(canvas.selection(), &[id]);
+        canvas.handle_event(&Event::mouse_move(47, 36));
+        canvas.handle_event(&Event::mouse_release(47, 36, 1));
+
+        let geometry = canvas.shape(id).expect("shape").base().geometry();
+        assert_eq!((geometry.x, geometry.y), (30, 20));
+        assert_eq!(*modified.lock().expect("modified lock"), vec![id]);
+    }
+
+    #[test]
+    fn removing_a_shape_drops_it_from_the_selection() {
+        let mut canvas = ShapeCanvas::new(Rect::new(0, 0, 400, 300));
+        let id = canvas.add_shape(box_shape(0, 0, 50));
+        canvas.set_selection(vec![id]);
+        assert!(canvas.remove_shape(id));
+        assert!(canvas.selection().is_empty());
+        assert!(!canvas.remove_shape(id));
+    }
+
+    #[test]
+    fn properties_describe_the_hosted_shapes() {
+        let mut canvas = ShapeCanvas::new(Rect::new(0, 0, 400, 300));
+        let id = canvas.add_shape(box_shape(0, 0, 50));
+        canvas.set_editable(true);
+        canvas.set_snap_to_grid(true);
+        canvas.set_grid_step(12);
+        canvas.set_selection(vec![id]);
+
+        assert_eq!(canvas.get("shape_count"), Ok(CapabilityValue::UInt(1)));
+        assert_eq!(canvas.get("editable"), Ok(CapabilityValue::Bool(true)));
+        assert_eq!(canvas.get("snap_to_grid"), Ok(CapabilityValue::Bool(true)));
+        assert_eq!(canvas.get("grid_step"), Ok(CapabilityValue::UInt(12)));
+        assert_eq!(
+            canvas.get("selection"),
+            Ok(CapabilityValue::Tuple(vec![CapabilityValue::UInt(id)]))
+        );
+        assert_eq!(
+            canvas.set("shape_count", CapabilityValue::UInt(3)),
+            Err(CapabilityAccessError::ReadOnlyProperty)
+        );
     }
 }

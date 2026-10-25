@@ -59,6 +59,9 @@ macro_rules! impl_properties_view {
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
             PropertySchema::new("expansion_animated", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("lazy_loading", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("loading_indicator_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("fetch_timeout_ms", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -232,6 +235,7 @@ macro_rules! impl_properties_view {
                 &["fixed", "stretch", "interactive"],
             ),
             PropertySchema::new("current_cell", PropertyValueKind::String, true, false),
+            PropertySchema::new("summary_text", PropertyValueKind::String, true, false),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -252,6 +256,9 @@ macro_rules! impl_properties_view {
             PropertySchema::enumerated("sort_role", true, true, &["text", "number"]),
             PropertySchema::new("case_sensitive", PropertyValueKind::Bool, true, true),
             PropertySchema::enumerated("projection_strategy", true, true, &["windowed", "eager"]),
+            PropertySchema::new("lazy_loading", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("loading_indicator_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("fetch_timeout_ms", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -423,6 +430,7 @@ macro_rules! impl_properties_view {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("show_screen_picker", PropertyValueKind::Bool, true, true),
         ];
     };
 }

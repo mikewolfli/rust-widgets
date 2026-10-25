@@ -144,6 +144,26 @@ pub struct Action {
     _enabled_handle: Option<ConnectionHandle>,
 }
 impl Action {
+    /// Builds a widget action from a registry definition.
+    ///
+    /// The definition is the data half of a command; this constructor is the one place it becomes
+    /// a presentable action, so a menu bar, toolbar and button built from the same registry row
+    /// cannot disagree about its text, flags or shortcut. Geometry is the caller's, because a
+    /// definition carries no placement.
+    pub fn from_definition(definition: &crate::action::ActionDefinition, geometry: Rect) -> Self {
+        let mut action = Self::new(definition.text.clone(), geometry);
+        action.set_command_id(definition.id.clone());
+        action.set_checkable(definition.checkable);
+        if definition.checkable {
+            action.set_checked(definition.checked);
+        }
+        action.cmd_mut().set_enabled(definition.enabled);
+        if !definition.shortcut.is_empty() {
+            action.set_shortcut(definition.shortcut.clone());
+        }
+        action
+    }
+
     /// Creates a plain (non-checkable, non-separator) action enabled by default.
     ///
     /// The inner command starts with an empty id, so
