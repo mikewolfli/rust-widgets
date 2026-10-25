@@ -21,7 +21,7 @@ pub(crate) fn ensure_window_class_registered() {
         fn GetModuleHandleW(lpModuleName: *const u16) -> *mut std::ffi::c_void;
     }
     static REGISTERED: OnceLock<()> = OnceLock::new();
-// SAFETY: process-wide one-time registration; the closure runs once and only registers a window class.
+    // SAFETY: process-wide one-time registration; the closure runs once and only registers a window class.
     REGISTERED.get_or_init(|| unsafe {
         use std::ptr::null_mut;
         use winapi::um::winuser::{
@@ -56,7 +56,7 @@ pub(crate) fn active_windows_platform() -> Option<&'static WindowsPlatform> {
     if ptr.is_null() {
         None
     } else {
-// SAFETY: `ptr` is written exactly once by `init` before publication and stays valid for the process lifetime.
+        // SAFETY: `ptr` is written exactly once by `init` before publication and stays valid for the process lifetime.
         Some(unsafe { &*ptr })
     }
 }

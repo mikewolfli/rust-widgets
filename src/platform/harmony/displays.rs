@@ -96,7 +96,7 @@ mod sys {
     /// The displays the display manager reports, in its own order.
     pub(super) fn displays() -> Vec<Display> {
         let mut all: *mut NativeDisplayManager_DisplaysInfo = core::ptr::null_mut();
-// SAFETY: the out-pointer is writable for the call and success is checked as non-null below.
+        // SAFETY: the out-pointer is writable for the call and success is checked as non-null below.
         let status = unsafe { OH_NativeDisplayManager_CreateAllDisplays(&mut all) };
         if status != DISPLAY_MANAGER_OK || all.is_null() {
             log::warn!(
@@ -106,18 +106,18 @@ mod sys {
         }
 
         let mut default_id = 0u64;
-// SAFETY: `default_id` is a writable local and the call only reads the display id.
+        // SAFETY: `default_id` is a writable local and the call only reads the display id.
         let has_default = unsafe { OH_NativeDisplayManager_GetDefaultDisplayId(&mut default_id) }
             == DISPLAY_MANAGER_OK;
 
         let mut out = Vec::new();
-// SAFETY: `all` is non-null and owned by the create call above.
+        // SAFETY: `all` is non-null and owned by the create call above.
         let count = unsafe { (*all).displays_length as usize };
-// SAFETY: same live `DisplaysInfo`; the field access is read-only.
+        // SAFETY: same live `DisplaysInfo`; the field access is read-only.
         let first = unsafe { (*all).displays_info };
         if !first.is_null() {
             for index in 0..count {
-// SAFETY: `first` holds `displays_length` entries and `index < count`.
+                // SAFETY: `first` holds `displays_length` entries and `index < count`.
                 let info = unsafe { &*first.add(index) };
                 if info.is_alive == 0 {
                     continue;
@@ -129,7 +129,7 @@ mod sys {
                 // fallback and is what the platform reports for it.
                 let mut x = 0i32;
                 let mut y = 0i32;
-// SAFETY: `info.id` is a live display id and the out-params are writable locals.
+                // SAFETY: `info.id` is a live display id and the out-params are writable locals.
                 let positioned = unsafe {
                     OH_NativeDisplayManager_GetDisplayPosition(info.id as u64, &mut x, &mut y)
                 } == DISPLAY_MANAGER_OK;
@@ -153,7 +153,7 @@ mod sys {
                 });
             }
         }
-// SAFETY: `all` came from the create call above and is not used afterwards.
+        // SAFETY: `all` came from the create call above and is not used afterwards.
         unsafe { OH_NativeDisplayManager_DestroyAllDisplays(all) };
         out
     }

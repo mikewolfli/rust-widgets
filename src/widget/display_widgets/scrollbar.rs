@@ -1388,10 +1388,14 @@ impl Draw for ScrollBar {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        // Draw border
-        context.draw_rect(
+        // Draw border, rounded to the trough's own face: a square 1 px stroke over the pill
+        // groove left the four corners outside the drawn surface.
+        crate::widget::draw::stroke_surface_border(
+            context,
             Rect::new(rect.x, rect.y, rect.width, rect.height),
+            self.style().border_radius.unwrap_or(0),
             style.border_color.unwrap_or_else(|| trough.contrast_color().with_alpha(80)),
+            1,
         );
         // Draw slider
         //

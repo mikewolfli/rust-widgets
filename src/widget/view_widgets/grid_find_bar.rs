@@ -295,7 +295,13 @@ impl Draw for GridFindBar {
             .map(|colors| colors.outline_variant)
             .unwrap_or_else(|| surface.blend(&ink, 0.25));
         context.fill_rounded_rect(rect, 4, surface);
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
         let font = crate::widget::metrics::effective_font(self.base.style());
         let label = if self.query.is_empty() { "Find…".to_string() } else { self.query.clone() };
         context.draw_text_fitted_cow(

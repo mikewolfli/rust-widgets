@@ -365,6 +365,25 @@ impl Widget for SwipeToDismiss {
         }
     }
 
+    /// Themes the child whenever the **wrapper's own** style is written.
+    ///
+    /// # Why the theme layer needed a second hook
+    ///
+    /// `theme::apply` writes only the top-level control's style: it calls `set_style`, not
+    /// `set_state_theme_hook`. The child this wrapper owns is not mounted in the runtime registry
+    /// either, so a global `reapply_active_theme()` never reaches it. The per-draw
+    /// `apply_theme_to_widget(child)` used to hide both facts; when G-A12 moved the theming to
+    /// `set_child`, an appearance switch left the child on its constructor's ink and the wrapper
+    /// rendered identically in light and dark (the rendering census caught it as P3). Writing the
+    /// child's theme here closes the gap at the one method the theme layer writes through, and
+    /// costs nothing per frame.
+    fn set_style(&mut self, style: crate::style::WidgetStyle) {
+        self.base.set_style(style);
+        if let Some(child) = self.child.as_deref_mut().map(|child| child as &mut dyn Widget) {
+            crate::theme::apply_theme_to_widget(child);
+        }
+    }
+
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(
             crate::widget::metrics::dimensions::SWIPE_TO_DISMISS_DEFAULT_WIDTH,

@@ -3,7 +3,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" rx="4" ry="4" fill="rgba(30,30,33,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <rect x="0.5" y="0.5" width="239" height="119" rx="3.5" ry="3.5" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
   <line x1="34" y1="93" x2="232" y2="93" stroke="rgba(65,65,68,0.95)" stroke-width="1" />
   <path d="M30.06 92.51L29.90 90.85L29.44 89.67L28.72 88.97L27.78 88.74L26.83 88.97L26.11 89.67L25.66 90.85L25.50 92.51L25.66 94.19L26.11 95.38L26.83 96.09L27.78 96.33L27.78 96.33L28.72 96.09L29.44 95.38L29.90 94.19ZM26.38 92.51L26.48 91.13L26.77 90.18L27.21 89.64L27.78 89.46L28.35 89.64L28.79 90.18L29.08 91.13L29.18 92.51L29.08 93.90L28.79 94.86L28.35 95.41L27.78 95.59L27.78 95.59L27.21 95.41L26.77 94.86L26.48 93.90Z" fill="rgba(225,225,225,0.75)" fill-rule="nonzero" data-text="1" />
   <line x1="34" y1="72" x2="232" y2="72" stroke="rgba(65,65,68,0.95)" stroke-width="1" />

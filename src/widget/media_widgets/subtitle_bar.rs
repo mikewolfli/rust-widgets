@@ -174,8 +174,7 @@ impl Draw for SubtitleBar {
             &mut |text: &str| context.measure_text(text, font).width,
         );
         let lines: Vec<_> = ranges.into_iter().take(self.max_lines).collect();
-        let height =
-            (line_height * lines.len() as u32 + 8).min(rect.height.max(line_height));
+        let height = (line_height * lines.len() as u32 + 8).min(rect.height.max(line_height));
         let band = match self.position {
             SubtitlePosition::Bottom => {
                 Rect::new(rect.x, rect.bottom() - height as i32, rect.width, height)

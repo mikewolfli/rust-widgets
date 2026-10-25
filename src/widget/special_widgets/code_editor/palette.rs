@@ -277,11 +277,8 @@ impl CommandPalette {
     /// Recomputes the filtered list and clamps the selection into it.
     fn refilter(&mut self) {
         self.filtered = self.filter_for(&self.query);
-        self.selected = if self.filtered.is_empty() {
-            0
-        } else {
-            self.selected.min(self.filtered.len() - 1)
-        };
+        self.selected =
+            if self.filtered.is_empty() { 0 } else { self.selected.min(self.filtered.len() - 1) };
     }
 }
 
@@ -334,7 +331,8 @@ impl CodeEditor {
             PaletteEntry::new("Duplicate Line", "duplicate_line").with_hint("Editing"),
             PaletteEntry::new("Delete Line", "delete_line").with_hint("Editing"),
             PaletteEntry::new("Sort Lines", "sort_lines").with_hint("Editing"),
-            PaletteEntry::new("Sort Lines Descending", "sort_lines_descending").with_hint("Editing"),
+            PaletteEntry::new("Sort Lines Descending", "sort_lines_descending")
+                .with_hint("Editing"),
             PaletteEntry::new("Sort Lines Unique", "sort_lines_unique").with_hint("Editing"),
             PaletteEntry::new("Move Line Up", "move_line_up").with_hint("Editing"),
             PaletteEntry::new("Move Line Down", "move_line_down").with_hint("Editing"),

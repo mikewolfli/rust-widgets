@@ -2380,7 +2380,13 @@ impl Draw for LottieWidget {
 
         // Draw bounding box — a chrome edge around the composition, so it follows the
         // theme's border token rather than a fixed violet.
-        context.draw_rect_stroke(rect, border_color, 1);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border_color,
+            1,
+        );
 
         // Render Lottie shapes from the parsed JSON.
         let frame = self.current_frame as f64 + self.frame_offset;

@@ -223,35 +223,35 @@ mod sys {
     /// service, and holding one past the call would keep the service connection alive for the
     /// whole process lifetime — a resource the caller never asked for.
     fn with_pasteboard<R>(body: impl FnOnce(*mut OhPasteboard) -> R) -> Option<R> {
-// SAFETY: FFI constructor; the returned handle is checked for null before use.
+        // SAFETY: FFI constructor; the returned handle is checked for null before use.
         let pasteboard = unsafe { OH_Pasteboard_Create() };
         if pasteboard.is_null() {
             log::error!("[harmony pasteboard] OH_Pasteboard_Create returned null");
             return None;
         }
         let result = body(pasteboard);
-// SAFETY: `pasteboard` is the live handle created above and is not touched afterwards.
+        // SAFETY: `pasteboard` is the live handle created above and is not touched afterwards.
         unsafe { OH_Pasteboard_Destroy(pasteboard) };
         Some(result)
     }
 
     /// The plain text of `record`, through the UDS the header requires the caller to supply.
     fn record_html(record: *mut OhUdmfRecord) -> Option<String> {
-// SAFETY: FFI constructor; the returned object is checked for null below.
+        // SAFETY: FFI constructor; the returned object is checked for null below.
         let uds = unsafe { OH_UdsHtml_Create() };
         if uds.is_null() {
             log::error!("[harmony pasteboard] OH_UdsHtml_Create returned null");
             return None;
         }
-// SAFETY: `record` is borrowed from the caller and `uds` is the live object created above.
+        // SAFETY: `record` is borrowed from the caller and `uds` is the live object created above.
         let status = unsafe { OH_UdmfRecord_GetHtml(record, uds) };
         let html = if status == OHOS_OK {
-// SAFETY: `uds` is live; the content pointer it returns stays valid until `uds` is destroyed.
+            // SAFETY: `uds` is live; the content pointer it returns stays valid until `uds` is destroyed.
             unsafe { read_c_string(OH_UdsHtml_GetContent(uds)) }
         } else {
             None
         };
-// SAFETY: `uds` is the live object created above and is not used afterwards.
+        // SAFETY: `uds` is the live object created above and is not used afterwards.
         unsafe { OH_UdsHtml_Destroy(uds) };
         html
     }
@@ -259,7 +259,7 @@ mod sys {
     /// Whether the pasteboard currently holds data of `data_type`.
     pub(super) fn has_type(data_type: &str) -> bool {
         let type_buffer = c_string(data_type);
-// SAFETY: `pasteboard` is live for the closure and `type_buffer` is NUL-terminated.
+        // SAFETY: `pasteboard` is live for the closure and `type_buffer` is NUL-terminated.
         with_pasteboard(|pasteboard| unsafe {
             OH_Pasteboard_HasType(pasteboard, type_buffer.as_ptr().cast())
         })
@@ -276,25 +276,25 @@ mod sys {
         read_back: fn() -> Option<String>,
         expect: &str,
     ) -> bool {
-// SAFETY: FFI constructor; the returned object is checked for null below.
+        // SAFETY: FFI constructor; the returned object is checked for null below.
         let data = unsafe { OH_UdmfData_Create() };
-// SAFETY: FFI constructor; the returned object is checked for null below.
+        // SAFETY: FFI constructor; the returned object is checked for null below.
         let record = unsafe { OH_UdmfRecord_Create() };
         if data.is_null() || record.is_null() {
             log::error!("[harmony pasteboard] UDMF create failed (data or record was null)");
             if !data.is_null() {
-// SAFETY: `data` is non-null and was created in this call.
+                // SAFETY: `data` is non-null and was created in this call.
                 unsafe { OH_UdmfData_Destroy(data) };
             }
             if !record.is_null() {
-// SAFETY: `record` is non-null and was created in this call.
+                // SAFETY: `record` is non-null and was created in this call.
                 unsafe { OH_UdmfRecord_Destroy(record) };
             }
             return false;
         }
 
         let attached = fill(record);
-// SAFETY: `data` and `record` are live objects owned by this function.
+        // SAFETY: `data` and `record` are live objects owned by this function.
         let status = if attached { unsafe { OH_UdmfData_AddRecord(data, record) } } else { -1 };
         let written = status == OHOS_OK
 // SAFETY: the pasteboard handle is live for the closure; `data` is a live UDMF object.
@@ -304,7 +304,7 @@ mod sys {
         // The caller owns all three objects (`OH_UdmfData_AddRecord` and
         // `OH_Pasteboard_SetData` copy what they need), so they go back regardless of the
         // outcome — a refused write must not leak the payload it refused.
-// SAFETY: both handles were created in this call and are not used after this drop.
+        // SAFETY: both handles were created in this call and are not used after this drop.
         unsafe {
             OH_UdmfData_Destroy(data);
             OH_UdmfRecord_Destroy(record);
@@ -330,17 +330,17 @@ mod sys {
         let content = c_string(value);
         publish(
             |record| {
-// SAFETY: FFI constructor; the returned object is checked for null below.
+                // SAFETY: FFI constructor; the returned object is checked for null below.
                 let uds = unsafe { OH_UdsPlainText_Create() };
                 if uds.is_null() {
                     return false;
                 }
-// SAFETY: `uds` is live and `content` is a NUL-terminated local buffer outliving the call.
+                // SAFETY: `uds` is live and `content` is a NUL-terminated local buffer outliving the call.
                 let set = unsafe { OH_UdsPlainText_SetContent(uds, content.as_ptr().cast()) };
                 let added =
 // SAFETY: `record` is the live record passed to `fill`, and `uds` is live.
                     set == OHOS_OK && unsafe { OH_UdmfRecord_AddPlainText(record, uds) } == OHOS_OK;
-// SAFETY: `uds` is the live object created above and is not used afterwards.
+                // SAFETY: `uds` is the live object created above and is not used afterwards.
                 unsafe { OH_UdsPlainText_Destroy(uds) };
                 added
             },
@@ -355,7 +355,7 @@ mod sys {
         let plain_buffer = c_string(plain);
         publish(
             |record| {
-// SAFETY: FFI constructor; the returned object is checked for null below.
+                // SAFETY: FFI constructor; the returned object is checked for null below.
                 let uds = unsafe { OH_UdsHtml_Create() };
                 if uds.is_null() {
                     return false;
@@ -372,7 +372,7 @@ mod sys {
                     && set_plain == OHOS_OK
 // SAFETY: `record` is the live record passed to `fill`, and `uds` is live.
                     && unsafe { OH_UdmfRecord_AddHtml(record, uds) } == OHOS_OK;
-// SAFETY: `uds` is the live object created above and is not used afterwards.
+                // SAFETY: `uds` is the live object created above and is not used afterwards.
                 unsafe { OH_UdsHtml_Destroy(uds) };
                 added
             },
@@ -385,25 +385,25 @@ mod sys {
     pub(super) fn text() -> Option<String> {
         let data = read_data()?;
         let text = {
-// SAFETY: FFI constructor; the returned object is checked for null below.
+            // SAFETY: FFI constructor; the returned object is checked for null below.
             let uds = unsafe { OH_UdsPlainText_Create() };
             if uds.is_null() {
                 None
             } else {
-// SAFETY: `data` is live and `uds` is the live object created above.
+                // SAFETY: `data` is live and `uds` is the live object created above.
                 let status = unsafe { OH_UdmfData_GetPrimaryPlainText(data, uds) };
                 let text = if status == OHOS_OK {
-// SAFETY: `uds` is live; the content pointer it returns stays valid until `uds` is destroyed.
+                    // SAFETY: `uds` is live; the content pointer it returns stays valid until `uds` is destroyed.
                     unsafe { read_c_string(OH_UdsPlainText_GetContent(uds)) }
                 } else {
                     None
                 };
-// SAFETY: `uds` is the live object created above and is not used afterwards.
+                // SAFETY: `uds` is the live object created above and is not used afterwards.
                 unsafe { OH_UdsPlainText_Destroy(uds) };
                 text
             }
         };
-// SAFETY: `data` is the live object returned by `read_data` and is not used afterwards.
+        // SAFETY: `data` is the live object returned by `read_data` and is not used afterwards.
         unsafe { OH_UdmfData_Destroy(data) };
         text
     }
@@ -415,7 +415,7 @@ mod sys {
             // The record is borrowed from `data` — the OpenHarmony sample code destroys only the
             // data it got from `OH_Pasteboard_GetData`, so destroying this one would be a double
             // free.
-// SAFETY: `data` is live; the record is borrowed from it and must not be destroyed here.
+            // SAFETY: `data` is live; the record is borrowed from it and must not be destroyed here.
             let record = unsafe { OH_UdmfData_GetRecord(data, 0) };
             if record.is_null() {
                 None
@@ -423,7 +423,7 @@ mod sys {
                 record_html(record)
             }
         };
-// SAFETY: `data` is the live object returned by `read_data` and is not used afterwards.
+        // SAFETY: `data` is the live object returned by `read_data` and is not used afterwards.
         unsafe { OH_UdmfData_Destroy(data) };
         html
     }
@@ -440,20 +440,20 @@ mod sys {
 
         let mime_buffer = c_string(content_type);
         let mut count = 0u32;
-// SAFETY: the MIME buffer is NUL-terminated and `count` is writable for the call.
+        // SAFETY: the MIME buffer is NUL-terminated and `count` is writable for the call.
         let list = unsafe { OH_Utd_GetTypesByMimeType(mime_buffer.as_ptr().cast(), &mut count) };
         if !list.is_null() {
             for index in 0..count as usize {
-// SAFETY: `list` is non-null with `count` entries, and `index < count`.
+                // SAFETY: `list` is non-null with `count` entries, and `index < count`.
                 let pointer = unsafe { *list.add(index) };
-// SAFETY: `pointer` is either null or a NUL-terminated id owned by `list`.
+                // SAFETY: `pointer` is either null or a NUL-terminated id owned by `list`.
                 if let Some(id) = unsafe { read_c_string(pointer) } {
                     if !ids.iter().any(|known| known == &id) {
                         ids.push(id);
                     }
                 }
             }
-// SAFETY: `list`/`count` are exactly the values returned by `OH_Utd_GetTypesByMimeType`.
+            // SAFETY: `list`/`count` are exactly the values returned by `OH_Utd_GetTypesByMimeType`.
             unsafe { OH_Utd_DestroyStringList(list, count) };
         }
         ids
@@ -474,18 +474,18 @@ mod sys {
         };
         let ids = type_ids_for_mime(content_type);
         let payload = data.to_vec();
-// SAFETY: FFI constructor; the returned object is checked for null below.
+        // SAFETY: FFI constructor; the returned object is checked for null below.
         let data_handle = unsafe { OH_UdmfData_Create() };
-// SAFETY: FFI constructor; the returned object is checked for null below.
+        // SAFETY: FFI constructor; the returned object is checked for null below.
         let record = unsafe { OH_UdmfRecord_Create() };
         if data_handle.is_null() || record.is_null() {
             log::error!("[harmony pasteboard] UDMF create failed (data or record was null)");
             if !data_handle.is_null() {
-// SAFETY: `data_handle` is non-null and was created in this call.
+                // SAFETY: `data_handle` is non-null and was created in this call.
                 unsafe { OH_UdmfData_Destroy(data_handle) };
             }
             if !record.is_null() {
-// SAFETY: `record` is non-null and was created in this call.
+                // SAFETY: `record` is non-null and was created in this call.
                 unsafe { OH_UdmfRecord_Destroy(record) };
             }
             return false;
@@ -494,7 +494,7 @@ mod sys {
         let mut attached = false;
         for id in &ids {
             let type_buffer = c_string(id);
-// SAFETY: `record` is live; the type and payload buffers outlive the call.
+            // SAFETY: `record` is live; the type and payload buffers outlive the call.
             let status = unsafe {
                 OH_UdmfRecord_AddGeneralEntry(
                     record,
@@ -519,7 +519,7 @@ mod sys {
             })
             .is_some_and(|set_status| set_status == OHOS_OK);
 
-// SAFETY: both handles were created in this call and are not used after this drop.
+        // SAFETY: both handles were created in this call and are not used after this drop.
         unsafe {
             OH_UdmfData_Destroy(data_handle);
             OH_UdmfRecord_Destroy(record);
@@ -543,7 +543,7 @@ mod sys {
         let ids = type_ids_for_mime(content_type);
         let data = read_data()?;
         let bytes = {
-// SAFETY: `data` is live; the record is borrowed from it and must not be destroyed here.
+            // SAFETY: `data` is live; the record is borrowed from it and must not be destroyed here.
             let record = unsafe { OH_UdmfData_GetRecord(data, 0) };
             if record.is_null() {
                 None
@@ -551,7 +551,7 @@ mod sys {
                 ids.iter().find_map(|id| record_general_entry(record, id))
             }
         };
-// SAFETY: `data` is the live object returned by `read_data` and is not used afterwards.
+        // SAFETY: `data` is the live object returned by `read_data` and is not used afterwards.
         unsafe { OH_UdmfData_Destroy(data) };
         bytes
     }
@@ -562,7 +562,7 @@ mod sys {
         with_pasteboard(|pasteboard| {
             ids.iter().any(|id| {
                 let type_buffer = c_string(id);
-// SAFETY: `pasteboard` is live for the closure and `type_buffer` is NUL-terminated.
+                // SAFETY: `pasteboard` is live for the closure and `type_buffer` is NUL-terminated.
                 unsafe { OH_Pasteboard_HasType(pasteboard, type_buffer.as_ptr().cast()) }
             })
         })
@@ -576,7 +576,7 @@ mod sys {
     pub(super) fn first_custom() -> Option<(String, Vec<u8>)> {
         let data = read_data()?;
         let found = {
-// SAFETY: `data` is live; the record is borrowed from it and must not be destroyed here.
+            // SAFETY: `data` is live; the record is borrowed from it and must not be destroyed here.
             let record = unsafe { OH_UdmfData_GetRecord(data, 0) };
             if record.is_null() {
                 None
@@ -584,7 +584,7 @@ mod sys {
                 first_general_entry(record)
             }
         };
-// SAFETY: `data` is the live object returned by `read_data` and is not used afterwards.
+        // SAFETY: `data` is the live object returned by `read_data` and is not used afterwards.
         unsafe { OH_UdmfData_Destroy(data) };
         found
     }
@@ -594,7 +594,7 @@ mod sys {
         let type_buffer = c_string(type_id);
         let mut entry: *mut u8 = core::ptr::null_mut();
         let mut count = 0u32;
-// SAFETY: `record` is live; `type_buffer` is NUL-terminated and the out-params are writable.
+        // SAFETY: `record` is live; `type_buffer` is NUL-terminated and the out-params are writable.
         let status = unsafe {
             OH_UdmfRecord_GetGeneralEntry(
                 record,
@@ -608,7 +608,7 @@ mod sys {
         }
         // The pointer addresses memory owned by the record; copying is the only safe use, and the
         // record (and the data that owns it) is destroyed by the caller after this returns.
-// SAFETY: `entry`/`count` describe a buffer owned by `record`, which outlives this copy.
+        // SAFETY: `entry`/`count` describe a buffer owned by `record`, which outlives this copy.
         Some(unsafe { core::slice::from_raw_parts(entry, count as usize) }.to_vec())
     }
 
@@ -617,15 +617,15 @@ mod sys {
         let mut count = 0u32;
         // The type list is borrowed from the record: the SDK declares no destructor for it (unlike
         // `OH_Utd_DestroyStringList`), and the record is destroyed by the caller after this returns.
-// SAFETY: `record` is live and `count` is a writable out-parameter.
+        // SAFETY: `record` is live and `count` is a writable out-parameter.
         let types = unsafe { OH_UdmfRecord_GetTypes(record, &mut count) };
         if types.is_null() {
             return None;
         }
         for index in 0..count as usize {
-// SAFETY: `types` is non-null with `count` entries, and `index < count`.
+            // SAFETY: `types` is non-null with `count` entries, and `index < count`.
             let type_pointer = unsafe { *types.add(index) };
-// SAFETY: `type_pointer` is either null or a NUL-terminated id owned by `types`.
+            // SAFETY: `type_pointer` is either null or a NUL-terminated id owned by `types`.
             let Some(type_id) = (unsafe { read_c_string(type_pointer) }) else {
                 continue;
             };
@@ -646,22 +646,22 @@ mod sys {
     /// The first MIME type a UTD type id maps to, if any.
     fn mime_for_type_id(type_id: &str) -> Option<String> {
         let type_buffer = c_string(type_id);
-// SAFETY: FFI constructor; the id buffer is NUL-terminated and the result is null-checked.
+        // SAFETY: FFI constructor; the id buffer is NUL-terminated and the result is null-checked.
         let utd = unsafe { OH_Utd_Create(type_buffer.as_ptr().cast()) };
         if utd.is_null() {
             return None;
         }
         let mut count = 0u32;
-// SAFETY: `utd` is non-null and live; `count` is a writable out-parameter.
+        // SAFETY: `utd` is non-null and live; `count` is a writable out-parameter.
         let mimes = unsafe { OH_Utd_GetMimeTypes(utd, &mut count) };
         let mime =
 // SAFETY: `mimes` is non-null with at least one entry, as checked on this line.
             if !mimes.is_null() && count > 0 { unsafe { read_c_string(*mimes) } } else { None };
         if !mimes.is_null() {
-// SAFETY: `mimes`/`count` are the values returned by `OH_Utd_GetMimeTypes`.
+            // SAFETY: `mimes`/`count` are the values returned by `OH_Utd_GetMimeTypes`.
             unsafe { OH_Utd_DestroyStringList(mimes, count) };
         }
-// SAFETY: `utd` is the live object created above and is not used afterwards.
+        // SAFETY: `utd` is the live object created above and is not used afterwards.
         unsafe { OH_Utd_Destroy(utd) };
         mime
     }
@@ -670,7 +670,7 @@ mod sys {
     fn read_data() -> Option<*mut OhUdmfData> {
         with_pasteboard(|pasteboard| {
             let mut status = -1i32;
-// SAFETY: `pasteboard` is live for the closure and `status` is a writable out-parameter.
+            // SAFETY: `pasteboard` is live for the closure and `status` is a writable out-parameter.
             let data = unsafe { OH_Pasteboard_GetData(pasteboard, &mut status) };
             if status != OHOS_OK || data.is_null() {
                 log::warn!("[harmony pasteboard] OH_Pasteboard_GetData answered status {status}");

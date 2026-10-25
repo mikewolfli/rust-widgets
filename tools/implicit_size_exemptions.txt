@@ -35,12 +35,11 @@
 # The three are not distinguished here because a lexical scan cannot tell them from a hand-rolled
 # literal. Naming the distinction is what lets a later round move an entry from debt to permanent
 # without re-deriving it.
-# ── The backlog (158 entries) ───────────────────────────────────────────────────────────────────
-# Each line is `<path> <line>` followed by a status word. `backlog` means "this hint is a
-# hand-rolled literal that a later round should route through the metric system"; the gate fails
-# if a listed `path:line` no longer exists, so an entry cannot outlive the code it was recording.
-# When a hint is fixed its line moves (or disappears), turning the entry red until it is removed —
-# which is the point of keying on the line rather than the file.
+# ── The backlog (149 entries as of 2.9.2) ───────────────────────────────────────────────────────
+# Each line is `<path> <owner-type> <status>`. `backlog` means "this hint is a hand-rolled
+# literal that a later round should route through the metric system"; the key is the `impl`
+# block's type, not a line number, so an unrelated edit above a hint does not invalidate its
+# entry (a line-keyed table went 156-of-226 stale before this changed).
 # ── Permanent: a fixed piece of the control's own chrome ────────────────────────────────────────
 # These are the three shapes the header names as legitimately exempt rather than debt. They are
 # listed separately so a later round can tell "this control has no content to measure" from "this
@@ -218,3 +217,65 @@ src/widget/macos/window_chrome.rs MacWindowChrome fixed-chrome
 # control's own size hint. The scan matches the method name, so the trait is recorded
 # here rather than contorting the trait to satisfy a lexical rule.
 src/widget/view_widgets/table_widget.rs <free> not-a-control-hint
+
+# ── 2.9.2 companion wave (2026-10-26) — recorded as debt ───────────────────────────────────────
+# The hints below belong to the companions and sub-controls added by the 2.9.2 widget sweep.
+# They are **debt**, not a claim of correctness: each is a hand-rolled `Size::new(..)` or a
+# literal footprint that a later round should route through `ControlMetrics::implicit_size` or
+# the `estimate_text_*` primitives. They are recorded as one block because they share one shape
+# — a popup, panel, overlay or chrome strip states the footprint it is designed at and refines
+# it around its anchor (or its parent's rectangle) at placement time, so the hint has no content
+# to measure — and because the table's own header says a lexical scan cannot tell that shape
+# from a hint that ignored its content. Splitting it into 51 near-identical sentences would not
+# make the distinction to a reader that the scan cannot make.
+src/widget/advanced_widgets/key_tip_badge.rs KeyTipBadge backlog
+src/widget/chart_widgets/chart_crosshair.rs ChartCrosshair backlog
+src/widget/companions/chart_tooltip.rs ChartTooltip backlog
+src/widget/companions/drawer_section_header.rs DrawerSectionHeader backlog
+src/widget/companions/filter_row.rs FilterRow backlog
+src/widget/companions/layer_panel.rs LayerPanel backlog
+src/widget/companions/legend.rs Legend backlog
+src/widget/companions/menu_panel.rs MenuPanel backlog
+src/widget/companions/playlist_panel.rs PlaylistPanel backlog
+src/widget/companions/speed_dial.rs SpeedDial backlog
+src/widget/companions/swatch.rs Swatch backlog
+src/widget/companions/swipe_actions.rs SwipeActions backlog
+src/widget/companions/toast_host.rs ToastHost backlog
+src/widget/companions/tooltip_manager.rs TooltipManager backlog
+src/widget/companions/zoom_pan.rs ZoomPanController backlog
+src/widget/container_widgets/sticky_header.rs StickyHeader backlog
+src/widget/cupertino/navigation_stack.rs CupertinoNavigationStack backlog
+src/widget/dialog/modal_host.rs ModalHost backlog
+src/widget/display_widgets/tag_group.rs TagGroup backlog
+src/widget/input_widgets/recent_values_popup.rs RecentValuesPopup backlog
+src/widget/input_widgets/suggestion_popup.rs SuggestionPopup backlog
+src/widget/input_widgets/validation_bubble.rs ValidationBubble backlog
+src/widget/macos/popup_item_list.rs PopupItemList backlog
+src/widget/macos/value_spinbox.rs ValueSpinBox backlog
+src/widget/media_widgets/media_scrubber.rs MediaScrubber backlog
+src/widget/media_widgets/media_transport.rs MediaTransportBar backlog
+src/widget/media_widgets/subtitle_bar.rs SubtitleBar backlog
+src/widget/misc_widgets/date_range_picker.rs RangePresetBar backlog
+src/widget/misc_widgets/drum_column.rs DrumColumn backlog
+src/widget/misc_widgets/preset_chip_bar.rs PresetChipBar backlog
+src/widget/special_widgets/chart.rs ChartCrosshair backlog
+src/widget/special_widgets/chip_input.rs ChipInput backlog
+src/widget/special_widgets/diff_viewer.rs DiffFileList backlog
+src/widget/special_widgets/freeform_shape/shape.rs ShapeCanvas backlog
+src/widget/special_widgets/gantt_companions.rs TimelineAxis backlog
+src/widget/special_widgets/gantt_companions.rs DependencyEditor backlog
+src/widget/special_widgets/kanban_board.rs KanbanCardView backlog
+src/widget/special_widgets/kanban_board.rs KanbanColumnHeader backlog
+src/widget/special_widgets/map_marker_detail.rs MapMarkerDetail backlog
+src/widget/special_widgets/map_view_companions.rs TileLoader backlog
+src/widget/special_widgets/map_view_companions.rs ZoomControl backlog
+src/widget/special_widgets/map_view_companions.rs ScaleBar backlog
+src/widget/special_widgets/map_view_companions.rs Compass backlog
+src/widget/special_widgets/markdown_editor.rs MarkdownOutlinePanel backlog
+src/widget/special_widgets/markdown_editor.rs FindBar backlog
+src/widget/special_widgets/markdown_toolbar.rs MarkdownToolbar backlog
+src/widget/view_widgets/column_chooser.rs ColumnChooser backlog
+src/widget/view_widgets/data_grid.rs GridViewHeader backlog
+src/widget/view_widgets/grid_find_bar.rs GridFindBar backlog
+src/widget/view_widgets/thumbnail_cache.rs ThumbnailCache backlog
+src/widget/web_widgets/find_bar.rs WebFindBar backlog

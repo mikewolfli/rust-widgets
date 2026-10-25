@@ -1161,8 +1161,9 @@ impl Draw for SplitButton {
                         Rect::new(
                             row_box.x + 16,
                             row_box.y,
-                            row_box.width
-                                .saturating_sub(16 + if has_shortcut { shortcut_gap as u32 } else { 0 }),
+                            row_box.width.saturating_sub(
+                                16 + if has_shortcut { shortcut_gap as u32 } else { 0 },
+                            ),
                             row_box.height,
                         )
                     } else if has_shortcut {

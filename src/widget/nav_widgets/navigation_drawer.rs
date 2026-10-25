@@ -666,12 +666,14 @@ impl Draw for NavigationDrawer {
             .unwrap_or_else(|| ink.with_alpha(82));
         if slide > 0.0 {
             let scrim = scrim.with_alpha((scrim.a as f32 * slide) as u8);
+            // The scrim is a veil over the control's whole rectangle, not a surface with a
+            // rounded face: rounding it left four corner notches where the veil stopped short.
             context.face_with_gradient(
                 rect,
                 scrim,
                 self.style().background_gradient.as_ref(),
                 self.style().surface.unwrap_or_default(),
-                self.style().border_radius.unwrap_or(0),
+                0,
                 Color::BLACK,
             );
         }

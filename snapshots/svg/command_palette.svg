@@ -3,7 +3,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" rx="4" ry="4" fill="rgba(69,69,69,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <rect x="0.5" y="0.5" width="239" height="119" rx="3.5" ry="3.5" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
   <rect x="0" y="0" width="240" height="24" fill="rgba(78,78,78,1.00)" />
   <path d="M11.53 9.24L14.84 10.47L16.94 11.26L16.94 11.31L14.84 12.10L11.53 13.32L11.53 14.44L18.25 11.79L18.25 10.78L11.53 8.14Z" fill="rgba(225,225,225,1.00)" fill-rule="nonzero" data-text="1" />
   <rect x="1" y="24" width="238" height="24" fill="rgba(97,97,97,1.00)" />

@@ -408,8 +408,8 @@ impl Draw for Toast {
         // The severity stripe is a *state* indicator, so it reads the theme's
         // semantic tokens rather than a literal colour per level.
         let accent = crate::style::semantic_color(self.level.into())
-        .map(|token| token.blend(&background, 0.15))
-        .unwrap_or_else(|| background.blend(&text_color, 0.6));
+            .map(|token| token.blend(&background, 0.15))
+            .unwrap_or_else(|| background.blend(&text_color, 0.6));
         // The close affordance is secondary chrome, so it is a tint of the resolved
         // foreground rather than a second literal.
         let close_color = text_color.blend(&background, 0.4);

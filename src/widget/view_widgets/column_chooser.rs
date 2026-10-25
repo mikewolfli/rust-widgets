@@ -187,8 +187,13 @@ impl Draw for ColumnChooser {
         let ink = palette.as_ref().map(|colors| colors.foreground).unwrap_or(Color::BLACK);
         let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         context.fill_rounded_rect(rect, 4, surface);
-        context
-            .draw_rect(rect, palette.as_ref().map(|colors| colors.outline_variant).unwrap_or(ink));
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            4,
+            palette.as_ref().map(|colors| colors.outline_variant).unwrap_or(ink),
+            1,
+        );
         let font = crate::widget::metrics::effective_font(self.base.style());
         let filtered = self.filtered_columns();
         for (index, column) in filtered.iter().enumerate() {

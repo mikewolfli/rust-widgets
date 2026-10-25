@@ -369,7 +369,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
                 // created itself and handed to this backend.
                 if lparam != 0 {
                     let hwnd_from = lparam as HWND;
-// SAFETY: `lparam` carries a control HWND for a command from a window this backend created.
+                    // SAFETY: `lparam` carries a control HWND for a command from a window this backend created.
                     let fallback_command_id = unsafe { GetDlgCtrlID(hwnd_from) } as u32;
                     if fallback_command_id != 0 {
                         if let Ok(map) = platform.menu_state.control_command_to_widget.lock() {
@@ -397,12 +397,12 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             if let Some(platform) = notify::active_windows_platform() {
                 let hdr = lparam as *const NMHDR;
                 if !hdr.is_null() {
-// SAFETY: `hdr` is the `NMHDR` at the start of a `WM_NOTIFY` payload, checked non-null above.
+                    // SAFETY: `hdr` is the `NMHDR` at the start of a `WM_NOTIFY` payload, checked non-null above.
                     let hwnd_from = unsafe { (*hdr).hwndFrom };
-// SAFETY: same checked non-null `NMHDR`.
+                    // SAFETY: same checked non-null `NMHDR`.
                     let notify_code = unsafe { (*hdr).code };
                     if let Some(widget_id) =
-// SAFETY: `hwnd_from` is live and `platform` was resolved for this thread.
+                        // SAFETY: `hwnd_from` is live and `platform` was resolved for this thread.
                         unsafe { platform.widget_id_by_native_handle(hwnd_from) }
                     {
                         if let Some(kind) =

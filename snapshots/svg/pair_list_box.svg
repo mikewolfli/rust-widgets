@@ -3,7 +3,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="8" y="8" width="224" height="104" rx="4" ry="4" fill="rgba(69,69,69,1.00)" />
-  <rect x="8" y="8" width="224" height="104" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <rect x="8.5" y="8.5" width="223" height="103" rx="3.5" ry="3.5" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
   <clipPath id="clip_0"><rect x="9" y="9" width="222" height="102" /></clipPath>
   <g clip-path="url(#clip_0)">
   <rect x="9" y="9" width="222" height="20" fill="rgba(78,103,122,1.00)" />

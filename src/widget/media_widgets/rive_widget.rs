@@ -2103,7 +2103,13 @@ impl Draw for RiveWidget {
 
         // Draw bounding box — a chrome edge around the animation, so it follows the theme's
         // border token rather than a fixed violet.
-        context.draw_rect_stroke(rect, border_color, 1);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border_color,
+            1,
+        );
 
         // The composition's extent is cached by `composition_extent`; this pass only reads it.
         let (comp_w, comp_h) = (comp_extent * 2.0, comp_extent * 2.0);
@@ -2141,12 +2147,8 @@ impl Draw for RiveWidget {
         // Origin is the glyph box's top edge, so it is the same `+ 2` the backdrop uses;
         // the removed `+ ascent` had pushed the label half a line down inside its own pill.
         let name_y = rect.y + 2;
-        let name_bg = Rect::new(
-            name_x - 2,
-            rect.y + 1,
-            name_metrics.width + 8,
-            name_metrics.height + 4,
-        );
+        let name_bg =
+            Rect::new(name_x - 2, rect.y + 1, name_metrics.width + 8, name_metrics.height + 4);
         context.fill_rounded_rect(name_bg, 3, trough_color);
         context.draw_text(
             Point::new(name_x, name_y),
@@ -2164,8 +2166,7 @@ impl Draw for RiveWidget {
         // Same top-edge origin as the name label: no ascent term, or the percentage sits
         // half a line low in its pill.
         let py = rect.y + 2;
-        let p_bg =
-            Rect::new(px - 2, rect.y + 1, p_metrics.width + 8, p_metrics.height + 4);
+        let p_bg = Rect::new(px - 2, rect.y + 1, p_metrics.width + 8, p_metrics.height + 4);
         context.fill_rounded_rect(p_bg, 3, trough_color);
         context.draw_text(
             Point::new(px, py),

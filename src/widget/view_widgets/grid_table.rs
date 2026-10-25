@@ -1720,7 +1720,13 @@ impl Draw for GridTableWidget {
 
         if rows == 0 || cols == 0 {
             // Draw at least the header / row-number area frame
-            context.draw_rect(rect, grid_color);
+            crate::widget::draw::stroke_surface_border(
+                context,
+                rect,
+                self.style().border_radius.unwrap_or(0),
+                grid_color,
+                1,
+            );
             return;
         }
 
@@ -1909,7 +1915,13 @@ impl Draw for GridTableWidget {
         }
 
         // ── Outer border ──
-        context.draw_rect(rect, outer_border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            outer_border,
+            1,
+        );
 
         // The scroll-bar thumb is opt-in: the grid is virtualized, so the wheel and keyboard
         // already reach every row; the thumb is the visible statement of how much is off-screen.

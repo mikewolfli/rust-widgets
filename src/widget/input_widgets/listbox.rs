@@ -1736,7 +1736,13 @@ impl Draw for ListBox {
         );
         // The border is drawn on the control's outer rectangle, so the rows must not paint over it
         // — `row_rect` insets them by `CONTENT_INSET` inside this stroke.
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         // Partial rows are clipped to the content box. `visible_range` deliberately includes the
         // row that is only partly visible (`ceil`), because a list that hid it would leave a band

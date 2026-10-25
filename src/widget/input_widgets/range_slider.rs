@@ -885,7 +885,7 @@ impl Draw for RangeSlider {
         let track_thickness = 6u32;
 
         if self.orientation == RangeSliderOrientation::Horizontal {
-            let track_y = rect.y + rect.height as i32 / 2 - track_thickness as i32 / 2;
+            let track_y = rect.center().y - track_thickness as i32 / 2;
             let track_rect = Rect::new(
                 rect.x + handle_radius as i32,
                 track_y,
@@ -928,7 +928,7 @@ impl Draw for RangeSlider {
             }
 
             // Draw handles
-            let center_y = rect.y + rect.height as i32 / 2;
+            let center_y = rect.center().y;
 
             for (index, &value) in [self.lower_value, self.upper_value].iter().enumerate() {
                 let cx = self.value_to_pixel(value, &rect);

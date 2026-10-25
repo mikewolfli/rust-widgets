@@ -1208,11 +1208,11 @@ impl Widget for PieMenu {
             }
             "about_to_show" => Some(EventSignalRef::unit("about_to_show", &self.about_to_show)),
             "about_to_hide" => Some(EventSignalRef::unit("about_to_hide", &self.about_to_hide)),
-            "triggered_id" => Some(EventSignalRef::mapped(
-                "triggered_id",
-                &self.triggered_id,
-                |v| CapabilityValue::UInt(*v),
-            )),
+            "triggered_id" => {
+                Some(EventSignalRef::mapped("triggered_id", &self.triggered_id, |v| {
+                    CapabilityValue::UInt(*v)
+                }))
+            }
             _ => None,
         }
     }

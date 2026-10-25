@@ -947,7 +947,13 @@ impl Draw for GridWidget {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != cell_fill)
             .unwrap_or_else(|| cell_fill.blend(&secondary, 0.45));
-        context.draw_rect(rect, border_color);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border_color,
+            1,
+        );
 
         // Selection and hover are chrome states, so they are tints of the resolved ink rather
         // than colours of their own. They are painted before the separators, so a line stays

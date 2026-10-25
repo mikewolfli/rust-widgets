@@ -168,7 +168,7 @@ impl FfmpegDecoder {
         // codec parameters the stream already carries.
         let (source_width, source_height) = {
             let params = stream.parameters();
-// SAFETY: `params` points at the codec parameters owned by the live `stream`; only two fields are read.
+            // SAFETY: `params` points at the codec parameters owned by the live `stream`; only two fields are read.
             unsafe { ((*params.as_ptr()).width, (*params.as_ptr()).height) }
         };
         let decoder = codec_ctx.decoder().video().map_err(|e| {

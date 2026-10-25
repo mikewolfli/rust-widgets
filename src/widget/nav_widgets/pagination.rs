@@ -1326,7 +1326,14 @@ impl Draw for Pagination {
             self.draw_page_size_popup(context, popup, font, text_color, background, outline);
         }
 
-        context.draw_rect(rect, outline);
+        // The bar's own outline follows the face's radius, so the four corners close.
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            outline,
+            1,
+        );
     }
 
     fn uses_custom_drawing(&self) -> bool {

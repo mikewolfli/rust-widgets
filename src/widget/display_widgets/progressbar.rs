@@ -767,9 +767,15 @@ impl Draw for ProgressBar {
         // The groove is the control's *own chrome* — the empty run the fill is measured against — so
         // it is drawn unconditionally, including at value 0. Only the fill below is conditional.
         context.fill_rounded_rect(bar_rect, bar_height / 2, track_color);
-        // Draw border
+        // Draw border, rounded like the pill groove so the outline closes at its ends.
         if let Some(border_color) = style.border_color {
-            context.draw_rect(bar_rect, border_color);
+            crate::widget::draw::stroke_surface_border(
+                context,
+                bar_rect,
+                bar_height / 2,
+                border_color,
+                1,
+            );
         }
         // Draw the filled run — but only when there is one.
         //

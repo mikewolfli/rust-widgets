@@ -209,6 +209,30 @@ fn software_backend_delegates_text_shaping() {
     let shaped = backend.shape_text("e\u{0301}", &font());
     assert_eq!(shaped.cluster_count(), 1);
 }
+/// CJK text must resolve to real glyphs with full-width advances, not tofu or narrow fallback.
+///
+/// "Mojibake in the demos" is either a wrong glyph mapping (a narrow or wrong-advance glyph per
+/// character) or a missing face (tofu). Both show up in the measured advance: a CJK glyph is about
+/// one em wide, so two of them advance about twice one. A build without a CJK face answers `None`
+/// from `face_for_char`, which the demo reports in its log, and there is no width to assert.
+#[test]
+fn cjk_text_measures_as_full_width_glyphs() {
+    let _guard = crate::style::theme_test_guard();
+    if crate::render::text::face_for_char('中').is_none() {
+        return;
+    }
+    let surface = SoftwareSurface::new(Size { width: 200, height: 40 }, 1.0);
+    let font = Font::simple("Sans", 16.0);
+    let one = surface.measure_text("中", &font);
+    let two = surface.measure_text("中文", &font);
+    let one_w = f64::from(one.width);
+    let two_w = f64::from(two.width);
+    assert!(one_w > 8.0, "a CJK glyph has an advance, got {one_w}");
+    assert!(
+        (two_w - one_w * 2.0).abs() < one_w.max(2.0),
+        "two CJK glyphs advance about twice one: {two_w} vs {one_w}"
+    );
+}
 #[test]
 fn draw_text_rasterizes_glyph_instead_of_full_rect_fill() {
     let mut surface = SoftwareSurface::new(Size { width: 80, height: 30 }, 1.0);
@@ -503,6 +527,48 @@ fn scene_composition_supports_rounded_rect_commands() {
     let fill_idx = ((7 * 14 + 7) * 4) as usize;
     assert_eq!(&backend.frame_rgba()[fill_idx..fill_idx + 4], &[71, 72, 73, 255]);
 }
+/// A rounded outline hugs its rectangle and closes at the corners on the **software** path.
+///
+/// This is the path the running application paints through, so the property the snapshots show must
+/// hold here first: the rule sits on `x = rect.x` / `y = rect.y` rather than `radius` pixels inside
+/// (which is what the wgpu CPU ring did), and the corner arc meets those rules instead of stopping
+/// short of them.
+#[test]
+fn rounded_rect_stroke_lies_on_the_edge_and_closes_its_corners() {
+    let mut surface = SoftwareSurface::new(Size { width: 24, height: 24 }, 1.0);
+    surface.begin_frame(Color::TRANSPARENT);
+    surface.draw_rounded_rect_with_width(
+        Rect { x: 0, y: 0, width: 20, height: 20 },
+        4,
+        Color::rgba(200, 201, 202, 255),
+        1,
+    );
+    surface.end_frame();
+    let px = |x: usize, y: usize| -> [u8; 4] {
+        let i = (y * 24 + x) * 4;
+        [
+            surface.frame_rgba()[i],
+            surface.frame_rgba()[i + 1],
+            surface.frame_rgba()[i + 2],
+            surface.frame_rgba()[i + 3],
+        ]
+    };
+
+    // The rules are on the rectangle's own edges, not inset by the radius.
+    assert!(px(0, 10)[3] > 0, "the left rule must sit on x = rect.x");
+    assert!(px(10, 0)[3] > 0, "the top rule must sit on y = rect.y");
+
+    // The corner is a quarter arc: the exact corner point is outside the rounded shape.
+    assert_eq!(px(0, 0)[3], 0, "the square corner must be cut away by the radius");
+
+    // The middle of the rectangle is the hole the outline encloses.
+    assert_eq!(px(10, 10)[3], 0, "an outline is a ring, not a fill");
+
+    // Nothing is painted outside the rectangle the caller declared.
+    assert_eq!(px(20, 10)[3], 0, "nothing is painted past rect.right()");
+    assert_eq!(px(10, 20)[3], 0, "nothing is painted past rect.bottom()");
+}
+
 #[test]
 fn draw_rounded_rect_aa_with_width_produces_soft_edge() {
     let mut surface = SoftwareSurface::new(Size { width: 16, height: 16 }, 1.0);

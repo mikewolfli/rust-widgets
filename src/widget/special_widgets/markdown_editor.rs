@@ -2382,7 +2382,13 @@ impl Draw for MarkdownEditor {
             style.border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         // The counts come from the revision-keyed cache, so a still frame walks no document.
         let metrics = self.metrics_snapshot();
@@ -3510,7 +3516,13 @@ impl Draw for MarkdownOutlinePanel {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         let rows = self.visible_rows();
         for offset in 0..rows {
@@ -4233,7 +4245,13 @@ impl Draw for FindBar {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         let query_band = self.query_band();
         let text_rect = self.query_text_rect();
@@ -4270,7 +4288,7 @@ impl Draw for FindBar {
         ] {
             if active {
                 context.fill_rounded_rect(box_rect, 3, surface.blend(&accent, 0.30));
-                context.draw_rect(box_rect, accent);
+                crate::widget::draw::stroke_surface_border(context, box_rect, 3, accent, 1);
             }
             context.draw_text(
                 Point::new(box_rect.x + 4, box_rect.y + 3),

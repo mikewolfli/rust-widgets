@@ -935,7 +935,7 @@ impl WaylandPlatform {
                 Some(read_guard) => {
                     let fd = read_guard.connection_fd().as_raw_fd();
                     let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-// SAFETY: `pollfd` is a valid stack local and the call touches only this thread's fd set.
+                    // SAFETY: `pollfd` is a valid stack local and the call touches only this thread's fd set.
                     let rc = unsafe { libc::poll(&mut pollfd, 1, IDLE_TIMEOUT_MS) };
                     if rc > 0 {
                         // Data available: read it, then dispatch to handlers.

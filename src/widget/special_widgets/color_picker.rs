@@ -834,7 +834,13 @@ impl Draw for ColorPicker {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, frame);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            frame,
+            1,
+        );
 
         let palette = self.palette_rect();
         let hue_rect = self.hue_rect();

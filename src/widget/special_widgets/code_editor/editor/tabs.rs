@@ -39,7 +39,8 @@ impl CodeEditor {
             .iter()
             .enumerate()
             .map(|(index, buffer)| {
-                let modified = if index == model.active_tab { model.dirty } else { buffer.modified };
+                let modified =
+                    if index == model.active_tab { model.dirty } else { buffer.modified };
                 (buffer.title.clone(), modified, buffer.language)
             })
             .collect()

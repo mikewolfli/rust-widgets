@@ -1399,7 +1399,13 @@ impl Draw for Canvas {
             context.pop_layer();
         }
         // Draw border to make canvas area visible
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
     }
 
     fn uses_custom_drawing(&self) -> bool {

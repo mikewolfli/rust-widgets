@@ -1482,7 +1482,13 @@ impl Draw for DiffViewer {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         let mid_x = rect.x + (rect.width as i32 / 2);
         if self.view_mode == DiffViewMode::SideBySide {
@@ -2299,7 +2305,13 @@ impl Draw for DiffFileList {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         let rows = self.visible_rows();
         for offset in 0..rows {

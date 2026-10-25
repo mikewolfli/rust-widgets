@@ -2112,7 +2112,13 @@ impl Draw for TextArea {
 
         // -- Border --
         let border = self.style().border_color.unwrap_or(Color::rgb(200, 200, 200));
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         // -- Text --
         let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));

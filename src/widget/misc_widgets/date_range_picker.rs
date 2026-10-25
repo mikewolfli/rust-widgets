@@ -1770,7 +1770,7 @@ impl Draw for RangePresetBar {
             };
             context.fill_rounded_rect(chip, 4, fill);
             if active {
-                context.draw_rect(chip, accent);
+                crate::widget::draw::stroke_surface_border(context, chip, 4, accent, 1);
             }
             let label = crate::widget::text_utils::elide_end(
                 &self.presets[index].label,

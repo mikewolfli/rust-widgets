@@ -1167,7 +1167,14 @@ impl Draw for ToolButton {
             Color::BLACK,
         );
         if hovered || pressed || self.checked {
-            context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), accent);
+            // The state outline follows the button's face radius, closing all four corners.
+            crate::widget::draw::stroke_surface_border(
+                context,
+                Rect::new(rect.x, rect.y, rect.width, rect.height),
+                style.border_radius.unwrap_or(0),
+                accent,
+                1,
+            );
         }
         // A disabled label is the ink faded toward the fill behind it, which keeps it
         // readable-but-muted on a dark theme as well as a light one; the literal is only

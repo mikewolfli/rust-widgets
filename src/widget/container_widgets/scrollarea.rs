@@ -1899,7 +1899,13 @@ impl Draw for ScrollArea {
             Color::BLACK,
         );
         // Draw border
-        context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(200, 200, 200)));
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
+            1,
+        );
         // The scroll bar's three surfaces, resolved from the style with the previous greys as
         // the fallback. `draw_sticky_band` already read the style; the bar did not, which is why
         // a themed scroll area kept a pale bar. `background_color` is what the bar's groove was

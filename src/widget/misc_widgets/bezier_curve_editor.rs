@@ -994,7 +994,13 @@ impl Draw for BezierCurveEditor {
         context.fill_circle(p3, 4, surface.blend(&text_color, 0.6));
 
         // A frame separates the editor from whatever it is embedded in.
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
     }
 }
 

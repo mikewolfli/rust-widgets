@@ -1000,7 +1000,7 @@ impl Platform for MacOSPlatform {
             return self.state.set_clipboard_text(text);
         }
         // Try real NSPasteboard integration first
-// SAFETY: runs on the main thread with an autorelease pool; `catch_unwind` contains any panic.
+        // SAFETY: runs on the main thread with an autorelease pool; `catch_unwind` contains any panic.
         let result = std::panic::catch_unwind(|| unsafe {
             let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
             if pb == nil {
@@ -1021,7 +1021,7 @@ impl Platform for MacOSPlatform {
             return self.state.clipboard_text();
         }
         // Try real NSPasteboard integration first
-// SAFETY: runs on the main thread with an autorelease pool; `catch_unwind` contains any panic.
+        // SAFETY: runs on the main thread with an autorelease pool; `catch_unwind` contains any panic.
         let result = std::panic::catch_unwind(|| unsafe {
             let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
             if pb == nil {

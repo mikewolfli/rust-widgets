@@ -65,7 +65,7 @@ impl WindowsAccessibilityBridge {
         #[cfg(target_os = "windows")]
         {
             let hwnd = hwnd_val as winapi::shared::windef::HWND;
-// SAFETY: `hwnd` is a live handle supplied by the caller and `event` is a Win32 event constant.
+            // SAFETY: `hwnd` is a live handle supplied by the caller and `event` is a Win32 event constant.
             unsafe {
                 winapi::um::winuser::NotifyWinEvent(
                     event,

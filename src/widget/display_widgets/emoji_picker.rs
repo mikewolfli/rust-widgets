@@ -869,7 +869,13 @@ impl Draw for EmojiPicker {
             style.border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
         self.draw_search(context, field, ink);
         self.draw_tabs(context, strip, ink, panel);
         // The projection is filled into the control's reusable index buffer instead of a fresh

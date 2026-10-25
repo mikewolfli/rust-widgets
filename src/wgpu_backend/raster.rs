@@ -767,40 +767,65 @@ fn fill_rounded_rect_cpu_rgba8(
     };
     let mut sink = PixelSink { pixels, width: fb_width, mode: blend };
     let r = radius.min(rect.width / 2).min(rect.height / 2) as i32;
-    let r2 = r * r;
     let x_start = clip_rect.x.max(rect.x);
     let y_start = clip_rect.y.max(rect.y);
     let x_end = clip_rect.right().min(rect.right());
     let y_end = clip_rect.bottom().min(rect.bottom());
     for y in y_start..y_end {
         for x in x_start..x_end {
-            // Check if pixel is inside the rounded rect:
-            // top-left corner
-            let inside = if x < rect.x + r && y < rect.y + r {
-                let dx = rect.x + r - x;
-                let dy = rect.y + r - y;
-                dx * dx + dy * dy <= r2
-            } else if x >= rect.right() - r && y < rect.y + r {
-                let dx = x - (rect.right() - r - 1);
-                let dy = rect.y + r - y;
-                dx * dx + dy * dy <= r2
-            } else if x < rect.x + r && y >= rect.bottom() - r {
-                let dx = rect.x + r - x;
-                let dy = y - (rect.bottom() - r - 1);
-                dx * dx + dy * dy <= r2
-            } else if x >= rect.right() - r && y >= rect.bottom() - r {
-                let dx = x - (rect.right() - r - 1);
-                let dy = y - (rect.bottom() - r - 1);
-                dx * dx + dy * dy <= r2
-            } else {
-                true
-            };
-            if inside {
+            if inside_rounded_rect(rect, r, x, y) {
                 sink.set(x as u32, y as u32, color);
             }
         }
     }
 }
+
+/// Whether pixel `(x, y)` is inside `rect` rounded with corner radius `r`.
+///
+/// One predicate shared by the fill and the outline. The outline is "the outer shape minus the
+/// same shape inset by its width", so the two must agree about what *inside* means — otherwise the
+/// ring's straight sections and its corner arcs land on different pixels and the outline has gaps.
+fn inside_rounded_rect(rect: PixelRect, r: i32, x: i32, y: i32) -> bool {
+    // Bounds first: the corner branches below also assume the point is inside, so `true` from the
+    // middle branch would otherwise mean "inside" for a point above or left of the rectangle —
+    // which is exactly the shape the outline's *inner* test is asked about.
+    if x < rect.x || x >= rect.right() || y < rect.y || y >= rect.bottom() {
+        return false;
+    }
+    if r <= 0 {
+        return true;
+    }
+    let r2 = r * r;
+    // Check if pixel is inside the rounded rect:
+    // top-left corner
+    if x < rect.x + r && y < rect.y + r {
+        let dx = rect.x + r - x;
+        let dy = rect.y + r - y;
+        dx * dx + dy * dy <= r2
+    } else if x >= rect.right() - r && y < rect.y + r {
+        let dx = x - (rect.right() - r - 1);
+        let dy = rect.y + r - y;
+        dx * dx + dy * dy <= r2
+    } else if x < rect.x + r && y >= rect.bottom() - r {
+        let dx = rect.x + r - x;
+        let dy = y - (rect.bottom() - r - 1);
+        dx * dx + dy * dy <= r2
+    } else if x >= rect.right() - r && y >= rect.bottom() - r {
+        let dx = x - (rect.right() - r - 1);
+        let dy = y - (rect.bottom() - r - 1);
+        dx * dx + dy * dy <= r2
+    } else {
+        true
+    }
+}
+/// Paints `rect`'s outline with rounded corners.
+///
+/// The outline is the **inside** band — `rect` minus `rect` inset by `thickness` — which is the
+/// same band the software backend (`pipeline::primitives`) and the SVG backend paint. It used to
+/// be built from four straight sections and four corner rings, with the straight sections placed
+/// `radius` pixels in from the edge; a corner arc and the line it should meet then sat `radius`
+/// apart, which is why every rounded outline had four open corners. Deriving the ring from one
+/// predicate removes that class of mistake: there is no second placement to disagree with.
 #[allow(clippy::nonminimal_bool)]
 fn stroke_rounded_rect_cpu_rgba8(
     pixels: &mut [u8],
@@ -819,45 +844,30 @@ fn stroke_rounded_rect_cpu_rgba8(
     let mut sink = PixelSink { pixels, width: fb_width, mode: blend };
     let r = radius.min(rect.width / 2).min(rect.height / 2) as i32;
     let t = thickness as i32;
-    let outer_r2 = (r + t) * (r + t);
-    let inner_r2 = (r - t).max(0) * (r - t).max(0);
+    let inner_width = rect.width as i32 - 2 * t;
+    let inner_height = rect.height as i32 - 2 * t;
+    let inner = (inner_width > 0 && inner_height > 0).then_some(PixelRect {
+        x: rect.x + t,
+        y: rect.y + t,
+        width: inner_width as u32,
+        height: inner_height as u32,
+    });
+    let inner_r = (r - t).max(0);
     let x_start = clip_rect.x.max(rect.x);
     let y_start = clip_rect.y.max(rect.y);
     let x_end = clip_rect.right().min(rect.right());
     let y_end = clip_rect.bottom().min(rect.bottom());
     for y in y_start..y_end {
         for x in x_start..x_end {
-            let in_corner_zone = (x < rect.x + r + t && y < rect.y + r + t)
-                || (x >= rect.right() - r - t && y < rect.y + r + t)
-                || (x < rect.x + r + t && y >= rect.bottom() - r - t)
-                || (x >= rect.right() - r - t && y >= rect.bottom() - r - t);
-            let visible = if in_corner_zone {
-                // Four corner quadrants
-                let (cx, cy) = if x < rect.x + r + t && y < rect.y + r + t {
-                    (rect.x + r, rect.y + r)
-                } else if x >= rect.right() - r - t && y < rect.y + r + t {
-                    (rect.right() - r - 1, rect.y + r)
-                } else if x < rect.x + r + t && y >= rect.bottom() - r - t {
-                    (rect.x + r, rect.bottom() - r - 1)
-                } else {
-                    (rect.right() - r - 1, rect.bottom() - r - 1)
-                };
-                let dx = x - cx;
-                let dy = y - cy;
-                let d2 = dx * dx + dy * dy;
-                d2 <= outer_r2 && d2 >= inner_r2
-            } else {
-                // Straight edge sections
-                let on_top = y < rect.y + r + t && y >= rect.y + r;
-                let on_bottom = y >= rect.bottom() - r - t && y < rect.bottom() - r;
-                let on_left = x < rect.x + r + t && x >= rect.x + r;
-                let on_right = x >= rect.right() - r - t && x < rect.right() - r;
-                (on_top || on_bottom) && x >= rect.x + r && x < rect.right() - r
-                    || (on_left || on_right) && y >= rect.y + r && y < rect.bottom() - r
-            };
-            if visible {
-                sink.set(x as u32, y as u32, color);
+            if !inside_rounded_rect(rect, r, x, y) {
+                continue;
             }
+            if let Some(inner) = inner {
+                if inside_rounded_rect(inner, inner_r, x, y) {
+                    continue;
+                }
+            }
+            sink.set(x as u32, y as u32, color);
         }
     }
 }
@@ -2104,6 +2114,54 @@ mod tests {
             "the outer-only region must not be painted: a nested clip can only shrink"
         );
         assert_eq!(pixel(&pixels, 10, 9, 9), [0, 0, 0, 0], "outside both clips stays untouched");
+    }
+
+    /// A rounded outline must hug the rectangle's edge and stay connected round the corner.
+    ///
+    /// # The defect this pins
+    ///
+    /// The straight sections used to be painted `radius` pixels in from the edge (`y >= rect.y +
+    /// r`), while the corner ring sat on the true corner centre. A 4 px corner therefore left a 4 px
+    /// gap between the arc and the line it was supposed to meet: every rounded control had four
+    /// open corners, and the top/bottom/left/right rules were drawn well inside the widget. The
+    /// outline is now derived as "outer shape minus the shape inset by its width", so the two
+    /// cannot disagree.
+    #[test]
+    fn rounded_stroke_hugs_the_edge_and_closes_its_corners() {
+        let commands = vec![WgpuDrawCommand::StrokeRoundedRect {
+            rect: rect(5, 5, 20, 20),
+            radius: 4,
+            color: RED,
+            thickness: 1,
+            clip: None,
+        }];
+        let pixels = rasterize_draw_commands_rgba8(40, 40, &commands).expect("rasterizes");
+
+        // The top rule is on the first row of the rectangle, not `radius` px below it.
+        for x in 9..=20 {
+            assert_eq!(
+                pixel(&pixels, 40, x, 5),
+                [255, 0, 0, 255],
+                "the top rule must sit on y = rect.y (x = {x})"
+            );
+        }
+        assert_eq!(
+            pixel(&pixels, 40, 5, 9),
+            [255, 0, 0, 255],
+            "the left rule meets the corner arc"
+        );
+        assert_eq!(pixel(&pixels, 40, 9, 5), [255, 0, 0, 255], "the top rule meets the corner arc");
+
+        // The interior stays empty: a 1 px outline is a ring, not a fill.
+        assert_eq!(
+            pixel(&pixels, 40, 15, 15),
+            [0, 0, 0, 0],
+            "the middle of the ring is not painted"
+        );
+
+        // Nothing bleeds outside the rectangle the caller declared.
+        assert_eq!(pixel(&pixels, 40, 4, 20), [0, 0, 0, 0], "nothing is painted left of rect.x");
+        assert_eq!(pixel(&pixels, 40, 20, 4), [0, 0, 0, 0], "nothing is painted above rect.y");
     }
 
     /// A command's own `clip` field and the pushed clip must compose, not override.

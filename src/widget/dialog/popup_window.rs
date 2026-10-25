@@ -569,7 +569,13 @@ impl Draw for PopupWindow {
                 self.style().border_radius.unwrap_or(0),
                 Color::BLACK,
             );
-            context.draw_rect(rect, border);
+            crate::widget::draw::stroke_surface_border(
+                context,
+                rect,
+                self.style().border_radius.unwrap_or(0),
+                border,
+                1,
+            );
         }
 
         // The resize grip is painted even for a titleless popup, which is why it sits before

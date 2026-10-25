@@ -109,7 +109,13 @@ impl Draw for CodeEditor {
 
         // Background and border.
         context.fill_rect(rect, chrome.surface);
-        context.draw_rect(rect, chrome.border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            chrome.border,
+            1,
+        );
 
         self.draw_tab_strip(context, rect, &chrome);
         self.draw_find_bar(context, rect, &chrome);

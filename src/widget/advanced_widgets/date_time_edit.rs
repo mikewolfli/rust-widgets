@@ -1227,7 +1227,14 @@ impl Draw for DateTimeEdit {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        // Rounded to the face's radius: a square outline left the four corners unpainted.
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
         // The value is spelled by the caller's `display_format` when that pattern is one this control
         // can render, and by `DateTime`'s own spelling otherwise — the same rule and the same shared
         // substituter as `date_edit` and `time_edit`, so the same pattern cannot render three ways.

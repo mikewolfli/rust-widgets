@@ -1026,10 +1026,7 @@ mod tests {
         assert_eq!(expect_i32_saturating(CapabilityValue::Int(1 << 40)), Ok(i32::MAX));
         assert_eq!(expect_i32_saturating(CapabilityValue::Int(-(1 << 40))), Ok(i32::MIN));
         assert_eq!(expect_i32_saturating(CapabilityValue::Int(-7)), Ok(-7));
-        assert_eq!(
-            expect_i32_saturating(CapabilityValue::UInt(i64::MAX as u64)),
-            Ok(i32::MAX)
-        );
+        assert_eq!(expect_i32_saturating(CapabilityValue::UInt(i64::MAX as u64)), Ok(i32::MAX));
 
         assert_eq!(expect_u32_saturating(CapabilityValue::UInt(u64::MAX)), Ok(u32::MAX));
         assert_eq!(expect_u16_saturating(CapabilityValue::Int(70_000)), Ok(u16::MAX));

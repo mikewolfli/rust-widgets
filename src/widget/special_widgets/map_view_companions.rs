@@ -503,7 +503,13 @@ impl Draw for TileLoader {
         let style = self.base.style();
         let (surface, border, ink) = companion_palette(style, "tile_loader");
         context.face_with_gradient(rect, surface, None, Default::default(), 0, Color::BLACK);
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
         let status = format!(
             "Tiles {}/{}  z{}-{}",
             self.cached_count(),
@@ -767,7 +773,13 @@ impl Draw for ZoomControl {
         let style = self.base.style();
         let (surface, border, ink) = companion_palette(style, "zoom_control");
         context.face_with_gradient(rect, surface, None, Default::default(), 0, Color::BLACK);
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
         for button in [ZoomButton::Out, ZoomButton::Reset, ZoomButton::In] {
             let button_rect = self.button_rect(button);
             context.face_with_gradient(
@@ -778,7 +790,8 @@ impl Draw for ZoomControl {
                 2,
                 Color::BLACK,
             );
-            context.draw_rect(button_rect, border);
+            // Rounded to the button's own face radius: a square outline left the corners bare.
+            crate::widget::draw::stroke_surface_border(context, button_rect, 2, border, 1);
             let label = match button {
                 ZoomButton::Out => "-",
                 ZoomButton::Reset => "1:1",
@@ -1081,7 +1094,11 @@ impl Draw for ScaleBar {
         let (surface, border, ink) = companion_palette(style, "scale_bar");
         if self.style == ScaleBarStyle::Boxed {
             context.face_with_gradient(rect, surface, None, Default::default(), 3, Color::BLACK);
-            context.draw_rect(rect, border);
+            crate::widget::draw::stroke_surface_border(
+                context, rect,
+                // The fill above is the companion's 3 px arc; the outline follows it.
+                3, border, 1,
+            );
         }
         let width = self.bar_pixels();
         if width == 0 {
@@ -1261,7 +1278,7 @@ impl Draw for Compass {
         let rect = self.geometry();
         let style = self.base.style();
         let (surface, border, ink) = companion_palette(style, "compass");
-        let center = Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2);
+        let center = rect.center();
         let radius = self.radius();
         context.fill_circle(center, radius, surface);
         context.draw_circle(center, radius, border);

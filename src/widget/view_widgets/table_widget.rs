@@ -1108,7 +1108,13 @@ impl Draw for TableWidget {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
         // Header row: the band the content rows begin below. It carries the surface's own
         // ink as a rule, so a table with a model reads as a table before its first row.
         if self.header_visible && content.height > header.height {

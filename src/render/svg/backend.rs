@@ -5,7 +5,9 @@
 
 #[cfg(feature = "3d")]
 use super::convert::quad_points;
-use super::convert::{color_to_rgba, point_attrs, rect_attrs};
+use super::convert::{
+    color_to_rgba, number_attr, outline_radius, outline_rect_attrs, point_attrs, rect_attrs,
+};
 #[cfg(test)]
 use crate::compat::Arc;
 use crate::compat::Rc;
@@ -1053,7 +1055,7 @@ impl PaintBackend for SvgPaintBackend {
             RenderCommand::DrawRect { rect, color } => {
                 self.push_element(format!(
                     r#"<rect {} fill="none" stroke="{}" stroke-width="1" />"#,
-                    rect_attrs(rect),
+                    outline_rect_attrs(rect, 1),
                     color_to_rgba(color)
                 ));
             }
@@ -1061,7 +1063,7 @@ impl PaintBackend for SvgPaintBackend {
             RenderCommand::DrawRectStroke { rect, color, width } => {
                 self.push_element(format!(
                     r#"<rect {} fill="none" stroke="{}" stroke-width="{}" />"#,
-                    rect_attrs(rect),
+                    outline_rect_attrs(rect, *width),
                     color_to_rgba(color),
                     width
                 ));
@@ -1072,9 +1074,9 @@ impl PaintBackend for SvgPaintBackend {
             | RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width } => {
                 self.push_element(format!(
                     r#"<rect {} rx="{}" ry="{}" fill="none" stroke="{}" stroke-width="{}" />"#,
-                    rect_attrs(rect),
-                    radius,
-                    radius,
+                    outline_rect_attrs(rect, *width),
+                    number_attr(outline_radius(rect, *radius, *width)),
+                    number_attr(outline_radius(rect, *radius, *width)),
                     color_to_rgba(color),
                     width
                 ));
@@ -1326,7 +1328,7 @@ impl PaintBackend for SvgPaintBackend {
                 match gradient.gradient_type {
                     GradientType::Linear => {
                         def.push_str(&format!(
-                            r##"<linearGradient id=\"{}\" x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\">"##,
+                            r##"<linearGradient id="{}" x1="{}" y1="{}" x2="{}" y2="{}">"##,
                             gid,
                             gradient.start_point.x,
                             gradient.start_point.y,
@@ -1336,7 +1338,7 @@ impl PaintBackend for SvgPaintBackend {
                     }
                     GradientType::Radial => {
                         def.push_str(&format!(
-                            r##"<radialGradient id=\"{}\" cx=\"{}\" cy=\"{}\" r=\"{}\">"##,
+                            r##"<radialGradient id="{}" cx="{}" cy="{}" r="{}">"##,
                             gid, gradient.center.x, gradient.center.y, gradient.radius
                         ));
                     }
@@ -1350,7 +1352,7 @@ impl PaintBackend for SvgPaintBackend {
                         format!("#{:02x}{:02x}{:02x}", stop.color.r, stop.color.g, stop.color.b);
                     let alpha = stop.color.a as f32 / 255.0;
                     def.push_str(&format!(
-                        r##"<stop offset=\"{:.3}\" stop-color=\"{}\" stop-opacity=\"{:.3}\"/>"##,
+                        r##"<stop offset="{:.3}" stop-color="{}" stop-opacity="{:.3}"/>"##,
                         stop.position, hex, alpha
                     ));
                 }
@@ -1996,8 +1998,11 @@ mod tests {
         });
         svg.end_frame();
         let result = svg.finish();
-        assert!(result.contains("rx=\"8\""));
-        assert!(result.contains("ry=\"8\""));
+        // The outline is inset by half the stroke, so the radius follows: 8 - 2/2 = 7, and the
+        // band covers the same pixels the raster backends paint.
+        assert!(result.contains("x=\"11\" y=\"11\" width=\"78\" height=\"78\""));
+        assert!(result.contains("rx=\"7\""));
+        assert!(result.contains("ry=\"7\""));
         assert!(result.contains("stroke-width=\"2\""));
     }
 

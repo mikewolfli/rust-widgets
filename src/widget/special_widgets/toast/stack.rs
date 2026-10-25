@@ -101,8 +101,8 @@ impl ToastStack {
     /// The tint a severity badge is painted in, derived from the theme's semantic token.
     fn badge_color(level: ToastLevel, background: Color, text_color: Color) -> Color {
         crate::style::semantic_color(level.into())
-        .map(|token| token.blend(&background, 0.15))
-        .unwrap_or_else(|| background.blend(&text_color, 0.6))
+            .map(|token| token.blend(&background, 0.15))
+            .unwrap_or_else(|| background.blend(&text_color, 0.6))
     }
     /// Creates empty toast stack.
     pub fn new(geometry: Rect) -> Self {

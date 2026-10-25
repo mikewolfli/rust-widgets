@@ -850,8 +850,12 @@ impl Widget for VirtualTable {
                             .map(|cell| {
                                 crate::widget::capability::CapabilityValue::Tuple(
                                     crate::compat::Vec::from([
-                                        crate::widget::capability::CapabilityValue::UInt(cell.0 as u64),
-                                        crate::widget::capability::CapabilityValue::UInt(cell.1 as u64),
+                                        crate::widget::capability::CapabilityValue::UInt(
+                                            cell.0 as u64,
+                                        ),
+                                        crate::widget::capability::CapabilityValue::UInt(
+                                            cell.1 as u64,
+                                        ),
                                     ]),
                                 )
                             })
@@ -1153,7 +1157,13 @@ impl Draw for VirtualTable {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         if self.show_header {
             if let Some(source) = self.data_source.as_ref() {

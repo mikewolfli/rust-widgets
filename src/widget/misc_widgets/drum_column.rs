@@ -34,6 +34,9 @@ use crate::{impl_widget_property_hooks, property_names_of};
 const DEFAULT_VISIBLE_ROWS: u32 = dimensions::PICKER_VISIBLE_ROWS;
 /// The default row height, from the shared picker metrics.
 const DEFAULT_ROW_HEIGHT: u32 = dimensions::PICKER_ROW_HEIGHT;
+/// Width reserved at the leading edge for the up/down hints, so they never share pixels with a
+/// row's value.
+const ARROW_GUTTER: u32 = 8;
 
 /// One wheel column: a vertical list of values with the selected row held in the middle.
 pub struct DrumColumn {
@@ -390,8 +393,16 @@ impl Draw for DrumColumn {
             let row_y = drum_rect.y + (row * row_height) as i32;
             let text_y = row_y + (row_height as i32 - text_height as i32) / 2;
             let color = if row == centre { chrome.selected_ink } else { chrome.row_ink };
+            // The value is painted in the column minus the arrow gutter; the up/down hints below
+            // used to be drawn over the first and last row because a full drum leaves no spare
+            // band for them.
             context.draw_text_fitted_cow(
-                Rect::new(drum_rect.x, text_y, drum_rect.width, text_height),
+                Rect::new(
+                    drum_rect.x + ARROW_GUTTER as i32,
+                    text_y,
+                    drum_rect.width.saturating_sub(ARROW_GUTTER * 2),
+                    text_height,
+                ),
                 text,
                 &font,
                 color,
@@ -399,9 +410,10 @@ impl Draw for DrumColumn {
             );
         }
 
-        // Up/down hints, on the drum rather than on the control's own bottom edge.
+        // Up/down hints, in the leading gutter the rows leave free rather than over the first and
+        // last row's value.
         context.draw_text(
-            Point::new(drum_rect.x + (drum_rect.width as i32 - 8) / 2, drum_rect.y + 2),
+            Point::new(drum_rect.x + 2, drum_rect.y + 2),
             "^",
             &arrow_font,
             chrome.arrow_ink,
@@ -409,7 +421,7 @@ impl Draw for DrumColumn {
         );
         context.draw_text(
             Point::new(
-                drum_rect.x + (drum_rect.width as i32 - 8) / 2,
+                drum_rect.x + 2,
                 drum_rect.y + drum_rect.height as i32 - row_height as i32 + 2,
             ),
             "v",

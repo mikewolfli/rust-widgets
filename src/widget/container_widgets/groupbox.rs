@@ -940,8 +940,14 @@ impl Draw for GroupBox {
                     Color::BLACK,
                 );
             }
-            // Draw border
-            context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(200, 200, 200)));
+            // Rounded to the face's radius: a square outline left the four corners unpainted.
+            crate::widget::draw::stroke_surface_border(
+                context,
+                rect,
+                self.style().border_radius.unwrap_or(0),
+                style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
+                1,
+            );
         }
         // Draw title background to hide the border behind the title. The band is widened
         // by `TITLE_PADDING` on both sides, so it is clipped to the frame: a band that ran

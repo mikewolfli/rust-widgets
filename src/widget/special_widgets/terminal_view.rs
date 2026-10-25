@@ -1550,7 +1550,13 @@ impl Draw for TerminalView {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         // The prompt row is anchored to the control's bottom edge, but it has to be a
         // *whole* row: the origin is the glyph's top-left, so `y = height - 10` placed the

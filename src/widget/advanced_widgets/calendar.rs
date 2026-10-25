@@ -1737,7 +1737,14 @@ impl Draw for Calendar {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border_color);
+        // Same radius as the face above, so the outline closes at all four corners.
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border_color,
+            1,
+        );
 
         // ── 1. Navigation bar ──
         if self.navigation_bar_visible {

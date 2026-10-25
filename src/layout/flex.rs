@@ -1832,8 +1832,7 @@ impl FlexLayout {
             // exceeded the band was emitted taller than the row it sat in under
             // `FlexStart`/`FlexEnd`/`Center`/`Baseline` while `Stretch` honoured the band —
             // the comment above states the rule, and the arms now follow it.
-            let (cross_start, cross_len) = match item.align_self.unwrap_or(self.align_items)
-            {
+            let (cross_start, cross_len) = match item.align_self.unwrap_or(self.align_items) {
                 AlignItems::Stretch => (0, stretch_cross),
                 AlignItems::FlexStart => (0, cross_len),
                 AlignItems::FlexEnd => (available_cross - cross_len, cross_len),

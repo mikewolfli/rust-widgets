@@ -974,7 +974,13 @@ impl Draw for ImageView {
 
             // Draw a border to make the placeholder visible.
             let border = self.style().border_color.unwrap_or(Color::rgb(200, 200, 200));
-            context.draw_rect_stroke(rect, border, 1);
+            crate::widget::draw::stroke_surface_border(
+                context,
+                rect,
+                self.style().border_radius.unwrap_or(0),
+                border,
+                1,
+            );
 
             // Draw "?" centered in the placeholder.
             let fg = self.style().text_color.unwrap_or(Color::rgb(120, 120, 120));

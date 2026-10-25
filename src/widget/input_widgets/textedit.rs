@@ -1977,8 +1977,14 @@ impl Draw for TextEdit {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        // Draw border
-        context.draw_rect(rect, border);
+        // Draw border (rounded with the fill, so the corners are not cut open)
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
         // Draw text or placeholder
         let display_text = if self.text.is_empty() && !self.placeholder_text.is_empty() {
             &self.placeholder_text

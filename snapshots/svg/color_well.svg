@@ -232,5 +232,5 @@
   <rect x="90" y="70" width="60" height="20" fill="rgba(46,46,48,1.00)" />
   <rect x="90" y="50" width="20" height="20" fill="rgba(46,46,48,1.00)" />
   <rect x="130" y="50" width="20" height="20" fill="rgba(46,46,48,1.00)" />
-  <rect x="90" y="30" width="60" height="60" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <rect x="90.5" y="30.5" width="59" height="59" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
 </svg>

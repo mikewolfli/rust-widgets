@@ -503,7 +503,13 @@ impl Draw for MiniCanvas {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != sheet)
             .unwrap_or_else(|| sheet.blend(&secondary, 0.45));
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         // Replay all stored commands without cloning the display list, unless a captured frame
         // already describes exactly this state. The cache is only trusted when the surface is

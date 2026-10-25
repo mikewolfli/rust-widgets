@@ -1337,8 +1337,12 @@ impl Draw for VideoPlayer {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect_stroke(
+        // The outline follows the face's radius: a square 1 px stroke over the rounded video
+        // surface left the four corners outside the drawn face.
+        crate::widget::draw::stroke_surface_border(
+            context,
             rect,
+            self.style().border_radius.unwrap_or(0),
             self.style().border_color.unwrap_or_else(|| video_bg.blend(&Color::WHITE, 0.2)),
             1,
         );

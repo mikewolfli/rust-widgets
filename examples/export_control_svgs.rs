@@ -454,7 +454,9 @@ fn build_pair_scene(factory: &WidgetFactory, stem: &str) -> Option<PairScene> {
         "navigation_drawer" => {
             use rust_widgets::widget::companions::DrawerSectionHeader;
             let primary = create(Rect::new(8, 8, 224, 104))?;
-            let mut header = DrawerSectionHeader::new(Rect::new(12, 36, 216, 28));
+            // Below the drawer's own 60 px title band. At y = 36 the header was painted *over* the
+            // drawer's title, so the pair showed two labels on top of each other.
+            let mut header = DrawerSectionHeader::new(Rect::new(12, 72, 216, 24));
             header.set_label("Library");
             header.set_uppercase(true);
             Some(PairScene::new(primary, Companion::Widget(Box::new(header)), false))

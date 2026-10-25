@@ -1294,7 +1294,14 @@ impl Draw for TimeEdit {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        // Rounded to the face's radius: a square outline left the four corners unpainted.
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
         // Into the buffer directly: the allocating wrapper built the result plus one string
         // per token; the same substituter as `date_edit` and `date_time_edit`.
         let mut text = String::new();

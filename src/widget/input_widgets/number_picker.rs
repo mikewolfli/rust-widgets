@@ -873,7 +873,13 @@ impl Draw for NumberPicker {
             );
         }
 
-        context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(200, 200, 200)));
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            style.border_radius.unwrap_or(0),
+            style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
+            1,
+        );
     }
 
     fn uses_custom_drawing(&self) -> bool {

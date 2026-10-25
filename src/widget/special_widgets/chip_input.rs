@@ -475,7 +475,7 @@ impl Draw for ChipInput {
         let border = style
             .border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .unwrap_or_else(|| surface.blend(&Color::BLACK, 0.2));
+            .unwrap_or_else(|| Color::border_of(surface));
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
@@ -490,7 +490,13 @@ impl Draw for ChipInput {
             style.border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
         self.band.draw(context);
 
         // The text line: a rule above it separates entry from what has been committed.

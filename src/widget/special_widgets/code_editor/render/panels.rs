@@ -119,7 +119,14 @@ impl CodeEditor {
                     self.style().border_radius.unwrap_or(0),
                     Color::BLACK,
                 );
-                context.draw_rect(tab_rect, chrome.border);
+                // Rounded like the tab's face: a square outline left the corners outside it.
+                crate::widget::draw::stroke_surface_border(
+                    context,
+                    tab_rect,
+                    self.style().border_radius.unwrap_or(0),
+                    chrome.border,
+                    1,
+                );
                 // A 2 px accent rule along the tab's top edge is the one mark that
                 // reads at a glance across a strip with several open files. It is
                 // the accent colour rather than a second grey, so it follows the

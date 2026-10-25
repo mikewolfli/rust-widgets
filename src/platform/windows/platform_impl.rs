@@ -334,12 +334,12 @@ impl Platform for WindowsPlatform {
             };
             if let Some(hwnd) = self.get_native_handle(widget_id) {
                 match flag {
-// SAFETY: `hwnd` was resolved from the live widget map above and the call only changes window state.
+                    // SAFETY: `hwnd` was resolved from the live widget map above and the call only changes window state.
                     WindowStateFlag::Maximized => unsafe {
                         let cmd = if on { SW_MAXIMIZE } else { SW_RESTORE };
                         ShowWindow(hwnd, cmd);
                     },
-// SAFETY: `hwnd` was resolved from the live widget map above and the call only changes window state.
+                    // SAFETY: `hwnd` was resolved from the live widget map above and the call only changes window state.
                     WindowStateFlag::Minimized => unsafe {
                         let cmd = if on { SW_MINIMIZE } else { SW_RESTORE };
                         ShowWindow(hwnd, cmd);
@@ -348,7 +348,7 @@ impl Platform for WindowsPlatform {
                         // Win32 has no "full screen" window flag: it is achieved by
                         // dropping the frame styles and filling the monitor. Reapply
                         // the styles to leave it, which is what the WM would do.
-// SAFETY: `hwnd` is live; the style read/write pair is the documented way to toggle a frame.
+                        // SAFETY: `hwnd` is live; the style read/write pair is the documented way to toggle a frame.
                         unsafe {
                             let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                             let frame =
@@ -358,7 +358,7 @@ impl Platform for WindowsPlatform {
                             ShowWindow(hwnd, SW_MAXIMIZE);
                         }
                     }
-// SAFETY: `hwnd` is live; the style read/write pair is the documented way to toggle a frame.
+                    // SAFETY: `hwnd` is live; the style read/write pair is the documented way to toggle a frame.
                     WindowStateFlag::Resizable => unsafe {
                         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                         let new_style = if on {
@@ -368,7 +368,7 @@ impl Platform for WindowsPlatform {
                         };
                         SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
                     },
-// SAFETY: `hwnd` is live; the style read/write pair is the documented way to toggle a frame.
+                    // SAFETY: `hwnd` is live; the style read/write pair is the documented way to toggle a frame.
                     WindowStateFlag::Decorated => unsafe {
                         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                         let decorative = WS_CAPTION | WS_THICKFRAME;
@@ -394,23 +394,23 @@ impl Platform for WindowsPlatform {
             };
             if let Some(hwnd) = self.get_native_handle(widget_id) {
                 let value = match flag {
-// SAFETY: `hwnd` was resolved from the live widget map above; these are read-only queries.
+                    // SAFETY: `hwnd` was resolved from the live widget map above; these are read-only queries.
                     WindowStateFlag::Maximized => unsafe { IsZoomed(hwnd) != 0 },
-// SAFETY: `hwnd` was resolved from the live widget map above; these are read-only queries.
+                    // SAFETY: `hwnd` was resolved from the live widget map above; these are read-only queries.
                     WindowStateFlag::Minimized => unsafe { IsIconic(hwnd) != 0 },
                     // Full screen is "no frame styles left", the inverse of the
                     // Decorated computation below.
-// SAFETY: `hwnd` was resolved from the live widget map above; the style query is read-only.
+                    // SAFETY: `hwnd` was resolved from the live widget map above; the style query is read-only.
                     WindowStateFlag::Fullscreen => unsafe {
                         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                         style & (WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) == 0
                     },
-// SAFETY: `hwnd` was resolved from the live widget map above; the style query is read-only.
+                    // SAFETY: `hwnd` was resolved from the live widget map above; the style query is read-only.
                     WindowStateFlag::Resizable => unsafe {
                         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                         style & (WS_THICKFRAME | WS_MAXIMIZEBOX) != 0
                     },
-// SAFETY: `hwnd` was resolved from the live widget map above; the style query is read-only.
+                    // SAFETY: `hwnd` was resolved from the live widget map above; the style query is read-only.
                     WindowStateFlag::Decorated => unsafe {
                         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                         style & (WS_CAPTION | WS_THICKFRAME) != 0
@@ -439,7 +439,7 @@ impl Platform for WindowsPlatform {
         {
             use winapi::um::winuser::{SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER};
             if let Some(hwnd) = self.get_native_handle(widget_id) {
-// SAFETY: `hwnd` is live; `SetWindowPos` only repositions that window.
+                // SAFETY: `hwnd` is live; `SetWindowPos` only repositions that window.
                 unsafe {
                     SetWindowPos(
                         hwnd,
@@ -497,7 +497,7 @@ impl Platform for WindowsPlatform {
                 }
                 // Set both the small (taskbar) and big (alt-tab) icons, which is
                 // what the shell reads.
-// SAFETY: `hwnd` is live and `icon` is the handle produced by the load call just above.
+                // SAFETY: `hwnd` is live and `icon` is the handle produced by the load call just above.
                 unsafe {
                     SendMessageW(hwnd, WM_SETICON, ICON_SMALL as usize, icon as isize);
                     SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, icon as isize);
@@ -1461,7 +1461,7 @@ impl Platform for WindowsPlatform {
         // wait must learn about the stop immediately rather than after the idle interval.
         crate::platform::frame_wait::wake();
         #[cfg(target_os = "windows")]
-// SAFETY: posted to the current thread queue; no pointer or handle is involved.
+        // SAFETY: posted to the current thread queue; no pointer or handle is involved.
         unsafe {
             use winapi::um::winuser::PostQuitMessage;
             PostQuitMessage(0);

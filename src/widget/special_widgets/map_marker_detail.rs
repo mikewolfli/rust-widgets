@@ -318,14 +318,14 @@ impl Widget for MapMarkerDetail {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
-            "closed" => Some(EventSignalRef::mapped("closed", &self.closed, |_| {
-                CapabilityValue::Null
-            })),
-            "action_triggered" => Some(EventSignalRef::mapped(
-                "action_triggered",
-                &self.action_triggered,
-                |value| CapabilityValue::String(value.clone()),
-            )),
+            "closed" => {
+                Some(EventSignalRef::mapped("closed", &self.closed, |_| CapabilityValue::Null))
+            }
+            "action_triggered" => {
+                Some(EventSignalRef::mapped("action_triggered", &self.action_triggered, |value| {
+                    CapabilityValue::String(value.clone())
+                }))
+            }
             _ => None,
         }
     }
@@ -432,9 +432,7 @@ impl WidgetProperties for MapMarkerDetail {
             }
             // Opening needs the anchor and the content, so a bare invocation is reported as
             // needing a payload rather than as unknown.
-            "open_for_marker" | "open_at" | "set_content" => {
-                Err(CapabilityAccessError::OutOfRange)
-            }
+            "open_for_marker" | "open_at" | "set_content" => Err(CapabilityAccessError::OutOfRange),
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }
@@ -480,7 +478,9 @@ impl Draw for MapMarkerDetail {
         let (surface, ink) = crate::style::theme_manager()
             .current_theme()
             .map(|theme| (theme.colors.inverse_surface, theme.colors.on_inverse_surface))
-            .unwrap_or_else(|| (style.background_color.unwrap_or(Color::rgb(48, 52, 58)), Color::WHITE));
+            .unwrap_or_else(|| {
+                (style.background_color.unwrap_or(Color::rgb(48, 52, 58)), Color::WHITE)
+            });
         let accent = crate::style::palette_shared()
             .as_ref()
             .map(|colors| colors.primary)
@@ -488,7 +488,13 @@ impl Draw for MapMarkerDetail {
         let font = effective_font(style);
 
         context.fill_rounded_rect(window, 6, surface);
-        context.draw_rect(window, surface.blend(&ink, 0.25));
+        crate::widget::draw::stroke_surface_border(
+            context,
+            window,
+            6,
+            surface.blend(&ink, 0.25),
+            1,
+        );
 
         let mut y = window.y + DETAIL_PADDING;
         let text_width = window.width.saturating_sub((DETAIL_PADDING * 2) as u32);

@@ -757,7 +757,15 @@ impl Draw for Banner {
             context.draw_line(Point::new(right, top), Point::new(left, bottom), text_color);
         }
 
-        context.draw_rect(rect, border_color);
+        // The bar's own outline follows the fill's radius: a square 1 px stroke over a rounded
+        // face left the four corners outside the drawn surface, which reads as an open corner.
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border_color,
+            1,
+        );
     }
 
     fn uses_custom_drawing(&self) -> bool {

@@ -25,6 +25,10 @@ use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// Width reserved at the leading edge of a column for its up/down hints, so a hint never shares
+/// pixels with the row's value.
+const ARROW_GUTTER: u32 = 10;
+
 /// Mobile-style date picker with year/month/day column spinners.
 ///
 /// Presents three side-by-side columns for selecting year, month, and day.
@@ -475,8 +479,20 @@ impl Draw for MobileDatePicker {
 
                 let text_color = if is_selected { selected_ink } else { row_ink };
 
+                // The five visible rows are painted in the columns' full width *minus* the arrow
+                // gutter. The hints at the top and bottom edge used to be drawn over the first and
+                // last row's value ("2023" had a caret through it), because a five-row drum fills
+                // its band completely and there is no spare row to put them in. Reserving a gutter
+                // on the leading side is what keeps the two from sharing pixels at any drum height.
+                let text_rect = Rect::new(
+                    col_x + ARROW_GUTTER as i32,
+                    text_y,
+                    col_width.saturating_sub(ARROW_GUTTER * 2),
+                    row_text_height,
+                );
+
                 context.draw_text_fitted_cow(
-                    Rect::new(col_x, text_y, col_width, row_text_height),
+                    text_rect,
                     text,
                     &font,
                     text_color,
@@ -484,20 +500,25 @@ impl Draw for MobileDatePicker {
                 );
 
                 // Today is a reference point, not a selection: a small accent dot inside the row's
-                // trailing edge, so it cannot be mistaken for the highlight bar (MISC-11).
+                // trailing edge, so it cannot be mistaken for the highlight bar (MISC-11). It sits
+                // in the same gutter the rows leave free, so it never touches the value.
                 if is_today_column(item_idx) {
                     context.fill_circle(
-                        Point::new(col_x + col_width as i32 - 8, item_y + row_height as i32 / 2),
+                        Point::new(
+                            col_x + col_width as i32 - ARROW_GUTTER as i32 / 2,
+                            item_y + row_height as i32 / 2,
+                        ),
                         3,
                         primary,
                     );
                 }
             }
 
-            // Up arrow indicator (top of column)
+            // Up arrow indicator (top of column), in the gutter the rows leave free rather than
+            // over the first row's value.
             let up_y = drum_rect.y + 2;
             context.draw_text(
-                Point::new(col_x + (col_width as i32 - 8) / 2, up_y),
+                Point::new(col_x + 2, up_y),
                 "^",
                 &arrow_font,
                 arrow_color,
@@ -508,7 +529,7 @@ impl Draw for MobileDatePicker {
             // own bottom edge, which sat half a row below the last visible row.
             let down_y = drum_rect.y + drum_rect.height as i32 - row_height as i32 + 2;
             context.draw_text(
-                Point::new(col_x + (col_width as i32 - 8) / 2, down_y),
+                Point::new(col_x + 2, down_y),
                 "v",
                 &arrow_font,
                 arrow_color,

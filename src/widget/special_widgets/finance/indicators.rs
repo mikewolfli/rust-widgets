@@ -662,8 +662,7 @@ pub fn vwap(
                     let start = index + 1 - period;
                     weighted = 0.0;
                     total_volume = 0.0;
-                    for (offset, &volume) in
-                        volumes.iter().enumerate().take(index + 1).skip(start)
+                    for (offset, &volume) in volumes.iter().enumerate().take(index + 1).skip(start)
                     {
                         weighted += typical(offset);
                         total_volume += volume;

@@ -757,10 +757,13 @@ impl Draw for ProgressCircle {
                 let hole = (radius - self.stroke_width / 2.0).max(0.0);
                 if (cache.width as f32) <= hole * 2.0 && (cache.height as f32) <= hole * 2.0 {
                     let ink = self.base.style().text_color.unwrap_or(self.progress_color);
+                    // The centring term is the *measured* glyph-box height, so the ring's
+                    // centre is the text's centre rather than the top edge's position.
+                    let line_height = cache.height as i32;
                     context.draw_text(
                         Point::new(
                             center.x - (cache.width as i32 / 2),
-                            center.y - (cache.height as i32 / 2),
+                            center.y - (line_height / 2),
                         ),
                         cache.text.as_str(),
                         &cache.font,

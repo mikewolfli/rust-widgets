@@ -1150,7 +1150,13 @@ impl Draw for Heatmap {
             Color::BLACK,
         );
         if let Some(border_color) = style.border_color {
-            context.draw_rect(rect, border_color);
+            crate::widget::draw::stroke_surface_border(
+                context,
+                rect,
+                self.style().border_radius.unwrap_or(0),
+                border_color,
+                1,
+            );
         }
 
         let rows = self.row_count();

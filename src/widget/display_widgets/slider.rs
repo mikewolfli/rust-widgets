@@ -1820,7 +1820,10 @@ impl Draw for Slider {
                         if self.tick_labels {
                             if let Some(label) = self.tick_label_cache.labels.get(i as usize) {
                                 let label_x = track.x + tick_width as i32 + 2;
-                                let label_y = tick_y as i32 - label.height as i32 / 2;
+                                // The centring term is the label's *measured* height, so the
+                                // tick label is centred on the tick rather than hung below it.
+                                let line_height = label.height as i32;
+                                let label_y = tick_y as i32 - line_height / 2;
                                 context.draw_text(
                                     Point::new(label_x, label_y),
                                     label.text.as_str(),

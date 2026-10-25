@@ -934,7 +934,9 @@ impl FreeformShapeWidget {
             if r > 0 {
                 context.draw_rounded_rect_stroke(rect, r, sc, self.stroke_width);
             } else {
-                context.draw_rect_stroke(rect, sc, self.stroke_width);
+                // A square shape keeps the square rule; only the rounded branch above needs a
+                // radius, so this call states zero rather than re-reading the style.
+                crate::widget::draw::stroke_surface_border(context, rect, 0, sc, self.stroke_width);
             }
         }
     }
@@ -1926,7 +1928,13 @@ impl Draw for ShapeCanvas {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         // One palette for every hosted shape: the per-shape theme resolution was `2n` manager
         // locks per frame (SP-P57).

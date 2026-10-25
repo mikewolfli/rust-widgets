@@ -43,9 +43,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{UndoStack, ValueCommand};
-use crate::widget::capability::coercion::{
-    expect_string, expect_u32_saturating, expect_usize,
-};
+use crate::widget::capability::coercion::{expect_string, expect_u32_saturating, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;

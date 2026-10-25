@@ -879,7 +879,13 @@ impl Draw for ChartWidget {
             Color::BLACK,
         );
         // Draw border to make chart area visible
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         if self.series.is_empty() {
             // Empty state: axis chrome plus a message, centred on the panel.

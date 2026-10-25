@@ -1777,7 +1777,13 @@ impl Draw for TreeView {
             Color::BLACK,
         );
         // Draw border
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
         // A source list is a sidebar: an accent-tinted face separates it from the content area
         // behind it, and the tint is inside the frame so the border keeps its own ink. Off by
         // default, which is what keeps the historical pixels.

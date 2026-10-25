@@ -870,7 +870,8 @@ mod tests {
         let create = real_creator();
         let inserted = apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(),
+            &[Patch::Insert {
+                path: Vec::new(),
                 parent: root,
                 index: 0,
                 node: Node::new("button").key("icon-button"),
@@ -963,7 +964,8 @@ mod tests {
         let create = real_creator();
         let inserted = apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(),
+            &[Patch::Insert {
+                path: Vec::new(),
                 parent: root,
                 index: 0,
                 node: Node::new("button").key("icon-button"),
@@ -1026,7 +1028,8 @@ mod tests {
         let resolver = TestIconResolver { fail: false, calls: std::cell::RefCell::new(Vec::new()) };
         let report = super::apply_with_icon_resolver(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(),
+            &[Patch::Insert {
+                path: Vec::new(),
                 parent: root,
                 index: 0,
                 node: Node::new("button").key("resource-button").prop(
@@ -1071,7 +1074,12 @@ mod tests {
         let create = real_creator();
         let created = apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(), parent: root, index: 0, node: Node::new("progress_bar").key("bar") }],
+            &[Patch::Insert {
+                path: Vec::new(),
+                parent: root,
+                index: 0,
+                node: Node::new("progress_bar").key("bar"),
+            }],
             &create,
         );
         assert!(created.is_clean(), "mount failed: {:?}", created.errors);
@@ -1129,7 +1137,12 @@ mod tests {
         let create = real_creator();
         apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(), parent: root, index: 0, node: Node::new("label").key("l") }],
+            &[Patch::Insert {
+                path: Vec::new(),
+                parent: root,
+                index: 0,
+                node: Node::new("label").key("l"),
+            }],
             &create,
         );
         let id = layout.child_by_key(Some(root), "l").expect("label must be indexed");
@@ -1167,17 +1180,32 @@ mod tests {
         let create = backend.creator();
         apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(), parent: root, index: 0, node: Node::new("label").key("first") }],
+            &[Patch::Insert {
+                path: Vec::new(),
+                parent: root,
+                index: 0,
+                node: Node::new("label").key("first"),
+            }],
             &create,
         );
         apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(), parent: root, index: 1, node: Node::new("label").key("second") }],
+            &[Patch::Insert {
+                path: Vec::new(),
+                parent: root,
+                index: 1,
+                node: Node::new("label").key("second"),
+            }],
             &create,
         );
         apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(), parent: root, index: 0, node: Node::new("label").key("zeroth") }],
+            &[Patch::Insert {
+                path: Vec::new(),
+                parent: root,
+                index: 0,
+                node: Node::new("label").key("zeroth"),
+            }],
             &create,
         );
         let keys: Vec<Option<&str>> =
@@ -1193,7 +1221,12 @@ mod tests {
         for key in ["a", "b"] {
             apply(
                 &mut layout,
-                &[Patch::Insert { path: Vec::new(), parent: root, index: 99, node: Node::new("label").key(key) }],
+                &[Patch::Insert {
+                    path: Vec::new(),
+                    parent: root,
+                    index: 99,
+                    node: Node::new("label").key(key),
+                }],
                 &create,
             );
         }
@@ -1209,7 +1242,8 @@ mod tests {
         let create = backend.creator();
         apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(),
+            &[Patch::Insert {
+                path: Vec::new(),
                 parent: root,
                 index: 0,
                 node: Node::new("panel").key("card").child(Node::new("label").key("title")),
@@ -1253,7 +1287,12 @@ mod tests {
         let (mut layout, root) = fixture_root();
         let report = apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(), parent: root, index: 0, node: Node::new("no_such_control") }],
+            &[Patch::Insert {
+                path: Vec::new(),
+                parent: root,
+                index: 0,
+                node: Node::new("no_such_control"),
+            }],
             &|_n: &Node| None,
         );
         assert_eq!(
@@ -1275,12 +1314,22 @@ mod tests {
         let create = backend.creator();
         apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(), parent: root, index: 0, node: Node::new("panel").key("left") }],
+            &[Patch::Insert {
+                path: Vec::new(),
+                parent: root,
+                index: 0,
+                node: Node::new("panel").key("left"),
+            }],
             &create,
         );
         apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(), parent: root, index: 1, node: Node::new("panel").key("right") }],
+            &[Patch::Insert {
+                path: Vec::new(),
+                parent: root,
+                index: 1,
+                node: Node::new("panel").key("right"),
+            }],
             &create,
         );
         let left = layout.child_by_key(Some(root), "left").expect("left");
@@ -1305,13 +1354,19 @@ mod tests {
         let create = backend.creator();
         apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(), parent: root, index: 0, node: Node::new("label").key("slot") }],
+            &[Patch::Insert {
+                path: Vec::new(),
+                parent: root,
+                index: 0,
+                node: Node::new("label").key("slot"),
+            }],
             &create,
         );
         let old = layout.child_by_key(Some(root), "slot").expect("slot");
         let report = apply(
             &mut layout,
-            &[Patch::Replace { path: Vec::new(),
+            &[Patch::Replace {
+                path: Vec::new(),
                 id: old,
                 parent: root,
                 index: 0,
@@ -1357,7 +1412,12 @@ mod tests {
         let create = backend.creator();
         apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(), parent: root, index: 0, node: Node::new("panel").key("card") }],
+            &[Patch::Insert {
+                path: Vec::new(),
+                parent: root,
+                index: 0,
+                node: Node::new("panel").key("card"),
+            }],
             &create,
         );
         let card = layout.child_by_key(Some(root), "card").expect("card");
@@ -1420,7 +1480,8 @@ mod tests {
         layout.register_node(1, "window", "main", None);
         let report = apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(),
+            &[Patch::Insert {
+                path: Vec::new(),
                 parent: 1,
                 index: 0,
                 node: Node::new("label").key("a").child(Node::new("icon").key("i")),
@@ -1465,7 +1526,8 @@ mod tests {
         // labels to the row; this front end must do the same rather than dropping them.
         let report = apply(
             &mut layout,
-            &[Patch::Insert { path: Vec::new(),
+            &[Patch::Insert {
+                path: Vec::new(),
                 parent: 1,
                 index: 0,
                 node: Node::new("spacer")

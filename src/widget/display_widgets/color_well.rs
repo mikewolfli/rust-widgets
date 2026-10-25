@@ -408,9 +408,15 @@ impl Draw for ColorWell {
                 .unwrap_or_else(|| border.blend(&text_color, 0.5));
             if pressed {
                 context.fill_rounded_rect(well, 2, accent.with_alpha(40));
-                context.draw_rect_stroke(well, accent, 2);
+                crate::widget::draw::stroke_surface_border(context, well, 2, accent, 2);
             } else {
-                context.draw_rect_stroke(well, accent.with_alpha(160), 2);
+                crate::widget::draw::stroke_surface_border(
+                    context,
+                    well,
+                    2,
+                    accent.with_alpha(160),
+                    2,
+                );
             }
         }
     }
@@ -602,12 +608,13 @@ mod tests {
             let expected = ControlMetrics::centered_square(rect, dimensions::COLOR_WELL_SIZE);
             assert_eq!(expected.width, dimensions::COLOR_WELL_SIZE, "at {rect:?}");
             assert_eq!(expected.height, dimensions::COLOR_WELL_SIZE, "at {rect:?}");
-            // The border is the well's own outline, and every emitted tile is inside it.
+            // The border is the well's own outline, and every emitted tile is inside it. An
+            // outline is inset by half its stroke so the whole rule lies inside the box (SVG
+            // centres a stroke on its path), so the expectation is built by the same helper the
+            // backend uses rather than from the raw box.
+            let outline = crate::render::svg::convert::outline_rect_attrs(&expected, 1);
             assert!(
-                svg.contains(&format!(
-                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"none\"",
-                    expected.x, expected.y, expected.width, expected.height
-                )),
+                svg.contains(&format!("<rect {outline} fill=\"none\"")),
                 "the well is outlined at its own box: {svg}"
             );
             // The defect's signature: a canvas-sized chequerboard. The control's own

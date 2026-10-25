@@ -180,11 +180,10 @@ fn format_margins(margins: EdgeOffsets) -> crate::compat::String {
 /// the committed snapshots contain. A radius the caller declared explicitly (so the style is no
 /// longer theme-derived) is a statement about the shape and is honoured for the stroke too.
 fn stroke_radius(style: &crate::style::WidgetStyle) -> u32 {
-    if style.theme_derived {
-        0
-    } else {
-        style.border_radius.unwrap_or(0)
-    }
+    // A theme-derived style carries the theme's own radius (`Borders::radius`). Returning 0 here
+    // for theme-derived styles made the outline square while the *fill* used that same radius, so
+    // the four corners showed the backdrop between the rounded fill and the square rule.
+    style.border_radius.unwrap_or(0)
 }
 
 impl Frame {

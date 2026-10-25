@@ -1288,7 +1288,15 @@ impl Draw for ToggleButton {
         let bw = style.border_width.unwrap_or(0);
         let border_width = if bw > 0 { bw } else { 1 };
         if chrome {
-            context.draw_rect_stroke(rect, border_color, border_width);
+            // Rounded to the face's radius: a square stroke over the rounded face left the four
+            // corners outside the drawn surface.
+            crate::widget::draw::stroke_surface_border(
+                context,
+                rect,
+                self.style().border_radius.unwrap_or(0),
+                border_color,
+                border_width,
+            );
         }
 
         // ── Icon, arrow and text ──

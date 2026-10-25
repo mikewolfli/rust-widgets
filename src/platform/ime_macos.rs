@@ -82,7 +82,7 @@ fn try_activate_nstextinputcontext(
         return None;
     }
 
-// SAFETY: messaging live Objective-C objects from the main thread; the token was created by this module.
+    // SAFETY: messaging live Objective-C objects from the main thread; the token was created by this module.
     unsafe {
         use objc2::msg_send;
         use objc2::runtime::AnyObject;
@@ -116,7 +116,7 @@ fn sync_nstextinputcontext(
     _marked_range: (usize, usize),
     _selected_range: (usize, usize),
 ) {
-// SAFETY: messaging live Objective-C objects from the main thread; the token was created by this module.
+    // SAFETY: messaging live Objective-C objects from the main thread; the token was created by this module.
     unsafe {
         use objc2::msg_send;
         use objc2::runtime::AnyObject;
@@ -214,7 +214,7 @@ impl MacOsImeBridge {
 
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
-// SAFETY: messaging AppKit classes on the main thread; selectors are those the class responds to.
+            // SAFETY: messaging AppKit classes on the main thread; selectors are those the class responds to.
             unsafe {
                 use objc2::msg_send;
                 use objc2::runtime::{AnyClass, AnyObject};
@@ -441,7 +441,7 @@ impl ImeBridge for MacOsImeBridge {
         {
             let guard = lock(&self.native_token);
             if let Some(ref token) = *guard {
-// SAFETY: the token is a live Objective-C object owned by this module and read on the main thread.
+                // SAFETY: the token is a live Objective-C object owned by this module and read on the main thread.
                 unsafe {
                     use objc2::msg_send;
                     use objc2::runtime::AnyObject;
@@ -474,7 +474,7 @@ impl ImeBridge for MacOsImeBridge {
         {
             let guard = lock(&self.native_token);
             if let Some(ref token) = *guard {
-// SAFETY: the token is a live Objective-C object owned by this module and read on the main thread.
+                // SAFETY: the token is a live Objective-C object owned by this module and read on the main thread.
                 unsafe {
                     use objc2::msg_send;
                     use objc2::runtime::AnyObject;
@@ -557,7 +557,7 @@ impl ImeBridge for MacOsImeBridge {
 
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
-// SAFETY: messaging AppKit classes on the main thread; selectors are those the class responds to.
+            // SAFETY: messaging AppKit classes on the main thread; selectors are those the class responds to.
             unsafe {
                 use objc2::msg_send;
                 use objc2::runtime::{AnyClass, AnyObject};

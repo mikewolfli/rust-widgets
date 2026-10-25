@@ -401,19 +401,18 @@ impl EventHandler for LayerPanel {
                     self.base.request_redraw();
                 }
             }
-            Event::Wheel { delta, .. }
-                if delta.y != 0 => {
-                    let max = self.entries.len().saturating_sub(self.visible_rows().max(1));
-                    let next = if delta.y > 0 {
-                        (self.scroll_offset + 1).min(max)
-                    } else {
-                        self.scroll_offset.saturating_sub(1)
-                    };
-                    if next != self.scroll_offset {
-                        self.scroll_offset = next;
-                        self.base.request_redraw();
-                    }
+            Event::Wheel { delta, .. } if delta.y != 0 => {
+                let max = self.entries.len().saturating_sub(self.visible_rows().max(1));
+                let next = if delta.y > 0 {
+                    (self.scroll_offset + 1).min(max)
+                } else {
+                    self.scroll_offset.saturating_sub(1)
+                };
+                if next != self.scroll_offset {
+                    self.scroll_offset = next;
+                    self.base.request_redraw();
                 }
+            }
             _ => {}
         }
     }

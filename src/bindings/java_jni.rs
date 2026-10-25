@@ -834,7 +834,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeFreeString(
     ptr: jlong,
 ) {
     if ptr != 0 {
-// SAFETY: `ptr` is a string previously handed out by the C ABI and is freed exactly once here.
+        // SAFETY: `ptr` is a string previously handed out by the C ABI and is freed exactly once here.
         unsafe {
             crate::bindings::rw_free_string(ptr as *mut std::ffi::c_char);
         }

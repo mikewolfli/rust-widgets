@@ -3051,15 +3051,15 @@ impl Draw for LineEdit {
             crate::style::resolved_semantic_border("line_edit", self.semantic_state());
         if let Some(border_color) = semantic_border.or(style.border_color) {
             let bw = style.border_width.unwrap_or(0);
-            if bw > 0 {
-                context.draw_rect_stroke(
-                    Rect::new(rect.x, rect.y, rect.width, rect.height),
-                    border_color,
-                    bw,
-                );
-            } else {
-                context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);
-            }
+            // STY-01: the outline follows the fill's corner radius. A square rule around a
+            // rounded field left the four corners showing the backdrop.
+            crate::widget::draw::stroke_surface_border(
+                context,
+                Rect::new(rect.x, rect.y, rect.width, rect.height),
+                style.border_radius.unwrap_or(0),
+                border_color,
+                bw,
+            );
         }
         // Draw text or placeholder
         //

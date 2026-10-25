@@ -3,11 +3,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" rx="4" ry="4" fill="rgba(69,69,69,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <rect x="0.5" y="0.5" width="239" height="119" rx="3.5" ry="3.5" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
   <clipPath id="clip_0"><rect x="0" y="0" width="232" height="120" /></clipPath>
   <g clip-path="url(#clip_0)">
   </g>
   <rect x="232" y="0" width="8" height="120" fill="rgba(69,69,69,1.00)" />
-  <rect x="232" y="0" width="8" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <rect x="232.5" y="0.5" width="7" height="119" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
   <rect x="232" y="0" width="8" height="60" fill="rgba(225,225,225,0.47)" />
 </svg>

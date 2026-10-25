@@ -1047,7 +1047,14 @@ impl Draw for MediaPlayer {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, divider);
+        // Rounded to the face's radius: a square outline left the four corners unpainted.
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            divider,
+            1,
+        );
 
         // ── Picture ──
         //

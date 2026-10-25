@@ -1301,8 +1301,14 @@ impl Draw for RichEdit {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        // Draw border
-        context.draw_rect(rect, if self.read_only { border.blend(&paper, 0.50) } else { border });
+        // Draw border (rounded with the fill, so the corners are not cut open)
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            if self.read_only { border.blend(&paper, 0.50) } else { border },
+            1,
+        );
         // Draw text content — all lines. I-P57: the row height comes from the font the ink is
         // actually drawn with, not a hardcoded 16 that disagreed with `size_hint`.
         let font = effective_font(self.style());

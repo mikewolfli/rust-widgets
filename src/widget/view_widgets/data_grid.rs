@@ -981,7 +981,13 @@ impl Draw for GridViewHeader {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         for column in 0..self.columns.len() {
             let Some(section) = self.section_rect(column) else {
@@ -2964,7 +2970,13 @@ impl Draw for DataGrid {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         // The draw pass reads a borrowed view of the projection (F-P02): no per-row/`String`
         // clone happens on a scroll, because the view addresses the cached matrix by offset.

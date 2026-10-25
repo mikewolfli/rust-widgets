@@ -921,7 +921,13 @@ impl Draw for NotificationCenter {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         if let Some(button) = self.clear_all_rect() {
             context.fill_rect(button, background.blend(&text_color, 0.10));

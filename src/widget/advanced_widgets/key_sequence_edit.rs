@@ -741,7 +741,14 @@ impl Draw for KeySequenceEdit {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, if recording { error } else { divider });
+        // Rounded to the face's radius: a square outline left the four corners unpainted.
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            if recording { error } else { divider },
+            1,
+        );
         // The hint is the weak ink; a recorded value is the field's own ink.
         let text_color = if is_empty && !recording { muted } else { ink };
         // Vertically centred through the shared primitive, and bounded to the field's own

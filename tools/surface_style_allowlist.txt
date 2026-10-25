@@ -93,25 +93,30 @@
 
 src/widget/advanced_widgets/calendar.rs        C-disabled: lightens the error tone by one edge only
 src/widget/base_widgets/frame.rs                A-bevel: the four-line groove arm; raised/sunken/double already use Bevel
+src/widget/chart_widgets/sparkline.rs           B-tint: the last-point dot is its own series colour one step darker (a data accent, not chrome)
+src/widget/container_widgets/toolbox.rs         B-tint: recessed page band, one shade of the page colour
 src/widget/cupertino/core.rs                    C-disabled: the switch track's lighter/darker pair
 src/widget/dialog/bottom_sheet.rs               B-tint: the scrim darkening, one shade
 src/widget/dialog/file_dialog.rs                C-disabled: a side-panel tint
 src/widget/dialog/find_replace_dialog.rs        C-disabled: a field tint
 src/widget/dialog/font_dialog.rs                C-disabled: a field tint
 src/widget/dialog/input_dialog.rs               C-disabled: a field tint
+src/widget/display_widgets/clock.rs             B-tint: a one-edge highlight along a data-coloured hand (no opposite pair)
 src/widget/display_widgets/color_well.rs        B-tint: the swatch's border step, one shade
+src/widget/display_widgets/lcd_number.rs        A-bevel: the sunken four-edge bezel — a well, the shape Bevel does not model
 src/widget/display_widgets/meter.rs             C-disabled: a highlight on the fill bar
 src/widget/display_widgets/switch.rs            C-disabled: the thumb's own soft edge
 src/widget/input_widgets/masked_edit.rs         C-disabled: the empty-field rendition
-src/widget/input_widgets/range_slider.rs        C-disabled: the track's lighter pair
+src/widget/input_widgets/range_slider.rs       C-disabled: the track's lighter pair
 src/widget/input_widgets/search_bar.rs          C-disabled: the disabled rendition
 src/widget/input_widgets/search_box.rs          C-disabled: the disabled rendition + placeholder ink
 src/widget/input_widgets/tag_input.rs           C-disabled: the disabled rendition
+src/widget/input_widgets/validation_bubble.rs   B-tint: the bubble surface derived from its severity tone, one shade
+src/widget/media_widgets/video_player.rs        A'-border: derives a border *lighter* than the video surface, which is dark by definition
 src/widget/menu_toolbar/tool_button.rs          C-disabled: the active lighten on the icon
 src/widget/misc_widgets/barcode_scanner.rs      B-tint: the letterbox/scrim, one shade
 src/widget/misc_widgets/bezier_curve_editor.rs  B-tint: the canvas gutter, one shade
 src/widget/misc_widgets/drop_zone.rs            B-tint: the rejected-state band, one shade
 src/widget/special_widgets/canvas.rs            B-tint: the canvas gutter, one shade
-src/widget/special_widgets/color_picker.rs      B-tint: a palette highlight, one shade
+
 src/widget/special_widgets/terminal_view.rs     B-tint: the chrome bands, one shade each
-src/widget/container_widgets/toolbox.rs         B-tint: recessed page band, one shade of the page colour

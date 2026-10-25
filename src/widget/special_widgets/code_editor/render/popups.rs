@@ -25,7 +25,14 @@ impl CodeEditor {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, edge);
+        // The popup's edge follows its face's radius; a square outline left the corners bare.
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            edge,
+            1,
+        );
         let font = self.chrome_font();
         let line_box = context.measure_text("M", font).height as i32;
         let label_dy = (MIN_TOUCH_TARGET - line_box).max(0) / 2;
@@ -82,7 +89,14 @@ impl CodeEditor {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, edge);
+        // The popup's edge follows its face's radius; a square outline left the corners bare.
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            edge,
+            1,
+        );
         let font = self.chrome_font();
         let line_box = context.measure_text("M", font).height as i32;
         let label_dy = (MIN_TOUCH_TARGET - line_box).max(0) / 2;

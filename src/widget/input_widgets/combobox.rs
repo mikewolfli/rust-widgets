@@ -2134,10 +2134,9 @@ impl EventHandler for ComboBox {
             }
             // Focus loss commits the typed value through the insert policy, so a host that
             // validates on `text_edited` sees the value the field is showing (I-06).
-            Event::FocusLost
-                if self.editable => {
-                    self.commit_editor();
-                }
+            Event::FocusLost if self.editable => {
+                self.commit_editor();
+            }
             // Other events are not relevant for this widget
             _ => {}
         }
@@ -2189,7 +2188,13 @@ impl Draw for ComboBox {
         );
         // Draw border
         if let Some(border_color) = style.border_color {
-            context.draw_rect(band, border_color);
+            crate::widget::draw::stroke_surface_border(
+                context,
+                band,
+                style.border_radius.unwrap_or(0),
+                border_color,
+                1,
+            );
         }
 
         let default_font = crate::core::Font::default();

@@ -1419,7 +1419,13 @@ impl Draw for GanttWidget {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         // The label column and the track share one derivation: `CHART_LABEL_GUTTER` is the room
         // reserved for task names, and the track begins at its trailing edge and ends a

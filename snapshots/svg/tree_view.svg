@@ -3,7 +3,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" rx="4" ry="4" fill="rgba(69,69,69,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <rect x="0.5" y="0.5" width="239" height="119" rx="3.5" ry="3.5" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
   <rect x="2" y="2" width="236" height="20" fill="rgba(78,103,122,1.00)" />
   <line x1="6" y1="9" x2="12" y2="9" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
   <line x1="12" y1="9" x2="9" y2="15" stroke="rgba(225,225,225,1.00)" stroke-width="1" />

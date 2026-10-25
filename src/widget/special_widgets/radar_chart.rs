@@ -751,7 +751,13 @@ impl Draw for RadarChart {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, chrome.border);
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            chrome.border,
+            1,
+        );
         // One font derivation for every piece of text the chart paints this frame.
         let font = role_font(self.style(), 10.0);
 

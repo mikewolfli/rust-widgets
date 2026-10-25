@@ -794,12 +794,7 @@ impl AdaptiveScaffold {
         let rect = self.geometry();
         let width = DRAWER_WIDTH.min(rect.width);
         let top = self.app_bar_height();
-        Rect::new(
-            rect.x,
-            rect.y + top as i32,
-            width,
-            rect.height.saturating_sub(top),
-        )
+        Rect::new(rect.x, rect.y + top as i32, width, rect.height.saturating_sub(top))
     }
 
     /// Returns the trailing drawer's panel rectangle.
@@ -998,12 +993,7 @@ impl Draw for AdaptiveScaffold {
         // ── AppBar ──
         // The bar carries any bottom slot it was given, so its band is set from the same
         // derivation `content_rect` uses (N-08).
-        self.app_bar.set_geometry(Rect::new(
-            rect.x,
-            rect.y,
-            rect.width,
-            self.app_bar_height(),
-        ));
+        self.app_bar.set_geometry(Rect::new(rect.x, rect.y, rect.width, self.app_bar_height()));
         self.app_bar.draw(context);
 
         // ── Body content area ──

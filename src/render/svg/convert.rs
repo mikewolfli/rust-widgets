@@ -24,6 +24,69 @@ pub fn rect_attrs(rect: &Rect) -> String {
     format!(r#"x="{}" y="{}" width="{}" height="{}""#, rect.x, rect.y, rect.width, rect.height)
 }
 
+/// Format an **outline** rectangle, inset by half the stroke width so the whole rule lies inside
+/// `rect`.
+///
+/// # Why the outline is not the same rectangle as the fill
+///
+/// SVG centres a stroke on the path it follows, so a `<rect x="0" y="0" width="240" …
+/// stroke-width="1">` paints half of that rule at `x = -0.5` — outside the picture. A viewer
+/// clips it, and what is left is a half-width edge whose corner arc is the first thing to
+/// disappear; the widget then reads as having *open* corners even though the fill is perfectly
+/// round.
+///
+/// The software and wgpu backends both paint an outline **inside** the rectangle: their band is
+/// `rect` minus `rect` inset by the stroke width. Moving the SVG path in by `width / 2` makes the
+/// band it covers identical to theirs — the same `[x, x + width)` on every edge, and the same
+/// corner ring (see [`outline_radius`]). A snapshot therefore shows what the screen shows, which
+/// is the only reason the SVG backend exists.
+///
+/// A rectangle too small to hold the stroke keeps the plain attributes rather than collapsing to
+/// a degenerate element.
+pub fn outline_rect_attrs(rect: &Rect, width: u32) -> String {
+    if !can_inset(rect, width) {
+        return rect_attrs(rect);
+    }
+    let half = width as f64 / 2.0;
+    format!(
+        r#"x="{}" y="{}" width="{}" height="{}""#,
+        number_attr(rect.x as f64 + half),
+        number_attr(rect.y as f64 + half),
+        number_attr(rect.width as f64 - width as f64),
+        number_attr(rect.height as f64 - width as f64),
+    )
+}
+
+/// The radius an **outline** of `width` follows, so its ring matches the raster backends.
+///
+/// The raster band is `rounded(rect, r) minus rounded(rect.inset(width), r - width)`; both arcs
+/// share the centre `(x + r, y + r)`, which is exactly an SVG stroke of `width` on a path whose
+/// radius is `r - width / 2`. Returns `radius` unchanged when the outline could not be inset.
+pub fn outline_radius(rect: &Rect, radius: u32, width: u32) -> f64 {
+    if !can_inset(rect, width) {
+        return radius as f64;
+    }
+    (radius as f64 - width as f64 / 2.0).max(0.0)
+}
+
+/// Whether a stroke of `width` fits inside `rect` with room to spare on both axes.
+fn can_inset(rect: &Rect, width: u32) -> bool {
+    width > 0 && rect.width > width * 2 && rect.height > width * 2
+}
+
+/// Formats a coordinate without a trailing `.0` (or `.50`), so an integral edge keeps the byte
+/// form it had before this helper existed.
+pub fn number_attr(value: f64) -> String {
+    let mut text = format!("{value:.2}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
+}
+
 /// Format the start point of a line as SVG `x1=".." y1=".."` attributes.
 pub fn point_attrs(p: &Point) -> String {
     format!(r#"x1="{}" y1="{}""#, p.x, p.y)
@@ -87,6 +150,44 @@ mod tests {
     fn rect_attrs_formats_correctly() {
         let r = Rect::new(10, 20, 100, 50);
         assert_eq!(rect_attrs(&r), r#"x="10" y="20" width="100" height="50""#);
+    }
+
+    /// An outline is inset by half its width, so the whole rule lies inside the rectangle. The
+    /// band it covers is then `[x, x + width)` on every edge — the same band the software and
+    /// wgpu backends paint, and the reason a 4 px corner no longer loses its arc to the canvas
+    /// edge.
+    #[test]
+    fn outline_rect_attrs_insets_the_stroke() {
+        let r = Rect::new(0, 0, 240, 120);
+        assert_eq!(outline_rect_attrs(&r, 1), r#"x="0.5" y="0.5" width="239" height="119""#);
+        assert_eq!(outline_rect_attrs(&r, 2), r#"x="1" y="1" width="238" height="118""#);
+    }
+
+    /// A rectangle too small to hold the stroke keeps the plain geometry: shrinking it would
+    /// emit a degenerate element that paints nothing.
+    #[test]
+    fn outline_rect_attrs_leaves_a_tiny_rect_alone() {
+        let r = Rect::new(5, 5, 2, 2);
+        assert_eq!(outline_rect_attrs(&r, 1), rect_attrs(&r));
+    }
+
+    /// The radius follows the same half-width shift: an SVG stroke of `w` on radius `r - w/2`
+    /// shares its corner centre `(x + r, y + r)` with the raster's `r` / `r - w` rings.
+    #[test]
+    fn outline_radius_shares_the_corner_centre() {
+        let r = Rect::new(0, 0, 240, 120);
+        assert_eq!(outline_radius(&r, 4, 1), 3.5);
+        assert_eq!(outline_radius(&r, 4, 2), 3.0);
+        assert_eq!(outline_radius(&Rect::new(0, 0, 2, 2), 4, 1), 4.0);
+    }
+
+    /// Coordinates print without a trailing `.0`, so integral edges keep the bytes they had before
+    /// the inset helper existed.
+    #[test]
+    fn number_attr_trims_trailing_zeroes() {
+        assert_eq!(number_attr(239.0), "239");
+        assert_eq!(number_attr(0.5), "0.5");
+        assert_eq!(number_attr(3.5), "3.5");
     }
 
     #[test]

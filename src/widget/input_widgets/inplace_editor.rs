@@ -776,7 +776,14 @@ impl Draw for InplaceEditor {
                 style.border_radius.unwrap_or(0),
                 Color::BLACK,
             );
-            context.draw_rect_stroke(rect, accent, 2);
+            // The focus ring follows the field's radius: a square 2 px ring left the corners bare.
+            crate::widget::draw::stroke_surface_border(
+                context,
+                rect,
+                style.border_radius.unwrap_or(0),
+                accent,
+                2,
+            );
 
             // Draw text, on the field's own line box. The old anchor was
             // `rect.y + padding + font_size`, which put the glyph origin a *font size* below
@@ -848,7 +855,14 @@ impl Draw for InplaceEditor {
                 style.border_radius.unwrap_or(0),
                 Color::BLACK,
             );
-            context.draw_rect_stroke(rect, border, 1);
+            // Rounded like the field's face, so the outline closes at all four corners.
+            crate::widget::draw::stroke_surface_border(
+                context,
+                rect,
+                style.border_radius.unwrap_or(0),
+                border,
+                1,
+            );
 
             let text_x = text_box.x;
             let line = context.text_line(text_box, &font);

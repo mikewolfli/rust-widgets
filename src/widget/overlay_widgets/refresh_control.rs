@@ -543,7 +543,14 @@ impl Draw for RefreshControl {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, border);
+        // Rounded to the face's radius: a square outline left the four corners unpainted.
+        crate::widget::draw::stroke_surface_border(
+            context,
+            rect,
+            self.style().border_radius.unwrap_or(0),
+            border,
+            1,
+        );
 
         if indicator_height > 0 {
             let indicator_area = ControlMetrics::top_band(rect, indicator_height);

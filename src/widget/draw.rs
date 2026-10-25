@@ -3,7 +3,37 @@
 
 //! Custom drawing trait for widgets that want to render their own content.
 
+use crate::core::{Color, Rect};
 use crate::render::RenderContext;
+
+/// Strokes a control's **surface** border, following the same corner radius as its fill.
+///
+/// # Why this exists
+///
+/// A field that fills itself with `border_radius` but strokes a square outline leaves the four
+/// corners showing the backdrop between the rounded fill and the square rule — the "corners have no
+/// line" defect. Every control that paints a themed surface goes through this one call, so the fill
+/// and the outline cannot disagree about the shape again.
+///
+/// A zero radius keeps the historical square call (including its 1 px `draw_rect` form); a non-zero
+/// radius strokes a rounded rectangle with the same width.
+pub(crate) fn stroke_surface_border(
+    context: &mut RenderContext,
+    rect: Rect,
+    radius: u32,
+    color: Color,
+    width: u32,
+) {
+    if radius == 0 {
+        if width > 1 {
+            context.draw_rect_stroke(rect, color, width);
+        } else {
+            context.draw_rect(rect, color);
+        }
+    } else {
+        context.draw_rounded_rect_stroke(rect, radius, color, width.max(1));
+    }
+}
 
 /// Custom drawing trait for widgets that want to render their own content.
 /// Widgets implementing this trait can provide custom drawing logic instead of
