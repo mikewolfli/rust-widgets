@@ -1566,6 +1566,84 @@ fn register_cjk_face(log: &Arc<EventLog>) {
     }
 }
 
+/// Builds the demo's whole window: the registered faces, the palette, the chrome, every
+/// control, and the layout that places them.
+///
+/// Shared by [`run`] and [`render_offscreen`]. The preview renders **this** construction rather
+/// than a second copy of it, so a picture produced offscreen and the window a user sees cannot
+/// describe two different layouts.
+fn build_window(app: &mut App, dark: bool, log: &Arc<EventLog>) -> WindowHandle {
+    // Before the first control exists: every label resolves its face at paint time, and a face
+    // registered later would leave the first frame in tofu.
+    register_cjk_face(log);
+
+    // Register the macOS-inspired palettes before any control exists: a control picks its
+    // colours up at construction, and switching afterwards would need a full repaint pass.
+    install_macos_themes();
+    match switch_appearance(dark) {
+        Some(name) => log.append(format!("[Theme] appearance '{name}'")),
+        None => log.append("[Theme] that appearance is not registered; keeping the default"),
+    }
+
+    // 创建窗口（必须在 init 之后，run 之前）
+    let win = app.new_window("Controls Demo - rust_widgets", 100, 100, 1180, 760);
+    log.append(format!("[Window] created: id={:?}", win.raw_id()));
+
+    // 窗口级 chrome：工具栏 + 状态栏
+    let mut slots = build_window_chrome(&win, log);
+
+    // 构建全部基础控件，并交给窗口一个 layout
+    let mut followers = Vec::new();
+    slots.extend(build_all_controls(&win, log, &mut followers));
+    // 必须在控件都建好之后：layout 需要它们的 id。
+    //
+    // 没有这一步，窗口 resize 后**什么都不会重排**：库侧链路是完整的
+    // （OS 报 resize → 后端入队 `Resized` → `app/handle.rs` 重跑窗口 layout），
+    // 但 `LAYOUTS` 里没有本窗口的条目，`apply_window_layout` 拿到空列表，控件
+    // 停留在启动时为 1180×760 算出的坐标。
+    register_window_layout(&win, slots, followers, log);
+    win
+}
+
+/// Renders the demo's window offscreen and returns its RGBA pixels.
+///
+/// # Why this exists
+///
+/// Every control in this demo is painted by the library, so the picture comes from the same
+/// `render_window_frame` entry point the platform's painter uses (the tree, then each mounted
+/// surface at its own rectangle) — no window needs to be shown, and none of the three platforms'
+/// native shells is involved. That is what makes the demo's composition checkable on a host that
+/// cannot open a window (and in CI), instead of only by looking at a screen.
+///
+/// It must run on the **main** thread: `mount_surface` (which the paging and chart rows use)
+/// refuses off-main-thread mounts, because the Cocoa backend has to create a view.
+pub fn render_offscreen(dark: bool, width: u32, height: u32) -> Option<Vec<u8>> {
+    let log = Arc::new(EventLog::new());
+    let mut app = App::with_config(
+        AppConfig::default()
+            .with_app_name("Controls Demo preview")
+            .with_organization("rust_widgets"),
+    );
+    app.init();
+    log.append("[App] init() done");
+    let win = build_window(&mut app, dark, &log);
+
+    // The same backdrop the SVG exporter uses: the active theme's own background, so a control
+    // that paints nothing shows the surface it would really sit on.
+    let clear = global_theme_manager()
+        .current_theme()
+        .map(|theme| theme.colors.background)
+        .unwrap_or(rust_widgets::core::Color::WHITE);
+    // `render_window_frame`, not `render_frame_tree`: the paging and chart rows are mounted
+    // surfaces, not tree children, and a tree-only render leaves two empty rectangles where they
+    // are (the platform gives each surface its own view and paints it separately).
+    rust_widgets::widget::runtime::render_window_frame(
+        win.raw_id(),
+        rust_widgets::core::Size::new(width, height),
+        clear,
+    )
+}
+
 /// 启动 demo 应用。
 ///
 /// 整个应用的入口逻辑集中于此函数中，`main()` 仅调用 `app::run()`。
@@ -1615,36 +1693,11 @@ pub fn run() {
     app.init();
     log.append("[App] init() done");
 
-    // Before the first control exists: every label resolves its face at paint time, and a face
-    // registered later would leave the first frame in tofu.
-    register_cjk_face(&log);
-
-    // Register the macOS-inspired palettes before any control exists: a control picks its
-    // colours up at construction, and switching afterwards would need a full repaint pass.
-    install_macos_themes();
+    // Register the macOS-inspired palettes before any control exists, then build the window.
+    // `build_window` is shared with `render_offscreen`, so an offscreen preview and the window
+    // a user sees are one construction rather than two that can drift.
     let want_light = std::env::args().any(|arg| arg == "--light");
-    match switch_appearance(!want_light) {
-        Some(name) => log.append(format!("[Theme] appearance '{name}'")),
-        None => log.append("[Theme] that appearance is not registered; keeping the default"),
-    }
-
-    // 创建窗口（必须在 init 之后，run 之前）
-    let win = app.new_window("Controls Demo - rust_widgets", 100, 100, 1180, 760);
-    log.append(format!("[Window] created: id={:?}", win.raw_id()));
-
-    // 窗口级 chrome：工具栏 + 状态栏
-    let mut slots = build_window_chrome(&win, &log);
-
-    // 构建全部基础控件，并交给窗口一个 layout
-    let mut followers = Vec::new();
-    slots.extend(build_all_controls(&win, &log, &mut followers));
-    // 必须在控件都建好之后：layout 需要它们的 id。
-    //
-    // 没有这一步，窗口 resize 后**什么都不会重排**：库侧链路是完整的
-    // （OS 报 resize → 后端入队 `Resized` → `app/handle.rs` 重跑窗口 layout），
-    // 但 `LAYOUTS` 里没有本窗口的条目，`apply_window_layout` 拿到空列表，控件
-    // 停留在启动时为 1180×760 算出的坐标。
-    register_window_layout(&win, slots, followers, &log);
+    let win = build_window(&mut app, !want_light, &log);
     log.append("[App] controls ready - starting event loop");
 
     // 显示窗口：WindowHandle::show() → platform show_widget → GTK show_all。

@@ -1078,6 +1078,14 @@ fn apply_appearance(default_dark: bool) {
     } else {
         default_dark
     };
+    apply_appearance_mode(dark);
+}
+
+/// Registers both palettes and selects `dark`.
+///
+/// Split from [`apply_appearance`] so the offscreen preview can choose an appearance without
+/// going through the process arguments: the preview renders both in one run.
+fn apply_appearance_mode(dark: bool) {
     let mut manager = global_theme_manager();
     manager.register_theme(Theme::macos_dark());
     manager.register_theme(Theme::macos_light());
@@ -1085,6 +1093,41 @@ fn apply_appearance(default_dark: bool) {
     manager.set_theme(name);
     drop(manager);
     rust_widgets::reapply_active_theme();
+}
+
+/// Renders the finance screen offscreen and returns its RGBA pixels.
+///
+/// # Why this exists
+///
+/// The charts are painted by the library (`CandlestickChart`, the depth chart, the tape), so the
+/// picture comes from `render_window_frame`: the window's tree, then each mounted surface at its
+/// own rectangle. Nothing has to be shown, which is what makes "is the light appearance complete?"
+/// answerable on a host with no window (and in CI).
+///
+/// It must run on the **main** thread: mounted surfaces are native views on macOS, and
+/// `mount_surface` refuses off-main-thread mounts.
+pub fn render_offscreen(dark: bool, width: u32, height: u32) -> Option<Vec<u8>> {
+    let log = Arc::new(EventLog::new());
+    let mut app = App::new();
+    app.init();
+    log.append("[App] init() done");
+    register_cjk_face(&log);
+    apply_appearance_mode(dark);
+
+    let win = app.new_window("Finance Demo — preview", 0, 0, width, height);
+    // The status bar is chrome around the screen, not part of what this verifies, so the preview
+    // leaves it to `run`; `build_screen` takes the same code path either way.
+    build_screen(&win, &log, None);
+
+    let clear = global_theme_manager()
+        .current_theme()
+        .map(|theme| theme.colors.background)
+        .unwrap_or(rust_widgets::core::Color::WHITE);
+    rust_widgets::widget::runtime::render_window_frame(
+        win.raw_id(),
+        rust_widgets::core::Size::new(width, height),
+        clear,
+    )
 }
 
 /// Whether the active palette is dark.

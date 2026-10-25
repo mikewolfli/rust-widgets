@@ -734,7 +734,30 @@ pub fn paint_active_at_weight(
             }
         }
     }
-    paint_active(ch, cell, out)
+    let painted = paint_active(ch, cell, out);
+
+    // The compile-time stack is a *preference*, and it answers tofu for a character none of the
+    // compiled faces carries. A face the host registered at run time (`runtime-fonts`) cannot be in
+    // that stack — the stack is a `static` — so a Han character outside the compiled subset was
+    // **measured** from the registered face and then **painted** as a box: 就绪, 点击我 and every
+    // other label in the demos. Asking the registry only after the stack has failed is what keeps
+    // this from changing any character the compiled faces do cover.
+    let covered_by_tofu = painted.as_ref().is_some_and(|painted| painted.source == "tofu");
+    if covered_by_tofu && !cell.is_empty() && out.len() >= cell.area() {
+        if let Some(face) = super::font_assets::outline_face_for(ch) {
+            if let Some(coverage) = super::raster::rasterize_face_at_weight(face, ch, cell, weight) {
+                // The whole cell is overwritten, so the tofu bitmap `paint_active` just wrote
+                // leaves nothing behind.
+                out[..cell.area()].copy_from_slice(&coverage);
+                return Some(Painted {
+                    source: face.name,
+                    source_cell: None,
+                    ink: InkKind::Coverage,
+                });
+            }
+        }
+    }
+    painted
 }
 
 /// Which source answers `ch` on this build, or `None` for tofu.

@@ -5640,6 +5640,96 @@ pub fn render_frame_tree_cached_shared(
     Some(shared)
 }
 
+/// Renders a window **as a platform painter presents it**: the window's widget tree, then every
+/// mounted surface at its own rectangle.
+///
+/// # Why the tree alone is not the window
+///
+/// A mounted surface is not a child in the widget tree — `Platform::mount_surface` gives it a
+/// native view of its own, and the platform paints each surface with `render_frame_cached` (see
+/// `platform/macos/canvas.rs`). A caller that renders only [`render_frame_tree`] therefore gets a
+/// picture with holes where the surfaced controls are: the demo's paging row and chart row were
+/// empty rectangles. This is that missing half, in the order the painters use: the tree first, then
+/// each surface composited over it at the surface's own geometry.
+///
+/// Surfaced pixels are straight (un-premultiplied) RGBA and may be transparent where the control
+/// did not paint, which is why they are **composited** rather than copied.
+///
+/// Returns `None` when `id` is not mounted or the size is empty.
+pub fn render_window_frame(id: ObjectId, size: Size, clear: crate::core::Color) -> Option<Vec<u8>> {
+    let mut frame = render_frame_tree(id, size, clear)?;
+    for surface in surfaces_of(id) {
+        let Some(rect) = with_widget(surface, |widget| widget.geometry()) else {
+            continue;
+        };
+        let surface_size = Size::new(rect.width, rect.height);
+        if surface_size.width == 0 || surface_size.height == 0 {
+            continue;
+        }
+        let Some(surface_frame) =
+            render_frame_cached(surface, surface_size, crate::core::Color::TRANSPARENT)
+        else {
+            continue;
+        };
+        composite_surface(
+            &mut frame,
+            size.width,
+            size.height,
+            (rect.x, rect.y),
+            &surface_frame,
+            (surface_size.width, surface_size.height),
+        );
+    }
+    Some(frame)
+}
+
+/// Alpha-composites a surface frame into a window frame at `(origin_x, origin_y)`.
+///
+/// Straight RGBA in and out, matching `SoftwareSurface::frame_rgba`'s contract: a surface paints as
+/// much of its own rectangle as it covers and leaves the rest transparent. Rounding rather than
+/// truncating matters — a fully opaque surface must land byte-exact, or a snapshot of a composited
+/// window would differ from one of the same controls in the tree by one unit per channel.
+#[allow(clippy::too_many_arguments)]
+fn composite_surface(
+    window: &mut [u8],
+    window_width: u32,
+    window_height: u32,
+    origin: (i32, i32),
+    surface: &[u8],
+    surface_size: (u32, u32),
+) {
+    let (origin_x, origin_y) = origin;
+    for row in 0..surface_size.1 as i32 {
+        let window_y = origin_y + row;
+        if window_y < 0 || window_y >= window_height as i32 {
+            continue;
+        }
+        for column in 0..surface_size.0 as i32 {
+            let window_x = origin_x + column;
+            if window_x < 0 || window_x >= window_width as i32 {
+                continue;
+            }
+            let source = ((row as u32 * surface_size.0 + column as u32) * 4) as usize;
+            let destination = ((window_y as u32 * window_width + window_x as u32) * 4) as usize;
+            let alpha = surface[source + 3] as u32;
+            if alpha == 0 {
+                continue;
+            }
+            if alpha == 255 {
+                window[destination..destination + 4].copy_from_slice(&surface[source..source + 4]);
+                continue;
+            }
+            let inverse = 255 - alpha;
+            for channel in 0..4 {
+                let source_value = surface[source + channel] as u32;
+                let destination_value = window[destination + channel] as u32;
+                window[destination + channel] =
+                    ((source_value * alpha + destination_value * inverse + 127) / 255) as u8;
+            }
+        }
+    }
+}
+
 /// Renders one frame of a mounted widget, reusing the previous one when the
 /// repaint policy allows.
 ///

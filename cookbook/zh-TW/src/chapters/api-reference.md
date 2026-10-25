@@ -833,6 +833,31 @@ let applied = restore_save_state(window_id, &saved, key_of);
 
 `BarChart::set_animate_value_changes(true)` 會把資料更新從螢幕上的目前值緩動到新值，而不是直接跳變；`false` 保持原本的立即更新行為。
 
+### 控制項渲染（離屏）（`widget::runtime`）
+
+一個視窗的畫面由兩部分組成：控制項樹，**以及**掛載在它下面的每個面。`Platform::mount_surface` 給掛載的控制項一個自己的原生視圖，而不是把它變成樹子節點，平台單獨繪製這個視圖——所以只畫樹會在該控制項所在處留下一個空洞。下面這幾個入口讓測試、文件建置或 `examples/` 二進位不必開啟視窗就能得到真實畫面：
+
+```rust
+use rust_widgets::core::{Color, Size};
+use rust_widgets::widget::runtime;
+
+// 平台實際呈現的整個視窗：先樹，再疊上每個掛載面。
+let frame = runtime::render_window_frame(window_id, Size::new(1180, 760), Color::WHITE);
+
+// 只畫樹，不疊任何面。
+let tree = runtime::render_frame_tree(window_id, Size::new(1180, 760), Color::WHITE);
+
+// 單一控制項；epoch 未變時重用快取幀，即面視圖所用的那條路徑。
+let control = runtime::render_frame_cached(control_id, Size::new(320, 200), Color::TRANSPARENT);
+
+// 這個視窗下有哪些控制項被掛載為面。
+let surfaces = runtime::surfaces_of(window_id);
+```
+
+三個渲染呼叫都回傳 `Option<Vec<u8>>`：id 未掛載或任一維度為 `0` 時是 `None`，否則是以列儲存的直通（非預乘）RGBA8，每列 `width * 4` 位元組。`render_window_frame` 把每個面自己的幀按該控制項的 `geometry()` 合成到樹上，因此沒有面覆蓋的區域與樹幀逐位元組一致。面可能在自己的矩形裡留空（透明），所以這裡是**合成**而不是複製。
+
+要「像截圖一樣的畫面」用 `render_window_frame`；只有視窗沒有掛載任何面時 `render_frame_tree` 才是完整的。兩者都必須在 UI 執行緒呼叫，`render_frame_cached` 的幀會留在幀快取裡直到下一個 epoch。
+
 ### 控制項子型別
 
 | 型別 | 形式 |

@@ -1017,28 +1017,50 @@ impl CandlestickChart {
     /// say which was which. Each row pairs the overlay's factory name with its swatch.
     fn draw_overlay_legend(&self, context: &mut RenderContext, area: &PlotArea) {
         let font = role_font(self.style(), 10.0);
-        let ink = self.chrome().ink;
+        let chrome = self.chrome();
+        let rows: Vec<(&str, Color)> = self
+            .overlays
+            .iter()
+            .enumerate()
+            .map(|(index, overlay)| (overlay.as_str(), Self::overlay_color(index)))
+            .collect();
+        let max_rows = (((area.bottom() - area.rect.y - 4) / 14).max(1)) as usize;
+        let rows = &rows[..rows.len().min(max_rows)];
+
+        // A surface behind the legend, sized to its widest label before anything is drawn.
+        //
+        // The legend sits in the plot's top-right, which is where a price **level line** crosses:
+        // the resistance dash struck through `moving_average` in the finance demo's light
+        // appearance, reading as a strikethrough rather than as a reference line. An opaque fill
+        // in the pane's own colour is what separates the two; a translucent wash would still show
+        // the dash.
+        let widest = rows
+            .iter()
+            .map(|(name, _)| context.measure_text(name, &font).width as i32)
+            .max()
+            .unwrap_or(0);
+        let box_width = (widest + 24).min(area.rect.width as i32).max(1);
+        let box_x = (area.right() - box_width).max(area.rect.x);
+        let box_height = (rows.len() as u32) * 14 + 4;
+        context
+            .fill_rect(Rect::new(box_x, area.rect.y, box_width as u32, box_height), chrome.surface);
+
         let mut y = area.rect.y + 4;
-        for (index, overlay) in self.overlays.iter().enumerate() {
-            let color = Self::overlay_color(index);
-            let name = overlay.as_str();
+        for (name, color) in rows {
             let text_width = context.measure_text(name, &font).width as i32;
             let x = area.right() - text_width - 20;
             if x < area.rect.x {
                 break;
             }
-            context.fill_rect(Rect::new(x, y + 3, 8, 8), color);
+            context.fill_rect(Rect::new(x, y + 3, 8, 8), *color);
             context.draw_text(
                 crate::core::Point { x: x + 12, y },
                 name,
                 &font,
-                ink,
+                chrome.ink,
                 HorizontalAlignment::Left,
             );
             y += 14;
-            if y + 14 > area.bottom() {
-                break;
-            }
         }
     }
 

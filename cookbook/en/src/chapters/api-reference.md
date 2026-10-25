@@ -863,6 +863,31 @@ adds a page-size menu. Both are off by default.
 `BarChart::set_animate_value_changes(true)` eases a data update from the values currently on
 screen to the new ones instead of jumping; `false` keeps the immediate behaviour.
 
+### Offscreen rendering (`widget::runtime`)
+
+A window's picture is two things: the widget tree **and** every surface mounted under it. `Platform::mount_surface` gives a surfaced control a native view of its own instead of making it a tree child, and the platform paints that view separately — so a tree-only render leaves a hole exactly where that control is. These entry points exist so a test, a docs build or an `examples/` binary can produce the real picture without opening a window:
+
+```rust
+use rust_widgets::core::{Color, Size};
+use rust_widgets::widget::runtime;
+
+// The whole window as the platform presents it: the tree, then mounted surfaces.
+let frame = runtime::render_window_frame(window_id, Size::new(1180, 760), Color::WHITE);
+
+// Just the tree, with no surfaces composited in.
+let tree = runtime::render_frame_tree(window_id, Size::new(1180, 760), Color::WHITE);
+
+// One control, reused while its epoch is unchanged — what a surface view paints.
+let control = runtime::render_frame_cached(control_id, Size::new(320, 200), Color::TRANSPARENT);
+
+// Which controls are mounted as surfaces of this window.
+let surfaces = runtime::surfaces_of(window_id);
+```
+
+All three render calls answer `Option<Vec<u8>>`: `None` when the id is not mounted or either dimension is `0`, otherwise straight (un-premultiplied) RGBA8, row-major, `width * 4` bytes per row. `render_window_frame` composites each surface's own frame at that widget's `geometry()` over the tree, so where no surface covers the picture it is byte-identical to the tree frame. Because a surface may leave its rectangle transparent, surfaces are **composited** rather than copied.
+
+`render_window_frame` is the entry to use for a screenshot-like picture; `render_frame_tree` is only correct when the window mounts nothing. Both must run on the UI thread, and `render_frame_cached` keeps its frame in the frame cache until the next epoch.
+
 ### Widget Sub-types
 
 | Type | As |

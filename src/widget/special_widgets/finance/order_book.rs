@@ -830,7 +830,18 @@ impl Draw for OrderBookWidget {
         // The size column occupies the middle band; prices sit outside it, so a long bar
         // cannot run under a price and make it unreadable.
         let spine = geometry.x + geometry.width as i32 / 2;
-        let bar_span = (geometry.width as i32 / 2 - 40).max(8);
+        // The two text columns come **out of** the bar's share, not out of the price's.
+        //
+        // The span used to be `width / 2 - 40`, which let the bar run to within 40 px of the
+        // panel's edge — where the price already lives. On the demo's 480 px ladder the price was
+        // left 30 px, so every bid showed `12...`: the numbers the ladder exists for were elided
+        // away. Reserving the price and quantity columns first is what keeps `121.30` readable at
+        // any width; a narrow ladder gets a shorter bar, which is the dimension that can afford it.
+        const PRICE_COLUMN: i32 = 44;
+        const QUANTITY_COLUMN: i32 = 42;
+        const COLUMN_GAP: i32 = 6;
+        let bar_span =
+            (geometry.width as i32 / 2 - PRICE_COLUMN - QUANTITY_COLUMN - COLUMN_GAP * 2).max(8);
 
         // The upper block is drawn first, stacked above the middle; the lower block follows.
         // The upper block is drawn from its deepest level up to its best one, so the best
@@ -918,10 +929,16 @@ impl Draw for OrderBookWidget {
                 // the bar already encodes size, and painting a number over the price (or
                 // past the panel edge) was the defect this bound removes.
                 let (price_x, quantity_x) = match side {
-                    BookSide::Bid => (geometry.x + 6, spine - bar_span - 46),
-                    BookSide::Ask => {
-                        (geometry.x + geometry.width as i32 - 58, spine + bar_span + 4)
+                    BookSide::Bid => {
+                        (geometry.x + COLUMN_GAP, spine - bar_span - QUANTITY_COLUMN - 4)
                     }
+                    // Mirrored, not a fixed 58 px inset: the ask side's price column has to be the
+                    // same width as the bid side's, or the two ladders show numbers in two
+                    // different font sizes' worth of space and the longer one elides.
+                    BookSide::Ask => (
+                        geometry.x + geometry.width as i32 - PRICE_COLUMN - COLUMN_GAP,
+                        spine + bar_span + 4,
+                    ),
                 };
                 let text_y = y + (row_height - 12) / 2;
                 // The quantity column stops short of the bar on the bid side, and short

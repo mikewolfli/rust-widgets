@@ -273,11 +273,39 @@ pub fn register_family(family: &str) -> bool {
     let Ok(bytes) = std::fs::read(path) else {
         return false;
     };
+    // A face with no outline source cannot be painted by this renderer, and registering it would
+    // be worse than skipping it: it still answers the **coverage** question (a `.ttc` of screen
+    // bitmaps carries a `cmap` but no `glyf`/`CFF`/`CFF2`), so it would shadow every later family
+    // for measurement while every glyph it "covers" painted as tofu.
+    //
+    // Measured on macOS 15: `PingFangUI.ttc` — the file `PingFang SC` resolves to on that host —
+    // is bitmap-only. Registering it made `register_system_cjk_font` return success, and then
+    // *every* Han character rendered as a box, because the next candidate in
+    // [`SYSTEM_CJK_FAMILIES`] (`Hiragino Sans GB`, whose CFF outlines the rasteriser reads fine)
+    // was never asked.
+    if !face_has_outlines(&bytes) {
+        log::warn!("[fonts] `{family}` has no glyf/CFF outlines; skipping it as a runtime face");
+        return false;
+    }
     // `register_face` keys by the name it is given and keeps that name for the process lifetime,
     // so the leaked spellings are the registry's own storage rather than a per-call copy.
     let name: &'static str = Box::leak(font.family.clone().into_boxed_str());
     let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
     crate::render::text::register_face(name, bytes)
+}
+
+/// Whether `bytes` carries a glyph **outline** source (`glyf`, `CFF` or `CFF2`).
+///
+/// The renderer's only paint path for a runtime face is outlining, so this is the honest answer to
+/// "can a host face registered from these bytes ever be drawn?" — a bitmap-only face (Apple's UI
+/// `.ttc` fonts, `sbix`) answers `false`.
+#[cfg(all(feature = "runtime-fonts", not(alloc_frugal)))]
+fn face_has_outlines(bytes: &[u8]) -> bool {
+    let Ok(face) = ttf_parser::Face::parse(bytes, 0) else {
+        return false;
+    };
+    let tables = face.tables();
+    tables.glyf.is_some() || tables.cff.is_some() || tables.cff2.is_some()
 }
 
 /// The family names a desktop host most often ships for Simplified Chinese UI text.

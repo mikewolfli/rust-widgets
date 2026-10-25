@@ -233,6 +233,45 @@ fn cjk_text_measures_as_full_width_glyphs() {
         "two CJK glyphs advance about twice one: {two_w} vs {one_w}"
     );
 }
+/// A host-registered face must be **painted** from, not only measured from.
+///
+/// # The defect this pins
+///
+/// The paint path walks a **compile-time** stack of shipped faces, so a face registered at run time
+/// cannot be in it. A host that registered a CJK face (what every demo does) therefore got the
+/// measurement right — full-width advances, no tofu *width* — and every Han character outside the
+/// shipped subset was then painted from the 8x8 tofu bitmap. The demo framed it perfectly: Chinese
+/// labels measured as Chinese and showed as boxes.
+///
+/// This also pins the registration guard: Apple's `PingFang UI` `.ttc` is bitmap-only (no `glyf`,
+/// no `CFF`, no `CFF2`), so registering it made the *first* covering face one that can never be
+/// drawn, and shadowed the next family — `Hiragino Sans GB`, whose CFF outlines the rasteriser
+/// reads fine. A face with no outlines is now refused at registration, so the family that answers
+/// is one that can actually paint.
+#[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
+#[test]
+fn a_registered_cjk_face_is_painted_not_just_measured() {
+    // The registry is process-wide and tests run in parallel; the same lock the registry's own
+    // tests take keeps this sequence from interleaving with a `clear_faces`.
+    let _guard = crate::render::text::runtime_fonts::runtime_fonts_test_guard();
+    let Some(family) = crate::render::text::register_system_cjk_font() else {
+        // No installed CJK face on this host: the refusal path is the whole contract here.
+        return;
+    };
+    let cell = crate::render::text::Cell::new(16, 16);
+    let mut coverage = vec![0u8; (cell.width * cell.height) as usize];
+    let painted = crate::render::text::paint_active_at_weight(
+        '窗',
+        cell,
+        &mut coverage,
+        crate::core::Font::default_weight(),
+    )
+    .expect("painting a glyph always answers");
+    assert_eq!(painted.source, family, "the registered face must be the one that paints");
+    assert!(coverage.iter().any(|byte| *byte > 0), "the glyph must have ink, not an empty cell");
+    crate::render::text::clear_faces();
+}
+
 #[test]
 fn draw_text_rasterizes_glyph_instead_of_full_rect_fill() {
     let mut surface = SoftwareSurface::new(Size { width: 80, height: 30 }, 1.0);

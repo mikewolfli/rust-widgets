@@ -622,8 +622,13 @@ impl Draw for DepthChart {
                 let price = low + fraction * (high - low);
                 let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
                 let text = alloc::format!("{price:.2}");
+                // Slide the label's band inward rather than letting it hang over the edge: a band
+                // centred on the last tick ran past the pane, and the painter's clip turned
+                // `121.30` into `1213` — a wrong number, not a cropped one.
+                let band_left = (x - band as i32 / 2)
+                    .clamp(area.rect.x, (area.right() - band as i32).max(area.rect.x));
                 context.draw_text_fitted_cow(
-                    Rect::new(x - band as i32 / 2, y, band, 12),
+                    Rect::new(band_left, y, band, 12),
                     &text,
                     &font,
                     chrome.ink.with_alpha(190),

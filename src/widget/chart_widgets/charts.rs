@@ -332,6 +332,19 @@ pub fn draw_y_ticks(
     let (axis_color, label_color, grid_color) = axis_chrome();
     // One reused label buffer: `format!` allocated a `String` per tick per frame.
     let mut label = crate::compat::String::new();
+    // A label is a full line box, so two labels whose ticks are closer than one line overlap and
+    // the axis becomes an unreadable stack. That is not hypothetical: the demo's bar chart in a
+    // short row drew "90.0/70.0/50.0/30.0/10.0" on top of each other. The gridlines stay at every
+    // tick — they carry the scale — and only the **labels** are thinned, by the smallest stride
+    // that keeps neighbouring ones a line apart.
+    let tick_spacing =
+        if tick_count == 0 { layout.plot_h } else { layout.plot_h / tick_count as f32 };
+    let label_line = layout.tick_label_height().max(1.0);
+    let label_stride = if tick_spacing >= label_line {
+        1
+    } else {
+        (label_line / tick_spacing.max(1.0)).ceil().max(1.0) as usize
+    };
     for tick in 0..=tick_count {
         let t = tick as f32 / tick_count as f32;
         let y = layout.plot_y + layout.plot_h - t * layout.plot_h;
@@ -352,6 +365,9 @@ pub fn draw_y_ticks(
         let value = min_y + (max_y - min_y) * t as f64;
         label.clear();
         let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{value:.1}"));
+        if tick % label_stride != 0 {
+            continue;
+        }
         context.draw_text(
             &label,
             Point::from_f32(layout.plot_x - 44.0, y + 4.0),
@@ -1489,5 +1505,63 @@ impl Chart for AreaChart {
             visible_count,
         );
         draw_attached_axes(context, &layout, &self.axes, (min_x, max_x), (min_y, max_y));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::chart_widgets::svg::MemoryChartContext;
+
+    /// A short plot must thin the y-tick **labels** instead of stacking them.
+    ///
+    /// # The defect this pins
+    ///
+    /// The labels were emitted at every tick regardless of how far apart the ticks were. In a row
+    /// only a few lines tall — the demo's chart row, a phone-sized card — five labels landed inside
+    /// a band shorter than one of them, so "90.0/70.0/50.0/30.0/10.0" was a single black smear.
+    /// The gridlines still belong at every tick (they carry the scale); only the text is thinned.
+    #[test]
+    fn a_short_plot_thins_the_y_tick_labels_instead_of_stacking_them() {
+        // 120 px tall with a 52 px bottom margin leaves a plot of roughly 36 px for five ticks.
+        let layout = compute_cartesian_layout(Rect::new(0, 0, 300, 120), true, true, 0);
+        let mut context = MemoryChartContext::default();
+        draw_y_ticks(&mut context, &layout, 0.0, 100.0, 4, true);
+
+        let mut label_ys: Vec<f32> = Vec::new();
+        for command in &context.commands {
+            let Some(rest) = command.strip_prefix("text:") else { continue };
+            let Some((_, position)) = rest.split_once('@') else { continue };
+            let Some((_, y)) = position.split_once(',') else { continue };
+            let Some((y, _)) = y.split_once(':') else { continue };
+            label_ys.push(y.parse().expect("a recorded y is a number"));
+        }
+        assert!(
+            label_ys.len() < 5,
+            "five ticks cannot each carry a label in a 36 px plot: {label_ys:?}"
+        );
+        let line = layout.tick_label_height();
+        let mut sorted = label_ys.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).expect("a recorded y is finite"));
+        for pair in sorted.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= line,
+                "labels {pair:?} are closer than one {line} px line box"
+            );
+        }
+        assert!(
+            context.commands.iter().any(|command| command.starts_with("line:")),
+            "the gridlines must still be drawn at every tick"
+        );
+    }
+
+    /// A tall plot keeps every label.
+    #[test]
+    fn a_tall_plot_keeps_every_y_tick_label() {
+        let layout = compute_cartesian_layout(Rect::new(0, 0, 300, 400), true, true, 0);
+        let mut context = MemoryChartContext::default();
+        draw_y_ticks(&mut context, &layout, 0.0, 100.0, 4, true);
+        let labels = context.commands.iter().filter(|command| command.starts_with("text:")).count();
+        assert_eq!(labels, 5, "five ticks, five labels, when the plot is tall enough");
     }
 }

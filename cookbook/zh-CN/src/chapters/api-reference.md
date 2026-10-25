@@ -833,6 +833,31 @@ let applied = restore_save_state(window_id, &saved, key_of);
 
 `BarChart::set_animate_value_changes(true)` 会把数据更新从屏幕上的当前值缓动到新值，而不是直接跳变；`false` 保持原有的立即更新行为。
 
+### 控件渲染（离屏）（`widget::runtime`）
+
+一个窗口的画面由两部分组成：控件树，**以及**挂载在它下面的每个面。`Platform::mount_surface` 给挂载的控件一个自己的原生视图，而不是把它变成树子节点，平台单独绘制这个视图——所以只画树会在该控件所在处留下一个空洞。下面这几个入口让测试、文档构建或 `examples/` 二进制不必打开窗口就能得到真实画面：
+
+```rust
+use rust_widgets::core::{Color, Size};
+use rust_widgets::widget::runtime;
+
+// 平台实际呈现的整个窗口：先树，再叠上每个挂载面。
+let frame = runtime::render_window_frame(window_id, Size::new(1180, 760), Color::WHITE);
+
+// 只画树，不叠任何面。
+let tree = runtime::render_frame_tree(window_id, Size::new(1180, 760), Color::WHITE);
+
+// 单个控件；epoch 未变时复用缓存帧，即面视图所用的那条路径。
+let control = runtime::render_frame_cached(control_id, Size::new(320, 200), Color::TRANSPARENT);
+
+// 这个窗口下有哪些控件被挂载为面。
+let surfaces = runtime::surfaces_of(window_id);
+```
+
+三个渲染调用都返回 `Option<Vec<u8>>`：id 未挂载或任一维度为 `0` 时是 `None`，否则是按行存储的直通（非预乘）RGBA8，每行 `width * 4` 字节。`render_window_frame` 把每个面自己的帧按该控件的 `geometry()` 合成到树上，因此没有面覆盖的区域与树帧逐字节一致。面可能在自己的矩形里留空（透明），所以这里是**合成**而不是拷贝。
+
+要「像截图一样的画面」用 `render_window_frame`；只有窗口没有挂载任何面时 `render_frame_tree` 才是完整的。两者都必须在 UI 线程调用，`render_frame_cached` 的帧会留在帧缓存里直到下一个 epoch。
+
 ### 控件子类型
 
 | 类型 | 形式 |
