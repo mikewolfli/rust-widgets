@@ -792,15 +792,13 @@ fn myers_diff(a: &[&str], b: &[&str]) -> Option<Vec<EditOp>> {
     let max_depth = (MYERS_TRACE_BUDGET_BYTES / per_snapshot).max(1);
     let mut trace: Vec<Vec<isize>> = Vec::new();
     let mut reached = false;
-    let mut rounds = 0usize;
 
-    for d in 0..=max {
+    for (rounds, d) in (0..=max).enumerate() {
         if rounds >= max_depth {
             // The edit distance outgrew the trace budget; reporting that is the honest answer.
             return None;
         }
         trace.push(v.clone());
-        rounds += 1;
         let d = d as isize;
         let mut k = -d;
         while k <= d {

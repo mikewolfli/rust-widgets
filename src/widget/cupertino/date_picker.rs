@@ -279,8 +279,11 @@ impl CupertinoDatePicker {
             let mut hours = Vec::with_capacity(12);
             hours.push("12".to_string());
             hours.extend((1..12).map(|hour| hour.to_string()));
-            let selected =
-                if self.selected_hour % 12 == 0 { 0 } else { (self.selected_hour % 12) as i32 };
+            let selected = if self.selected_hour.is_multiple_of(12) {
+                0
+            } else {
+                (self.selected_hour % 12) as i32
+            };
             (selected, hours)
         }
     }

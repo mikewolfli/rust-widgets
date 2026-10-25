@@ -1432,6 +1432,12 @@ pub fn create_shortcut_editor(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates a chord recorder with an empty sequence.
+pub fn create_key_sequence_editor(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(KeySequenceEdit::new(geometry))
+}
+
+#[cfg(full_widgets)]
 /// Creates a swipe-to-dismiss wrapper with no content. `text` is applied as the
 /// control's label.
 pub fn create_swipe_to_dismiss(geometry: Rect, text: &str) -> Box<dyn Widget> {

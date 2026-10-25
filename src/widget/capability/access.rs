@@ -471,6 +471,9 @@ pub fn default_widget_property_default_value(
             "chrome_height" => CapabilityValue::UInt(28),
             "buttons_visible" => CapabilityValue::Bool(true),
             "draggable" => CapabilityValue::Bool(true),
+            "fullscreen" => CapabilityValue::Bool(false),
+            "document_edited" => CapabilityValue::Bool(false),
+            "focused" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::GroupBox => match property_name {
@@ -566,6 +569,9 @@ pub fn default_widget_property_default_value(
             "horizontal_header_visible" => CapabilityValue::Bool(true),
             "vertical_header_visible" => CapabilityValue::Bool(false),
             "date_format" => CapabilityValue::String("%Y-%m-%d".to_string()),
+            "show_week_numbers" => CapabilityValue::Bool(false),
+            "selection_mode" => CapabilityValue::String("single".to_string()),
+            "selected_dates" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             _ => return None,
         },
         WidgetKind::DatePicker => match property_name {
@@ -584,6 +590,7 @@ pub fn default_widget_property_default_value(
             "display_format" => CapabilityValue::String("HH:mm:ss".to_string()),
             "clock_popup" => CapabilityValue::Bool(false),
             "alignment" => CapabilityValue::String("left".to_string()),
+            "time_format" => CapabilityValue::String("24h".to_string()),
             _ => return None,
         },
         WidgetKind::LineEdit => match property_name {
@@ -639,6 +646,9 @@ pub fn default_widget_property_default_value(
             "selected_row" => CapabilityValue::Null,
             "row_height" => CapabilityValue::UInt(24),
             "alignment" => CapabilityValue::String("left".to_string()),
+            "group_by_category" => CapabilityValue::Bool(false),
+            "level_filter" => CapabilityValue::String("all".to_string()),
+            "max_items" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::TreeView => match property_name {
@@ -702,6 +712,12 @@ pub fn default_widget_property_default_value(
             "line_count" => CapabilityValue::UInt(0),
             "change_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
+            "view_mode" => CapabilityValue::String("side_by_side".to_string()),
+            "fold_unchanged" => CapabilityValue::Bool(false),
+            "fold_threshold" => CapabilityValue::UInt(8),
+            "fold_context_lines" => CapabilityValue::UInt(0),
+            "unified_changed_pair" => CapabilityValue::Bool(true),
+            "whitespace_mode" => CapabilityValue::String("show".to_string()),
             _ => return None,
         },
         WidgetKind::DataView => match property_name {
@@ -773,6 +789,7 @@ pub fn default_widget_property_default_value(
             "series" => CapabilityValue::String(alloc::string::String::new()),
             "overlay_count" => CapabilityValue::UInt(0),
             "show_price_levels" => CapabilityValue::Bool(false),
+            "show_overlay_legend" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::VolumeChart => match property_name {
@@ -797,6 +814,7 @@ pub fn default_widget_property_default_value(
             "sort" => CapabilityValue::String(alloc::string::String::from("none")),
             "selected_index" => CapabilityValue::Null,
             "row_height" => CapabilityValue::UInt(22),
+            "scroll_offset" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::IndicatorChart => match property_name {
@@ -833,6 +851,7 @@ pub fn default_widget_property_default_value(
             // A freshly constructed menu is a standalone popup and paints its heading; the
             // menu-bar path clears the flag when it creates one (see `create_menu`).
             "show_heading" => CapabilityValue::Bool(true),
+            "column_count" => CapabilityValue::UInt(1),
             _ => return None,
         },
         WidgetKind::MenuBar => match property_name {
@@ -851,6 +870,7 @@ pub fn default_widget_property_default_value(
             // selected slot until the host asks for one.
             "selectable" => CapabilityValue::Bool(false),
             "selected_index" => CapabilityValue::Null,
+            "overflow_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::RibbonBar => match property_name {
@@ -858,6 +878,8 @@ pub fn default_widget_property_default_value(
             "current_tab" => CapabilityValue::UInt(0),
             "expanded" => CapabilityValue::Bool(true),
             "minimized" => CapabilityValue::Bool(false),
+            "quick_access_items" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "quick_access_overflow_menu" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::ColorDialog => match property_name {
@@ -879,6 +901,15 @@ pub fn default_widget_property_default_value(
             "hex_rgba" => CapabilityValue::String("#FF0000FF".to_string()),
             "show_alpha" => CapabilityValue::Bool(true),
             "preset_count" => CapabilityValue::UInt(6),
+            "presets" => CapabilityValue::Tuple(crate::compat::Vec::from([
+                CapabilityValue::String("#F44336FF".to_string()),
+                CapabilityValue::String("#2196F3FF".to_string()),
+                CapabilityValue::String("#4CAF50FF".to_string()),
+                CapabilityValue::String("#FFC107FF".to_string()),
+                CapabilityValue::String("#9C27B0FF".to_string()),
+                CapabilityValue::String("#607D8BFF".to_string()),
+            ])),
+            "hue_degrees" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::RichEdit => match property_name {
@@ -895,6 +926,13 @@ pub fn default_widget_property_default_value(
             "preview_mode" => CapabilityValue::Bool(false),
             "word_count" => CapabilityValue::UInt(0),
             "heading_count" => CapabilityValue::UInt(0),
+            "undo_stack_limit" => CapabilityValue::UInt(100),
+            "undo_depth" => CapabilityValue::UInt(0),
+            "goto_bar_visible" => CapabilityValue::Bool(false),
+            "breakpoint_gutter" => CapabilityValue::Bool(false),
+            "show_scrollbar" => CapabilityValue::Bool(true),
+            "gfm_extensions" => CapabilityValue::Bool(true),
+            "code_highlight" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::Chart => match property_name {
@@ -912,6 +950,10 @@ pub fn default_widget_property_default_value(
             "point_count" => CapabilityValue::UInt(0),
             "label_count" => CapabilityValue::UInt(0),
             "series_count" => CapabilityValue::UInt(0),
+            "show_critical_path" => CapabilityValue::Bool(false),
+            "show_today" => CapabilityValue::Bool(true),
+            "show_time_labels" => CapabilityValue::Bool(false),
+            "lane_mode" => CapabilityValue::String("row".to_string()),
             _ => return None,
         },
         WidgetKind::TextEdit => match property_name {
@@ -923,6 +965,14 @@ pub fn default_widget_property_default_value(
             "output_line_count" => CapabilityValue::UInt(0),
             "input_line" => CapabilityValue::String(String::new()),
             "alignment" => CapabilityValue::String("left".to_string()),
+            "scrollback_lines" => CapabilityValue::UInt(5000),
+            "wrap_output" => CapabilityValue::Bool(true),
+            "show_scrollbar" => CapabilityValue::Bool(true),
+            "caret_style" => CapabilityValue::String("line".to_string()),
+            "caret_blink_enabled" => CapabilityValue::Bool(true),
+            "prompt" => CapabilityValue::String("> ".to_string()),
+            "selection_mode" => CapabilityValue::String("lines".to_string()),
+            "ansi_palette" => CapabilityValue::Null,
             _ => return None,
         },
 
@@ -937,6 +987,17 @@ pub fn default_widget_property_default_value(
             "zoom" => CapabilityValue::Float(1.0),
             "marker_count" => CapabilityValue::UInt(0),
             "selected_marker_id" => CapabilityValue::Null,
+            "projection" => CapabilityValue::String("linear".to_string()),
+            "layer_count" => CapabilityValue::UInt(0),
+            "anti_alias" => CapabilityValue::Bool(true),
+            "show_grid" => CapabilityValue::Bool(false),
+            "grid_step" => CapabilityValue::UInt(20),
+            "snap_to_grid" => CapabilityValue::Bool(false),
+            "zoom_range" => CapabilityValue::Tuple(crate::compat::Vec::from([
+                CapabilityValue::Float(0.125),
+                CapabilityValue::Float(16.0),
+            ])),
+            "zoom_step" => CapabilityValue::Float(1.1),
             _ => return None,
         },
         WidgetKind::Carousel => match property_name {
@@ -964,6 +1025,13 @@ pub fn default_widget_property_default_value(
             "volume" => CapabilityValue::UInt(80),
             "muted" => CapabilityValue::Bool(false),
             "fullscreen" => CapabilityValue::Bool(false),
+            "playlist_index" => CapabilityValue::Null,
+            "track_count" => CapabilityValue::UInt(0),
+            "user_agent" => CapabilityValue::String(
+                crate::widget::web_widgets::web_engine::DEFAULT_USER_AGENT.to_string(),
+            ),
+            "background_transparent" => CapabilityValue::Bool(false),
+            "cookie_persistence_enabled" => CapabilityValue::Bool(false),
             _ => return None,
         },
 
@@ -980,6 +1048,8 @@ pub fn default_widget_property_default_value(
             )),
             "segment_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
+            "collapsed_count" => CapabilityValue::UInt(0),
+            "separator" => CapabilityValue::String("/".to_string()),
             _ => return None,
         },
         WidgetKind::SignaturePad => match property_name {
@@ -999,6 +1069,11 @@ pub fn default_widget_property_default_value(
             "accepted_type" => CapabilityValue::String("text/plain".to_string()),
             "state" => CapabilityValue::String("idle".to_string()),
             "hovered" => CapabilityValue::Bool(false),
+            "accepted_types" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "multi_file" => CapabilityValue::Bool(false),
+            "hover_style" => CapabilityValue::String("highlight".to_string()),
+            "show_count_badge" => CapabilityValue::Bool(false),
+            "dropped_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
 
@@ -1030,6 +1105,9 @@ pub fn default_widget_property_default_value(
             "selected_id" => CapabilityValue::Null,
             // The macOS picker's own derived count (see `MAC_SEGMENTED_CONTROL_PROPERTIES`).
             "segment_count" => CapabilityValue::UInt(0),
+            "size_to_fit" => CapabilityValue::Bool(false),
+            "min_segment_width" => CapabilityValue::UInt(56),
+            "multi_select" => CapabilityValue::Bool(false),
             _ => return None,
         },
         // A `Chip` declares these; `CheckListBox` is a *type alias for `ListBox`* and
@@ -1062,6 +1140,8 @@ pub fn default_widget_property_default_value(
             "selected_count" => CapabilityValue::UInt(0),
             "page" => CapabilityValue::UInt(0),
             "selected_cell" => CapabilityValue::Null,
+            "page_count" => CapabilityValue::UInt(1),
+            "headers" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             _ => return None,
         },
         WidgetKind::FreeformShape => match property_name {
@@ -1069,6 +1149,7 @@ pub fn default_widget_property_default_value(
             "fill_rgba" => CapabilityValue::String("#C8DCFFFF".to_string()),
             "stroke_rgba" => CapabilityValue::String("#5078C8FF".to_string()),
             "stroke_width" => CapabilityValue::UInt(2),
+            "movable" => CapabilityValue::Bool(true),
             _ => return None,
         },
         // ── Always-available widget defaults (not mini-gated) ─────
@@ -1175,6 +1256,7 @@ pub fn default_widget_property_default_value(
             "show_axis_labels" => CapabilityValue::Bool(true),
             "show_legend" => CapabilityValue::Bool(true),
             "hovered_axis" => CapabilityValue::Null,
+            "series_names" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             _ => return None,
         },
         WidgetKind::KanbanBoard => match property_name {
@@ -1184,6 +1266,7 @@ pub fn default_widget_property_default_value(
             "hovered_column" => CapabilityValue::Null,
             // Mirrors the `COLUMN_WIDTH` layout constant in the control.
             "column_width" => CapabilityValue::UInt(220),
+            "horizontal_scroll_offset" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::Heatmap => match property_name {
@@ -1199,6 +1282,8 @@ pub fn default_widget_property_default_value(
             // Mirrors `Heatmap::new`.
             "show_labels" => CapabilityValue::Bool(true),
             "show_legend" => CapabilityValue::Bool(true),
+            "viewport_rows" => CapabilityValue::Null,
+            "viewport_columns" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::Cascader => match property_name {
@@ -1295,6 +1380,8 @@ pub fn default_widget_property_default_value(
             "label_text" | "default_suffix" => CapabilityValue::String(String::new()),
             "file_count" => CapabilityValue::UInt(0),
             "can_go_back" | "can_go_forward" => CapabilityValue::Bool(false),
+            "view_mode" => CapabilityValue::String("list".to_string()),
+            "sidebar_urls" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             _ => return None,
         },
         WidgetKind::FontDialog => match property_name {
@@ -1340,6 +1427,10 @@ pub fn default_widget_property_default_value(
             "toast_count" => CapabilityValue::UInt(0),
             "selected_id" => CapabilityValue::Null,
             "row_height" => CapabilityValue::UInt(30),
+            "resizable" => CapabilityValue::Bool(false),
+            "max_visible" => CapabilityValue::UInt(5),
+            "anchor" => CapabilityValue::String("bottom_left".to_string()),
+            "stacking_direction" => CapabilityValue::String("newest_at_bottom".to_string()),
             _ => return None,
         },
         // ── Container widgets ───────────────────────────────
@@ -1466,6 +1557,7 @@ pub fn default_widget_property_default_value(
             // to claim the empty string, which the property route cannot write back
             // (`parse_iso_date("")` is malformed) — a default no instance can hold.
             "selected_date" => CapabilityValue::String("2025-01-01".to_string()),
+            "year_span" => CapabilityValue::UInt(50),
             _ => return None,
         },
         WidgetKind::Divider => match property_name {
@@ -1483,6 +1575,8 @@ pub fn default_widget_property_default_value(
             "step" => CapabilityValue::Int(1),
             // The macOS stepper's own flag (see `MAC_STEPPER_PROPERTIES`).
             "wraps" => CapabilityValue::Bool(false),
+            "repeat_delay_ms" => CapabilityValue::UInt(400),
+            "repeat_interval_ms" => CapabilityValue::UInt(80),
             _ => return None,
         },
         WidgetKind::Rating => match property_name {
@@ -1499,6 +1593,9 @@ pub fn default_widget_property_default_value(
         WidgetKind::Avatar => match property_name {
             "initials" => CapabilityValue::String(String::new()),
             "image_source" => CapabilityValue::String(String::new()),
+            "badge" => CapabilityValue::Null,
+            "ring_color" => CapabilityValue::Null,
+            "ring_width" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::EmptyState => match property_name {
@@ -1544,6 +1641,11 @@ pub fn default_widget_property_default_value(
             "size" => CapabilityValue::UInt(100),
             // The constructor's own default.
             "quiet_zone" => CapabilityValue::UInt(2),
+            "ec_level" => CapabilityValue::String("L".to_string()),
+            "min_version" => CapabilityValue::UInt(1),
+            "max_version" => CapabilityValue::UInt(10),
+            "foreground_color" => CapabilityValue::Null,
+            "background_color" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::MasonryLayout => match property_name {
@@ -1555,6 +1657,8 @@ pub fn default_widget_property_default_value(
         WidgetKind::MaterialSnackbar => match property_name {
             "message" => CapabilityValue::String(String::new()),
             "action_text" => CapabilityValue::String(String::new()),
+            "duration_ms" => CapabilityValue::UInt(4000),
+            "slide_progress" => CapabilityValue::Float(0.0),
             _ => return None,
         },
         WidgetKind::AdaptiveScaffold => match property_name {
@@ -1609,6 +1713,7 @@ pub fn default_widget_property_default_value(
             "selected_indices" => CapabilityValue::String(String::new()),
             "allows_multiple" => CapabilityValue::Bool(false),
             "segment_count" => CapabilityValue::UInt(0),
+            "group_id" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::NavigationStack => match property_name {
@@ -1755,6 +1860,8 @@ pub fn default_widget_property_default_value(
         WidgetKind::CupertinoNavigationBar => match property_name {
             "title" => CapabilityValue::String(String::new()),
             "large_title" => CapabilityValue::Bool(true),
+            "prompt" => CapabilityValue::String("".to_string()),
+            "collapse_offset" => CapabilityValue::Float(0.0),
             _ => return None,
         },
         WidgetKind::CupertinoSegmentedControl => match property_name {
@@ -1792,6 +1899,9 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::CupertinoDatePicker => match property_name {
             "selected_date" => CapabilityValue::String("2025-01-01".to_string()),
+            "mode" => CapabilityValue::String("date".to_string()),
+            "use_24_hour" => CapabilityValue::Bool(true),
+            "minute_interval" => CapabilityValue::UInt(1),
             _ => return None,
         },
         WidgetKind::EditableComboBox => match property_name {
@@ -1809,6 +1919,10 @@ pub fn default_widget_property_default_value(
             // writable (`parse_iso_date("")` is malformed).
             "start_date" => CapabilityValue::Null,
             "end_date" => CapabilityValue::Null,
+            "presets" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "double_month" => CapabilityValue::Bool(false),
+            "min_nights" => CapabilityValue::UInt(0),
+            "max_nights" => CapabilityValue::UInt(0),
             _ => return None,
         },
 
@@ -1820,11 +1934,17 @@ pub fn default_widget_property_default_value(
             "menu_open" => CapabilityValue::Bool(false),
             "action_count" => CapabilityValue::UInt(0),
             "row_height" => CapabilityValue::UInt(24),
+            "popup_direction" => CapabilityValue::String("down".to_string()),
+            "max_menu_height" => CapabilityValue::Null,
+            "menu_scroll" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::StatusBar => match property_name {
             "message" => CapabilityValue::String(String::new()),
             "action_label" => CapabilityValue::Null,
+            "queued_count" => CapabilityValue::UInt(0),
+            "max_queued" => CapabilityValue::UInt(4),
+            "anchor" => CapabilityValue::String("center".to_string()),
             _ => return None,
         },
 
@@ -1873,6 +1993,10 @@ pub fn default_widget_property_default_value(
             "stroke_width" => CapabilityValue::Float(1.5),
             "data" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "show_end_value" => CapabilityValue::Bool(false),
+            "fill" => CapabilityValue::Bool(false),
+            "show_points" => CapabilityValue::Bool(false),
+            "show_last_marker" => CapabilityValue::Bool(true),
+            "capacity" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::BarChart => match property_name {
@@ -1887,6 +2011,8 @@ pub fn default_widget_property_default_value(
         // ── New widgets (media/animation) ───────────────────────────
         WidgetKind::AnimatedImage => match property_name {
             "playing" => CapabilityValue::Bool(false),
+            "direction" => CapabilityValue::String("forward".to_string()),
+            "frame_cache_limit" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::HeroAnimation => match property_name {
@@ -1895,10 +2021,17 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::LottieWidget => match property_name {
             "playing" => CapabilityValue::Bool(false),
+            "loop_count" => CapabilityValue::Int(0),
+            "loops_completed" => CapabilityValue::Int(0),
+            "direction" => CapabilityValue::String("forward".to_string()),
+            "speed" => CapabilityValue::Float(1.0),
             _ => return None,
         },
         WidgetKind::RiveWidget => match property_name {
             "is_playing" => CapabilityValue::Bool(false),
+            "loop_count" => CapabilityValue::Int(0),
+            "loops_completed" => CapabilityValue::Int(0),
+            "state" => CapabilityValue::String("idle".to_string()),
             _ => return None,
         },
         WidgetKind::VideoPlayer => match property_name {
@@ -1907,6 +2040,8 @@ pub fn default_widget_property_default_value(
             "muted" => CapabilityValue::Bool(false),
             "playback_rate" => CapabilityValue::Float(1.0),
             "controls_visible" => CapabilityValue::Bool(true),
+            "looping" => CapabilityValue::Bool(false),
+            "pipeline" => CapabilityValue::String("Idle".to_string()),
             _ => return None,
         },
 
@@ -1937,10 +2072,16 @@ pub fn default_widget_property_default_value(
         // ── New widgets (misc) ──────────────────────────────────────
         WidgetKind::AudioVisualizer => match property_name {
             "bar_count" => CapabilityValue::UInt(64),
+            "peak_threshold" => CapabilityValue::Float(0.9),
+            "mode" => CapabilityValue::String("waveform".to_string()),
+            "level_report_interval" => CapabilityValue::UInt(50),
             _ => return None,
         },
         WidgetKind::CameraPreview => match property_name {
             "is_active" => CapabilityValue::Bool(false),
+            "pixel_format" => CapabilityValue::String("Rgba8888".to_string()),
+            "target_fps" => CapabilityValue::UInt(30),
+            "camera_id" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::BarcodeScanner => match property_name {
@@ -2074,6 +2215,12 @@ pub fn default_widget_property_default_value(
             "thickness" => CapabilityValue::UInt(10),
             "zone_count" => CapabilityValue::UInt(0),
             "animated" => CapabilityValue::Bool(false),
+            "bands" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "tick_count" => CapabilityValue::UInt(5),
+            "start_angle" => CapabilityValue::Float(2.3561945),
+            "end_angle" => CapabilityValue::Float(7.0685835),
+            "needle_style" => CapabilityValue::String("none".to_string()),
+            "unit_label" => CapabilityValue::String("".to_string()),
             _ => return None,
         },
 

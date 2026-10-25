@@ -335,6 +335,13 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated(
+                "level_filter",
+                true,
+                true,
+                &["all", "info", "warning", "error"],
+            ),
+            PropertySchema::new("max_items", PropertyValueKind::UInt, true, true),
         ];
 
         // `DiffViewer` compares two snapshots. Both texts are readable and
@@ -427,6 +434,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("user_agent", PropertyValueKind::String, true, true),
+            PropertySchema::new("background_transparent", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("cookie_persistence_enabled", PropertyValueKind::Bool, true, true),
         ];
 
         pub(crate) const ARC_PROPERTIES: &[PropertySchema] = &[
@@ -1240,6 +1250,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("repeat_delay_ms", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("repeat_interval_ms", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -1255,6 +1267,7 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("overflow_count", PropertyValueKind::UInt, true, false),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -1281,6 +1294,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("fullscreen", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("document_edited", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("focused", PropertyValueKind::Bool, true, true),
         ];
     };
 }

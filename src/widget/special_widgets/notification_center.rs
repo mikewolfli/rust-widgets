@@ -14,6 +14,7 @@ use crate::widget::menu_toolbar::popup_reveal::PopupReveal;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use core::fmt::Write as _;
 
 /// Notification severity level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +99,12 @@ pub struct NotificationCenter {
     show_clear_all: bool,
     /// Whether rows are preceded by a day header.
     group_by_day: bool,
+    /// Only rows whose level matches are shown; `None` shows every level.
+    level_filter: Option<NotificationLevel>,
+    /// Maximum retained notifications; zero keeps every item.
+    max_items: usize,
+    /// Reused `HH:MM` buffer for the paint path, so a still frame does not format-allocate.
+    stamp_buf: String,
     /// Emitted when selected notification changes. Payload is id.
     pub notification_selected: Signal1<String>,
     /// Emitted when notification is activated. Payload is id.
@@ -123,6 +130,9 @@ impl NotificationCenter {
             show_timestamps: false,
             show_clear_all: false,
             group_by_day: false,
+            level_filter: None,
+            max_items: 0,
+            stamp_buf: String::new(),
             notification_selected: Signal1::new(),
             notification_activated: Signal1::new(),
             unread_count_changed: Signal1::new(),
@@ -181,7 +191,7 @@ impl NotificationCenter {
     /// Scrolls the list by `delta` rows.
     pub fn scroll_by(&mut self, delta: isize) {
         let capacity = (self.geometry().height / self.row_height.max(1)) as usize;
-        let max = self.items.len().saturating_sub(capacity.max(1));
+        let max = self.visible_count().saturating_sub(capacity.max(1));
         let next = (self.scroll_offset as isize + delta).clamp(0, max as isize) as usize;
         if self.scroll_offset == next {
             return;
@@ -239,6 +249,9 @@ impl NotificationCenter {
         let mut rows = Vec::new();
         let mut previous_day = None;
         for (index, item) in self.items.iter().enumerate().skip(self.scroll_offset) {
+            if !self.item_matches_filter(item) {
+                continue;
+            }
             if self.group_by_day && item.day_index().is_some() && item.day_index() != previous_day {
                 y += 14;
             }
@@ -278,6 +291,8 @@ impl NotificationCenter {
         // painted frame is the start of the movement rather than a snap into its middle.
         self.reveal.jump_to(false);
         self.reveal.set_open(true);
+        self.enforce_item_cap();
+        self.clamp_scroll_to_visible();
         self.unread_count_changed.emit(self.unread_count());
         self.base.request_layout();
         self.base.request_redraw();
@@ -290,6 +305,74 @@ impl NotificationCenter {
         self.unread_count_changed.emit(0);
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Sets the level filter, or `None` to show every level.
+    pub fn set_level_filter(&mut self, level: Option<NotificationLevel>) {
+        if self.level_filter == level {
+            return;
+        }
+        self.level_filter = level;
+        self.clamp_scroll_to_visible();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The level filter, or `None` when every level is shown.
+    pub fn level_filter(&self) -> Option<NotificationLevel> {
+        self.level_filter
+    }
+
+    /// Sets how many notifications are retained; zero keeps every item.
+    ///
+    /// Lowering the cap evicts the oldest items immediately, publishing each through
+    /// [`Self::notification_dismissed`] so a mirroring host sees the same removals.
+    pub fn set_max_items(&mut self, max_items: usize) {
+        if self.max_items == max_items {
+            return;
+        }
+        self.max_items = max_items;
+        self.enforce_item_cap();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// How many notifications are retained; zero means unbounded.
+    pub fn max_items(&self) -> usize {
+        self.max_items
+    }
+
+    /// Whether `item` passes the current level filter.
+    fn item_matches_filter(&self, item: &NotificationItem) -> bool {
+        self.level_filter.is_none_or(|level| item.level == level)
+    }
+
+    /// The number of rows the filter lets through.
+    fn visible_count(&self) -> usize {
+        self.items.iter().filter(|item| self.item_matches_filter(item)).count()
+    }
+
+    /// Evicts the oldest items until the cap holds. Removal goes through [`Self::remove`], so
+    /// the dismissal signal and selection repair are the same as a user dismissal.
+    fn enforce_item_cap(&mut self) {
+        if self.max_items == 0 {
+            return;
+        }
+        while self.items.len() > self.max_items {
+            let Some(id) = self.items.first().map(|item| item.id.clone()) else {
+                break;
+            };
+            if !self.remove(&id) {
+                break;
+            }
+        }
+    }
+
+    /// Keeps the scroll offset inside the rows the filter actually shows.
+    fn clamp_scroll_to_visible(&mut self) {
+        let capacity = (self.geometry().height / self.row_height.max(1)) as usize;
+        let max = self.visible_count().saturating_sub(capacity.max(1));
+        self.scroll_offset = self.scroll_offset.min(max);
     }
 
     /// Returns unread count.
@@ -489,6 +572,16 @@ impl WidgetProperties for NotificationCenter {
                 }
             }
             "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            "level_filter" => Ok(CapabilityValue::String(
+                match self.level_filter() {
+                    None => "all",
+                    Some(NotificationLevel::Info) => "info",
+                    Some(NotificationLevel::Warning) => "warning",
+                    Some(NotificationLevel::Error) => "error",
+                }
+                .to_string(),
+            )),
+            "max_items" => Ok(CapabilityValue::UInt(self.max_items() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -504,6 +597,23 @@ impl WidgetProperties for NotificationCenter {
                 }
                 _ => Err(CapabilityAccessError::TypeMismatch),
             },
+            "level_filter" => {
+                let token = crate::widget::capability::coercion::expect_string(value)?;
+                let level = match token.to_ascii_lowercase().as_str() {
+                    "all" => None,
+                    "info" => Some(NotificationLevel::Info),
+                    "warning" => Some(NotificationLevel::Warning),
+                    "error" => Some(NotificationLevel::Error),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_level_filter(level);
+                Ok(())
+            }
+            "max_items" => {
+                let max = crate::widget::capability::coercion::expect_usize(value)?;
+                self.set_max_items(max);
+                Ok(())
+            }
             "item_count" | "unread_count" | "selected_index" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
@@ -517,6 +627,8 @@ impl WidgetProperties for NotificationCenter {
             "unread_count",
             "selected_index",
             "row_height",
+            "level_filter",
+            "max_items",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -820,7 +932,8 @@ impl Draw for NotificationCenter {
                 let seconds = item.timestamp_ms / 1000;
                 let hour = (seconds / 3600) % 24;
                 let minute = (seconds / 60) % 60;
-                let stamp = format!("{hour:02}:{minute:02}");
+                self.stamp_buf.clear();
+                let _ = write!(self.stamp_buf, "{hour:02}:{minute:02}");
                 let band = Rect::new(
                     row_rect.x + row_rect.width as i32 - 56,
                     row_rect.y,
@@ -829,7 +942,7 @@ impl Draw for NotificationCenter {
                 );
                 context.draw_text_line_cow(
                     band,
-                    &stamp,
+                    &self.stamp_buf,
                     effective_font(style),
                     text_color.blend(&background, 0.25),
                     HorizontalAlignment::Right,
@@ -877,6 +990,26 @@ mod tests {
 
         center.mark_all_read();
         assert_eq!(center.unread_count(), 0);
+    }
+
+    #[test]
+    fn level_filter_and_item_cap_bound_the_list() {
+        let mut center = sample_center();
+        center.set_level_filter(Some(NotificationLevel::Warning));
+        let rows = center.layout_rows();
+        assert_eq!(rows.len(), 1, "only the warning row is laid out");
+        assert_eq!(center.items()[rows[0].0].id, "n2");
+
+        center.set_level_filter(None);
+        let dismissed = Arc::new(Mutex::new(Vec::<String>::new()));
+        center.notification_dismissed.connect({
+            let dismissed = Arc::clone(&dismissed);
+            move |id: Arc<String>| dismissed.lock().unwrap().push((*id).clone())
+        });
+        center.set_max_items(2);
+        assert_eq!(center.items().len(), 2, "the cap evicts down to two rows");
+        assert_eq!(*dismissed.lock().unwrap(), vec!["n1".to_string()]);
+        assert_eq!(center.items()[0].id, "n2");
     }
 
     #[test]

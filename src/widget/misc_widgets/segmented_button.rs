@@ -33,11 +33,12 @@ const SEGMENT_ICON_GAP: u32 = 4;
 /// selected a segment and a generation counter so every member can tell whether its local
 /// selection is still the authoritative one. A global map is what makes two controls that
 /// know nothing about each other able to share one selection without a host-owned registry.
-fn segmented_groups(
-) -> &'static std::sync::Mutex<std::collections::BTreeMap<String, (u64, u64, Option<usize>)>> {
-    static GROUPS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::BTreeMap<String, (u64, u64, Option<usize>)>>,
-    > = std::sync::OnceLock::new();
+type SegmentedGroupEntry = (u64, u64, Option<usize>);
+type SegmentedGroupTable =
+    std::sync::Mutex<std::collections::BTreeMap<String, SegmentedGroupEntry>>;
+
+fn segmented_groups() -> &'static SegmentedGroupTable {
+    static GROUPS: std::sync::OnceLock<SegmentedGroupTable> = std::sync::OnceLock::new();
     GROUPS.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
 }
 

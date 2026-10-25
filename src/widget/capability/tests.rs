@@ -1537,7 +1537,7 @@ fn connect_event_binds_every_spelling_to_the_canonical_signal() {
 ///
 /// # Why this is a contract, not a gap (BLUE-issue E-14)
 ///
-/// `audio_visualizer`, `ime_preedit` and `popover` all change some internal state
+/// `ime_preedit` changes some internal state
 /// when handled input arrives, but none of those state changes is a **semantic event a host wires a
 /// behaviour to**: a peak-hold overlay, a pre-edit buffer and a popover's internal
 /// dismissal are presentation state. Publishing them would invent an API the host never asked for and
@@ -1547,21 +1547,22 @@ fn connect_event_binds_every_spelling_to_the_canonical_signal() {
 /// `clicked`" change from silently adding events the contract never promised.
 ///
 /// `camera_preview` was in this list until it grew `error_occurred` and `permission_denied`, which are
-/// host-visible failures rather than presentation state, so it now publishes them.
+/// host-visible failures rather than presentation state, so it now publishes them. `audio_visualizer`
+/// (`level_changed`/`peak_exceeded`/`mode_changed`, MW-16) and `popover` (show/hide lifecycle,
+/// DLG-12) left this list because a host wires those state changes to behaviour.
 #[test]
 fn controls_with_no_published_events_keep_none_on_purpose() {
     let factory = WidgetFactory::new_with_defaults();
-    for name in ["audio_visualizer", "ime_preedit", "popover"] {
-        let capability = factory
-            .capability(name)
-            .unwrap_or_else(|| panic!("`{name}` must be a registered capability"));
-        assert!(
-            capability.events.is_empty(),
-            "`{name}` is documented as an internal-presentation control with no published events; \
-             publishing {} would change the contract (BLUE-issue E-14)",
-            capability.events.len()
-        );
-    }
+    let name = "ime_preedit";
+    let capability = factory
+        .capability(name)
+        .unwrap_or_else(|| panic!("`{name}` must be a registered capability"));
+    assert!(
+        capability.events.is_empty(),
+        "`{name}` is documented as an internal-presentation control with no published events; \
+         publishing {} would change the contract (BLUE-issue E-14)",
+        capability.events.len()
+    );
 }
 
 /// The validated text-input variants are real controls over the one `LineEdit` model.

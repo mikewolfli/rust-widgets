@@ -2398,7 +2398,7 @@ mod tests {
         terminal.handle_event(&Event::mouse_move(40, 16 + OUTPUT_LINE_HEIGHT));
         assert_eq!(terminal.output_selection(), Some((0, 1)));
         assert_eq!(terminal.selected_output().as_deref(), Some("red first\nsecond"));
-        assert_eq!(terminal.selected_output().unwrap().contains('\u{1b}'), false);
+        assert!(!terminal.selected_output().unwrap().contains('\u{1b}'));
 
         terminal.handle_event(&Event::mouse_release(40, 16 + OUTPUT_LINE_HEIGHT, 1));
         assert!(terminal.copy_output());

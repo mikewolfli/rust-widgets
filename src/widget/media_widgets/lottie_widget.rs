@@ -421,11 +421,14 @@ pub struct LottiePathShape {
     /// A path's geometry is sampled once at load, so the same outline is tessellated on every
     /// frame. Without the cache the renderer rebuilt an SVG `d` string and ran the flattener for
     /// every path of every frame.
-    flatten_cache: core::cell::RefCell<Option<(PathCacheKey, Vec<Point>, Vec<(usize, usize)>)>>,
+    flatten_cache: FlattenCache,
 }
 
 /// The placement components a flattened path depends on.
 type PathCacheKey = (u64, u64, u64, u64);
+
+/// The cached flattening: its key plus the points and per-subpath ranges.
+type FlattenCache = core::cell::RefCell<Option<(PathCacheKey, Vec<Point>, Vec<(usize, usize)>)>>;
 
 impl LottiePathShape {
     /// Parses a `"sh"` shape from its `ks.k` value.
@@ -3208,7 +3211,7 @@ mod tests {
             }]
         }"#;
         let mut lottie = LottieWidget::new(Rect::new(0, 0, 100, 100));
-        lottie.load_json(&json).unwrap();
+        lottie.load_json(json).unwrap();
         let first = crate::widget::svg::render_to_svg(&mut lottie);
         let second = crate::widget::svg::render_to_svg(&mut lottie);
         assert_eq!(first, second, "a cached outline must paint the same picture");

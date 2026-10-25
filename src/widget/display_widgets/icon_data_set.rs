@@ -81,7 +81,7 @@ static REGISTRY_REVISION: AtomicU64 = AtomicU64::new(0);
 
 // This thread's snapshot of the registry, tagged with the revision it came from.
 thread_local! {
-    static SNAPSHOT: RefCell<Snapshot> = RefCell::new(Snapshot { revision: u64::MAX, table: Registry::new() });
+    static SNAPSHOT: RefCell<Snapshot> = const { RefCell::new(Snapshot { revision: u64::MAX, table: Registry::new() }) };
 }
 
 struct Snapshot {

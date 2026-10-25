@@ -352,10 +352,10 @@ impl GanttWidget {
         // Kahn's topological order. `edges[pred]` lists the successors that wait on it.
         let mut edges: Vec<Vec<usize>> = vec![Vec::new(); count];
         let mut indegree = vec![0usize; count];
-        for successor in 0..count {
+        for (successor, indegree_slot) in indegree.iter_mut().enumerate() {
             for predecessor in self.predecessor_indices(successor) {
                 edges[predecessor].push(successor);
-                indegree[successor] += 1;
+                *indegree_slot += 1;
             }
         }
         let mut queue: Vec<usize> = (0..count).filter(|index| indegree[*index] == 0).collect();

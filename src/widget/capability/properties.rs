@@ -1818,7 +1818,7 @@ pub(crate) fn avatar_capability() -> WidgetCapability {
         canonical_name: "avatar",
         aliases: &["avatar_widget", "user_avatar"],
         properties: AVATAR_PROPERTIES,
-        events: &[],
+        events: events_of!("avatar"),
         commands: &["set_initials", "set_image_source"],
     }
 }
@@ -2103,7 +2103,7 @@ pub(crate) fn popover_capability() -> WidgetCapability {
         canonical_name: "popover",
         aliases: &["popover_widget", "popup_card"],
         properties: POPOVER_PROPERTIES,
-        events: &[],
+        events: events_of!("popover"),
         commands: &["set_visible", "set_text"],
     }
 }
@@ -2355,6 +2355,37 @@ pub(crate) fn shortcut_editor_capability() -> WidgetCapability {
     }
 }
 
+/// The base contract `KeySequenceEdit` publishes.
+///
+/// The control's value is edited through its own API, so the capability surface is exactly the
+/// four names every widget inherits.
+#[cfg(not(alloc_frugal))]
+const KEY_SEQUENCE_EDITOR_PROPERTIES: &[PropertySchema] = &[
+    PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+    PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+    PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+];
+
+/// The chord recorder (`KeySequenceEdit`), published separately from `ShortcutEditor`.
+///
+/// The two controls capture different things: `ShortcutEditor` edits a command id plus a list of
+/// keys, while `KeySequenceEdit` records one chord. Its published names are the ones that control
+/// emits, so a subscriber is not told about an event the other control would have to fake.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn key_sequence_editor_capability() -> WidgetCapability {
+    WidgetCapability {
+        // `KeySequenceEdit`'s base widget reports the line-edit kind; the capability follows the
+        // control it describes rather than inventing a second kind for a text-shaped editor.
+        kind: WidgetKind::LineEdit,
+        canonical_name: "key_sequence_editor",
+        aliases: &["key_sequence_edit"],
+        properties: KEY_SEQUENCE_EDITOR_PROPERTIES,
+        events: events_of!("key_sequence_editor"),
+        commands: &[],
+    }
+}
+
 #[cfg(not(alloc_frugal))]
 pub(crate) fn swipe_to_dismiss_capability() -> WidgetCapability {
     WidgetCapability {
@@ -2386,7 +2417,7 @@ pub(crate) fn sparkline_capability() -> WidgetCapability {
         canonical_name: "sparkline",
         aliases: &["sparkline_chart"],
         properties: SPARKLINE_PROPERTIES,
-        events: &[],
+        events: events_of!("sparkline"),
         commands: &["set_stroke_width"],
     }
 }
@@ -2600,7 +2631,7 @@ pub(crate) fn audio_visualizer_capability() -> WidgetCapability {
         canonical_name: "audio_visualizer",
         aliases: &["audio_viz"],
         properties: AUDIO_VISUALIZER_PROPERTIES,
-        events: &[],
+        events: events_of!("audio_visualizer"),
         commands: &["set_bar_count"],
     }
 }
@@ -2884,7 +2915,7 @@ pub(crate) fn gauge_capability() -> WidgetCapability {
         canonical_name: "gauge",
         aliases: &["dial_gauge"],
         properties: GAUGE_PROPERTIES,
-        events: &[],
+        events: events_of!("gauge"),
         commands: &[],
     }
 }

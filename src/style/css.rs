@@ -42,11 +42,14 @@ enum CachedDeclValue {
 
 // The most recently parsed declaration values, keyed by kind and a hash of the source text.
 // The stored text is compared on a hit, so a hash collision is a miss rather than a wrong value.
+type DeclCacheEntry = (String, CachedDeclValue);
+type InlineDeclEntry = (String, Rc<Vec<(String, String)>>);
+
 thread_local! {
-    static DECL_CACHE: RefCell<HashMap<(u8, u64), (String, CachedDeclValue)>> =
+    static DECL_CACHE: RefCell<HashMap<(u8, u64), DeclCacheEntry>> =
         RefCell::new(HashMap::new());
     /// Parsed semicolon-separated declaration lists (the inline-CSS form), keyed by text hash.
-    static INLINE_DECL_CACHE: RefCell<HashMap<u64, (String, Rc<Vec<(String, String)>>)>> =
+    static INLINE_DECL_CACHE: RefCell<HashMap<u64, InlineDeclEntry>> =
         RefCell::new(HashMap::new());
 }
 

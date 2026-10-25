@@ -1762,7 +1762,7 @@ mod tests {
         let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
         assert_eq!(canvas.get("anti_alias").unwrap(), CapabilityValue::Bool(true));
         canvas.set("anti_alias", CapabilityValue::Bool(false)).unwrap();
-        assert_eq!(canvas.anti_alias(), false);
+        assert!(!canvas.anti_alias());
         canvas.set("show_grid", CapabilityValue::Bool(true)).unwrap();
         assert!(canvas.show_grid());
         canvas

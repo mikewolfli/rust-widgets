@@ -420,22 +420,39 @@ impl Widget for DropZone {
     /// optional property uses — so "no selection" is distinguishable from "selection 0".
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
-        let files = |values: &Vec<String>| {
-            CapabilityValue::Tuple(
-                values.iter().map(|value| CapabilityValue::String(value.clone())).collect(),
-            )
-        };
         match name {
             "payload_dropped" => {
                 Some(EventSignalRef::mapped("payload_dropped", &self.payload_dropped, |v| {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
             }
-            "zone_entered" => {
-                Some(EventSignalRef::mapped("zone_entered", &self.zone_entered, files))
+            // The declared shape is `ListScalar` of `String`, so each file is delivered as its own
+            // `CapabilityValue::String`; a debug spelling would be one unparseable scalar.
+            "zone_entered" => Some(EventSignalRef::mapped(
+                "zone_entered",
+                &self.zone_entered,
+                |values: &Vec<String>| {
+                    CapabilityValue::Tuple(
+                        values.iter().map(|value| CapabilityValue::String(value.clone())).collect(),
+                    )
+                },
+            )),
+            "zone_exited" => Some(EventSignalRef::mapped(
+                "zone_exited",
+                &self.zone_exited,
+                |values: &Vec<String>| {
+                    CapabilityValue::Tuple(
+                        values.iter().map(|value| CapabilityValue::String(value.clone())).collect(),
+                    )
+                },
+            )),
+            "dropped" => {
+                Some(EventSignalRef::mapped("dropped", &self.dropped, |values: &Vec<String>| {
+                    CapabilityValue::Tuple(
+                        values.iter().map(|value| CapabilityValue::String(value.clone())).collect(),
+                    )
+                }))
             }
-            "zone_exited" => Some(EventSignalRef::mapped("zone_exited", &self.zone_exited, files)),
-            "dropped" => Some(EventSignalRef::mapped("dropped", &self.dropped, files)),
             "drop_rejected" => Some(EventSignalRef::unit("drop_rejected", &self.drop_rejected)),
             _ => None,
         }

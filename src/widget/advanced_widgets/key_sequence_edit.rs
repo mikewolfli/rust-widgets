@@ -9,10 +9,13 @@ use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
-use crate::widget::capability::types::CapabilityValue;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -418,6 +421,7 @@ impl Widget for KeySequenceEdit {
         crate::core::Size::new(150, 28)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
 
     /// Resolves the control's published events to its signals.
     ///
@@ -626,6 +630,21 @@ impl Draw for KeySequenceEdit {
             text_color,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
+    }
+}
+
+/// `KeySequenceEdit`'s property contract.
+impl WidgetProperties for KeySequenceEdit {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        base_property_get(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![BASE_PROPERTY_NAMES]
     }
 }
 

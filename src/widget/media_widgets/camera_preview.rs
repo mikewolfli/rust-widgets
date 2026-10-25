@@ -318,10 +318,11 @@ impl CameraPreview {
     /// readout name the same size because both come from the frame that is on screen. Returns
     /// `Err` when the dimensions are empty or the byte count is not `width * height * 4`.
     pub fn set_frame(&mut self, width: u32, height: u32, data: &[u8]) -> Result<(), String> {
-        self.set_frame_shared(width, height, 0, Arc::from(data)).map_err(|error| {
+        let result = self.set_frame_shared(width, height, 0, Arc::from(data));
+        if let Err(error) = &result {
             self.error_occurred.emit(error.clone());
-            error
-        })
+        }
+        result
     }
 
     /// Supplies a frame from a shared buffer, with no pixel copy.

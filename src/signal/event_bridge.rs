@@ -788,7 +788,12 @@ mod tests {
         let mut binder = EventSignalBinder::new(hub);
 
         let view = crate::widget::web_widgets::web_engine::WebEngineView::new(r);
-        assert_eq!(binder.forward_all(&view), 13, "`web_engine_view` publishes thirteen events");
+        assert_eq!(
+            binder.forward_all(&view),
+            16,
+            "`web_engine_view` publishes sixteen events after `link_hovered`, \
+             `render_process_crashed` and `js_evaluated` (MW-19/MW-24)"
+        );
 
         let player = crate::widget::special_widgets::media_player::MediaPlayer::new(r);
         for name in ["playback_changed", "position_changed", "volume_changed"] {
@@ -797,9 +802,9 @@ mod tests {
 
         assert_eq!(
             binder.unwired_events_for(&player),
-            Some(2),
-            "the shortfall is this control's own (5 published - 3 wired), not `WebEngineView`'s \
-             eight extra names folded in through a shared `WidgetKind`"
+            Some(4),
+            "the shortfall is this control's own (7 published - 3 wired), not `WebEngineView`'s \
+             extra names folded in through a shared `WidgetKind`"
         );
         // The larger sibling is still fully wired; neither answer may be read off the other.
         assert_eq!(binder.unwired_events_for(&view), Some(0));

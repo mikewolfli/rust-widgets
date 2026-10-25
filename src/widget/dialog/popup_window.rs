@@ -582,7 +582,7 @@ impl Draw for PopupWindow {
         if let Some(grip) = self.resize_grip_rect() {
             let ink = border.with_alpha(170);
             for step in 1..=3 {
-                let offset = (step * 4) as i32;
+                let offset = step * 4;
                 context.draw_line(
                     Point::new(
                         grip.x + grip.width as i32 - offset,

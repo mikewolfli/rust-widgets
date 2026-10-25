@@ -154,6 +154,8 @@ use crate::widget::web_widgets::web_view::WebView;
 // there because its kind is shared with another control, so the concrete-type check
 // is the only way to tell which capability a mounted widget belongs to.
 #[cfg(full_widgets)]
+use crate::widget::advanced_widgets::key_sequence_edit::KeySequenceEdit;
+#[cfg(full_widgets)]
 use crate::widget::advanced_widgets::time_edit::TimeEdit;
 #[cfg(full_widgets)]
 use crate::widget::container_widgets::groupbox::GroupBox;
@@ -1667,8 +1669,10 @@ impl WidgetFactory {
             // `WidgetKind::LineEdit`. Three validated variants share the kind with the plain
             // field, and all four are the same concrete control: the variant is a constructor
             // that installs an echo mode or a grammar, so `canonical_of` folds every one of them
-            // onto this row.
+            // onto this row. `KeySequenceEdit` also reports this kind (it is a text-shaped chord
+            // recorder) but is a different concrete control, so it needs its own row.
             "line_edit" => self::coercion::widget_as::<LineEdit>(widget).is_some(),
+            "key_sequence_editor" => self::coercion::widget_as::<KeySequenceEdit>(widget).is_some(),
             // `WidgetKind::Splitter`. `split_layout` is the two-pane spelling of the same
             // control, folded into this row by `canonical_of`.
             "splitter" => self::coercion::widget_as::<Splitter>(widget).is_some(),

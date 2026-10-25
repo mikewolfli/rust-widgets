@@ -73,6 +73,7 @@ PRODUCER_ELSEWHERE: dict[str, str] = {
     "order_book": "OrderBookWidget",
     "freeform_shape": "FreeformShapeWidget",
     "fab": "FAB",
+    "key_sequence_editor": "KeySequenceEdit",
     "lcd_number": "LCDNumber",
     # The three grammar fields are `LineEdit` in a different echo/validator mode.
     "password_edit": "LineEdit",
@@ -115,6 +116,15 @@ MANUAL: dict[tuple[str, str], tuple[str, str]] = {
     ("video_player", "media_status_changed"): ("Some(K::String)", "Some(S::Scalar)"),
     # A borrowed static string is the same wire value as an owned one.
     ("badge", "level_changed"): ("Some(K::String)", "Some(S::Scalar)"),
+    # A size travels as width/height, the same pair the property side uses for geometry.
+    ("popup_window", "resized"): ("Some(K::UInt)", "Some(S::Tuple2)"),
+    # The shortcut editor's signal is `key_sequence_changed`; the published spelling is the
+    # capability name. It delivers a one-element list of the display string, matching the
+    # `query_builder` row shape.
+    ("key_sequence_editor", "sequence_changed"): ("Some(K::String)", "Some(S::ListScalar)"),
+    ("key_sequence_editor", "conflict_detected"): ("Some(K::String)", "Some(S::Scalar)"),
+    # A unit signal carries no payload.
+    ("key_sequence_editor", "editing_finished"): ("None", "None"),
 }
 
 # ── Rust payload type -> declared kind ──────────────────────────────────────────────

@@ -118,8 +118,7 @@ fn find_all_offsets(haystack: &[u8], needle: &[u8], case_sensitive: bool) -> Vec
         return Vec::new();
     }
     let fold = |byte: u8| if case_sensitive { byte } else { byte.to_ascii_lowercase() };
-    let mut prefix = Vec::new();
-    prefix.resize(needle.len(), 0usize);
+    let mut prefix = vec![0usize; needle.len()];
     let mut matched = 0usize;
     for index in 1..needle.len() {
         while matched > 0 && fold(needle[index]) != fold(needle[matched]) {
@@ -1934,7 +1933,7 @@ impl Draw for WebEngineView {
                 let highlight = Rect::new(
                     content.x + 2,
                     top,
-                    content.width.saturating_sub(4).min(160).max(8),
+                    content.width.saturating_sub(4).clamp(8, 160),
                     line_h,
                 );
                 ctx.fill_rect(highlight, accent.with_alpha(90));

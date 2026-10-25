@@ -404,7 +404,7 @@ impl ToastStack {
 
     /// The measured trailing band an action's label occupies inside `row`.
     fn action_rect_for(&self, row: Rect, label: &str, font: &crate::core::Font) -> Rect {
-        let width = estimate_text_width(label, font, 1.0) as u32 + 12;
+        let width = estimate_text_width(label, font, 1.0) + 12;
         let width = width.min(row.width);
         Rect::new(row.x + row.width as i32 - width as i32 - 4, row.y, width, row.height)
     }
@@ -446,12 +446,8 @@ impl ToastStack {
     }
 
     fn row_at(&self, pos: Point) -> Option<usize> {
-        for index in self.scroll_offset..self.toasts.len() {
-            if self.row_rect(index).contains_point(pos) {
-                return Some(index);
-            }
-        }
-        None
+        (self.scroll_offset..self.toasts.len())
+            .find(|&index| self.row_rect(index).contains_point(pos))
     }
 
     /// The rectangle a toast row is painted at.

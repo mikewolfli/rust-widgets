@@ -577,7 +577,7 @@ impl Draw for BarcodeScanner {
             let format_line = context.text_line(overlay_rect, &small_font);
             context.draw_text(
                 Point::new(rect.x + BARCODE_PADDING, format_line.y),
-                &format_text,
+                format_text,
                 &small_font,
                 bracket_color,
                 HorizontalAlignment::Left,

@@ -21,6 +21,10 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 /// Default delay (ms) before the tooltip appears after mouse enters the target.
 const DEFAULT_SHOW_DELAY_MS: u64 = 500;
@@ -77,6 +81,25 @@ impl TooltipSpan {
     }
 }
 
+/// The inputs that decide how a tooltip label wraps.
+#[derive(PartialEq, Eq)]
+struct TooltipWrapKey {
+    text_hash: u64,
+    family_hash: u64,
+    size_bits: u32,
+    weight: u16,
+    bold: bool,
+    italic: bool,
+    available: u32,
+}
+
+/// The last wrap result, so a still frame does no measuring or allocation.
+struct TooltipWrapCache {
+    key: TooltipWrapKey,
+    lines: Rc<Vec<String>>,
+    width: u32,
+}
+
 /// Tooltip widget — a popup label attached to a target widget.
 ///
 /// The tooltip appears when the pointer hovers over the target widget and
@@ -121,6 +144,8 @@ pub struct Tooltip {
     show_pending: bool,
     /// Tracks whether a hide delay is counting down.
     hide_pending: bool,
+    /// Wrapped label cache keyed by text, font identity and available width (M-11).
+    wrap_cache: RefCell<Option<TooltipWrapCache>>,
 }
 
 impl Tooltip {
@@ -151,6 +176,7 @@ impl Tooltip {
             hide_elapsed_ms: 0,
             show_pending: false,
             hide_pending: false,
+            wrap_cache: RefCell::new(None),
         }
     }
 
@@ -468,36 +494,65 @@ impl Tooltip {
     /// at spaces and at explicit newlines, measured against the bubble's content width.
     /// A word longer than the cap is kept whole on its own line and elided by the fitted
     /// draw, rather than being split mid-word.
-    fn wrapped_lines(&self, context: &RenderContext, text: &str, font: &Font) -> Vec<String> {
-        if !self.wrap {
-            return vec![text.to_string()];
-        }
+    fn wrapped_lines(&self, context: &RenderContext, text: &str, font: &Font) -> Rc<Vec<String>> {
         let control_width = self.geometry().width.saturating_sub(dimensions::TOOLTIP_PADDING_H * 2);
-        let available = self.max_width.min(control_width).max(1);
-        let mut lines: Vec<String> = Vec::new();
-        for paragraph in text.split('\n') {
-            let mut current = String::new();
-            for word in paragraph.split(' ') {
-                let candidate = if current.is_empty() {
-                    word.to_string()
-                } else {
-                    let mut candidate = current.clone();
-                    candidate.push(' ');
-                    candidate.push_str(word);
-                    candidate
-                };
-                if current.is_empty() || context.measure_text(&candidate, font).width <= available {
-                    current = candidate;
-                } else {
-                    lines.push(core::mem::take(&mut current));
-                    current = word.to_string();
-                }
+        let available =
+            if self.wrap { self.max_width.min(control_width).max(1) } else { control_width.max(1) };
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        let text_hash = hasher.finish();
+        let mut family = DefaultHasher::new();
+        font.family().hash(&mut family);
+        let key = TooltipWrapKey {
+            text_hash,
+            family_hash: family.finish(),
+            size_bits: font.size().to_bits(),
+            weight: font.weight(),
+            bold: font.is_bold(),
+            italic: font.is_italic(),
+            available,
+        };
+        if let Some(cache) = self.wrap_cache.borrow().as_ref() {
+            if cache.key == key {
+                return Rc::clone(&cache.lines);
             }
-            lines.push(current);
         }
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
+        let lines = if !self.wrap {
+            vec![text.to_string()]
+        } else {
+            let mut lines: Vec<String> = Vec::new();
+            for paragraph in text.split('\n') {
+                let mut current = String::new();
+                for word in paragraph.split(' ') {
+                    let candidate = if current.is_empty() {
+                        word.to_string()
+                    } else {
+                        let mut candidate = current.clone();
+                        candidate.push(' ');
+                        candidate.push_str(word);
+                        candidate
+                    };
+                    if current.is_empty()
+                        || context.measure_text(&candidate, font).width <= available
+                    {
+                        current = candidate;
+                    } else {
+                        lines.push(core::mem::take(&mut current));
+                        current = word.to_string();
+                    }
+                }
+                lines.push(current);
+            }
+            if lines.is_empty() {
+                lines.push(String::new());
+            }
+            lines
+        };
+        let width =
+            lines.iter().map(|line| context.measure_text(line, font).width).max().unwrap_or(0);
+        let lines = Rc::new(lines);
+        *self.wrap_cache.borrow_mut() =
+            Some(TooltipWrapCache { key, lines: Rc::clone(&lines), width });
         lines
     }
 
@@ -803,13 +858,15 @@ impl Draw for Tooltip {
         let lines = if self.spans.is_empty() {
             self.wrapped_lines(context, label, &font)
         } else {
-            Vec::new()
+            Rc::new(Vec::new())
         };
 
         // Measured content width: the widest wrapped line, or every rich run's advance in a
         // row. Either way the bubble is capped by `max_width` and by the control itself.
         let text_width = if self.spans.is_empty() {
-            lines.iter().map(|line| context.measure_text(line, &font).width).max().unwrap_or(0)
+            // The wrap cache measured every line when it built them; a still frame reads the
+            // widest one instead of measuring the whole label again (M-11).
+            self.wrap_cache.borrow().as_ref().map(|cache| cache.width).unwrap_or(0)
         } else {
             let mut total = 0u32;
             for span in &self.spans {

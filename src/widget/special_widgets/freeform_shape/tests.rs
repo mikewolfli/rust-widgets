@@ -441,10 +441,7 @@ fn dragging_the_body_moves_the_shape_and_is_undoable() {
     shape.handle_event(&crate::event::Event::MouseMove { pos: Point::new(70, 80) });
     assert_eq!(shape.geometry().x, 20);
     assert_eq!(shape.geometry().y, 30);
-    shape.handle_event(&crate::event::Event::MouseRelease {
-        pos: Point::new(70, 80),
-        button: 1,
-    });
+    shape.handle_event(&crate::event::Event::MouseRelease { pos: Point::new(70, 80), button: 1 });
 
     assert!(!moves.lock().unwrap().is_empty(), "a move must be reported");
     assert!(shape.can_undo());
@@ -485,11 +482,7 @@ fn dragging_a_vertex_updates_the_polygon() {
 
     let handle = shape.handle_rects()[0].1;
     let start = Point::new(handle.x + 4, handle.y + 4);
-    shape.handle_event(&crate::event::Event::MousePress {
-        pos: start,
-        button: 1,
-        modifiers: 0,
-    });
+    shape.handle_event(&crate::event::Event::MousePress { pos: start, button: 1, modifiers: 0 });
     shape.handle_event(&crate::event::Event::MouseMove {
         pos: Point::new(start.x + 20, start.y + 20),
     });

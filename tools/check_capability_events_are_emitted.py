@@ -68,6 +68,12 @@ DATA_SOURCE_SIGNALS: dict[str, str] = {
 }
 
 # Accessors whose underlying field is named differently, with the field that is emitted.
+# Published names whose signal field is spelled differently. Keyed by (capability, event) so one
+# control's spelling cannot silently satisfy another's.
+PUBLISHED_EVENT_ALIASES: dict[tuple[str, str], str] = {
+    ("key_sequence_editor", "sequence_changed"): "key_sequence_changed",
+}
+
 ACCESSOR_ALIASES: dict[str, str] = {
     "on_theme_changed": "theme_changed",
     "hover_signal": "hover",
@@ -96,6 +102,10 @@ PRODUCER_ELSEWHERE: dict[str, tuple[str, str]] = {
     ),
     "fab": ("FAB", "`fab` is the short name for the `FAB` struct"),
     "lcd_number": ("LCDNumber", "the type is spelled `LCDNumber`, not `LcdNumber`"),
+    "key_sequence_editor": (
+        "KeySequenceEdit",
+        "the chord recorder publishes its capability under the longer canonical name",
+    ),
     "password_edit": (
         "LineEdit",
         "the password field is a `LineEdit` in password echo mode",
@@ -376,6 +386,10 @@ def main() -> int:
             distinct.add(event)
 
             resolved = {event, f"{event}_signal"} & signals
+            if not resolved:
+                published = PUBLISHED_EVENT_ALIASES.get((capability, event))
+                if published and published in signals:
+                    resolved = {published}
             if not resolved:
                 alias = ACCESSOR_ALIASES.get(event)
                 if alias and alias in signals:

@@ -260,6 +260,7 @@ impl WidgetFactory {
             self.register(tab_view_capability(), create_tab_view);
             self.register(search_bar_capability(), create_search_bar);
             self.register(shortcut_editor_capability(), create_shortcut_editor);
+            self.register(key_sequence_editor_capability(), create_key_sequence_editor);
             self.register(swipe_to_dismiss_capability(), create_swipe_to_dismiss);
             self.register(line_chart_capability(), create_line_chart);
             self.register(sparkline_capability(), create_sparkline);

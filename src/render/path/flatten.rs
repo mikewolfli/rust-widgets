@@ -178,7 +178,7 @@ fn parse_dynamic_cached(
 
     const CACHE_CAPACITY: usize = 128;
     thread_local! {
-        static CACHE: RefCell<VecDeque<CachedDynamicPath>> = RefCell::new(VecDeque::new());
+        static CACHE: RefCell<VecDeque<CachedDynamicPath>> = const { RefCell::new(VecDeque::new()) };
     }
 
     let address = path.as_ptr() as usize;

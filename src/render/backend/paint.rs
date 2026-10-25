@@ -621,11 +621,7 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
                 let h = size.height as usize;
                 if w > 0 && h > 0 {
                     let radius = (*blur_radius).min(100) as usize;
-                    let region = surface
-                        .current_clip()
-                        .map_or((0, 0, w as u32, h as u32), |(clip_x, clip_y, clip_w, clip_h)| {
-                            (clip_x, clip_y, clip_w, clip_h)
-                        });
+                    let region = surface.current_clip().unwrap_or((0, 0, w as u32, h as u32));
                     let blur_x0 = spread_rect.x.max(region.0).max(0) as usize;
                     let blur_y0 = spread_rect.y.max(region.1).max(0) as usize;
                     let clip_right = region.0 as i64 + i64::from(region.2);

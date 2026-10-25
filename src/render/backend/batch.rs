@@ -895,7 +895,7 @@ fn transform_command(
             let applied_rect = state.apply_to_rect(dest);
             let combined_opacity = state.opacity * opacity;
             let data: Arc<[u8]> = Arc::from(cropped);
-            let data = if combined_opacity < 1.0 && data.len() % 4 == 0 {
+            let data = if combined_opacity < 1.0 && data.len().is_multiple_of(4) {
                 baked_image(&data, combined_opacity)
             } else {
                 data
@@ -977,13 +977,18 @@ fn transform_command(
     }
 }
 
+/// Key for the alpha-baked image cache: source address, source length and opacity.
+type BakedImageKey = (usize, usize, u32);
+/// A cached variant: the source kept alive plus the baked bytes.
+type BakedImageEntry = (Arc<[u8]>, Arc<[u8]>);
+
 thread_local! {
     /// Alpha-baked image variants, keyed by the source allocation's address, length and opacity.
     ///
     /// Each entry holds the source `Arc` as well as the baked bytes. Keeping the source alive is
     /// what makes the address a stable identity: without it the allocation could be freed and a
     /// different image could reuse the same address. Bounded because a frame can fade many images.
-    static BAKED_IMAGES: core::cell::RefCell<HashMap<(usize, usize, u32), (Arc<[u8]>, Arc<[u8]>)>> =
+    static BAKED_IMAGES: core::cell::RefCell<HashMap<BakedImageKey, BakedImageEntry>> =
         core::cell::RefCell::new(HashMap::new());
 }
 

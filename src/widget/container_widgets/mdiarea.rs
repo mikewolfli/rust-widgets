@@ -429,9 +429,15 @@ impl MdiArea {
         if subwindow.title == title {
             return true;
         }
+        // The record's setter announces a change through the sink it was given. Here the area is
+        // the caller, so it suppresses that path and emits once itself, keeping one announcement
+        // per change (and one visible emit for the capability gate).
+        let sink = subwindow.title_sink.take();
         subwindow.set_title(title);
+        subwindow.title_sink = sink;
         self.title_dirty.set(false);
         self.base.request_redraw();
+        self.subwindow_title_changed.emit((widget, subwindow.title.clone()));
         true
     }
     /// Returns active sub-window.

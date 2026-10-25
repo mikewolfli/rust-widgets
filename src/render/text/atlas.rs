@@ -329,7 +329,7 @@ mod tests {
         source[1] = 255;
         let slanted = oblique_if_requested(source.clone(), cell, true);
         assert_eq!(slanted[1], 0, "the top row moved horizontally");
-        assert!(slanted.iter().any(|&byte| byte == 255), "the ink is still present");
+        assert!(slanted.contains(&255), "the ink is still present");
         assert_eq!(
             oblique_if_requested(source.clone(), cell, false),
             source,

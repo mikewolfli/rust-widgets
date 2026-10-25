@@ -402,10 +402,6 @@ impl Dialog {
         rects
     }
 
-    /// The close button's rectangle is published through
-    /// [`Dialog::title_bar_button_rects`], which is the one geometry the paint and the hit
-    /// test read.
-
     /// The title-bar band that starts a move drag.
     fn drag_bar(&self) -> Option<Rect> {
         if self.title.is_empty() {

@@ -759,13 +759,15 @@ impl Widget for ColorDialog {
         match name {
             "color_selected" => {
                 Some(EventSignalRef::mapped("color_selected", &self.color_selected, |v| {
-                    CapabilityValue::Color(*v)
+                    // A declared `Color` payload travels as its `#RRGGBBAA` spelling, the same
+                    // carrier the property surface uses for a colour.
+                    CapabilityValue::String(v.to_hex_rgba())
                 }))
             }
             "current_color_changed" => Some(EventSignalRef::mapped(
                 "current_color_changed",
                 &self.current_color_changed,
-                |v| CapabilityValue::Color(*v),
+                |v| CapabilityValue::String(v.to_hex_rgba()),
             )),
             "focus_changed" => {
                 Some(EventSignalRef::mapped("focus_changed", &self.focus_changed, |v| {

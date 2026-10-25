@@ -2199,6 +2199,11 @@ fn render_table_row(
 }
 
 /// Splits inline markdown into styled runs.
+// The parser peeks ahead while consuming (`**`/`__` need a second character), so a plain
+// `while let Some(ch) = chars.next()` is the honest shape; clippy's iterator-lint suggestion
+// would borrow the iterator twice.
+#[allow(clippy::while_let_on_iterator)]
+#[allow(clippy::while_let_loop)]
 fn parse_inline(
     text: &str,
     gfm: bool,
@@ -2215,7 +2220,10 @@ fn parse_inline(
                 push_run(runs, &core::mem::take(&mut plain), PreviewStyle::Text, font, context);
                 let mut inner = String::new();
                 let mut closed = false;
-                while let Some(next) = chars.next() {
+                loop {
+                    let Some(next) = chars.next() else {
+                        break;
+                    };
                     if next == '*' && chars.peek() == Some(&'*') {
                         chars.next();
                         closed = true;

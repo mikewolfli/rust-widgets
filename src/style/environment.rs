@@ -570,7 +570,7 @@ struct PlatformPoll {
 
 thread_local! {
     static PLATFORM_POLL: crate::compat::RefCell<Option<PlatformPoll>> =
-        crate::compat::RefCell::new(None);
+        const { crate::compat::RefCell::new(None) };
 }
 
 /// Whether a poll taken at `polled_at` is due again at `now`.
