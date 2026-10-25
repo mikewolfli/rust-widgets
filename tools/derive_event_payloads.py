@@ -113,6 +113,8 @@ MANUAL: dict[tuple[str, str], tuple[str, str]] = {
     # The status is published as its token spelling, the same way every other enum-valued event
     # (a state or a mode) travels; there is no numeric spelling a consumer could rely on.
     ("video_player", "media_status_changed"): ("Some(K::String)", "Some(S::Scalar)"),
+    # A borrowed static string is the same wire value as an owned one.
+    ("badge", "level_changed"): ("Some(K::String)", "Some(S::Scalar)"),
 }
 
 # ── Rust payload type -> declared kind ──────────────────────────────────────────────

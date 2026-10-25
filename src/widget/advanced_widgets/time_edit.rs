@@ -164,24 +164,74 @@ pub enum TimeSection {
     Minute,
     /// The second component.
     Second,
+    /// The meridiem (AM/PM) of a 12-hour clock.
+    AmPm,
+    /// The millisecond component.
+    Millisecond,
 }
 
 impl TimeSection {
-    /// The next section, wrapping from second back to hour.
+    /// The next section, wrapping from millisecond back to hour.
     pub const fn next(self) -> Self {
         match self {
             Self::Hour => Self::Minute,
             Self::Minute => Self::Second,
-            Self::Second => Self::Hour,
+            Self::Second => Self::AmPm,
+            Self::AmPm => Self::Millisecond,
+            Self::Millisecond => Self::Hour,
         }
     }
 
-    /// The previous section, wrapping from hour back to second.
+    /// The previous section, wrapping from hour back to millisecond.
     pub const fn previous(self) -> Self {
         match self {
-            Self::Hour => Self::Second,
+            Self::Hour => Self::Millisecond,
             Self::Minute => Self::Hour,
             Self::Second => Self::Minute,
+            Self::AmPm => Self::Second,
+            Self::Millisecond => Self::AmPm,
+        }
+    }
+
+    /// How many digits this section accepts before it starts dropping the oldest.
+    pub const fn digit_capacity(self) -> usize {
+        match self {
+            Self::Millisecond => 3,
+            Self::Hour | Self::Minute | Self::Second => 2,
+            // A meridiem is chosen by stepping, not typed.
+            Self::AmPm => 0,
+        }
+    }
+
+    /// The five sections, in the order the field lays them out.
+    pub const ORDER: [Self; 5] =
+        [Self::Hour, Self::Minute, Self::Second, Self::AmPm, Self::Millisecond];
+}
+
+/// Whether a time field presents a 24-hour or a 12-hour clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeFormat {
+    /// `00:00`–`23:59`.
+    TwentyFourHour,
+    /// `01:00 AM`–`12:59 PM`.
+    TwelveHour,
+}
+
+impl TimeFormat {
+    /// The token this format publishes through the property contract.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TwentyFourHour => "24h",
+            Self::TwelveHour => "12h",
+        }
+    }
+
+    /// Parses [`Self::as_str`].
+    pub fn from_token(token: &str) -> Option<Self> {
+        match crate::widget::capability::coercion::normalize_key(token).as_str() {
+            "12h" | "12" | "twelvehour" => Some(Self::TwelveHour),
+            "24h" | "24" | "twentyfourhour" => Some(Self::TwentyFourHour),
+            _ => None,
         }
     }
 }
@@ -203,6 +253,11 @@ pub struct TimeEdit {
     minimum: Time,
     maximum: Time,
     display_format: String,
+    /// Whether the field presents a 24-hour or a 12-hour clock.
+    ///
+    /// The setter also switches the default pattern between `HH:mm:ss` and `hh:mm:ss AP`; a
+    /// caller-supplied pattern is left untouched, because its own tokens are its choice.
+    time_format: TimeFormat,
     /// Whether the field draws a clock face under itself for picking a time.
     ///
     /// The widget had `step_up`/`step_down` from the day it was written, so a keyboard user could
@@ -268,6 +323,7 @@ impl TimeEdit {
             minimum: Time::new(0, 0, 0, 0),
             maximum: Time::new(23, 59, 59, 999),
             display_format: "HH:mm:ss".to_string(),
+            time_format: TimeFormat::TwentyFourHour,
             clock_popup: false,
             alignment: crate::core::Alignment::Left,
             hovered_hand: None,
@@ -353,20 +409,22 @@ impl TimeEdit {
 
     /// The box one section occupies inside the value text.
     ///
-    /// The three zones are equal thirds of the text run. A custom `display_format` can
+    /// The five zones are equal fifths of the text run. A custom `display_format` can
     /// order the components differently and this control does not parse the pattern to
     /// recover their positions, so the zones are the documented approximation; the
     /// underline and the pointer target still agree with each other.
     pub fn section_zone(&self, section: TimeSection) -> Rect {
         let rect = self.geometry();
         let width = rect.width.saturating_sub(12);
-        let third = width / 3;
+        let fifth = width / 5;
         let index = match section {
             TimeSection::Hour => 0,
             TimeSection::Minute => 1,
             TimeSection::Second => 2,
+            TimeSection::AmPm => 3,
+            TimeSection::Millisecond => 4,
         };
-        Rect::new(rect.x + 6 + index * third as i32, rect.y, third, rect.height)
+        Rect::new(rect.x + 6 + index * fifth as i32, rect.y, fifth, rect.height)
     }
 
     /// The section containing `pos`, when the point is on the value text.
@@ -374,7 +432,7 @@ impl TimeEdit {
         if !self.geometry().contains_point(pos) {
             return None;
         }
-        [TimeSection::Hour, TimeSection::Minute, TimeSection::Second]
+        TimeSection::ORDER
             .into_iter()
             .find(|section| self.section_zone(*section).contains_point(pos))
     }
@@ -412,6 +470,27 @@ impl TimeEdit {
                 next.set_minute(minute_total.rem_euclid(60) as u8);
                 next.set_hour((next.hour() as i32 + hour_carry).rem_euclid(24) as u8);
             }
+            TimeSection::AmPm => {
+                // Stepping the meridiem moves the hour by half a day, which is the only value
+                // change an AM/PM segment can express.
+                if delta != 0 {
+                    next.set_hour((next.hour() as i32 + 12).rem_euclid(24) as u8);
+                }
+            }
+            TimeSection::Millisecond => {
+                let total = next.msec() as i32 + delta;
+                let carry = total.div_euclid(1000);
+                next.set_msec(total.rem_euclid(1000) as u16);
+                if carry != 0 {
+                    let second_total = next.second() as i32 + carry;
+                    let minute_carry = second_total.div_euclid(60);
+                    next.set_second(second_total.rem_euclid(60) as u8);
+                    let minute_total = next.minute() as i32 + minute_carry;
+                    let hour_carry = minute_total.div_euclid(60);
+                    next.set_minute(minute_total.rem_euclid(60) as u8);
+                    next.set_hour((next.hour() as i32 + hour_carry).rem_euclid(24) as u8);
+                }
+            }
         }
         self.set_time(next);
     }
@@ -424,8 +503,11 @@ impl TimeEdit {
         let Some(section) = self.current_section else {
             return false;
         };
+        if section.digit_capacity() == 0 {
+            return false;
+        }
         self.digit_buffer.push(digit);
-        while self.digit_buffer.len() > 2 {
+        while self.digit_buffer.len() > section.digit_capacity() {
             self.digit_buffer.remove(0);
         }
         let Ok(value) = self.digit_buffer.parse::<i32>() else {
@@ -436,6 +518,8 @@ impl TimeEdit {
             TimeSection::Hour => next.set_hour(value as u8),
             TimeSection::Minute => next.set_minute(value as u8),
             TimeSection::Second => next.set_second(value as u8),
+            TimeSection::Millisecond => next.set_msec(value as u16),
+            TimeSection::AmPm => return false,
         }
         self.set_time(next);
         true
@@ -609,10 +693,32 @@ impl TimeEdit {
     }
     /// Returns the stored display-format pattern.
     ///
-    /// This is a plain string; it is currently stored and round-tripped but not
-    /// interpreted when the widget paints (painting always uses `HH:MM:SS`).
+    /// The pattern is interpreted when the widget paints, through the shared
+    /// [`super::date_edit::format_with_pattern_into`] substituter. The tokens include
+    /// `h`/`hh` (12-hour), `AP`/`ap` (meridiem) and `SSS`/`zzz` (milliseconds).
     pub fn display_format(&self) -> &str {
         &self.display_format
+    }
+
+    /// Whether the field presents a 12-hour or a 24-hour clock.
+    pub fn time_format(&self) -> TimeFormat {
+        self.time_format
+    }
+
+    /// Selects the clock presentation.
+    ///
+    /// Switching also rewrites the *default* pattern (`HH:mm:ss` ↔ `hh:mm:ss AP`), so the
+    /// property has a visible effect; a caller-supplied pattern is left alone.
+    pub fn set_time_format(&mut self, format: TimeFormat) {
+        if self.time_format == format {
+            return;
+        }
+        self.time_format = format;
+        self.display_format = match format {
+            TimeFormat::TwentyFourHour => "HH:mm:ss".to_string(),
+            TimeFormat::TwelveHour => "hh:mm:ss AP".to_string(),
+        };
+        self.base.request_redraw();
     }
     /// Sets the current time, subject to validity and the accepted range.
     ///
@@ -691,8 +797,8 @@ impl TimeEdit {
     }
     /// Stores the display-format pattern.
     ///
-    /// The string is kept verbatim; no validation is performed. See
-    /// [`TimeEdit::display_format`] for the current limits on its use.
+    /// The pattern is applied by the next paint; see [`TimeEdit::display_format`] for the
+    /// supported tokens.
     pub fn set_display_format(&mut self, fmt: String) {
         if self.display_format == fmt {
             return;
@@ -912,6 +1018,7 @@ impl WidgetProperties for TimeEdit {
             "minimum_time" => Ok(CapabilityValue::String(time_to_string(self.minimum_time()))),
             "maximum_time" => Ok(CapabilityValue::String(time_to_string(self.maximum_time()))),
             "display_format" => Ok(CapabilityValue::String(self.display_format().to_string())),
+            "time_format" => Ok(CapabilityValue::String(self.time_format().as_str().to_string())),
             "clock_popup" => Ok(CapabilityValue::Bool(self.clock_popup())),
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
@@ -938,6 +1045,13 @@ impl WidgetProperties for TimeEdit {
                 self.set_display_format(expect_string(value)?);
                 Ok(())
             }
+            "time_format" => {
+                let token = expect_string(value)?;
+                let format =
+                    TimeFormat::from_token(&token).ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_time_format(format);
+                Ok(())
+            }
             "clock_popup" => {
                 self.set_clock_popup(expect_bool(value)?);
                 Ok(())
@@ -956,6 +1070,7 @@ impl WidgetProperties for TimeEdit {
             "minimum_time",
             "maximum_time",
             "display_format",
+            "time_format",
             "clock_popup",
             "alignment",
             BASE_PROPERTY_NAMES
@@ -2049,5 +2164,42 @@ mod tests {
             5,
             "the :15 position is past the range's :10, so it is refused"
         );
+    }
+
+    #[test]
+    fn am_pm_and_millisecond_sections_step_the_value() {
+        let mut editor = TimeEdit::new(Rect::new(0, 0, 240, 30));
+        editor.set_time(Time::new(10, 0, 0, 123));
+        editor.set_current_section(Some(TimeSection::AmPm));
+        editor.step_current_section(1);
+        assert_eq!(editor.time().hour(), 22, "the meridiem step moves the hour by 12");
+        editor.set_current_section(Some(TimeSection::Millisecond));
+        editor.step_current_section(1);
+        assert_eq!(editor.time().msec(), 124);
+        editor.type_digit('9');
+        assert_eq!(editor.time().msec(), 9);
+        assert!(!editor.type_digit('x'));
+    }
+
+    #[test]
+    fn the_time_format_switches_the_default_pattern() {
+        let mut editor = TimeEdit::new(Rect::new(0, 0, 240, 30));
+        assert_eq!(editor.time_format(), TimeFormat::TwentyFourHour);
+        editor.set_time_format(TimeFormat::TwelveHour);
+        assert_eq!(editor.display_format(), "hh:mm:ss AP");
+        editor.set_time(Time::new(15, 4, 0, 0));
+        let mut text = String::new();
+        super::super::date_edit::format_with_pattern_into(
+            editor.display_format(),
+            super::super::date_edit::DateTimeComponents {
+                hour: Some(editor.time().hour()),
+                minute: Some(editor.time().minute()),
+                second: Some(editor.time().second()),
+                millisecond: Some(editor.time().msec()),
+                ..Default::default()
+            },
+            &mut text,
+        );
+        assert_eq!(text, "03:04:00 PM");
     }
 }

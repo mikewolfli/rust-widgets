@@ -41,12 +41,13 @@ const SPLITTER_DRAG_TYPE: &str = "splitter_handle";
 /// first few pixels of every drag feel unresponsive.
 const SPLITTER_DRAG_THRESHOLD: i32 = 2;
 
-/// The width of the divider between adjacent panes, in logical pixels.
+/// The default width of the divider between adjacent panes, in logical pixels.
 ///
 /// This is **one** number with three consumers: the layout reserves it between panes, the
 /// painter fills it, and the press hit test accepts a grab inside it. They used to disagree —
 /// the layout reserved nothing and the draw and drag each restated `5` — which is why the
-/// panes' rectangles met edge to edge and the divider was painted over them.
+/// panes' rectangles met edge to edge and the divider was painted over them. A caller can
+/// change it at runtime with [`Splitter::set_handle_width`].
 const HANDLE_WIDTH: u32 = 5;
 
 /// The pane ratios captured when a handle drag began, plus the handle index.
@@ -68,9 +69,13 @@ struct HandleDrag {
 pub struct Splitter {
     base: BaseWidget,
     layout: SplitterLayout,
-    /// Emitted after a pane ratio changes, with the full ratio vector in pane
-    /// order. Ratios are relative weights, not pixels.
+    /// Emitted after a pane ratio change is **committed** — a drag release or an explicit
+    /// ratio/state mutation — with the full ratio vector in pane order. Ratios are relative
+    /// weights, not pixels. Live drag feedback uses [`Self::pane_layout_preview`].
     pub pane_layout_changed: Signal1<Vec<f32>>,
+    /// Emitted while a handle drag changes the ratios, so a preview can follow
+    /// the pointer without treating every move as a committed layout change.
+    pub pane_layout_preview: Signal1<Vec<f32>>,
     /// Emitted when the splitter is switched between horizontal and vertical,
     /// with the new orientation.
     pub orientation_changed: Signal1<Orientation>,
@@ -80,6 +85,15 @@ pub struct Splitter {
     /// The splitter-specific snapshot a drag started with.
     drag_state: Option<HandleDrag>,
     active_pane: Option<usize>,
+    /// Width of the divider between adjacent panes, in logical pixels.
+    handle_width: u32,
+    /// Per-pane collapsed state, parallel to the layout's pane list.
+    collapsed: Vec<bool>,
+    /// The ratio each pane had before it was collapsed, restored on expansion.
+    pre_collapse_ratios: Vec<f32>,
+    /// The last dragged-pair ratio thousandths emitted as a preview; throttles the
+    /// preview to a visible change rather than one event per pointer sample.
+    preview_mark: Option<(i64, i64)>,
 }
 impl Splitter {
     /// Creates an empty splitter with horizontal orientation.
@@ -91,11 +105,16 @@ impl Splitter {
             // of the splitter, so the drag can never start.
             layout: SplitterLayout::new(Orientation::Horizontal, HANDLE_WIDTH),
             pane_layout_changed: Signal1::new(),
+            pane_layout_preview: Signal1::new(),
             orientation_changed: Signal1::new(),
             registry: None,
             drag_session: None,
             drag_state: None,
             active_pane: None,
+            handle_width: HANDLE_WIDTH,
+            collapsed: Vec::new(),
+            pre_collapse_ratios: Vec::new(),
+            preview_mark: None,
         }
     }
     /// Returns splitter orientation.
@@ -136,6 +155,8 @@ impl Splitter {
     /// Adds one pane and returns assigned index.
     pub fn add_pane(&mut self, pane_id: ObjectId, stretch: u32) -> usize {
         let index = self.layout.add_pane(pane_id, stretch);
+        self.collapsed.push(false);
+        self.pre_collapse_ratios.push((stretch.max(1)) as f32);
         // A pane is an ordinary tree child: the tree painter draws it after the splitter's
         // track and the hit test reaches it directly, so no draw-closure registry is needed.
         self.base.add_child_linked(pane_id);
@@ -148,8 +169,17 @@ impl Splitter {
     }
     /// Removes one pane by object id.
     pub fn remove_pane(&mut self, pane_id: ObjectId) -> bool {
+        let index = self.layout.pane_ids().iter().position(|id| *id == pane_id);
         if !self.layout.remove_pane(pane_id) {
             return false;
+        }
+        if let Some(index) = index {
+            if index < self.collapsed.len() {
+                self.collapsed.remove(index);
+            }
+            if index < self.pre_collapse_ratios.len() {
+                self.pre_collapse_ratios.remove(index);
+            }
         }
         self.base.remove_child_linked(pane_id);
         // A removed pane is no longer part of the split; leaving it visible would let a host that
@@ -166,6 +196,12 @@ impl Splitter {
         if !self.layout.set_ratio(index, ratio) {
             return false;
         }
+        // A positive ratio is an explicit expansion; keep the collapse flag in step.
+        if ratio > 0.0 {
+            if let Some(slot) = self.collapsed.get_mut(index) {
+                *slot = false;
+            }
+        }
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
@@ -180,6 +216,12 @@ impl Splitter {
     pub fn set_ratios(&mut self, ratios: &[f32]) -> bool {
         if !self.layout.set_ratios(ratios.to_vec()) {
             return false;
+        }
+        // A zero weight is the collapsed representation; a positive one is expanded.
+        for (index, ratio) in ratios.iter().enumerate() {
+            if let Some(slot) = self.collapsed.get_mut(index) {
+                *slot = *ratio <= 0.0;
+            }
         }
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
@@ -221,10 +263,98 @@ impl Splitter {
         self.layout.collapsible(index)
     }
 
+    /// The width of the divider between adjacent panes, in logical pixels.
+    pub fn handle_width(&self) -> u32 {
+        self.handle_width
+    }
+
+    /// Sets the divider width. The layout reserves the same extent between panes, so the
+    /// painted handle, its grab area and the gap can never disagree.
+    pub fn set_handle_width(&mut self, width: u32) {
+        let width = width.max(1);
+        if self.handle_width == width {
+            return;
+        }
+        self.rebuild_layout_with_spacing(width);
+        self.handle_width = width;
+        self.place_panes();
+        self.base.request_redraw();
+    }
+
+    /// Rebuilds the layout at a new pane gap, preserving panes, weights, minimums and
+    /// collapse permissions. `SplitterLayout` has no spacing setter, so the wrapper replays
+    /// the pane list into a fresh layout rather than mutating it in place.
+    fn rebuild_layout_with_spacing(&mut self, spacing: u32) {
+        let count = self.layout.pane_count();
+        let ids = self.layout.pane_ids().to_vec();
+        let ratios = self.layout.ratios().to_vec();
+        let minimums: Vec<u32> = (0..count).map(|index| self.layout.min_size(index)).collect();
+        let permissions: Vec<bool> =
+            (0..count).map(|index| self.layout.collapsible(index)).collect();
+        let mut rebuilt = SplitterLayout::new(self.layout.orientation(), spacing);
+        for pane_id in &ids {
+            rebuilt.add_pane(*pane_id, 1);
+        }
+        let _ = rebuilt.set_ratios(ratios);
+        for index in 0..count {
+            let _ = rebuilt.set_min_size(index, minimums[index]);
+            let _ = rebuilt.set_collapsible(index, permissions[index]);
+        }
+        self.layout = rebuilt;
+    }
+
+    /// Whether pane `index` is currently collapsed.
+    pub fn pane_collapsed(&self, index: usize) -> bool {
+        self.collapsed.get(index).copied().unwrap_or(false)
+    }
+
+    /// The indices of every collapsed pane, in pane order.
+    pub fn collapsed_panes(&self) -> Vec<usize> {
+        self.collapsed
+            .iter()
+            .enumerate()
+            .filter_map(|(index, collapsed)| collapsed.then_some(index))
+            .collect()
+    }
+
+    /// Collapses or expands pane `index`.
+    ///
+    /// Collapsing stores the pane's current weight and sets it to zero, so the remaining panes
+    /// take the freed space; expanding restores that weight. Returns `false` when the index is
+    /// out of range or the pane is not collapsible.
+    pub fn set_pane_collapsed(&mut self, index: usize, collapsed: bool) -> bool {
+        if index >= self.layout.pane_count() || !self.layout.collapsible(index) {
+            return false;
+        }
+        if self.pane_collapsed(index) == collapsed {
+            return true;
+        }
+        if collapsed {
+            let ratio = self.layout.ratio(index).unwrap_or(0.0).max(0.0);
+            if let Some(slot) = self.pre_collapse_ratios.get_mut(index) {
+                *slot = ratio;
+            }
+            self.layout.set_ratio(index, 0.0);
+        } else {
+            let restored = self.pre_collapse_ratios.get(index).copied().unwrap_or(1.0);
+            self.layout.set_ratio(index, if restored > 0.0 { restored } else { 1.0 });
+        }
+        if let Some(slot) = self.collapsed.get_mut(index) {
+            *slot = collapsed;
+        }
+        self.place_panes();
+        self.base.request_redraw();
+        if self.pane_layout_changed.slot_count() > 0 {
+            self.pane_layout_changed.emit(self.layout.ratios().to_vec());
+        }
+        true
+    }
+
     /// Gives every pane an equal share.
     ///
-    /// This is the double-click-a-divider action and the "reset layout" operation a host
-    /// may expose. It emits `pane_layout_changed` once and repaints.
+    /// This is the double-click-a-divider action when the adjacent pane cannot collapse, and
+    /// the "reset layout" operation a host may expose. It emits `pane_layout_changed` once and
+    /// repaints.
     pub fn equalize_panes(&mut self) {
         let count = self.pane_count();
         if count == 0 {
@@ -233,6 +363,14 @@ impl Splitter {
         let ratios: Vec<f32> = (0..count).map(|_| 1.0).collect();
         let _ = self.layout.set_ratios(ratios);
         self.layout.normalize_ratios();
+        for index in 0..count {
+            if let Some(slot) = self.collapsed.get_mut(index) {
+                *slot = false;
+            }
+            if let Some(slot) = self.pre_collapse_ratios.get_mut(index) {
+                *slot = 1.0;
+            }
+        }
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
@@ -241,8 +379,19 @@ impl Splitter {
     }
 
     /// Serialises the pane layout (ratios, minimums and collapse flags).
+    ///
+    /// The layout's own `SPL1` blob is followed by a wrapper trailer carrying the divider
+    /// width and the per-pane collapsed bits, so a restored session keeps both. A blob without
+    /// the trailer (produced before this wrapper existed) still restores.
     pub fn save_state(&self) -> Vec<u8> {
-        self.layout.save_state()
+        let mut out = self.layout.save_state();
+        out.extend_from_slice(b"SPW1");
+        out.extend_from_slice(&self.handle_width.to_le_bytes());
+        out.extend_from_slice(&(self.collapsed.len() as u32).to_le_bytes());
+        for collapsed in &self.collapsed {
+            out.push(u8::from(*collapsed));
+        }
+        out
     }
 
     /// Restores a state produced by [`Self::save_state`].
@@ -250,8 +399,66 @@ impl Splitter {
     /// Returns `false` for a malformed blob or a pane count that no longer matches,
     /// leaving the current layout untouched.
     pub fn restore_state(&mut self, state: &[u8]) -> bool {
-        if !self.layout.restore_state(state) {
+        const HEADER: usize = 8;
+        if state.len() < HEADER || &state[..4] != b"SPL1" {
             return false;
+        }
+        let count = u32::from_le_bytes([state[4], state[5], state[6], state[7]]) as usize;
+        let layout_len = HEADER + count * 9;
+        if state.len() < layout_len || count != self.layout.pane_count() {
+            return false;
+        }
+        let (layout_state, trailer) = if state.len() == layout_len {
+            (&state[..layout_len], None)
+        } else {
+            // marker(4) + handle width(4) + collapsed count(4) + one bit byte per pane.
+            const MARKER: usize = 12;
+            let expected = layout_len + MARKER + count;
+            if state.len() != expected || &state[layout_len..layout_len + 4] != b"SPW1" {
+                return false;
+            }
+            let width = u32::from_le_bytes([
+                state[layout_len + 4],
+                state[layout_len + 5],
+                state[layout_len + 6],
+                state[layout_len + 7],
+            ]);
+            let collapsed_count = u32::from_le_bytes([
+                state[layout_len + 8],
+                state[layout_len + 9],
+                state[layout_len + 10],
+                state[layout_len + 11],
+            ]) as usize;
+            if collapsed_count != count {
+                return false;
+            }
+            let bits_start = layout_len + 12;
+            let bits = state[bits_start..bits_start + count].to_vec();
+            (&state[..layout_len], Some((width, bits)))
+        };
+        if let Some((width, _)) = &trailer {
+            // Rebuild before restoring: the replay uses the pane list the caller has already
+            // added, and the ratio bytes then land in the new layout.
+            self.rebuild_layout_with_spacing((*width).max(1));
+            self.handle_width = (*width).max(1);
+        }
+        if !self.layout.restore_state(layout_state) {
+            return false;
+        }
+        if let Some((_, bits)) = trailer {
+            for (index, bit) in bits.into_iter().enumerate() {
+                if let Some(slot) = self.collapsed.get_mut(index) {
+                    *slot = bit != 0;
+                }
+            }
+        } else {
+            // A legacy blob has no collapse bits; a zero weight is the only representation it
+            // could carry, so derive the flags from the restored weights.
+            for index in 0..count {
+                if let Some(slot) = self.collapsed.get_mut(index) {
+                    *slot = self.layout.ratio(index).unwrap_or(1.0) <= 0.0;
+                }
+            }
         }
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
@@ -342,6 +549,9 @@ impl Splitter {
 }
 impl SaveState for Splitter {
     fn state_version(&self) -> u16 {
+        // The version stays 1: the wrapper trailer is self-describing (the `SPW1` marker and an
+        // explicit byte count), and a blob without it is still accepted, so an older saved
+        // session keeps restoring through the same gate.
         1
     }
 
@@ -422,8 +632,22 @@ impl Widget for Splitter {
             "orientation_changed" => Some(EventSignalRef::mapped(
                 "orientation_changed",
                 &self.orientation_changed,
-                |v| CapabilityValue::String(format!("{v:?}")),
+                |v| CapabilityValue::String(orientation_to_str(*v).to_string()),
             )),
+            "pane_layout_preview" => Some(EventSignalRef::mapped(
+                "pane_layout_preview",
+                &self.pane_layout_preview,
+                |ratios| {
+                    CapabilityValue::Tuple(
+                        ratios
+                            .iter()
+                            .map(|ratio| CapabilityValue::Float(f64::from(*ratio)))
+                            .collect(),
+                    )
+                },
+            )),
+            // Preview is not a published hub event; it is exposed as a Rust signal for a host
+            // drawing live drag feedback. Committed changes still use `pane_layout_changed`.
             _ => None,
         }
     }
@@ -543,7 +767,7 @@ impl Draw for Splitter {
         // boundaries are. Deriving them here from raw ratios was a defect: the layout reads a
         // ratio as a relative weight (`weight / sum`), so two equal panes put the boundary at
         // the middle while the raw-weight accumulation put the handle at the right edge.
-        let handle_width = HANDLE_WIDTH as i32;
+        let handle_width = self.handle_width as i32;
         match self.orientation() {
             Orientation::Horizontal => {
                 // Draw vertical splitter handles, one in each gap between panes.
@@ -589,12 +813,19 @@ impl crate::event::EventHandler for Splitter {
                     Orientation::Horizontal => pos.x,
                     Orientation::Vertical => pos.y,
                 };
-                let on_divider = self
-                    .divider_centers()
-                    .iter()
-                    .any(|center| (coordinate - *center).abs() <= HANDLE_WIDTH as i32 / 2);
-                if on_divider {
-                    self.equalize_panes();
+                let hit = self.divider_centers().iter().position(|center| {
+                    (coordinate - *center).abs() <= self.handle_width as i32 / 2
+                });
+                if let Some(index) = hit {
+                    // Double-clicking a divider collapses the trailing pane; when that pane is
+                    // not collapsible, fall back to the historical equalize action.
+                    let trailing = index + 1;
+                    if trailing < self.pane_count() && self.pane_collapsible(trailing) {
+                        let collapsed = !self.pane_collapsed(trailing);
+                        let _ = self.set_pane_collapsed(trailing, collapsed);
+                    } else {
+                        self.equalize_panes();
+                    }
                 }
             }
             _ => {}
@@ -671,7 +902,7 @@ impl Splitter {
                 Orientation::Horizontal => center as f32 - self.base.geometry().x as f32,
                 Orientation::Vertical => center as f32 - self.base.geometry().y as f32,
             };
-            if (pos_primary - center).abs() <= HANDLE_WIDTH as f32 / 2.0 {
+            if (pos_primary - center).abs() <= self.handle_width as f32 / 2.0 {
                 // The payload names the handle, so a future drop target can tell
                 // which divider the drag came from.
                 let payload =
@@ -681,6 +912,7 @@ impl Splitter {
                     handle_index: index,
                     start_ratios: self.layout.ratios().to_vec(),
                 });
+                self.preview_mark = None;
                 break;
             }
         }
@@ -744,10 +976,17 @@ impl Splitter {
         let scale = pair_sum / new_pair_sum;
         self.layout.set_ratio(index, new_left * scale);
         self.layout.set_ratio(index + 1, new_right * scale);
-        // The panes follow the ratios while the handle is moving, not only on release.
+        // The panes follow the ratios while the handle is moving, not only on release. The
+        // committed signal waits for release: a per-move `pane_layout_changed` made one gesture
+        // look like hundreds of layout changes and allocated a ratio vector per pointer sample.
+        // `pane_layout_preview` is the live channel, throttled to a visible ratio step.
         self.place_panes();
-        if self.pane_layout_changed.slot_count() > 0 {
-            self.pane_layout_changed.emit(self.layout.ratios().to_vec());
+        if self.pane_layout_preview.slot_count() > 0 {
+            let mark = ((new_left * 1000.0).round() as i64, (new_right * 1000.0).round() as i64);
+            if self.preview_mark != Some(mark) {
+                self.preview_mark = Some(mark);
+                self.pane_layout_preview.emit(self.layout.ratios().to_vec());
+            }
         }
     }
 
@@ -761,6 +1000,7 @@ impl Splitter {
             return;
         }
         self.drag_state = None;
+        self.preview_mark = None;
         self.layout.normalize_ratios();
         self.place_panes();
         if self.pane_layout_changed.slot_count() > 0 {

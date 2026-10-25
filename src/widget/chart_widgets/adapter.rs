@@ -26,6 +26,7 @@
 //! non-negative, so a chart drawn through a `RenderContext` lands on the same
 //! pixels every time rather than depending on truncation direction.
 
+use crate::compat::RefCell;
 use crate::core::{Color, Font, Point, Rect};
 use crate::render::RenderContext;
 use crate::widget::chart_widgets::types::ChartContext;
@@ -46,12 +47,50 @@ use crate::widget::chart_widgets::types::ChartContext;
 /// ```
 pub struct ChartContextAdapter<'ctx, 'backend> {
     inner: &'ctx mut RenderContext<'backend>,
+    /// `Sans` faces already built for this adapter, keyed by the size's bit pattern.
+    ///
+    /// An adapter lives for one draw call, so the cache is scoped to that call: it
+    /// removes the repeated `Font` construction while the engine walks its ticks and
+    /// legend, and it cannot go stale across frames.
+    fonts: RefCell<Vec<(u32, Font)>>,
+    /// Scratch vertex buffer reused by the polygon/path conversions.
+    ///
+    /// `draw_polygon` and `draw_path` used to allocate a fresh `Vec<Point>` on every
+    /// call; a chart makes several of those per frame. `clear()` keeps the capacity
+    /// and the next conversion refills it instead of allocating again.
+    rounded: Vec<Point>,
 }
 
 impl<'ctx, 'backend> ChartContextAdapter<'ctx, 'backend> {
     /// Wraps `inner` for use by the chart engine.
     pub fn new(inner: &'ctx mut RenderContext<'backend>) -> Self {
-        Self { inner }
+        Self { inner, fonts: RefCell::new(Vec::new()), rounded: Vec::new() }
+    }
+
+    /// Returns the `Sans` face at `size`, reusing one built earlier in this draw.
+    ///
+    /// Reads use `try_borrow` so a nested draw that somehow re-enters this adapter
+    /// falls back to a fresh `Font` rather than panicking on a borrowed cell.
+    fn font_at(&self, size: f32) -> Font {
+        let key = size.to_bits();
+        if let Ok(fonts) = self.fonts.try_borrow() {
+            if let Some((_, font)) = fonts.iter().find(|(stored, _)| *stored == key) {
+                return font.clone();
+            }
+        }
+        let font = Font::simple("Sans", size);
+        if let Ok(mut fonts) = self.fonts.try_borrow_mut() {
+            if let Some((_, stored)) = fonts.iter().find(|(stored, _)| *stored == key) {
+                return stored.clone();
+            }
+            // Chart labels use a handful of sizes. A caller that asks for many
+            // distinct sizes must not grow the cache without bound, so it stops
+            // caching past this point and keeps constructing the unusual sizes.
+            if fonts.len() < 8 {
+                fonts.push((key, font.clone()));
+            }
+        }
+        font
     }
 
     /// Rounds a chart-space coordinate to a device pixel.
@@ -84,7 +123,7 @@ impl ChartContext for ChartContextAdapter<'_, '_> {
 
     fn draw_text(&mut self, text: &str, pos: Point, font_size: f32, color: Color) {
         let origin = Point { x: Self::px(pos.x as f32), y: Self::px(pos.y as f32) };
-        let font = Font::simple("Sans", font_size);
+        let font = self.font_at(font_size);
         self.inner.draw_text(origin, text, &font, color, crate::core::HorizontalAlignment::Left);
     }
 
@@ -93,7 +132,7 @@ impl ChartContext for ChartContextAdapter<'_, '_> {
         // so a chart label sits on exactly the row a widget label does. That
         // method's line height is already a whole number of pixels, so widening
         // it back to the engine's `f32` space is lossless.
-        let font = Font::simple("Sans", font_size);
+        let font = self.font_at(font_size);
         self.inner.text_line(band, &font)
     }
 
@@ -108,14 +147,15 @@ impl ChartContext for ChartContextAdapter<'_, '_> {
             // a dot, which the callers express through the other methods.
             return;
         }
-        let rounded: Vec<Point> = points
-            .iter()
-            .map(|p| Point { x: Self::px(p.x as f32), y: Self::px(p.y as f32) })
-            .collect();
+        self.rounded.clear();
+        self.rounded.extend(
+            points.iter().map(|p| Point { x: Self::px(p.x as f32), y: Self::px(p.y as f32) }),
+        );
         // A polygon is filled, so the stroke width is unused. Passing `0` keeps the emitted
         // `DrawPath` honest: the SVG backend mirrors the argument into `stroke-width`, and a filled
         // polygon carrying `stroke-width="1"` claimed a stroke that is never painted.
-        self.inner.draw_path(&rounded, true, color, true, 0);
+        let rounded = &self.rounded;
+        self.inner.draw_path(rounded, true, color, true, 0);
     }
 
     fn draw_path_segment(&mut self, start: Point, end: Point, width: f32, color: Color) {
@@ -163,11 +203,12 @@ impl ChartContext for ChartContextAdapter<'_, '_> {
         if points.len() < 2 {
             return;
         }
-        let rounded: Vec<Point> = points
-            .iter()
-            .map(|p| Point { x: Self::px(p.x as f32), y: Self::px(p.y as f32) })
-            .collect();
-        self.inner.draw_path(&rounded, false, color, false, Self::len(width).max(1));
+        self.rounded.clear();
+        self.rounded.extend(
+            points.iter().map(|p| Point { x: Self::px(p.x as f32), y: Self::px(p.y as f32) }),
+        );
+        let rounded = &self.rounded;
+        self.inner.draw_path(rounded, false, color, false, Self::len(width).max(1));
     }
 
     fn draw_ellipse(&mut self, center: Point, radius_x: f32, radius_y: f32, color: Color) {

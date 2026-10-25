@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Texture atlas for GPU rendering — packs small textures into a larger atlas (BLUE11 R5.8).
-use crate::compat::HashMap;
+use crate::compat::{HashMap, Vec};
 use crate::core::Size;
 
 /// A rectangle within the texture atlas.
@@ -40,10 +40,9 @@ pub struct AtlasEntry {
 ///
 /// Allocation is a first-fit row packer: entries advance left to right along
 /// the current row and, when the next entry would exceed the atlas width, a new
-/// row is started below the tallest entry of the previous row. There is no
-/// compaction and [`TextureAtlas::remove`] does **not** reclaim space — the free
-/// rectangle is simply abandoned — so a long-lived atlas that churns entries
-/// will eventually fill up and return `None`.
+/// row is started below the tallest entry of the previous row. Removed rectangles
+/// are reused before advancing the row packer. Adjacent free rectangles are coalesced;
+/// live entries never move, so already uploaded texels and UV coordinates remain valid.
 ///
 pub struct TextureAtlas {
     max_size: Size,
@@ -52,6 +51,7 @@ pub struct TextureAtlas {
     cursor_x: u32,
     cursor_y: u32,
     row_height: u32,
+    free_rects: Vec<AtlasRect>,
 }
 
 impl TextureAtlas {
@@ -67,6 +67,7 @@ impl TextureAtlas {
             cursor_x: 0,
             cursor_y: 0,
             row_height: 0,
+            free_rects: Vec::new(),
         }
     }
 
@@ -85,6 +86,36 @@ impl TextureAtlas {
         if width > self.max_size.width || height > self.max_size.height {
             return None;
         }
+        // Exhaustion must not overwrite a live entry with a saturated identifier.
+        let id = self.next_id;
+        let next_id = id.checked_add(1)?;
+        if width > 0 && height > 0 {
+            if let Some(index) =
+                self.free_rects.iter().position(|rect| width <= rect.width && height <= rect.height)
+            {
+                let free = self.free_rects.swap_remove(index);
+                let rect = AtlasRect { x: free.x, y: free.y, width, height };
+                if free.width > width {
+                    self.free_rects.push(AtlasRect {
+                        x: free.x + width,
+                        y: free.y,
+                        width: free.width - width,
+                        height,
+                    });
+                }
+                if free.height > height {
+                    self.free_rects.push(AtlasRect {
+                        x: free.x,
+                        y: free.y + height,
+                        width: free.width,
+                        height: free.height - height,
+                    });
+                }
+                self.next_id = next_id;
+                self.entries.insert(id, AtlasEntry { rect, texture_id: id });
+                return Some((id, rect));
+            }
+        }
         // Compute the prospective origin *without* mutating the packer, so a failed
         // allocation leaves `cursor_x`/`cursor_y`/`row_height` exactly where they were.
         let wrap = self.cursor_x.checked_add(width).map(|next| next > self.max_size.width)?;
@@ -95,8 +126,7 @@ impl TextureAtlas {
         if y.checked_add(height)? > self.max_size.height {
             return None; // Atlas full or the new row overflows
         }
-        let id = self.next_id;
-        self.next_id = self.next_id.saturating_add(1);
+        self.next_id = next_id;
         let rect = AtlasRect { x, y, width, height };
         self.entries.insert(id, AtlasEntry { rect, texture_id: id });
         self.cursor_x = x.checked_add(width)?;
@@ -111,15 +141,46 @@ impl TextureAtlas {
         self.entries.get(&id)
     }
 
-    /// Drops the entry's bookkeeping. No-op for an unknown id.
+    /// Reclaims an entry's rectangle. No-op for an unknown id.
     ///
-    /// The freed region is **not** returned to the packer: the cursors are left
-    /// where they are, so the space stays occupied until
-    /// [`TextureAtlas::clear`]. Removing an id also means a later `get` for it
-    /// returns `None` even though its rectangle is still referenced by whatever
-    /// was uploaded there.
+    /// A removed rectangle may be overwritten by the next allocation. Live entries
+    /// retain their coordinates, and removed identifiers are never reused.
     pub fn remove(&mut self, id: u64) {
-        self.entries.remove(&id);
+        let Some(entry) = self.entries.remove(&id) else { return };
+        if self.entries.is_empty() {
+            self.cursor_x = 0;
+            self.cursor_y = 0;
+            self.row_height = 0;
+            self.free_rects.clear();
+            return;
+        }
+        let mut rect = entry.rect;
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let mut index = 0;
+        while index < self.free_rects.len() {
+            let other = self.free_rects[index];
+            let horizontal = rect.y == other.y
+                && rect.height == other.height
+                && (rect.x + rect.width == other.x || other.x + other.width == rect.x);
+            let vertical = rect.x == other.x
+                && rect.width == other.width
+                && (rect.y + rect.height == other.y || other.y + other.height == rect.y);
+            if horizontal || vertical {
+                self.free_rects.swap_remove(index);
+                rect = AtlasRect {
+                    x: rect.x.min(other.x),
+                    y: rect.y.min(other.y),
+                    width: if horizontal { rect.width + other.width } else { rect.width },
+                    height: if vertical { rect.height + other.height } else { rect.height },
+                };
+                index = 0;
+            } else {
+                index += 1;
+            }
+        }
+        self.free_rects.push(rect);
     }
 
     /// Forgets every entry and resets the packer, making the whole atlas
@@ -127,6 +188,7 @@ impl TextureAtlas {
     /// restarting at `1`.
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.free_rects.clear();
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.row_height = 0;
@@ -214,6 +276,34 @@ mod tests {
         // The 4x6 that fits beside the first entry is still allocatable.
         let (_, rect) = atlas.allocate(4, 6).expect("packer state must remain intact");
         assert_eq!((rect.x, rect.y), (6, 0));
+    }
+
+    #[test]
+    fn removed_rectangles_are_split_and_coalesced_without_moving_live_entries() {
+        let mut atlas = TextureAtlas::new(Size::new(16, 8));
+        let (live, _) = atlas.allocate(8, 8).unwrap();
+        let (removed, _) = atlas.allocate(8, 8).unwrap();
+        for _ in 0..100 {
+            atlas.remove(removed);
+            let (a, first) = atlas.allocate(4, 8).unwrap();
+            let (b, second) = atlas.allocate(4, 8).unwrap();
+            assert_eq!((first.x, second.x), (8, 12));
+            atlas.remove(a);
+            atlas.remove(b);
+            let (id, rect) = atlas.allocate(8, 8).unwrap();
+            assert_eq!((rect.x, rect.y), (8, 0));
+            atlas.remove(id);
+        }
+        assert_eq!(atlas.get(live).unwrap().rect.x, 0);
+        assert!(atlas.get(removed).is_none());
+    }
+
+    #[test]
+    fn exhausted_ids_do_not_replace_live_entries() {
+        let mut atlas = TextureAtlas::new(Size::new(8, 8));
+        atlas.next_id = u64::MAX;
+        assert!(atlas.allocate(1, 1).is_none());
+        assert!(atlas.is_empty());
     }
 
     #[test]

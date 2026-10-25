@@ -38,6 +38,7 @@ macro_rules! impl_properties_view {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("icon_visible_in_list_mode", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -57,6 +58,7 @@ macro_rules! impl_properties_view {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("expansion_animated", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -77,6 +79,11 @@ macro_rules! impl_properties_view {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("header_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
+            // A bitset of gestures; the published tokens are `none`, `double_clicked`,
+            // `edit_key` and the union `all` (or any `+`-joined combination).
+            PropertySchema::new("edit_triggers", PropertyValueKind::String, true, true),
         ];
 
         // `GridTableWidget` is the feature-rich virtualised table (grid lines,
@@ -139,6 +146,7 @@ macro_rules! impl_properties_view {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("wheel_paging_enabled", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -180,6 +188,9 @@ macro_rules! impl_properties_view {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("sorting_enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("sort_role", PropertyValueKind::String, true, true),
+            PropertySchema::new("auto_refresh", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -200,6 +211,27 @@ macro_rules! impl_properties_view {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated(
+                "selection_mode",
+                true,
+                true,
+                &["single", "multi", "extended", "none"],
+            ),
+            PropertySchema::enumerated(
+                "selection_behavior",
+                true,
+                true,
+                &["cells", "rows", "columns"],
+            ),
+            PropertySchema::new("sort_indicator_visible", PropertyValueKind::Bool, true, true),
+            // The grid-family spelling of `column_width_mode`; both name the same field.
+            PropertySchema::enumerated(
+                "section_resize_mode",
+                true,
+                true,
+                &["fixed", "stretch", "interactive"],
+            ),
+            PropertySchema::new("current_cell", PropertyValueKind::String, true, false),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -214,6 +246,12 @@ macro_rules! impl_properties_view {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("header_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("expands_on_double_click", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("middle_click_expands", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("sort_role", true, true, &["text", "number"]),
+            PropertySchema::new("case_sensitive", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("projection_strategy", true, true, &["windowed", "eager"]),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -232,6 +270,8 @@ macro_rules! impl_properties_view {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated("wheel_scroll_mode", true, true, &["per_row", "per_page"]),
+            PropertySchema::new("header_visible", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -246,6 +286,13 @@ macro_rules! impl_properties_view {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("selected_rows", PropertyValueKind::NumberList, true, false),
+            PropertySchema::enumerated(
+                "selection_mode",
+                true,
+                true,
+                &["single", "multi", "extended", "none"],
+            ),
         ];
 
         pub(crate) const IMAGE_VIEW_PROPERTIES: &[PropertySchema] = &[
@@ -263,6 +310,18 @@ macro_rules! impl_properties_view {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated(
+                "description_mode",
+                true,
+                true,
+                &["tooltip", "status_bar", "hidden"],
+            ),
+            PropertySchema::enumerated(
+                "edit_trigger",
+                true,
+                true,
+                &["single_click", "double_click"],
+            ),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -283,6 +342,15 @@ macro_rules! impl_properties_view {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("strip_offset", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("strip_scroll_enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("wheel_mode", true, true, &["strip", "navigate", "zoom"]),
+            PropertySchema::new(
+                "arrow_key_navigation_enabled",
+                PropertyValueKind::Bool,
+                true,
+                true,
+            ),
         ];
 
         #[cfg(not(alloc_frugal))]

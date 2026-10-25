@@ -313,6 +313,35 @@ impl SelectionModel {
     pub fn anchor(&self) -> Option<usize> {
         self.anchor
     }
+
+    /// Selects every row in `0..row_count`, according to the current mode.
+    ///
+    /// `Single` keeps a single selection (row 0), because a multi-row selection in that mode
+    /// would contradict the mode on the next click; `Multi` and `Extended` select the whole
+    /// range; `None` clears. Returns the resulting selection so a caller can report it.
+    pub fn select_all(&mut self, row_count: usize) -> Vec<usize> {
+        match self.mode {
+            SelectionMode::None => {
+                self.clear();
+            }
+            SelectionMode::Single => {
+                self.selected_rows.clear();
+                self.anchor = None;
+                if row_count > 0 {
+                    self.selected_rows.push(0);
+                    self.current_row = Some(0);
+                } else {
+                    self.current_row = None;
+                }
+            }
+            SelectionMode::Multi | SelectionMode::Extended => {
+                self.selected_rows = (0..row_count).collect();
+                self.current_row = row_count.checked_sub(1);
+                self.anchor = Some(0);
+            }
+        }
+        self.selected_rows.clone()
+    }
     /// Clears selection.
     pub fn clear(&mut self) {
         self.selected_rows.clear();
@@ -330,6 +359,11 @@ impl SelectionModel {
     /// Returns all selected rows.
     pub fn rows(&self) -> Vec<usize> {
         self.selected_rows.clone()
+    }
+
+    /// Whether `row` is selected, without materialising the whole selection.
+    pub fn is_selected(&self, row: usize) -> bool {
+        self.selected_rows.contains(&row)
     }
     fn normalize(&mut self) {
         if self.mode == SelectionMode::Single && self.selected_rows.len() > 1 {
@@ -380,6 +414,65 @@ pub enum ViewMode {
     Details,
     /// Thumbnail grid.
     Thumbnails,
+}
+
+/// Row whose selection state is being reported to a delegate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListItemState {
+    /// The row's index in the projection.
+    pub row: usize,
+    /// Whether the row is selected.
+    pub selected: bool,
+    /// Whether the row carries keyboard focus.
+    pub focused: bool,
+    /// Whether the pointer is over the row.
+    pub hovered: bool,
+    /// Whether the view is enabled.
+    pub enabled: bool,
+}
+
+/// Presentation hook for one [`ListView`] row.
+///
+/// The view had no extension point at all: icon, ink and any extra decoration were fixed by
+/// the control's own paint loop, so a host that wanted a status column, a per-row accent or a
+/// computed icon had to subclass by copying the widget. Every method has a default that
+/// reproduces the built-in behaviour, so a delegate only overrides what it cares about.
+pub trait ItemDelegate: Send + Sync {
+    /// The row's leading icon.
+    fn icon(&self, row: usize, model: &dyn ListModel) -> Option<String> {
+        model.icon(row)
+    }
+
+    /// The ink the row's label is painted with.
+    fn text_color(&self, row: usize, default: crate::core::Color) -> crate::core::Color {
+        let _ = row;
+        default
+    }
+
+    /// Extra text painted at the row's trailing edge, when the delegate has one.
+    fn trailing_text(&self, row: usize, model: &dyn ListModel) -> Option<String> {
+        let _ = (row, model);
+        None
+    }
+
+    /// Called after the built-in content has been painted, so a delegate can add decoration.
+    fn paint(&self, context: &mut RenderContext, row: usize, cell: Rect, state: ListItemState) {
+        let _ = (context, row, cell, state);
+    }
+}
+
+/// Where a scroll request places its target row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollHint {
+    /// Put the row at the top of the viewport.
+    Top,
+    /// Put the row at the bottom of the viewport.
+    Bottom,
+    /// Centre the row in the viewport.
+    Center,
+    /// Move only when the row is currently outside the viewport.
+    #[default]
+    Nearest,
 }
 
 /// List view widget.
@@ -440,6 +533,10 @@ pub struct ListView {
     /// The view does not own the data, so the move is a request; a model that keeps its own
     /// order applies it (or ignores it).
     pub row_reordered: Signal1<(usize, usize)>,
+    /// Whether the list mode paints the model's icon beside the label.
+    icon_visible_in_list_mode: bool,
+    /// Optional per-row presentation hook.
+    item_delegate: Option<Box<dyn ItemDelegate>>,
 }
 impl ListView {
     /// Creates an empty list view.
@@ -460,6 +557,8 @@ impl ListView {
             context_menu_requested: Signal1::new(),
             drag_row: None,
             row_reordered: Signal1::new(),
+            icon_visible_in_list_mode: false,
+            item_delegate: None,
         }
     }
     /// Binds an external list model.
@@ -780,6 +879,76 @@ impl ListView {
         self.set_scroll_row(current.max(0) as usize);
     }
 
+    /// Scrolls so `row` is inside the viewport, placing it per `hint`.
+    ///
+    /// The previous API could only move by lines, so a host could not ask for "row 400, centred"
+    /// without knowing the row height and the viewport size itself and risking the same
+    /// arithmetic drift the control's own layout has already paid for.
+    pub fn scroll_to_item(&mut self, row: usize, hint: ScrollHint) {
+        let layout = self.list_layout();
+        let columns = layout.columns.max(1) as usize;
+        let visible_lines = (layout.content.height / layout.row_height.max(1)) as usize;
+        let line = row / columns;
+        let current = self.scroll_row;
+        let target = match hint {
+            ScrollHint::Top => line,
+            ScrollHint::Bottom => line.saturating_add(1).saturating_sub(visible_lines.max(1)),
+            ScrollHint::Center => line.saturating_sub(visible_lines / 2),
+            ScrollHint::Nearest => {
+                if line < current {
+                    line
+                } else if visible_lines > 0 && line >= current + visible_lines {
+                    line + 1 - visible_lines
+                } else {
+                    current
+                }
+            }
+        };
+        self.set_scroll_row(target);
+    }
+
+    /// Selects every row, according to the current selection mode.
+    pub fn select_all(&mut self) -> Vec<usize> {
+        let selected = self.selection.select_all(self.row_count());
+        if let Some(&last) = selected.last() {
+            self.focused_row = Some(last);
+            self.selection_changed.emit(last);
+        }
+        self.base.request_redraw();
+        selected
+    }
+
+    /// Whether the list mode paints the model's icon beside the label.
+    pub fn icon_visible_in_list_mode(&self) -> bool {
+        self.icon_visible_in_list_mode
+    }
+
+    /// Shows or hides each row's icon in the single-column modes.
+    ///
+    /// The grid modes always paint an icon (it is their content); this switch is for
+    /// [`ViewMode::List`] and [`ViewMode::Details`], where the icon used to be discarded even
+    /// though the model supplied one.
+    pub fn set_icon_visible_in_list_mode(&mut self, visible: bool) {
+        if self.icon_visible_in_list_mode == visible {
+            return;
+        }
+        self.icon_visible_in_list_mode = visible;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Installs a per-row presentation delegate, replacing any previous one.
+    pub fn set_item_delegate(&mut self, delegate: Option<Box<dyn ItemDelegate>>) {
+        self.item_delegate = delegate;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns the installed delegate, if any.
+    pub fn item_delegate(&self) -> Option<&dyn ItemDelegate> {
+        self.item_delegate.as_deref()
+    }
+
     /// The band item `index` occupies: its column's slice of its row.
     ///
     /// In a one-column mode this is the row's own band, so [`Self::row_rect`] and this agree exactly
@@ -951,6 +1120,9 @@ impl WidgetProperties for ListView {
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
+            "icon_visible_in_list_mode" => {
+                Ok(CapabilityValue::Bool(self.icon_visible_in_list_mode()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -986,6 +1158,14 @@ impl WidgetProperties for ListView {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
             }
+            "icon_visible_in_list_mode" => {
+                let visible = match value {
+                    CapabilityValue::Bool(visible) => visible,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_icon_visible_in_list_mode(visible);
+                Ok(())
+            }
             "has_model" => Err(CapabilityAccessError::ReadOnlyProperty),
             "row_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -1000,6 +1180,7 @@ impl WidgetProperties for ListView {
             "selection_mode",
             "view_mode",
             "alignment",
+            "icon_visible_in_list_mode",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1095,6 +1276,7 @@ impl Draw for ListView {
             // at the two ends. `index / columns` reports the line, `index % columns` the column within
             // it, and truncating division is what makes the two agree for the last partial line.
             let mut cell_text = String::new();
+            let delegate = self.item_delegate.as_deref();
             let start = self.scroll_row.saturating_mul(layout.columns.max(1) as usize);
             for i in start..row_count {
                 let Some(cell) = self.item_rect(i) else { break };
@@ -1107,22 +1289,42 @@ impl Draw for ListView {
                     context.fill_rect(cell, hovered_bg);
                 }
                 cell_text.clear();
+                // The delegate may override the icon; with no delegate the model's own icon is
+                // used, which is what keeps an existing view byte-identical.
+                let icon_name: Option<String> = match (self.model.as_ref(), delegate) {
+                    (Some(model), Some(delegate)) => delegate.icon(i, model.as_ref()),
+                    (Some(model), None) => model.icon(i),
+                    (None, _) => None,
+                };
+                let mut leading_icon = false;
                 // A grid-mode tile draws its icon in the picture area: the caption strip is
                 // carved off the foot, and the glyph is centred in what remains.
                 if layout.label_below {
-                    if let Some(model) = self.model.as_ref() {
-                        if let Some(name) = model.icon(i) {
-                            let caption = layout.caption_height();
-                            let picture = Rect::new(
-                                cell.x + 4,
-                                cell.y + 4,
-                                cell.width.saturating_sub(8),
-                                cell.height.saturating_sub(caption + 8),
-                            );
-                            if picture.width > 0 && picture.height > 0 {
-                                crate::widget::draw_icon_named(context, picture, ink, &name);
-                            }
+                    if let Some(name) = icon_name.as_deref() {
+                        let caption = layout.caption_height();
+                        let picture = Rect::new(
+                            cell.x + 4,
+                            cell.y + 4,
+                            cell.width.saturating_sub(8),
+                            cell.height.saturating_sub(caption + 8),
+                        );
+                        if picture.width > 0 && picture.height > 0 {
+                            crate::widget::draw_icon_named(context, picture, ink, name);
                         }
+                    }
+                } else if self.icon_visible_in_list_mode {
+                    // A single-column row used to drop `model.icon()` entirely. The icon takes
+                    // the leading inset and the label shifts by its allowance below.
+                    if let Some(name) = icon_name.as_deref() {
+                        let side = layout.row_height.saturating_sub(8).clamp(1, 20);
+                        let icon_rect = Rect::new(
+                            cell.x + 4,
+                            cell.y + (cell.height as i32 - side as i32) / 2,
+                            side,
+                            side,
+                        );
+                        crate::widget::draw_icon_named(context, icon_rect, ink, name);
+                        leading_icon = true;
                     }
                 }
                 let has_text = match self.model.as_ref() {
@@ -1147,11 +1349,14 @@ impl Draw for ListView {
                             HorizontalAlignment::Center,
                         )
                     } else {
+                        let icon_allowance = if leading_icon { 24 } else { 0 };
                         (
                             Rect::new(
-                                cell.x + layout.text_inset,
+                                cell.x + layout.text_inset + icon_allowance,
                                 cell.y,
-                                cell.width.saturating_sub(layout.text_inset as u32),
+                                cell.width.saturating_sub(
+                                    layout.text_inset as u32 + icon_allowance as u32,
+                                ),
                                 cell.height,
                             ),
                             // A beside-label is a single run in a single-column row, so it is the
@@ -1161,12 +1366,50 @@ impl Draw for ListView {
                             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
                         )
                     };
+                    let row_ink = delegate.map_or(ink, |delegate| delegate.text_color(i, ink));
                     context.draw_text_fitted_cow(
                         context.text_line(band, font),
                         &cell_text,
                         font,
-                        ink,
+                        row_ink,
                         align,
+                    );
+                }
+                if let Some(delegate) = delegate {
+                    if let Some(model) = self.model.as_ref() {
+                        if let Some(trailing) = delegate.trailing_text(i, model.as_ref()) {
+                            if !trailing.is_empty() {
+                                let metrics = context.measure_text(&trailing, font);
+                                let inset = 6;
+                                let width = (metrics.width + inset as u32 * 2)
+                                    .min(cell.width.saturating_sub(layout.text_inset as u32));
+                                let band = Rect::new(
+                                    cell.x + cell.width as i32 - width as i32,
+                                    cell.y,
+                                    width,
+                                    cell.height,
+                                );
+                                context.draw_text_fitted_cow(
+                                    context.text_line(band, font),
+                                    &trailing,
+                                    font,
+                                    delegate.text_color(i, ink),
+                                    HorizontalAlignment::Right,
+                                );
+                            }
+                        }
+                    }
+                    delegate.paint(
+                        context,
+                        i,
+                        cell,
+                        ListItemState {
+                            row: i,
+                            selected: self.selection.is_selected(i),
+                            focused: Some(i) == current_row,
+                            hovered: Some(i) == self.hovered_row,
+                            enabled: self.base.is_enabled(),
+                        },
                     );
                 }
             }

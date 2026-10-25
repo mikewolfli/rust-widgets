@@ -114,6 +114,18 @@ impl JsonEventBinding {
         }
     }
 
+    /// The published event this binding corresponds to, when it has one.
+    ///
+    /// A [`Self::Published`] binding returns its own name; a [`Self::Marker`] binding returns the
+    /// counterpart recorded in [`MARKER_PUBLISHED_EVENTS`]. `None` therefore means "this binding
+    /// rides the compatibility route and no published name exists for its intent".
+    pub fn published_counterpart(self) -> Option<&'static str> {
+        match self {
+            Self::Published { name, .. } => Some(name),
+            Self::Marker { marker, .. } => marker.published_counterpart(),
+        }
+    }
+
     /// The published event name when this is a published binding, for diagnostics.
     pub fn published_name(self) -> Option<&'static str> {
         match self {
@@ -220,6 +232,27 @@ impl JsonTriggerMarker {
         }
     }
 
+    /// The published event name this marker corresponds to, or `None` when the intent has no
+    /// published spelling.
+    ///
+    /// See [`MARKER_PUBLISHED_EVENTS`] for why the answer is data rather than a second `match`.
+    pub fn published_counterpart(self) -> Option<&'static str> {
+        MARKER_PUBLISHED_EVENTS
+            .iter()
+            .find(|(marker, _)| *marker == self)
+            .and_then(|(_, name)| *name)
+    }
+
+    /// Whether this marker has any published equivalent at all.
+    ///
+    /// The compatibility route is allowed to carry an intent with no published name —
+    /// double-click and focus currently have none — but that fact is now explicit, so a gate can
+    /// require a *new* marker without a counterpart to be recorded here rather than inferred from
+    /// silence.
+    pub fn is_publishable(self) -> bool {
+        self.published_counterpart().is_some()
+    }
+
     /// The `WidgetTriggerKind` this marker reports as.
     ///
     /// # Why some markers share a kind
@@ -315,6 +348,40 @@ pub const MARKER_KEYS: &[(&str, JsonTriggerMarker)] = &[
 
 /// The JSON key under which published-name handlers are declared.
 pub const EVENTS_KEY: &str = "events";
+
+/// The published event name each compatibility marker corresponds to, or `None`.
+///
+/// # Why the correspondence is data
+///
+/// `on_*` keys are trigger *intents*; `events:` names are names the capability table publishes.
+/// Two of the intents overlap a published name (`clicked`, `value_changed`), `selection_changed`
+/// and `closed` overlap one each, and `double_clicked` is published by controls that actually
+/// distinguish a second click (the canvas, grid/table cells, tree nodes). The two **focus**
+/// intents have no published equivalent anywhere in the census. That was previously only stated in
+/// prose, so a new marker could quietly be added with no published route and nothing would notice.
+///
+/// Keeping the answer in one table lets [`JsonTriggerMarker::published_counterpart`] answer it for
+/// the binder and lets a gate reject a future marker that claims a published name which no control
+/// actually publishes. `None` is a promise, not an omission: it says this intent has no published
+/// spelling and must stay on the compatibility route.
+pub const MARKER_PUBLISHED_EVENTS: &[(JsonTriggerMarker, Option<&'static str>)] = &[
+    (JsonTriggerMarker::Clicked, Some("clicked")),
+    (JsonTriggerMarker::ValueChanged, Some("value_changed")),
+    (JsonTriggerMarker::SelectionChanged, Some("selection_changed")),
+    (JsonTriggerMarker::Closed, Some("closed")),
+    (JsonTriggerMarker::DoubleClicked, Some("double_clicked")),
+    (JsonTriggerMarker::FocusGained, None),
+    (JsonTriggerMarker::FocusLost, None),
+];
+
+/// Every marker that has no published counterpart.
+///
+/// A gate reads this to require an explicit decision for a new marker: a marker added to
+/// [`MARKER_KEYS`] without a row in [`MARKER_PUBLISHED_EVENTS`] is absent from the table rather
+/// than silently "unpublished", and a marker whose row is `None` is recorded here.
+pub fn markers_without_published_counterpart() -> impl Iterator<Item = JsonTriggerMarker> {
+    MARKER_PUBLISHED_EVENTS.iter().filter_map(|(marker, name)| name.is_none().then_some(*marker))
+}
 
 /// Every `on_*` key, for the loader's "this key is not a property" list.
 ///

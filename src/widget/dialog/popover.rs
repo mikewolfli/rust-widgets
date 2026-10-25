@@ -12,6 +12,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
+use crate::signal::GenericSignal;
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -148,6 +149,25 @@ impl PopoverArrow {
     }
 }
 
+/// The edge of the anchor a popover hangs from.
+///
+/// The name a caller writes in `set_placement`; it is expressed through the existing
+/// arrow-direction field so the placement and the arrow cannot disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PopoverEdge {
+    /// Below the anchor when it fits, above otherwise.
+    #[default]
+    Auto,
+    /// Above the anchor, arrow pointing down.
+    Top,
+    /// Below the anchor, arrow pointing up.
+    Bottom,
+    /// Left of the anchor, arrow pointing right.
+    Left,
+    /// Right of the anchor, arrow pointing left.
+    Right,
+}
+
 /// Popover widget — a floating bubble card with an anchor arrow.
 ///
 /// Shows a rounded rectangle with a triangular arrow pointing toward an
@@ -178,6 +198,14 @@ pub struct Popover {
     /// card unfolds rather than appearing whole on one frame and vanishing on the next. Same split,
     /// same reason, as `Switch`'s `checked`/`travel` and `Dialog`'s `visible`/`reveal`.
     reveal: PropertyDriver,
+    /// Emitted just before the card becomes visible.
+    pub about_to_show: GenericSignal,
+    /// Emitted when the card becomes visible.
+    pub shown: GenericSignal,
+    /// Emitted just before the card is hidden.
+    pub about_to_hide: GenericSignal,
+    /// Emitted when the card has been hidden.
+    pub dismissed: GenericSignal,
 }
 
 impl Popover {
@@ -198,22 +226,65 @@ impl Popover {
             // At rest at the closed end: a freshly built popover is hidden, so it must not
             // animate itself away on its first frame.
             reveal: PropertyDriver::at(0.0, MotionSlot::Normal),
+            about_to_show: GenericSignal::new(),
+            shown: GenericSignal::new(),
+            about_to_hide: GenericSignal::new(),
+            dismissed: GenericSignal::new(),
         }
     }
 
     /// Shows the popover positioned relative to the given anchor rectangle.
     pub fn show(&mut self, anchor: Rect) {
         self.anchor_rect = anchor;
+        if self.visible {
+            // Already up: repositioning is not a lifecycle transition and must not replay the
+            // show signals.
+            self.base.request_redraw();
+            return;
+        }
+        self.about_to_show.emit();
         self.visible = true;
         self.reveal.set_target(1.0);
         self.base.request_redraw();
+        self.shown.emit();
     }
 
     /// Hides the popover.
     pub fn hide(&mut self) {
+        if !self.visible {
+            return;
+        }
+        self.about_to_hide.emit();
         self.visible = false;
         self.reveal.set_target(0.0);
         self.base.request_redraw();
+        self.dismissed.emit();
+    }
+
+    /// The edge of the anchor the card is placed against.
+    pub fn placement(&self) -> PopoverEdge {
+        match self.arrow {
+            PopoverArrow::Auto => PopoverEdge::Auto,
+            PopoverArrow::Down => PopoverEdge::Top,
+            PopoverArrow::Up => PopoverEdge::Bottom,
+            PopoverArrow::Right => PopoverEdge::Left,
+            PopoverArrow::Left => PopoverEdge::Right,
+        }
+    }
+
+    /// Places the card against `edge` and requests a redraw.
+    ///
+    /// This is the edge spelling of [`Popover::set_arrow_direction`]: the edge determines the
+    /// arrow, and the single `arrow` field means the two setters can never disagree.
+    pub fn set_placement(&mut self, edge: PopoverEdge) {
+        let arrow = match edge {
+            PopoverEdge::Auto => PopoverArrow::Auto,
+            PopoverEdge::Top => PopoverArrow::Down,
+            PopoverEdge::Bottom => PopoverArrow::Up,
+            PopoverEdge::Left => PopoverArrow::Right,
+            PopoverEdge::Right => PopoverArrow::Left,
+        };
+        self.set_arrow_direction(arrow);
     }
 
     /// Returns how far the card has unfolded, `0.0` closed and `1.0` fully open.
@@ -492,6 +563,18 @@ impl Widget for Popover {
 
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Resolves a published lifecycle name to the control's own signal.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "about_to_show" => Some(EventSignalRef::unit("about_to_show", &self.about_to_show)),
+            "shown" => Some(EventSignalRef::unit("shown", &self.shown)),
+            "about_to_hide" => Some(EventSignalRef::unit("about_to_hide", &self.about_to_hide)),
+            "dismissed" => Some(EventSignalRef::unit("dismissed", &self.dismissed)),
+            _ => None,
+        }
+    }
 }
 
 /// `Popover`'s property contract.
@@ -1340,5 +1423,62 @@ mod tests {
             card_alpha(&translucent_svg)
         );
         assert_ne!(opaque_svg, translucent_svg);
+    }
+
+    #[test]
+    fn the_show_and_hide_lifecycle_is_observable() {
+        use std::sync::{Arc, Mutex};
+
+        let mut popover = Popover::new(Rect::new(0, 0, 300, 400));
+        let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let sink = Arc::clone(&events);
+        popover.about_to_show.connect({
+            let sink = Arc::clone(&sink);
+            move || sink.lock().expect("lock").push("about_to_show")
+        });
+        popover.shown.connect({
+            let sink = Arc::clone(&sink);
+            move || sink.lock().expect("lock").push("shown")
+        });
+        popover.about_to_hide.connect({
+            let sink = Arc::clone(&sink);
+            move || sink.lock().expect("lock").push("about_to_hide")
+        });
+        popover.dismissed.connect(move || sink.lock().expect("lock").push("dismissed"));
+
+        popover.show(Rect::new(10, 10, 40, 20));
+        assert_eq!(
+            *events.lock().expect("lock"),
+            vec!["about_to_show", "shown"],
+            "showing announces both halves of the transition"
+        );
+        // Repositioning an open card is not a second show.
+        popover.show(Rect::new(20, 20, 40, 20));
+        assert_eq!(events.lock().expect("lock").len(), 2);
+
+        popover.hide();
+        assert_eq!(
+            *events.lock().expect("lock"),
+            vec!["about_to_show", "shown", "about_to_hide", "dismissed"]
+        );
+        // Hiding a hidden card is not a second dismissal.
+        popover.hide();
+        assert_eq!(events.lock().expect("lock").len(), 4);
+    }
+
+    #[test]
+    fn placement_selects_the_arrow_that_points_at_the_anchor() {
+        let mut popover = Popover::new(Rect::new(0, 0, 400, 400));
+        popover.set_placement(PopoverEdge::Bottom);
+        assert_eq!(popover.placement(), PopoverEdge::Bottom);
+        assert_eq!(popover.arrow_direction(), PopoverArrow::Up);
+        popover.set_placement(PopoverEdge::Top);
+        assert_eq!(popover.arrow_direction(), PopoverArrow::Down);
+        popover.set_placement(PopoverEdge::Left);
+        assert_eq!(popover.arrow_direction(), PopoverArrow::Right);
+        popover.set_placement(PopoverEdge::Right);
+        assert_eq!(popover.arrow_direction(), PopoverArrow::Left);
+        popover.set_placement(PopoverEdge::Auto);
+        assert_eq!(popover.arrow_direction(), PopoverArrow::Auto);
     }
 }

@@ -31,6 +31,125 @@ use alloc::vec::Vec;
 /// a real one.
 pub const FIRST_PAGE_ID: ObjectId = 1;
 
+/// User agent used when the host has not set one.
+///
+/// The view performs no network I/O, so this string is reported to the host rather than sent
+/// anywhere; it exists so a settings consumer always has a concrete value to display and pass on.
+pub const DEFAULT_USER_AGENT: &str =
+    "Mozilla/5.0 (compatible; rust-widgets WebEngineView) AppleWebKit/605.1.15";
+
+/// The `SameSite` policy a cookie was stored with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CookieSameSite {
+    /// The host declared no policy.
+    #[default]
+    Unspecified,
+    /// Sent on same-site requests and top-level navigations.
+    Lax,
+    /// Sent on same-site requests only.
+    Strict,
+    /// Sent on every request; legal only with `Secure`.
+    None,
+}
+
+/// A cookie with the fields a browser store needs.
+///
+/// The store is in memory; persistence is the host's file I/O. [`WebEngineView::persist_cookies`]
+/// serialises the list to JSON and [`WebEngineView::load_cookies`] restores it, so a host that
+/// wants disk persistence writes and reads that document itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cookie {
+    /// Cookie name.
+    pub name: String,
+    /// Cookie value.
+    pub value: String,
+    /// Domain the cookie belongs to.
+    pub domain: String,
+    /// Path scope; defaults to `/`.
+    pub path: String,
+    /// Expiry in Unix milliseconds, or `None` for a session cookie.
+    pub expires_ms: Option<i64>,
+    /// Whether the cookie is HTTPS-only.
+    pub secure: bool,
+    /// Whether script can read the cookie.
+    pub http_only: bool,
+    /// Cross-site policy.
+    pub same_site: CookieSameSite,
+}
+
+impl Cookie {
+    /// A session cookie with the historical `(name, value, domain)` defaults.
+    pub fn new(
+        name: impl Into<String>,
+        value: impl Into<String>,
+        domain: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+            domain: domain.into(),
+            path: "/".to_string(),
+            expires_ms: None,
+            secure: false,
+            http_only: false,
+            same_site: CookieSameSite::Unspecified,
+        }
+    }
+}
+
+/// One history entry, with the state a back/forward navigation restores.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryEntry {
+    /// The page URL.
+    pub url: String,
+    /// The title the page reported when it was current.
+    pub title: String,
+    /// The content scroll position in logical pixels.
+    pub scroll_pos: f32,
+}
+
+/// Every non-overlapping occurrence of `needle` in `haystack`, found in linear time.
+///
+/// The KMP prefix table makes the scan O(haystack + needle); the previous byte-by-byte
+/// `haystack[offset..offset + needle.len()]` comparison was O(haystack × needle) in the worst case
+/// (a long run of a repeated prefix). Case folding is ASCII-only, matching the published rule.
+fn find_all_offsets(haystack: &[u8], needle: &[u8], case_sensitive: bool) -> Vec<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return Vec::new();
+    }
+    let fold = |byte: u8| if case_sensitive { byte } else { byte.to_ascii_lowercase() };
+    let mut prefix = Vec::new();
+    prefix.resize(needle.len(), 0usize);
+    let mut matched = 0usize;
+    for index in 1..needle.len() {
+        while matched > 0 && fold(needle[index]) != fold(needle[matched]) {
+            matched = prefix[matched - 1];
+        }
+        if fold(needle[index]) == fold(needle[matched]) {
+            matched += 1;
+        }
+        prefix[index] = matched;
+    }
+
+    let mut matches = Vec::new();
+    matched = 0;
+    for (index, byte) in haystack.iter().enumerate() {
+        let byte = fold(*byte);
+        while matched > 0 && byte != fold(needle[matched]) {
+            matched = prefix[matched - 1];
+        }
+        if byte == fold(needle[matched]) {
+            matched += 1;
+        }
+        if matched == needle.len() {
+            matches.push(index + 1 - needle.len());
+            // Non-overlapping matches: restart the scan at the next byte.
+            matched = 0;
+        }
+    }
+    matches
+}
+
 /// Lifecycle state of the most recent download the host has reported.
 ///
 /// The view performs no network I/O; the host supplies progress through
@@ -60,16 +179,18 @@ pub struct WebEngineView {
     javascript_enabled: bool,
     plugins_enabled: bool,
     private_browsing: bool,
-    /// In-memory cookie store. Each entry is `(name, value, domain)`.
-    cookies: Vec<(String, String, String)>,
+    /// In-memory cookie store.
+    cookies: Vec<Cookie>,
+    /// Whether a host may persist cookies; the store itself never touches the filesystem.
+    cookie_persistence_enabled: bool,
     /// Bytes received for the most recent host-reported download.
     download_received: u64,
     /// Total bytes for that download when the host knows it.
     download_total: Option<u64>,
     /// Lifecycle state of that download.
     download_state: WebEngineDownloadState,
-    /// Visited URLs, oldest first.
-    history: Vec<String>,
+    /// Visited pages, oldest first.
+    history: Vec<HistoryEntry>,
     /// Index of the current entry in [`Self::history`].
     history_index: usize,
     /// Last reported load progress, `0..=100`.
@@ -104,6 +225,27 @@ pub struct WebEngineView {
     pub load_progress_changed: Signal1<u32>,
     /// Emitted with `(channel, payload)` when the page posts to a web channel.
     pub channel_message: Signal1<(String, String)>,
+    /// Emitted with the target URL when the pointer enters a link, and with an empty string when
+    /// it leaves (the standard wiring point for a status-bar URL readout).
+    pub link_hovered: Signal1<String>,
+    /// Emitted with a host-supplied reason when the render process exits abnormally.
+    pub render_process_crashed: Signal1<String>,
+    /// Emitted when a deferred JavaScript evaluation finishes, with `(ok, payload)`.
+    pub js_evaluated: Signal1<(bool, String)>,
+    /// The user agent the host declared, or [`DEFAULT_USER_AGENT`].
+    user_agent: String,
+    /// Whether the blank page surface is painted at all.
+    background_transparent: bool,
+    /// HTML source the current find was computed over; a new document invalidates the matches.
+    find_needle: String,
+    /// Whether the active find is case sensitive.
+    find_case_sensitive: bool,
+    /// Byte offsets of the current matches in [`Self::html_content`].
+    find_matches: Vec<usize>,
+    /// Index into [`Self::find_matches`] of the match a find-next/previous action selected.
+    find_current: Option<usize>,
+    /// Script queued by [`Self::evaluate_javascript_async`], drained on the next tick.
+    pending_javascript: Option<String>,
     /// Most recently loaded HTML source (kept for inspection; no DOM layout).
     html_content: String,
     /// Next id [`WebEngineView::create_page`] will issue.
@@ -178,6 +320,22 @@ impl WebEngineSettings {
     pub fn set_javascript_enabled(&mut self, enabled: bool) {
         self.0.set_javascript_enabled(enabled);
     }
+    /// The user agent the wrapped view reports.
+    pub fn user_agent(&self) -> &str {
+        self.0.user_agent()
+    }
+    /// Sets the user agent the wrapped view reports.
+    pub fn set_user_agent(&mut self, user_agent: impl Into<String>) {
+        self.0.set_user_agent(user_agent);
+    }
+    /// Whether the wrapped view paints a page surface.
+    pub fn background_transparent(&self) -> bool {
+        self.0.background_transparent()
+    }
+    /// Skips the page surface fill for the wrapped view.
+    pub fn set_background_transparent(&mut self, transparent: bool) {
+        self.0.set_background_transparent(transparent);
+    }
     /// Returns whether JavaScript evaluation is enabled for the wrapped view.
     pub fn is_javascript_enabled(&self) -> bool {
         self.0.is_javascript_enabled()
@@ -237,9 +395,10 @@ impl WebEngineDownloadItem {
 }
 /// Cookie-store facade over the wrapped view's in-memory cookie list.
 ///
-/// Cookies are `(name, value, domain)` triples held only in memory and discarded
-/// with the view. While the wrapped view is in private browsing,
-/// [`WebEngineCookieStore::set_cookie`] refuses to store anything.
+/// Cookies are [`Cookie`] values held only in memory and discarded with the view. While the
+/// wrapped view is in private browsing, [`WebEngineCookieStore::set_cookie`] refuses to store
+/// anything. Persistence is the host's file I/O: [`WebEngineCookieStore::persist_cookies`] and
+/// [`WebEngineCookieStore::load_cookies`] convert the jar to and from the JSON a host saves.
 pub struct WebEngineCookieStore(pub WebEngineView);
 impl WebEngineCookieStore {
     /// Wraps a fresh view occupying `geometry` (in logical pixels).
@@ -264,16 +423,28 @@ impl WebEngineCookieStore {
         self.0.set_cookie(name, value, domain)
     }
     /// Returns the cookie stored under `name`, if any.
-    pub fn get_cookie(&self, name: &str) -> Option<&(String, String, String)> {
+    pub fn get_cookie(&self, name: &str) -> Option<&Cookie> {
         self.0.get_cookie(name)
     }
     /// Alias for [`Self::get_cookie`].
-    pub fn get(&self, name: &str) -> Option<&(String, String, String)> {
+    pub fn get(&self, name: &str) -> Option<&Cookie> {
         self.get_cookie(name)
     }
+    /// Stores a fully specified cookie.
+    pub fn set_cookie_entry(&mut self, cookie: &Cookie) -> bool {
+        self.0.set_cookie_entry(cookie)
+    }
     /// Returns every stored cookie.
-    pub fn cookies(&self) -> &[(String, String, String)] {
+    pub fn cookies(&self) -> &[Cookie] {
         self.0.cookies()
+    }
+    /// Serialises the jar to JSON (empty while persistence is disabled).
+    pub fn persist_cookies(&self) -> String {
+        self.0.persist_cookies()
+    }
+    /// Restores a jar from JSON.
+    pub fn load_cookies(&mut self, json: &str) -> Result<(), String> {
+        self.0.load_cookies(json)
     }
     /// Removes every stored cookie.
     pub fn clear_cookies(&mut self) {
@@ -497,6 +668,17 @@ impl WebEngineView {
             page_destroyed: Signal1::new(),
             load_progress_changed: Signal1::new(),
             channel_message: Signal1::new(),
+            link_hovered: Signal1::new(),
+            render_process_crashed: Signal1::new(),
+            js_evaluated: Signal1::new(),
+            user_agent: DEFAULT_USER_AGENT.to_string(),
+            background_transparent: false,
+            find_needle: String::new(),
+            find_case_sensitive: false,
+            find_matches: Vec::new(),
+            find_current: None,
+            pending_javascript: None,
+            cookie_persistence_enabled: false,
             html_content: String::new(),
             next_page_id: FIRST_PAGE_ID,
             #[cfg(feature = "js-engine")]
@@ -521,6 +703,11 @@ impl WebEngineView {
     pub fn set_title(&mut self, title: String) {
         if self.title != title {
             self.title = title.clone();
+            // The current history entry restores the title the page had; keeping it in step here is
+            // what makes back/forward restore a title rather than a stale one.
+            if let Some(entry) = self.history.get_mut(self.history_index) {
+                entry.title = title.clone();
+            }
             self.title_changed.emit(title);
             self.base.request_redraw();
         }
@@ -609,13 +796,35 @@ impl WebEngineView {
     /// Appends a URL to the history, discarding any forward entries.
     fn push_history(&mut self, url: &str) {
         self.history.truncate(self.history_index + 1);
-        self.history.push(url.to_string());
+        self.history.push(HistoryEntry {
+            url: url.to_string(),
+            title: self.title.clone(),
+            scroll_pos: 0.0,
+        });
         self.history_index = self.history.len() - 1;
     }
 
     /// Returns the visited URL list, oldest first.
-    pub fn history(&self) -> &[String] {
+    pub fn history(&self) -> Vec<String> {
+        self.history.iter().map(|entry| entry.url.clone()).collect()
+    }
+
+    /// Returns the full history entries, including the title and scroll position each restores.
+    pub fn history_entries(&self) -> &[HistoryEntry] {
         &self.history
+    }
+
+    /// Records the current page's scroll position on its history entry.
+    ///
+    /// A navigation that leaves the page calls this so going back restores where the reader was,
+    /// not just which document was open.
+    pub fn set_history_scroll(&mut self, scroll_pos: f32) {
+        if !scroll_pos.is_finite() {
+            return;
+        }
+        if let Some(entry) = self.history.get_mut(self.history_index) {
+            entry.scroll_pos = scroll_pos.max(0.0);
+        }
     }
 
     /// Returns the index of the current history entry.
@@ -678,6 +887,7 @@ impl WebEngineView {
         // Navigation and loading state are simulated (no DOM layout), but the
         // HTML source is retained so script evaluation and introspection work.
         self.html_content = html.to_string();
+        self.clear_find();
         self.url = "data:text/html".to_string();
         self.push_history(&self.url.clone());
         self.sync_history_flags();
@@ -702,6 +912,7 @@ impl WebEngineView {
         // Data payloads are retained for introspection; no binary media decode
         // or layout happens in this simulated view.
         self.html_content = String::from_utf8_lossy(data).into_owned();
+        self.clear_find();
         self.url = base_url.to_string();
         self.push_history(&self.url.clone());
         self.sync_history_flags();
@@ -719,7 +930,8 @@ impl WebEngineView {
     pub fn go_back(&mut self) {
         if self.history_index > 0 {
             self.history_index -= 1;
-            self.url = self.history[self.history_index].clone();
+            let entry = self.history[self.history_index].clone();
+            self.restore_history_entry(entry);
             self.sync_history_flags();
             self.url_changed.emit(self.url.clone());
             self.begin_loading();
@@ -730,11 +942,21 @@ impl WebEngineView {
     pub fn go_forward(&mut self) {
         if self.history_index + 1 < self.history.len() {
             self.history_index += 1;
-            self.url = self.history[self.history_index].clone();
+            let entry = self.history[self.history_index].clone();
+            self.restore_history_entry(entry);
             self.sync_history_flags();
             self.url_changed.emit(self.url.clone());
             self.begin_loading();
             self.update_navigation_state();
+        }
+    }
+
+    /// Restores the URL and title an entry records, emitting `title_changed` when the title differs.
+    fn restore_history_entry(&mut self, entry: HistoryEntry) {
+        self.url = entry.url;
+        if self.title != entry.title {
+            self.title = entry.title.clone();
+            self.title_changed.emit(entry.title);
         }
     }
 
@@ -807,6 +1029,38 @@ impl WebEngineView {
     pub fn set_javascript_enabled(&mut self, enabled: bool) {
         self.javascript_enabled = enabled;
     }
+
+    /// Queues a script for evaluation and returns immediately.
+    ///
+    /// The script is drained by [`Self::poll_async_javascript`] (which [`Widget::tick`] calls), and
+    /// the result is announced through [`Self::js_evaluated`] as `(ok, payload)`. This is the
+    /// asynchronous variant of [`Self::evaluate_javascript`]: a host that drives a frame loop does
+    /// not block the caller while the document runs. The work is deferred, not moved to another
+    /// thread — this crate has no scheduler to hand it to.
+    pub fn evaluate_javascript_async(&mut self, script: &str) {
+        self.pending_javascript = Some(script.to_string());
+        self.base.request_redraw();
+    }
+
+    /// Runs the queued script, if any; returns whether one was waiting.
+    pub fn poll_async_javascript(&mut self) -> bool {
+        let Some(script) = self.pending_javascript.take() else {
+            return false;
+        };
+        match self.evaluate_javascript(&script) {
+            Ok(value) => self.js_evaluated.emit((true, value)),
+            Err(error) => {
+                self.js_evaluated.emit((false, error.clone()));
+                self.error_occurred.emit(error);
+            }
+        }
+        true
+    }
+
+    /// Whether a script is waiting for the next tick.
+    pub fn has_pending_javascript(&self) -> bool {
+        self.pending_javascript.is_some()
+    }
     /// Records whether plugin content is permitted. This is a state flag only and
     /// gates no rendering.
     pub fn set_plugins_enabled(&mut self, enabled: bool) {
@@ -822,45 +1076,54 @@ impl WebEngineView {
 
     /// Returns the cookies currently held in this view's in-memory store.
     ///
-    /// Each entry is `(name, value, domain)`. Nothing is persisted to disk: the
-    /// list lives with the view, so dropping the view discards the cookies.
-    pub fn cookies(&self) -> &[(String, String, String)] {
+    /// Each entry is a [`Cookie`] with its path, expiry, security flags and SameSite policy, not
+    /// the old `(name, value, domain)` triple. Nothing is persisted to disk automatically: the list
+    /// lives with the view, and [`Self::persist_cookies`] is the serialisation a host writes itself.
+    pub fn cookies(&self) -> &[Cookie] {
         &self.cookies
     }
 
     /// Stores a cookie, replacing the value of an existing `(name, domain)` pair.
     ///
     /// Returns `false` and stores nothing while [`Self::is_private_browsing`] is
-    /// true: a private session must not leave cookie state behind.
+    /// true: a private session must not leave cookie state behind. This convenience form creates
+    /// a session cookie at path `/`; use [`Self::set_cookie_entry`] for the full field set.
     pub fn set_cookie(
         &mut self,
         name: impl Into<String>,
         value: impl Into<String>,
         domain: impl Into<String>,
     ) -> bool {
+        self.set_cookie_entry(&Cookie::new(name, value, domain))
+    }
+
+    /// Stores a fully specified cookie.
+    ///
+    /// Replacement is by `(name, domain, path)`, which is the identity a browser's cookie jar uses:
+    /// two cookies with the same name on different paths are distinct.
+    pub fn set_cookie_entry(&mut self, cookie: &Cookie) -> bool {
         if self.private_browsing {
             return false;
         }
-        let name = name.into();
-        let value = value.into();
-        let domain = domain.into();
-        if let Some(existing) =
-            self.cookies.iter_mut().find(|cookie| cookie.0 == name && cookie.2 == domain)
-        {
-            existing.1 = value;
+        if let Some(existing) = self.cookies.iter_mut().find(|stored| {
+            stored.name == cookie.name
+                && stored.domain == cookie.domain
+                && stored.path == cookie.path
+        }) {
+            *existing = cookie.clone();
         } else {
-            self.cookies.push((name, value, domain));
+            self.cookies.push(cookie.clone());
         }
         true
     }
 
     /// Returns the cookie stored under `name`, if any.
-    pub fn get_cookie(&self, name: &str) -> Option<&(String, String, String)> {
-        self.cookies.iter().find(|cookie| cookie.0 == name)
+    pub fn get_cookie(&self, name: &str) -> Option<&Cookie> {
+        self.cookies.iter().find(|cookie| cookie.name == name)
     }
 
     /// Alias for [`Self::get_cookie`].
-    pub fn get(&self, name: &str) -> Option<&(String, String, String)> {
+    pub fn get(&self, name: &str) -> Option<&Cookie> {
         self.get_cookie(name)
     }
 
@@ -874,47 +1137,220 @@ impl WebEngineView {
         self.clear_cookies();
     }
 
+    /// Whether the host may persist cookies. The control never writes a file itself.
+    pub fn cookie_persistence_enabled(&self) -> bool {
+        self.cookie_persistence_enabled
+    }
+
+    /// Enables or disables cookie persistence for this view.
+    pub fn set_cookie_persistence_enabled(&mut self, enabled: bool) {
+        self.cookie_persistence_enabled = enabled;
+    }
+
+    /// Serialises the cookie jar to JSON, so a host can write it to its own storage.
+    ///
+    /// Returns an empty string while [`Self::cookie_persistence_enabled`] is false: a view told not
+    /// to persist must not hand out a document a host could save.
+    pub fn persist_cookies(&self) -> String {
+        if !self.cookie_persistence_enabled {
+            return String::new();
+        }
+        let entries: Vec<serde_json::Value> = self
+            .cookies
+            .iter()
+            .map(|cookie| {
+                serde_json::json!({
+                    "name": cookie.name,
+                    "value": cookie.value,
+                    "domain": cookie.domain,
+                    "path": cookie.path,
+                    "expires_ms": cookie.expires_ms,
+                    "secure": cookie.secure,
+                    "http_only": cookie.http_only,
+                    "same_site": match cookie.same_site {
+                        CookieSameSite::Unspecified => "unspecified",
+                        CookieSameSite::Lax => "lax",
+                        CookieSameSite::Strict => "strict",
+                        CookieSameSite::None => "none",
+                    },
+                })
+            })
+            .collect();
+        serde_json::Value::Array(entries).to_string()
+    }
+
+    /// Restores a cookie jar from the JSON written by [`Self::persist_cookies`].
+    ///
+    /// The whole document is validated before the store is replaced, so a malformed entry cannot
+    /// leave the jar half-loaded.
+    pub fn load_cookies(&mut self, json: &str) -> Result<(), String> {
+        if self.private_browsing {
+            return Err("private browsing refuses to restore cookies".to_string());
+        }
+        let parsed: serde_json::Value =
+            serde_json::from_str(json).map_err(|error| format!("invalid cookie JSON: {error}"))?;
+        let entries = parsed
+            .as_array()
+            .ok_or_else(|| "cookie JSON must be an array of objects".to_string())?;
+        let mut restored = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let name = entry
+                .get("name")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| "a cookie needs a name".to_string())?;
+            let value = entry
+                .get("value")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| format!("cookie {name} needs a value"))?;
+            let domain = entry
+                .get("domain")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| format!("cookie {name} needs a domain"))?;
+            restored.push(Cookie {
+                name: name.to_string(),
+                value: value.to_string(),
+                domain: domain.to_string(),
+                path: entry.get("path").and_then(|value| value.as_str()).unwrap_or("/").to_string(),
+                expires_ms: entry.get("expires_ms").and_then(|value| value.as_i64()),
+                secure: entry.get("secure").and_then(|value| value.as_bool()).unwrap_or(false),
+                http_only: entry
+                    .get("http_only")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+                same_site: match entry.get("same_site").and_then(|value| value.as_str()) {
+                    Some("lax") => CookieSameSite::Lax,
+                    Some("strict") => CookieSameSite::Strict,
+                    Some("none") => CookieSameSite::None,
+                    _ => CookieSameSite::Unspecified,
+                },
+            });
+        }
+        self.cookies = restored;
+        Ok(())
+    }
+
+    /// The user agent the host declared, or [`DEFAULT_USER_AGENT`].
+    pub fn user_agent(&self) -> &str {
+        &self.user_agent
+    }
+
+    /// Sets the user agent a host would send. An empty string restores the default.
+    pub fn set_user_agent(&mut self, user_agent: impl Into<String>) {
+        let user_agent = user_agent.into();
+        self.user_agent =
+            if user_agent.is_empty() { DEFAULT_USER_AGENT.to_string() } else { user_agent };
+    }
+
+    /// Whether the blank page surface is painted.
+    pub fn background_transparent(&self) -> bool {
+        self.background_transparent
+    }
+
+    /// Skips the page surface fill, so a rounded container or layered window shows through.
+    pub fn set_background_transparent(&mut self, transparent: bool) {
+        if self.background_transparent == transparent {
+            return;
+        }
+        self.background_transparent = transparent;
+        self.base.request_redraw();
+    }
+
     /// Counts occurrences of `needle` in the retained HTML source and returns
     /// `(match_count, selected_offset)`.
     ///
     /// The search covers [`Self::html_source`] only — this widget has no DOM, so
-    /// there is no rendered text to search. Matches are non-overlapping. When
-    /// `case_sensitive` is false the comparison folds ASCII case in place, so the
-    /// returned offset is always a byte offset into the original source.
-    /// `backwards` selects the last match's offset instead of the first. An empty
-    /// needle, or no match, returns `(0, 0)`.
+    /// there is no rendered text to search. Matches are non-overlapping and found with a linear
+    /// two-way (KMP) scan, so the worst case is O(haystack + needle) rather than the old
+    /// O(haystack × needle) byte-by-byte comparison.
+    /// `case_sensitive` false folds ASCII case; the returned offset is always a byte offset into
+    /// the original source. `backwards` selects the last match instead of the first. An empty
+    /// needle, or no match, returns `(0, 0)`. The match list is retained for
+    /// [`Self::find_next`] / [`Self::find_previous`].
     pub fn find_text(
         &mut self,
         needle: &str,
         case_sensitive: bool,
         backwards: bool,
     ) -> (usize, usize) {
+        self.find_needle = needle.to_string();
+        self.find_case_sensitive = case_sensitive;
         if needle.is_empty() {
+            self.find_matches.clear();
+            self.find_current = None;
             return (0, 0);
         }
-        let haystack = self.html_content.as_bytes();
-        let needle = needle.as_bytes();
-        let mut count = 0usize;
-        let mut selected = 0usize;
-        let mut offset = 0usize;
-        while offset + needle.len() <= haystack.len() {
-            let candidate = &haystack[offset..offset + needle.len()];
-            let matches = if case_sensitive {
-                candidate == needle
-            } else {
-                candidate.eq_ignore_ascii_case(needle)
-            };
-            if matches {
-                count += 1;
-                if backwards || count == 1 {
-                    selected = offset;
-                }
-                offset += needle.len();
-            } else {
-                offset += 1;
-            }
+        self.find_matches =
+            find_all_offsets(self.html_content.as_bytes(), needle.as_bytes(), case_sensitive);
+        let selected_index = if self.find_matches.is_empty() {
+            None
+        } else if backwards {
+            Some(self.find_matches.len() - 1)
+        } else {
+            Some(0)
+        };
+        self.find_current = selected_index;
+        let selected = selected_index.map(|index| self.find_matches[index]).unwrap_or(0);
+        self.base.request_redraw();
+        (self.find_matches.len(), selected)
+    }
+
+    /// Selects the next match, wrapping to the first at the end.
+    ///
+    /// Returns the selected `(index, total)` (zero-based index), or `None` when there is no active
+    /// find. The view repaints so the highlight moves with the selection.
+    pub fn find_next(&mut self) -> Option<(usize, usize)> {
+        if self.find_matches.is_empty() {
+            return None;
         }
-        (count, selected)
+        let next = match self.find_current {
+            Some(current) => (current + 1) % self.find_matches.len(),
+            None => 0,
+        };
+        self.find_current = Some(next);
+        self.base.request_redraw();
+        Some((next, self.find_matches.len()))
+    }
+
+    /// Selects the previous match, wrapping to the last at the start.
+    pub fn find_previous(&mut self) -> Option<(usize, usize)> {
+        if self.find_matches.is_empty() {
+            return None;
+        }
+        let previous = match self.find_current {
+            Some(0) | None => self.find_matches.len() - 1,
+            Some(current) => current - 1,
+        };
+        self.find_current = Some(previous);
+        self.base.request_redraw();
+        Some((previous, self.find_matches.len()))
+    }
+
+    /// Clears the active find, including every stored match offset.
+    pub fn clear_find(&mut self) {
+        if self.find_matches.is_empty() && self.find_needle.is_empty() {
+            return;
+        }
+        self.find_needle.clear();
+        self.find_matches.clear();
+        self.find_current = None;
+        self.base.request_redraw();
+    }
+
+    /// The `(one-based current, total)` find progress, or `(0, 0)` when nothing is selected.
+    pub fn find_progress(&self) -> (usize, usize) {
+        match self.find_current {
+            Some(current) if !self.find_matches.is_empty() => {
+                (current + 1, self.find_matches.len())
+            }
+            _ => (0, 0),
+        }
+    }
+
+    /// The byte range of the currently selected match in the HTML source.
+    pub fn current_match_range(&self) -> Option<(usize, usize)> {
+        let index = self.find_current?;
+        let start = *self.find_matches.get(index)?;
+        Some((start, start + self.find_needle.len()))
     }
 
     /// Reports host-supplied progress for the most recent download.
@@ -1024,6 +1460,39 @@ impl WebEngineView {
         self.page_destroyed.emit(id);
         true
     }
+
+    /// Reloads the page `id`, returning `false` for an id this view never issued.
+    ///
+    /// A page id is validated against the same range `destroy_page` uses, so a host cannot ask a
+    /// view to reload a page it does not own.
+    pub fn reload_page(&mut self, id: ObjectId) -> bool {
+        if id < FIRST_PAGE_ID || id >= self.next_page_id {
+            return false;
+        }
+        self.reload();
+        true
+    }
+
+    /// Reports the URL under the pointer, or an empty string when it leaves a link.
+    ///
+    /// This widget cannot hit-test a DOM, so the hover is host-reported; the signal is the
+    /// standard wiring point for a status bar's URL readout.
+    pub fn report_link_hover(&mut self, url: impl Into<String>) {
+        self.link_hovered.emit(url.into());
+    }
+
+    /// Reports that the render process exited abnormally, emitting
+    /// [`Self::render_process_crashed`].
+    ///
+    /// A crash is kept distinct from a load error: a host shows a "page died" recovery UI and may
+    /// call [`Self::reload_page`], whereas a load error is retried or reported inline.
+    pub fn report_render_process_crash(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.loading = false;
+        self.pending_load = false;
+        self.base.request_redraw();
+        self.render_process_crashed.emit(reason);
+    }
 }
 impl Widget for WebEngineView {
     fn base(&self) -> &BaseWidget {
@@ -1038,6 +1507,16 @@ impl Widget for WebEngineView {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
+    }
+
+    /// Drains a script queued by [`Self::evaluate_javascript_async`].
+    fn tick(&mut self, _delta_ms: u32) -> bool {
+        self.poll_async_javascript()
+    }
+
+    /// A queued script is an owed result, so the frame bus keeps ticking until it is drained.
+    fn is_animating(&self) -> bool {
+        self.has_pending_javascript()
     }
 
     /// Resolves a published event name to this view's own signal.
@@ -1134,6 +1613,24 @@ impl Widget for WebEngineView {
                 &self.load_progress_changed,
                 |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
             )),
+            "link_hovered" => {
+                Some(EventSignalRef::mapped("link_hovered", &self.link_hovered, |v| {
+                    crate::widget::capability::CapabilityValue::String((*v).clone())
+                }))
+            }
+            "render_process_crashed" => Some(EventSignalRef::mapped(
+                "render_process_crashed",
+                &self.render_process_crashed,
+                |v| crate::widget::capability::CapabilityValue::String((*v).clone()),
+            )),
+            "js_evaluated" => {
+                Some(EventSignalRef::mapped("js_evaluated", &self.js_evaluated, |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Bool(v.0),
+                        crate::widget::capability::CapabilityValue::String(v.1.clone()),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }
@@ -1160,6 +1657,11 @@ impl WidgetProperties for WebEngineView {
             "url" => Ok(CapabilityValue::String(self.url().to_string())),
             "loading" => Ok(CapabilityValue::Bool(self.is_loading())),
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "user_agent" => Ok(CapabilityValue::String(self.user_agent().to_string())),
+            "background_transparent" => Ok(CapabilityValue::Bool(self.background_transparent())),
+            "cookie_persistence_enabled" => {
+                Ok(CapabilityValue::Bool(self.cookie_persistence_enabled()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -1177,12 +1679,40 @@ impl WidgetProperties for WebEngineView {
                 self.set_title(expect_string(value)?);
                 Ok(())
             }
+            "user_agent" => {
+                self.set_user_agent(expect_string(value)?);
+                Ok(())
+            }
+            "background_transparent" => {
+                let transparent = match value {
+                    CapabilityValue::Bool(value) => value,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_background_transparent(transparent);
+                Ok(())
+            }
+            "cookie_persistence_enabled" => {
+                let enabled = match value {
+                    CapabilityValue::Bool(value) => value,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_cookie_persistence_enabled(enabled);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["url", "loading", "title", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "url",
+            "loading",
+            "title",
+            "user_agent",
+            "background_transparent",
+            "cookie_persistence_enabled",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `web_engine_view` publishes.
@@ -1294,13 +1824,21 @@ impl Draw for WebEngineView {
         let theme = crate::style::resolved_theme_style_shared("web_engine_view");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
-        let (window_fill, foreground, secondary) = {
+        let (window_fill, foreground, secondary, accent) = {
             let manager = crate::style::theme_manager();
             match manager.current_theme() {
-                Some(active) => {
-                    (active.colors.background, active.colors.foreground, active.colors.secondary)
-                }
-                None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.secondary,
+                    active.colors.primary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(158, 158, 158),
+                    Color::rgb(33, 150, 243),
+                ),
             }
         };
         let ink = style
@@ -1321,7 +1859,11 @@ impl Draw for WebEngineView {
             .filter(|resolved| *resolved != page)
             .unwrap_or_else(|| page.blend(&secondary, 0.45));
 
-        ctx.fill_rect(g, page);
+        // A transparent-background view is a layered surface over whatever its container paints, so
+        // it still draws its URL bar and border but leaves the page area un-filled.
+        if !self.background_transparent {
+            ctx.fill_rect(g, page);
+        }
         ctx.draw_rect(g, border);
         // Draw URL bar. The label is centred inside the bar's own height: the origin is the
         // glyph's **top** edge, so `+ 20` in a 28 px bar left a 14 px URL spanning 20..34 —
@@ -1373,6 +1915,29 @@ impl Draw for WebEngineView {
                     secondary,
                     HorizontalAlignment::Left,
                 );
+            }
+        }
+
+        // ── Find highlight ──
+        //
+        // There is no DOM layout, so the match has no painted glyph box to outline. The band is
+        // placed at the match's *proportional* position in the source instead: it moves as
+        // find-next advances and is honest about being an indicator of where in the document the
+        // match sits, rather than pretending to be a text selection.
+        if let Some((start, _)) = self.current_match_range() {
+            let content = ControlMetrics::content_below_top_band(g, dimensions::WEB_URL_BAR_HEIGHT);
+            if content.height > 0 && !self.html_content.is_empty() {
+                let line_h = ctx.measure_text("M", &Font::default_ui()).height.max(1);
+                let fraction = (start as f32 / self.html_content.len() as f32).clamp(0.0, 1.0);
+                let travel = content.height.saturating_sub(line_h);
+                let top = content.y + (travel as f32 * fraction) as i32;
+                let highlight = Rect::new(
+                    content.x + 2,
+                    top,
+                    content.width.saturating_sub(4).min(160).max(8),
+                    line_h,
+                );
+                ctx.fill_rect(highlight, accent.with_alpha(90));
             }
         }
     }
@@ -1586,16 +2151,122 @@ mod tests {
         assert!(store.set_cookie("session", "abc", "example.com"));
 
         let cookie = store.get_cookie("session").expect("the cookie was stored");
-        assert_eq!(cookie.0, "session");
-        assert_eq!(cookie.1, "abc");
-        assert_eq!(cookie.2, "example.com");
+        assert_eq!(cookie.name, "session");
+        assert_eq!(cookie.value, "abc");
+        assert_eq!(cookie.domain, "example.com");
+        assert_eq!(cookie.path, "/", "the convenience setter stores a root-path session cookie");
 
         assert!(store.set_cookie("session", "def", "example.com"));
         assert_eq!(store.cookies().len(), 1, "the same name and domain replaces the value");
-        assert_eq!(store.get_cookie("session").expect("still stored").1, "def");
+        assert_eq!(store.get_cookie("session").expect("still stored").value, "def");
 
         store.clear_cookies();
         assert!(store.cookies().is_empty());
+    }
+
+    /// A full cookie survives a JSON round trip, and persistence is opt-in.
+    #[test]
+    fn cookies_persist_only_when_enabled_and_keep_every_field() {
+        let mut store = WebEngineCookieStore::new(Rect::new(0, 0, 300, 200));
+        let mut cookie = Cookie::new("token", "abc", "example.com");
+        cookie.path = "/app".to_string();
+        cookie.expires_ms = Some(1_700_000_000_000);
+        cookie.secure = true;
+        cookie.http_only = true;
+        cookie.same_site = CookieSameSite::Strict;
+        assert!(store.set_cookie_entry(&cookie));
+        assert_eq!(store.persist_cookies(), "", "persistence must be opt-in");
+
+        store.inner_mut().set_cookie_persistence_enabled(true);
+        let json = store.persist_cookies();
+        let mut restored = WebEngineCookieStore::new(Rect::new(0, 0, 300, 200));
+        restored.inner_mut().set_cookie_persistence_enabled(true);
+        restored.load_cookies(&json).expect("the persisted jar must load");
+        assert_eq!(restored.cookies(), &[cookie]);
+    }
+
+    /// Find-next/previous walk the stored matches, and the highlight range follows.
+    #[test]
+    fn find_navigation_reports_one_based_progress_and_a_match_range() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        view.load_html("<p>Rust rust rust</p>");
+        assert_eq!(view.find_text("rust", false, false), (3, 3));
+        assert_eq!(view.find_progress(), (1, 3));
+        assert_eq!(view.find_next(), Some((1, 3)));
+        assert_eq!(view.find_progress(), (2, 3));
+        assert_eq!(view.find_previous(), Some((0, 3)));
+        assert_eq!(view.find_previous(), Some((2, 3)), "previous wraps to the last match");
+        let (start, end) = view.current_match_range().expect("a match is selected");
+        assert_eq!(end - start, 4);
+        view.clear_find();
+        assert_eq!(view.find_progress(), (0, 0));
+        assert!(view.current_match_range().is_none());
+    }
+
+    /// The async evaluation variant queued a script and announced the result on tick.
+    #[test]
+    fn deferred_javascript_reports_its_result() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let s = seen.clone();
+        view.js_evaluated.connect(move |value: std::sync::Arc<(bool, String)>| {
+            *s.lock().unwrap() = Some((*value).clone());
+        });
+        view.evaluate_javascript_async("1 + 1");
+        assert!(view.has_pending_javascript());
+        assert!(view.tick(16), "draining a queued script is a frame-worthy event");
+        assert!(!view.has_pending_javascript());
+        let (ok, payload) = seen.lock().unwrap().clone().expect("a result was announced");
+        #[cfg(feature = "js-engine")]
+        assert!(ok && payload == "2", "a real engine returns the value: {payload}");
+        #[cfg(not(feature = "js-engine"))]
+        assert!(!ok, "without an engine the honest answer is an error");
+    }
+
+    /// History entries restore a title, and the crash/hover signals resolve.
+    #[test]
+    fn history_titles_links_crashes_and_user_agent_are_reported() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        let titles = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let t = titles.clone();
+        view.title_changed.connect(move |value: std::sync::Arc<String>| {
+            t.lock().unwrap().push((*value).clone());
+        });
+        view.set_url("https://example.com/a".to_string());
+        view.set_title("A".to_string());
+        view.set_url("https://example.com/b".to_string());
+        view.set_title("B".to_string());
+        view.go_back();
+        assert_eq!(view.title(), "A", "back restores the title, not just the URL");
+        assert!(titles.lock().unwrap().iter().any(|title| title == "A"));
+        assert_eq!(view.history_entries()[1].title, "B");
+
+        let hovered = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let h = hovered.clone();
+        view.link_hovered.connect(move |value: std::sync::Arc<String>| {
+            *h.lock().unwrap() = (*value).clone();
+        });
+        view.report_link_hover("https://example.com/link");
+        assert_eq!(*hovered.lock().unwrap(), "https://example.com/link");
+        view.report_link_hover("");
+        assert_eq!(*hovered.lock().unwrap(), "", "leaving a link reports an empty target");
+
+        let crashed = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let c = crashed.clone();
+        view.render_process_crashed.connect(move |value: std::sync::Arc<String>| {
+            *c.lock().unwrap() = (*value).clone();
+        });
+        view.report_render_process_crash("SIGSEGV");
+        assert_eq!(*crashed.lock().unwrap(), "SIGSEGV");
+        for name in ["link_hovered", "render_process_crashed", "js_evaluated"] {
+            assert!(view.event_signal_dyn(name).is_some(), "{name} must resolve");
+        }
+
+        assert_eq!(view.user_agent(), DEFAULT_USER_AGENT);
+        view.set_user_agent("custom/1.0");
+        assert_eq!(view.user_agent(), "custom/1.0");
+        view.set_user_agent("");
+        assert_eq!(view.user_agent(), DEFAULT_USER_AGENT, "empty restores the default");
     }
 
     /// The settings facade forwards the view's real feature flags.

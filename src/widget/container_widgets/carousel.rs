@@ -341,6 +341,37 @@ impl Carousel {
         index
     }
 
+    /// Inserts a page at `index`, shifting the pages at and after it.
+    ///
+    /// Returns the slot the page was stored at. An `index` past the end appends, which is the
+    /// same rule [`crate::layout::StackLayout::insert_at`] states (an insert at `len` is an
+    /// append) and what the rest of the paged family does.
+    ///
+    /// # Why the selection follows the page rather than the slot
+    ///
+    /// `current_index` is a *slot*, but the user's model is a *page*. Inserting at or before the
+    /// selected page therefore shifts the index by one, so the page on screen stays the page on
+    /// screen — the rule is copied from `StackLayout::insert_at`, including its `had_current`
+    /// guard: an empty carousel reports `current_index == 0`, and an insert at 0 into it must not
+    /// shift that to 1.
+    ///
+    /// Emits [`Self::page_changed`] once the page set changed. The event reports the current index,
+    /// which is what [`Self::selected_index`] returns; an insert/remove that leaves the selected
+    /// page alone still reports it, because a mirroring host also has to learn that the page list
+    /// itself changed (C-13).
+    pub fn insert_page(&mut self, index: usize, title: impl Into<String>, color: Color) -> usize {
+        let index = index.min(self.pages.len());
+        // Whether the current index addressed a page *before* the insert.
+        let had_current = self.current_index < self.pages.len();
+        self.pages.insert(index, CarouselPage::new(title, color));
+        if had_current && index <= self.current_index {
+            self.current_index += 1;
+        }
+        self.page_changed.emit(self.current_index);
+        self.base.request_redraw();
+        index
+    }
+
     /// Mounts `content` as the visible control of the page at `index`.
     ///
     /// Returns `false` when `index` names no page, so a caller cannot silently
@@ -369,9 +400,9 @@ impl Carousel {
     /// The current index follows the page it pointed at: removing an *earlier* page
     /// shifts the remaining pages left, so the current index is decremented to keep
     /// naming the same page. Removing the visible page (or a later one that leaves the
-    /// current index past the end) clamps to the last page. Both cases emit
-    /// `page_changed`, because in both the *value* `current_index()` returns would
-    /// otherwise silently start naming a different page than the one on screen.
+    /// current index past the end) clamps to the last page. Every successful removal
+    /// emits `page_changed` with the resulting current index, so a mirroring host learns
+    /// about the removal even when the selection itself did not move (C-13).
     pub fn remove_page(&mut self, index: usize) -> Option<CarouselPage> {
         if index >= self.pages.len() {
             return None;
@@ -384,9 +415,7 @@ impl Carousel {
         } else if self.current_index > last {
             self.current_index = last;
         }
-        if self.current_index != before {
-            self.page_changed.emit(self.current_index);
-        }
+        self.page_changed.emit(self.current_index);
         self.base.request_redraw();
         Some(removed)
     }
@@ -1689,6 +1718,30 @@ mod tests {
 
         c.previous();
         assert_eq!(*captured.lock().unwrap(), Some(0));
+    }
+
+    #[test]
+    fn carousel_page_set_changes_are_announced_even_without_a_selection_move() {
+        let mut c = default_carousel();
+        c.set_current(1);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        c.page_changed.connect({
+            let seen = Arc::clone(&seen);
+            move |value: Arc<usize>| seen.lock().unwrap().push(*value)
+        });
+
+        // Insert before the current page: the index moves with the page.
+        c.insert_page(0, "first", Color::BLUE);
+        assert_eq!(*seen.lock().unwrap(), vec![2]);
+
+        // Insert after the current page: the selection does not move, the page list did.
+        let end = c.page_count();
+        c.insert_page(end, "last", Color::BLUE);
+        assert_eq!(*seen.lock().unwrap(), vec![2, 2]);
+
+        // Removing a later page leaves the selection alone and still announces the change.
+        c.remove_page(end);
+        assert_eq!(*seen.lock().unwrap(), vec![2, 2, 2]);
     }
 
     #[test]

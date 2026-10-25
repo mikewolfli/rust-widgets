@@ -42,12 +42,23 @@ pub struct SplitAction {
     pub icon: Option<IconName>,
     /// Whether a separator rule is drawn above this row.
     pub separator_above: bool,
+    /// Whether the action can be chosen; a disabled row is skipped by keyboard navigation.
+    pub enabled: bool,
+    /// Whether the action shows a check mark, for a menu that toggles a mode.
+    pub checked: bool,
 }
 
 impl SplitAction {
     /// Creates a split action.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into(), icon: None, separator_above: false }
+        Self {
+            id: id.into(),
+            label: label.into(),
+            icon: None,
+            separator_above: false,
+            enabled: true,
+            checked: false,
+        }
     }
 
     /// Sets the action's leading icon.
@@ -60,6 +71,51 @@ impl SplitAction {
     pub fn with_separator_above(mut self) -> Self {
         self.separator_above = true;
         self
+    }
+
+    /// Marks the action enabled or disabled.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Marks the action checked or unchecked.
+    pub fn with_checked(mut self, checked: bool) -> Self {
+        self.checked = checked;
+        self
+    }
+}
+
+/// Where a split button's drop-down opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PopupDirection {
+    /// Below the face, the conventional placement.
+    #[default]
+    Down,
+    /// Above the face.
+    Up,
+    /// Below when it fits, above when the window has no room below.
+    Auto,
+}
+
+impl PopupDirection {
+    /// The property spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PopupDirection::Down => "down",
+            PopupDirection::Up => "up",
+            PopupDirection::Auto => "auto",
+        }
+    }
+
+    /// Parses a property spelling.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "down" => PopupDirection::Down,
+            "up" => PopupDirection::Up,
+            "auto" => PopupDirection::Auto,
+            _ => return None,
+        })
     }
 }
 
@@ -93,6 +149,12 @@ pub struct SplitButton {
     hovered_arrow: bool,
     arrow_width: u32,
     row_height: u32,
+    /// Where the drop-down opens.
+    popup_direction: PopupDirection,
+    /// The maximum height of the drop-down, or `None` to size it to its rows.
+    max_menu_height: Option<u32>,
+    /// The first action drawn in a capped drop-down.
+    menu_scroll: usize,
     /// Emitted when primary area triggers current action id.
     pub triggered: Signal1<String>,
     /// Emitted when a drop-down action is explicitly selected.
@@ -118,6 +180,9 @@ impl SplitButton {
             hovered_arrow: false,
             arrow_width: dimensions::SPLIT_ARROW_COLUMN_WIDTH,
             row_height: 22,
+            popup_direction: PopupDirection::default(),
+            max_menu_height: None,
+            menu_scroll: 0,
             triggered: Signal1::new(),
             action_selected: Signal1::new(),
             menu_toggled: Signal1::new(),
@@ -144,6 +209,7 @@ impl SplitButton {
         self.actions = actions;
         self.primary_action_index = if self.actions.is_empty() { None } else { Some(0) };
         self.highlighted_action_index = self.primary_action_index;
+        self.menu_scroll = 0;
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -197,6 +263,118 @@ impl SplitButton {
         self.row_height
     }
 
+    /// Where the drop-down opens.
+    pub fn popup_direction(&self) -> PopupDirection {
+        self.popup_direction
+    }
+
+    /// Sets where the drop-down opens.
+    pub fn set_popup_direction(&mut self, direction: PopupDirection) {
+        if self.popup_direction == direction {
+            return;
+        }
+        self.popup_direction = direction;
+        self.base.request_redraw();
+    }
+
+    /// The configured maximum drop-down height, or `None` when it sizes to its rows.
+    pub fn max_menu_height(&self) -> Option<u32> {
+        self.max_menu_height
+    }
+
+    /// Caps the drop-down height; `None` restores the natural height.
+    pub fn set_max_menu_height(&mut self, height: Option<u32>) {
+        let height = height.map(|value| value.max(self.row_height));
+        if self.max_menu_height == height {
+            return;
+        }
+        self.max_menu_height = height;
+        self.clamp_menu_scroll();
+        self.base.request_redraw();
+    }
+
+    /// The first action drawn in a capped drop-down.
+    pub fn menu_scroll(&self) -> usize {
+        self.menu_scroll
+    }
+
+    /// Sets the first action drawn in a capped drop-down.
+    pub fn set_menu_scroll(&mut self, offset: usize) {
+        let max = self.actions.len().saturating_sub(self.visible_menu_rows());
+        let offset = offset.min(max);
+        if self.menu_scroll == offset {
+            return;
+        }
+        self.menu_scroll = offset;
+        self.base.request_redraw();
+    }
+
+    fn visible_menu_rows(&self) -> usize {
+        (self.menu_height() / self.row_height.max(1)).max(1) as usize
+    }
+
+    fn menu_height(&self) -> u32 {
+        let natural = self.row_height.saturating_mul(self.actions.len() as u32);
+        match self.max_menu_height {
+            Some(max) => natural.min(max.max(self.row_height)),
+            None => natural,
+        }
+    }
+
+    fn clamp_menu_scroll(&mut self) {
+        let max = self.actions.len().saturating_sub(self.visible_menu_rows());
+        self.menu_scroll = self.menu_scroll.min(max);
+    }
+
+    /// The mounted window's vertical extent, when this control is on a tree.
+    ///
+    /// Used only by [`PopupDirection::Auto`]. The widget layer has no window object, so the
+    /// root of the mounted parent chain is the one rectangle that describes the space the
+    /// drop-down has to fit into. A control that is not mounted (or the alloc-frugal build,
+    /// which compiles the registry out) keeps the explicit/down placement.
+    #[cfg(not(alloc_frugal))]
+    fn viewport_bounds(&self) -> Option<(i32, i32)> {
+        let mut id = self.base.parent()?;
+        let mut guard = 0usize;
+        loop {
+            let (geometry, parent) = crate::widget::runtime::with_widget(id, |widget| {
+                (widget.geometry(), widget.parent())
+            })?;
+            match parent {
+                Some(next) => {
+                    guard += 1;
+                    if guard > 128 {
+                        return None;
+                    }
+                    id = next;
+                }
+                None => return Some((geometry.y, geometry.y + geometry.height as i32)),
+            }
+        }
+    }
+
+    #[cfg(alloc_frugal)]
+    fn viewport_bounds(&self) -> Option<(i32, i32)> {
+        None
+    }
+
+    /// Whether the drop-down has to open upward.
+    fn opens_upward(&self, height: u32) -> bool {
+        match self.popup_direction {
+            PopupDirection::Down => false,
+            PopupDirection::Up => true,
+            PopupDirection::Auto => {
+                let band = self.face_band();
+                let Some((top, bottom)) = self.viewport_bounds() else {
+                    return false;
+                };
+                let below = band.y + band.height as i32 + height as i32;
+                let above = band.y - height as i32;
+                below > bottom && above >= top
+            }
+        }
+    }
+
     /// Triggers primary action.
     pub fn trigger_primary(&mut self) -> bool {
         let Some(index) = self.primary_action_index() else {
@@ -205,6 +383,9 @@ impl SplitButton {
         let Some(action) = self.actions.get(index) else {
             return false;
         };
+        if !action.enabled {
+            return false;
+        }
         self.triggered.emit(action.id.clone());
         true
     }
@@ -221,6 +402,8 @@ impl SplitButton {
         self.menu_open = true;
         self.reveal.set_open(true);
         self.highlighted_action_index = self.primary_action_index();
+        self.menu_scroll = 0;
+        self.ensure_highlight_visible();
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::set_popup_grab(self.id());
         self.menu_toggled.emit(true);
@@ -259,24 +442,60 @@ impl SplitButton {
         let Some(action) = self.actions.get(index) else {
             return false;
         };
+        if !action.enabled {
+            return false;
+        }
         self.primary_action_index = Some(index);
         self.action_selected.emit(action.id.clone());
         self.close_menu();
         true
     }
 
-    /// Moves highlighted action in menu by signed delta.
+    /// Moves highlighted action in menu by signed delta, skipping disabled rows.
     pub fn move_highlight(&mut self, delta: isize) {
+        if delta == 0 {
+            return;
+        }
         if self.actions.is_empty() {
             self.highlighted_action_index = None;
             return;
         }
-
-        let current = self.highlighted_action_index.unwrap_or(0) as isize;
-        let max = self.actions.len().saturating_sub(1) as isize;
-        let next = (current + delta).clamp(0, max) as usize;
-        self.highlighted_action_index = Some(next);
+        let max = self.actions.len().saturating_sub(1);
+        let mut next = self.highlighted_action_index.unwrap_or(0).min(max) as isize;
+        let step = if delta >= 0 { 1 } else { -1 };
+        let mut remaining = delta.unsigned_abs().max(1);
+        while remaining > 0 {
+            let mut candidate = next;
+            loop {
+                candidate += step;
+                if candidate < 0 || candidate > max as isize {
+                    break;
+                }
+                if self.actions[candidate as usize].enabled {
+                    next = candidate;
+                    break;
+                }
+            }
+            remaining -= 1;
+        }
+        self.highlighted_action_index = Some(next as usize);
+        self.ensure_highlight_visible();
         self.base.request_redraw();
+    }
+
+    /// Scrolls a capped drop-down until the highlighted row is inside the window.
+    fn ensure_highlight_visible(&mut self) {
+        let Some(index) = self.highlighted_action_index.filter(|index| *index < self.actions.len())
+        else {
+            return;
+        };
+        let visible = self.visible_menu_rows();
+        if index < self.menu_scroll {
+            self.menu_scroll = index;
+        } else if index >= self.menu_scroll + visible {
+            self.menu_scroll = index + 1 - visible;
+        }
+        self.clamp_menu_scroll();
     }
 
     /// The band the button actually paints: full width,
@@ -421,22 +640,28 @@ impl SplitButton {
 
     fn menu_rect(&self) -> Rect {
         // The popup hangs from the **face**'s bottom edge, not the control's, so it appears
-        // directly under the button the user pressed rather than 120 px below it.
+        // directly under the button the user pressed rather than 120 px below it. A capped
+        // menu keeps that height and scrolls its rows.
         let band = self.face_band();
-        Rect::new(
-            band.x,
-            band.y + band.height as i32,
-            band.width,
-            self.row_height.saturating_mul(self.actions.len() as u32),
-        )
+        let height = self.menu_height();
+        let y = if self.opens_upward(height) {
+            band.y - height as i32
+        } else {
+            band.y + band.height as i32
+        };
+        Rect::new(band.x, y, band.width, height)
     }
 
     fn action_rect(&self, index: usize) -> Option<Rect> {
-        if index >= self.actions.len() {
+        if index >= self.actions.len() || index < self.menu_scroll {
+            return None;
+        }
+        let visible = index - self.menu_scroll;
+        if visible >= self.visible_menu_rows() {
             return None;
         }
         let menu = self.menu_rect();
-        let y = menu.y + index as i32 * self.row_height as i32;
+        let y = menu.y + visible as i32 * self.row_height as i32;
         Some(Rect::new(menu.x, y, menu.width, self.row_height))
     }
 
@@ -468,7 +693,7 @@ impl SplitButton {
         {
             return None;
         }
-        let index = ((pos.y - menu.y) / self.row_height as i32) as usize;
+        let index = ((pos.y - menu.y) / self.row_height as i32) as usize + self.menu_scroll;
         (index < self.actions.len()).then_some(index)
     }
 }
@@ -564,6 +789,14 @@ impl WidgetProperties for SplitButton {
             "action_count" => Ok(CapabilityValue::UInt(self.actions().len() as u64)),
             "menu_open" => Ok(CapabilityValue::Bool(self.menu_open())),
             "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            "popup_direction" => {
+                Ok(CapabilityValue::String(self.popup_direction().as_str().to_string()))
+            }
+            "max_menu_height" => Ok(match self.max_menu_height() {
+                Some(height) => CapabilityValue::UInt(height as u64),
+                None => CapabilityValue::Null,
+            }),
+            "menu_scroll" => Ok(CapabilityValue::UInt(self.menu_scroll() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -587,12 +820,43 @@ impl WidgetProperties for SplitButton {
                 self.set_row_height(expect_u32(value)?);
                 Ok(())
             }
+            "popup_direction" => {
+                let token = expect_string(value)?;
+                let direction =
+                    PopupDirection::from_name(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_popup_direction(direction);
+                Ok(())
+            }
+            "max_menu_height" => {
+                let height = match value {
+                    CapabilityValue::UInt(height) => Some(
+                        u32::try_from(height).map_err(|_| CapabilityAccessError::TypeMismatch)?,
+                    ),
+                    CapabilityValue::Null => None,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_max_menu_height(height);
+                Ok(())
+            }
+            "menu_scroll" => {
+                self.set_menu_scroll(expect_u32(value)? as usize);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "action_count", "menu_open", "row_height", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "text",
+            "action_count",
+            "menu_open",
+            "row_height",
+            "popup_direction",
+            "max_menu_height",
+            "menu_scroll",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `split_button` publishes.
@@ -677,6 +941,12 @@ impl EventHandler for SplitButton {
                     self.highlighted_action_index = Some(index);
                     let _ = self.select_highlighted_action();
                 }
+            }
+            Event::Wheel { delta, .. } if self.menu_open && delta.y != 0 => {
+                let step = if delta.y > 0 { 1isize } else { -1 };
+                let max = self.actions.len().saturating_sub(self.visible_menu_rows());
+                let next = (self.menu_scroll as isize + step).clamp(0, max as isize) as usize;
+                self.set_menu_scroll(next);
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
                 13 | 32 => {
@@ -863,6 +1133,7 @@ impl Draw for SplitButton {
                 }
 
                 if let Some(action) = self.actions.get(index) {
+                    let row_ink = if action.enabled { ink } else { ink.with_alpha(110) };
                     // A menu row's label is centred through the shared primitive, since the
                     // glyph origin is a top edge and `action_rect.y + height / 2` placed it
                     // half a line low. The box is the row's own padded interior — the same
@@ -887,15 +1158,25 @@ impl Draw for SplitButton {
                             side,
                             side,
                         );
-                        crate::widget::draw_icon_at(context, icon_rect, ink, icon);
+                        crate::widget::draw_icon_at(context, icon_rect, row_ink, icon);
                     }
                     context.draw_text_fitted_cow(
                         context.text_line(label_box, font),
                         &action.label,
                         font,
-                        ink,
+                        row_ink,
                         HorizontalAlignment::Left,
                     );
+                    if action.checked {
+                        let side = 12u32.min(row_box.height.max(1));
+                        let check = Rect::new(
+                            row_box.x + row_box.width as i32 - side as i32 - 2,
+                            row_box.y + (row_box.height.saturating_sub(side) / 2) as i32,
+                            side,
+                            side,
+                        );
+                        crate::widget::draw_icon_at(context, check, row_ink, IconName::Check);
+                    }
                 }
                 if action_rect.y > menu.y
                     && self.actions.get(index).is_some_and(|a| a.separator_above)
@@ -944,6 +1225,43 @@ mod tests {
             SplitAction::new("run.debug", "Run with Debug"),
             SplitAction::new("run.profile", "Run with Profile"),
         ]
+    }
+
+    /// A disabled row is skipped by keyboard navigation and cannot be selected.
+    #[test]
+    fn disabled_actions_are_skipped_and_checked_actions_carry_their_flag() {
+        let mut button = SplitButton::new("Run", Rect::new(0, 0, 200, 28));
+        button.set_actions(vec![
+            SplitAction::new("one", "One"),
+            SplitAction::new("two", "Two").with_enabled(false),
+            SplitAction::new("three", "Three").with_checked(true),
+        ]);
+        button.open_menu();
+        button.move_highlight(1);
+        assert_eq!(button.highlighted_action_index(), Some(2), "the disabled row is skipped");
+        assert!(button.actions()[2].checked);
+
+        button.highlighted_action_index = Some(1);
+        assert!(!button.select_highlighted_action(), "a disabled action refuses selection");
+    }
+
+    /// A capped menu scrolls its rows, and `Up` puts the panel above the face.
+    #[test]
+    fn a_capped_menu_scrolls_and_can_open_upward() {
+        let mut button = SplitButton::new("Run", Rect::new(0, 0, 200, 28));
+        button.set_actions((0..6).map(|i| SplitAction::new(format!("a{i}"), "row")).collect());
+        button.set_max_menu_height(Some(44));
+        assert_eq!(button.row_height(), 22);
+        button.open_menu();
+        button.move_highlight(5);
+        assert_eq!(button.menu_scroll(), 4, "the window follows the highlight");
+        button.set_menu_scroll(0);
+        assert_eq!(button.menu_scroll(), 0);
+
+        button.set_popup_direction(PopupDirection::Up);
+        let menu = button.menu_rect();
+        let face = button.face_band();
+        assert_eq!(menu.y + menu.height as i32, face.y, "an upward menu ends at the face top");
     }
 
     #[test]

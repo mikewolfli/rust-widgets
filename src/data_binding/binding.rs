@@ -3,8 +3,54 @@
 
 use crate::compat::{format, lock, Box, HashMap, MiniToString, Mutex, String};
 use crate::data_binding::traits::*;
+use crate::signal::Signal1;
 use alloc::sync::{Arc, Weak};
 use core::sync::atomic::{AtomicBool, Ordering};
+
+/// A parse or validation failure reported by a [`Formatter`] or [`Validator`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationError {
+    /// Human-readable reason, safe to show next to the input.
+    pub message: String,
+}
+
+impl ValidationError {
+    /// Creates an error with `message`.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self { message: message.into() }
+    }
+}
+
+impl core::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// Converts a value to its displayed text and back.
+///
+/// # Why the pair lives in one trait
+///
+/// A formatter that can write `"42 px"` but cannot parse it back makes every edit one-way, and a
+/// parser with a different idea of the prefix than the writer produces text the user sees but the
+/// control rejects. Requiring both directions on one implementation is what keeps the two spellings
+/// from drifting — the failure a `SpinBox` had when each control grew its own number/text conversion.
+pub trait Formatter<T: Clone + Send + 'static>: Send + Sync {
+    /// The text shown for `value`.
+    fn format(&self, value: &T) -> String;
+
+    /// Parses user text back to a value, or explains why it cannot.
+    fn parse(&self, text: &str) -> Result<T, ValidationError>;
+}
+
+/// Accepts, adjusts or rejects a value before it reaches the binding.
+///
+/// A validator may clamp (`Ok(clamped)`) rather than reject, which is what a range limit needs;
+/// a parse failure rejects through [`ValidationError`].
+pub trait Validator<T: Clone + Send + 'static>: Send + Sync {
+    /// Returns the value to store, or the reason it is refused.
+    fn validate(&self, value: T) -> Result<T, ValidationError>;
+}
 
 /// A reactive binding that notifies listeners when the value changes.
 ///
@@ -17,6 +63,15 @@ use core::sync::atomic::{AtomicBool, Ordering};
 /// safely share a `Binding` across threads or use it with shared references.
 pub struct Binding<T: Clone + Send + 'static> {
     inner: Arc<Mutex<BindingInner<T>>>,
+    /// Emitted when a formatter or validator refuses a value.
+    ///
+    /// # Why the binding owns the report
+    ///
+    /// A pipeline is `source → format → validate → target`; the caller that supplied the text may
+    /// be gone by the time the target reports a problem, and an error swallowed at that point looks
+    /// exactly like a successful edit. Keeping the signal on the source binding makes the failure
+    /// observable wherever the pipeline is used.
+    validation_failed: Signal1<String>,
 }
 
 struct BindingInner<T: Clone + Send + 'static> {
@@ -63,7 +118,10 @@ impl<T: Clone + Send + 'static> BindingInner<T> {
 impl<T: Clone + Send + 'static> Binding<T> {
     /// Create a new binding with an initial value.
     pub fn new(value: T) -> Self {
-        Self { inner: Arc::new(Mutex::new(BindingInner::new(value))) }
+        Self {
+            inner: Arc::new(Mutex::new(BindingInner::new(value))),
+            validation_failed: Signal1::new(),
+        }
     }
 
     /// Get the current value.
@@ -201,6 +259,28 @@ impl<T: Clone + Send + 'static> Binding<T> {
         }
     }
 
+    /// Subscribe a closure that receives the binding's **current value** on every change.
+    ///
+    /// This is the form a view bridge needs: a widget setter wants the value, not the
+    /// subscription key the raw [`BindingListener`] receives. The closure is called with a clone
+    /// so it may hold the value past the call, which is what a property write does.
+    pub fn observe<F>(&self, key: &str, mut observer: F)
+    where
+        F: FnMut(&T) + Send + 'static,
+    {
+        let inner = Arc::downgrade(&self.inner);
+        self.subscribe(
+            key,
+            Box::new(FnListener::new(move |_key, _operation| {
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
+                let value = lock(&inner).value.clone();
+                observer(&value);
+            })),
+        );
+    }
+
     /// Create a two-way binding between this binding and another.
     ///
     /// Whenever either binding's value changes, the other is updated to match.
@@ -254,6 +334,65 @@ impl<T: Clone + Send + 'static> Binding<T> {
     pub fn listener_count(&self) -> usize {
         lock(&self.inner).listeners.len()
     }
+
+    /// The signal that reports a refused parse or validation.
+    ///
+    /// A subscriber receives the [`ValidationError::message`] the formatter or validator produced.
+    pub fn validation_failed_signal(&self) -> &Signal1<String> {
+        &self.validation_failed
+    }
+
+    /// Validates `value` and then stores it.
+    ///
+    /// A refusal is reported through [`Self::validation_failed_signal`] and returned to the caller;
+    /// the binding keeps its previous value rather than storing something the validator rejected.
+    pub fn set_validated<V>(&self, value: T, validator: &V) -> Result<(), ValidationError>
+    where
+        V: Validator<T> + ?Sized,
+    {
+        match validator.validate(value) {
+            Ok(value) => {
+                self.set(value);
+                Ok(())
+            }
+            Err(error) => {
+                self.validation_failed.emit(error.message.clone());
+                Err(error)
+            }
+        }
+    }
+
+    /// Formats `value` for display.
+    pub fn display_text<F>(&self, formatter: &F) -> String
+    where
+        F: Formatter<T> + ?Sized,
+    {
+        formatter.format(&self.get())
+    }
+
+    /// Parses user text, validates it, and stores the result.
+    ///
+    /// This is the `source → format → validate → target` entry point for an editable control: the
+    /// text never reaches the value unchecked, and a parse failure is reported the same way a
+    /// validator refusal is.
+    pub fn set_from_text<F, V>(
+        &self,
+        text: &str,
+        formatter: &F,
+        validator: &V,
+    ) -> Result<(), ValidationError>
+    where
+        F: Formatter<T> + ?Sized,
+        V: Validator<T> + ?Sized,
+    {
+        match formatter.parse(text) {
+            Ok(value) => self.set_validated(value, validator),
+            Err(error) => {
+                self.validation_failed.emit(error.message.clone());
+                Err(error)
+            }
+        }
+    }
 }
 
 impl<T: Clone + Send + 'static> BindingInner<T> {
@@ -261,6 +400,67 @@ impl<T: Clone + Send + 'static> BindingInner<T> {
     /// Used by TwoWayListener to propagate changes silently.
     fn set_no_notify(&mut self, value: T) {
         self.value = value;
+    }
+}
+
+/// A value pipeline: `source → format → validate → target`.
+///
+/// # Why a named chain rather than three free calls
+///
+/// The stages only make sense together: text is parsed by the formatter, checked by the
+/// validator, stored in the source, and mirrored into the target the control reads. Calling them
+/// separately lets a caller skip validation or forget the target, and the symptom is a control
+/// that looks updated while the model is not. Owning all four here makes that skip impossible.
+pub struct BindingPipeline<T, F, V>
+where
+    T: Clone + Send + 'static,
+    F: Formatter<T>,
+    V: Validator<T>,
+{
+    source: Binding<T>,
+    formatter: F,
+    validator: V,
+    target: Binding<T>,
+}
+
+impl<T, F, V> BindingPipeline<T, F, V>
+where
+    T: Clone + Send + 'static,
+    F: Formatter<T>,
+    V: Validator<T>,
+{
+    /// Builds a pipeline over two bindings.
+    ///
+    /// `source` is the model the pipeline validates against; `target` receives the accepted
+    /// value. They are separate bindings so a control can hold a local copy and a formatter can
+    /// change the representation without changing the model's identity.
+    pub fn new(source: Binding<T>, formatter: F, validator: V, target: Binding<T>) -> Self {
+        Self { source, formatter, validator, target }
+    }
+
+    /// The model binding.
+    pub fn source(&self) -> &Binding<T> {
+        &self.source
+    }
+
+    /// The binding the accepted value is mirrored into.
+    pub fn target(&self) -> &Binding<T> {
+        &self.target
+    }
+
+    /// The text the control should show for the current value.
+    pub fn render(&self) -> String {
+        self.source.display_text(&self.formatter)
+    }
+
+    /// Commits edited text: parse, validate, store in the source, then mirror to the target.
+    ///
+    /// A refused parse or validation leaves both bindings untouched and reports through the
+    /// source's `validation_failed` signal.
+    pub fn edit(&self, text: &str) -> Result<(), ValidationError> {
+        self.source.set_from_text(text, &self.formatter, &self.validator)?;
+        self.target.set(self.source.get());
+        Ok(())
     }
 }
 

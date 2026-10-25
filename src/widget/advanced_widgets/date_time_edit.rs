@@ -24,7 +24,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::advanced_widgets::{date_edit::Date, time_edit::Time};
 use crate::widget::capability::coercion::{
@@ -162,7 +162,9 @@ impl DateTimeSection {
 /// # Display format
 ///
 /// [`DateTimeEdit::display_format`] holds a format pattern string that is
-/// exposed as a property, but the widget's own `draw` always uses the fixed
+/// exposed as a property and is interpreted when the widget paints, through the
+/// shared [`super::date_edit::format_with_pattern_into`] substituter. A pattern
+/// with no recognised token falls back to `YYYY-MM-DD HH:MM:SS`.
 /// `YYYY-MM-DD HH:MM:SS` spelling. The pattern is stored and round-tripped, not
 /// yet applied when painting.
 pub struct DateTimeEdit {
@@ -188,6 +190,14 @@ pub struct DateTimeEdit {
     /// produced by [`DateTimeEdit::undo`] and [`DateTimeEdit::redo`]. Not emitted
     /// when a change is rejected or when the value is already the requested one.
     pub datetime_changed: Signal1<DateTime>,
+    /// Emitted with the new date part when it changes, so a subscriber interested only in
+    /// the date does not have to filter `datetime_changed` payloads.
+    pub date_changed: Signal1<Date>,
+    /// Emitted with the new time part when it changes, the time counterpart of
+    /// [`Self::date_changed`].
+    pub time_changed: Signal1<Time>,
+    /// Emitted when editing is committed: Enter, Escape, or focus leaving the field.
+    pub editing_finished: GenericSignal,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<DateTime>>,
     restoring_history: bool,
@@ -224,6 +234,9 @@ impl DateTimeEdit {
             popup_visibility_changed: Signal1::new(),
             alignment: crate::core::Alignment::Left,
             datetime_changed: Signal1::new(),
+            date_changed: Signal1::new(),
+            time_changed: Signal1::new(),
+            editing_finished: GenericSignal::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(now)),
             restoring_history: false,
@@ -280,9 +293,8 @@ impl DateTimeEdit {
     }
     /// Returns the stored display-format pattern.
     ///
-    /// This is a plain string; it is currently stored and round-tripped but not
-    /// interpreted when the widget paints (painting always uses
-    /// `YYYY-MM-DD HH:MM:SS`).
+    /// The pattern is applied by the next paint; see
+    /// [`super::date_edit::format_with_pattern_into`] for the token table.
     pub fn display_format(&self) -> &str {
         &self.display_format
     }
@@ -324,6 +336,12 @@ impl DateTimeEdit {
                 )));
             }
             self.datetime_changed.emit(dt);
+            if before.date != dt.date {
+                self.date_changed.emit(dt.date);
+            }
+            if before.time != dt.time {
+                self.time_changed.emit(dt.time);
+            }
             self.base.request_redraw();
         }
     }
@@ -379,8 +397,8 @@ impl DateTimeEdit {
     }
     /// Stores the display-format pattern.
     ///
-    /// The string is kept verbatim; no validation is performed. See
-    /// [`DateTimeEdit::display_format`] for the current limits on its use.
+    /// The pattern is applied by the next paint; see
+    /// [`super::date_edit::format_with_pattern_into`] for the token table.
     pub fn set_display_format(&mut self, fmt: String) {
         if self.display_format == fmt {
             return;
@@ -806,6 +824,19 @@ impl Widget for DateTimeEdit {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
             }
+            "date_changed" => {
+                Some(EventSignalRef::mapped("date_changed", &self.date_changed, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "time_changed" => {
+                Some(EventSignalRef::mapped("time_changed", &self.time_changed, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "editing_finished" => {
+                Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
+            }
             "popup_visibility_changed" => Some(EventSignalRef::mapped(
                 "popup_visibility_changed",
                 &self.popup_visibility_changed,
@@ -915,9 +946,16 @@ impl EventHandler for DateTimeEdit {
                     self.step_current_section(-1);
                 }
             }
+            Event::FocusLost => {
+                self.editing_finished.emit();
+            }
             Event::KeyPress { key, modifiers } => match *key {
                 // Escape closes an open grid first, before any value navigation runs.
                 27 if self.calendar_open => self.set_calendar_open(false),
+                13 => {
+                    // Enter commits the edited value, which is where a field's edit ends.
+                    self.editing_finished.emit();
+                }
                 // Undo and redo are the platform primary chord: Control+Z/Y on
                 // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
                 // different binding and stays unbound here.
@@ -1720,5 +1758,36 @@ mod tests {
             editor.tick(16);
         }
         assert!(!editor.is_animating());
+    }
+
+    #[test]
+    fn date_time_and_finish_signals_split_the_change() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut editor = DateTimeEdit::new(Rect::new(0, 0, 280, 30));
+        let dates = Arc::new(AtomicUsize::new(0));
+        let times = Arc::new(AtomicUsize::new(0));
+        let fin = Arc::new(AtomicUsize::new(0));
+        let (d, t, f) = (Arc::clone(&dates), Arc::clone(&times), Arc::clone(&fin));
+        editor.date_changed.connect(move |_| {
+            d.fetch_add(1, Ordering::SeqCst);
+        });
+        editor.time_changed.connect(move |_| {
+            t.fetch_add(1, Ordering::SeqCst);
+        });
+        editor.editing_finished.connect(move || {
+            f.fetch_add(1, Ordering::SeqCst);
+        });
+
+        editor.set_date(Date::new(2026, 7, 4));
+        assert_eq!(dates.load(Ordering::SeqCst), 1);
+        assert_eq!(times.load(Ordering::SeqCst), 0);
+        editor.set_time(Time::new(12, 0, 0, 0));
+        assert_eq!(times.load(Ordering::SeqCst), 1);
+        editor.handle_event(&Event::key_press(13, 0));
+        assert_eq!(fin.load(Ordering::SeqCst), 1);
+        assert!(editor.event_signal_dyn("date_changed").is_some());
+        assert!(editor.event_signal_dyn("editing_finished").is_some());
     }
 }

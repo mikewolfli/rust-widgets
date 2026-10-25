@@ -42,6 +42,7 @@ macro_rules! impl_properties_menu {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("column_count", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]

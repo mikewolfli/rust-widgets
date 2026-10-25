@@ -403,6 +403,42 @@ fn a_toast_paints_one_fixed_height_bar() {
     }
 }
 
+/// A toast retires when its own ttl elapses, and the expiry is reported separately from
+/// a user dismissal.
+#[test]
+fn a_toast_expires_on_its_ttl() {
+    let mut stack = ToastStack::new(Rect::new(0, 0, 360, 180));
+    stack.push_at(ToastItem::new("short", "bye", ToastLevel::Info, 1000), 0);
+    stack.push_at(ToastItem::new("long", "stay", ToastLevel::Info, 5000), 0);
+
+    let expired = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&expired);
+    stack.toast_expired.connect(move |id| sink.lock().unwrap().push(id.to_string()));
+
+    assert_eq!(stack.expire_toasts(999), 0, "not yet due");
+    assert_eq!(stack.expire_toasts(1000), 1);
+    assert_eq!(stack.toasts().len(), 1);
+    assert_eq!(stack.toasts()[0].id, "long");
+    assert_eq!(*expired.lock().unwrap(), vec!["short".to_string()]);
+
+    // `tick` advances the same clock and retires the rest.
+    assert!(stack.tick(4000));
+    assert!(stack.toasts().is_empty());
+}
+
+/// The visible cap drops the oldest toast instead of letting the vector grow without bound.
+#[test]
+fn the_visible_cap_expires_the_oldest_toast() {
+    let mut stack = ToastStack::new(Rect::new(0, 0, 360, 180));
+    stack.set_max_visible(2);
+    stack.push(ToastItem::new("a", "a", ToastLevel::Info, 3000));
+    stack.push(ToastItem::new("b", "b", ToastLevel::Info, 3000));
+    stack.push(ToastItem::new("c", "c", ToastLevel::Info, 3000));
+    assert_eq!(stack.toasts().len(), 2);
+    assert_eq!(stack.toasts()[0].id, "b");
+    assert_eq!(stack.toasts()[1].id, "c");
+}
+
 /// A toast stack occupies only the rows it holds, anchored to the bottom.
 ///
 /// The defect this pins: the stack filled its whole rectangle, so a 240x120 census cell drew

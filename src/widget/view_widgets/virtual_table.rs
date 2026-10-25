@@ -7,10 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::core::{Color, HorizontalAlignment, Rect};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, Signal1};
-use crate::widget::capability::coercion::{expect_u32, expect_usize};
+use crate::widget::capability::coercion::{expect_bool, expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -37,6 +37,36 @@ pub trait VirtualCellDelegate: Send + Sync {
     ) -> bool {
         let _ = (context, cell, row, column, text);
         false
+    }
+}
+
+/// How one wheel notch scrolls a [`VirtualTable`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WheelScrollMode {
+    /// One notch is one row (the historical behaviour).
+    #[default]
+    PerRow,
+    /// One notch is one visible page of rows.
+    PerPage,
+}
+
+fn wheel_scroll_mode_to_str(mode: WheelScrollMode) -> &'static str {
+    match mode {
+        WheelScrollMode::PerRow => "per_row",
+        WheelScrollMode::PerPage => "per_page",
+    }
+}
+
+fn expect_wheel_scroll_mode(
+    value: CapabilityValue,
+) -> Result<WheelScrollMode, CapabilityAccessError> {
+    match value {
+        CapabilityValue::String(token) => match token.as_str() {
+            "per_row" => Ok(WheelScrollMode::PerRow),
+            "per_page" => Ok(WheelScrollMode::PerPage),
+            _ => Err(CapabilityAccessError::TypeMismatch),
+        },
+        _ => Err(CapabilityAccessError::TypeMismatch),
     }
 }
 
@@ -81,6 +111,10 @@ pub struct VirtualTable {
     pub selection_changed: Signal1<Option<(usize, usize)>>,
     /// Optional per-cell painter.
     delegate: Option<Arc<dyn VirtualCellDelegate>>,
+    /// Labels supplied through [`VirtualTable::set_header_labels`].
+    header_labels: Vec<String>,
+    /// How one wheel notch scrolls.
+    wheel_scroll_mode: WheelScrollMode,
 }
 
 impl VirtualTable {
@@ -107,6 +141,8 @@ impl VirtualTable {
             show_scrollbar: false,
             selection_changed: Signal1::new(),
             delegate: None,
+            header_labels: Vec::new(),
+            wheel_scroll_mode: WheelScrollMode::PerRow,
         }
     }
 
@@ -440,6 +476,27 @@ impl VirtualTable {
         self.base.request_redraw();
     }
 
+    /// The header labels supplied by the host.
+    pub fn header_labels(&self) -> &[String] {
+        &self.header_labels
+    }
+
+    /// Replaces the header labels, taking precedence over [`IncrementalTableDataSource::column_name`].
+    pub fn set_header_labels(&mut self, labels: &[&str]) {
+        self.header_labels = labels.iter().map(|label| (*label).to_string()).collect();
+        self.base.request_redraw();
+    }
+
+    /// How one wheel notch scrolls.
+    pub fn wheel_scroll_mode(&self) -> WheelScrollMode {
+        self.wheel_scroll_mode
+    }
+
+    /// Sets how one wheel notch scrolls.
+    pub fn set_wheel_scroll_mode(&mut self, mode: WheelScrollMode) {
+        self.wheel_scroll_mode = mode;
+    }
+
     /// Whether the vertical scroll-bar thumb is painted.
     pub fn show_scrollbar(&self) -> bool {
         self.show_scrollbar
@@ -488,27 +545,58 @@ impl VirtualTable {
 
     /// The **global** cell whose box contains `pos`, if any.
     ///
-    /// Derived from [`Self::cell_rect`], so the box a press resolves to is the box that was
-    /// painted. Absent from the previous version entirely: the table had no way to answer
-    /// "which cell is under this point?", because the only record of a cell's position was the
-    /// draw loop's local accumulator.
-    ///
-    /// `cell_rect` answers with a **viewport-local** index (`(0, 0)` is the first visible cell).
-    /// The global cell is that index advanced by the current scroll (D09-VIEW-01), which is the
-    /// data source's own index — the same one `visible_window`'s fetch origin leads up to. The
-    /// overscan only decides how much extra data is fetched *before* that origin, so it does not
-    /// enter the global answer.
+    /// With a fixed row height and column width a cell is `origin + index * stride`, so the cell
+    /// under a point is a division rather than a walk. The previous version nested a loop over the
+    /// visible grid and tested every cell's rectangle, which ran on every `MouseMove` and cost
+    /// `O(visible cells)`. The 2 px inter-cell gap is rejected explicitly, matching the box
+    /// [`Self::cell_rect`] paints.
     pub fn cell_at(&self, pos: crate::core::Point) -> Option<(usize, usize)> {
+        Some((self.row_at(pos.y)?, self.column_at(pos.x)?))
+    }
+
+    /// The **global** row at screen y `y`, if `y` is inside a cell rather than a gap.
+    pub fn row_at(&self, y: i32) -> Option<usize> {
+        const INSET: i32 = 2;
         let rect = self.geometry();
-        let (rows, columns) = self.visible_grid(rect);
-        for row in 0..rows {
-            for column in 0..columns {
-                if self.cell_rect(rect, row, column).contains(pos) {
-                    return Some((self.scroll_row + row, self.scroll_column + column));
-                }
-            }
+        let top = rect.y + INSET + self.header_offset();
+        if y < top {
+            return None;
         }
-        None
+        let (rows, _) = self.visible_grid(rect);
+        let stride = self.row_height.max(1) as i32;
+        let offset = y - top;
+        let local = offset / stride;
+        if local < 0 || local as usize >= rows {
+            return None;
+        }
+        // The painted cell is 2 px shorter than its stride; the remainder is the gap.
+        if offset % stride >= stride.saturating_sub(2) {
+            return None;
+        }
+        let row = self.scroll_row + local as usize;
+        Some(row)
+    }
+
+    /// The **global** column at screen x `x`, if `x` is inside a cell rather than a gap.
+    pub fn column_at(&self, x: i32) -> Option<usize> {
+        const INSET: i32 = 2;
+        let rect = self.geometry();
+        let left = rect.x + INSET;
+        if x < left {
+            return None;
+        }
+        let (_, columns) = self.visible_grid(rect);
+        let stride = self.column_width.max(1) as i32;
+        let offset = x - left;
+        let local = offset / stride;
+        if local < 0 || local as usize >= columns {
+            return None;
+        }
+        if offset % stride >= stride.saturating_sub(2) {
+            return None;
+        }
+        let column = self.scroll_column + local as usize;
+        Some(column)
     }
 }
 
@@ -591,8 +679,12 @@ impl WidgetProperties for VirtualTable {
             "scroll_column" => Ok(CapabilityValue::UInt(self.scroll_column() as u64)),
             "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
             "column_width" => Ok(CapabilityValue::UInt(self.column_width() as u64)),
-            "overscan_rows" => Ok(CapabilityValue::UInt(self.overscan_rows() as u64)),
-            "overscan_columns" => Ok(CapabilityValue::UInt(self.overscan_columns() as u64)),
+            "overscan_rows" => Ok(CapabilityValue::UInt(self.overscan_rows as u64)),
+            "overscan_columns" => Ok(CapabilityValue::UInt(self.overscan_columns as u64)),
+            "wheel_scroll_mode" => Ok(CapabilityValue::String(
+                wheel_scroll_mode_to_str(self.wheel_scroll_mode()).to_string(),
+            )),
+            "header_visible" => Ok(CapabilityValue::Bool(self.show_header())),
             "visible_window" => {
                 let (row_start, row_len, column_start, column_len) = self.visible_window();
                 Ok(CapabilityValue::String(format!(
@@ -632,6 +724,14 @@ impl WidgetProperties for VirtualTable {
                 self.set_overscan_columns(expect_usize(value)?);
                 Ok(())
             }
+            "wheel_scroll_mode" => {
+                self.set_wheel_scroll_mode(expect_wheel_scroll_mode(value)?);
+                Ok(())
+            }
+            "header_visible" => {
+                self.set_show_header(expect_bool(value)?);
+                Ok(())
+            }
             // Derived counts and the visible-window summary are computed from the
             // data source and layout, so they are refused as read-only rather
             // than reported as names this control does not know.
@@ -653,6 +753,8 @@ impl WidgetProperties for VirtualTable {
             "column_width",
             "overscan_rows",
             "overscan_columns",
+            "wheel_scroll_mode",
+            "header_visible",
             // `get` answers this name; leaving it out of the list made the schema
             // declare a readable property no contract published.
             "visible_window",
@@ -722,11 +824,32 @@ impl EventHandler for VirtualTable {
                     self.base.request_redraw();
                 }
             }
-            Event::Wheel { delta, .. } => {
-                if delta.y < 0 {
-                    self.set_scroll_row(self.scroll_row.saturating_add(1));
-                } else if delta.y > 0 {
-                    self.set_scroll_row(self.scroll_row.saturating_sub(1));
+            Event::Wheel { delta, modifiers } => {
+                // One shared normalisation for wheel units and modifiers, the same one the rest of
+                // the table family uses. The old arm read `delta.y` raw and ignored modifiers, so a
+                // model-level delta scrolled hundreds of rows and Shift could not pan sideways.
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                let step = match self.wheel_scroll_mode {
+                    WheelScrollMode::PerRow => 1,
+                    WheelScrollMode::PerPage => self.visible_grid(self.geometry()).0.max(1),
+                };
+                let lines = scroll.lines_y.unsigned_abs() as usize * step;
+                if scroll.lines_y < 0 {
+                    self.set_scroll_row(self.scroll_row.saturating_add(lines));
+                } else if scroll.lines_y > 0 {
+                    self.set_scroll_row(self.scroll_row.saturating_sub(lines));
+                }
+                let columns = scroll.columns_x as isize * step as isize;
+                if columns != 0 {
+                    let next = self.scroll_column.saturating_add_signed(columns);
+                    self.set_scroll_column(next);
+                }
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                if mods.contains(crate::shortcut::Modifiers::SHIFT) {
+                    let next = self
+                        .scroll_column
+                        .saturating_add_signed(-(scroll.lines_y as isize * step as isize));
+                    self.set_scroll_column(next);
                 }
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
@@ -840,8 +963,13 @@ impl Draw for VirtualTable {
                         self.row_height.saturating_sub(2),
                     );
                     context.fill_rect(band, surface.blend(&ink, 0.08));
-                    let name = source
-                        .column_name(global)
+                    let name = self
+                        .header_labels
+                        .get(global)
+                        .map(String::as_str)
+                        .filter(|label| !label.is_empty())
+                        .map(ToOwned::to_owned)
+                        .or_else(|| source.column_name(global))
                         .unwrap_or_else(|| std::format!("Column {}", global + 1));
                     let name = crate::widget::text_utils::elide_end(&name, 20);
                     context.draw_text_fitted_cow(

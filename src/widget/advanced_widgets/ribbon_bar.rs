@@ -27,11 +27,11 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::{expect_bool, expect_usize};
+use crate::widget::capability::coercion::{expect_bool, expect_string_list, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::effective_font;
+use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -39,6 +39,16 @@ use crate::{impl_widget_property_hooks, property_names_of};
 
 const TAB_HEIGHT: i32 = 20;
 const TAB_SPACING: i32 = 1;
+/// Horizontal padding around a tab's measured title.
+const TAB_TEXT_PADDING: i32 = 12;
+/// Horizontal padding inside one quick-access item.
+const QUICK_ACCESS_PADDING: i32 = 4;
+/// Gap between two quick-access items.
+const QUICK_ACCESS_GAP: i32 = 2;
+/// Width reserved for the overflow marker.
+const QUICK_ACCESS_OVERFLOW_WIDTH: i32 = 20;
+/// Height of one row in the overflow panel.
+const QUICK_ACCESS_OVERFLOW_ROW: u32 = 18;
 const PANEL_TOP_MARGIN: i32 = 2; // gap between tab row and content panel
 const GROUP_PADDING: i32 = 4;
 const LARGE_ICON_SIZE: i32 = 32;
@@ -222,6 +232,62 @@ impl RibbonItem {
     }
 }
 
+/// One quick-access command.
+///
+/// The short-label list the ribbon shipped with could only express text, so an entry could not
+/// carry an icon, a checked state or a separator. This type is the attribute-carrying form; the
+/// legacy [`RibbonBar::quick_access`] labels remain supported when no items are installed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuickAccessItem {
+    /// The short label painted beside the icon.
+    pub label: String,
+    /// An optional icon glyph, painted left of the label.
+    pub icon: String,
+    /// Whether the item paints a check mark and toggles it on click.
+    pub checkable: bool,
+    /// The current checked state, meaningful only when `checkable` is set.
+    pub checked: bool,
+    /// Whether this entry is a separator rule rather than a command.
+    pub separator: bool,
+}
+
+impl QuickAccessItem {
+    /// Creates a plain quick-access command.
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            icon: String::new(),
+            checkable: false,
+            checked: false,
+            separator: false,
+        }
+    }
+
+    /// Creates a separator rule.
+    pub fn separator() -> Self {
+        Self {
+            label: String::new(),
+            icon: String::new(),
+            checkable: false,
+            checked: false,
+            separator: true,
+        }
+    }
+
+    /// Sets the leading icon glyph.
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = icon.into();
+        self
+    }
+
+    /// Marks the item as checkable and, optionally, currently checked.
+    pub fn with_checkable(mut self, checked: bool) -> Self {
+        self.checkable = true;
+        self.checked = checked;
+        self
+    }
+}
+
 /// RibbonBar (Office-style ribbon) widget.
 pub struct RibbonBar {
     base: BaseWidget,
@@ -245,6 +311,13 @@ pub struct RibbonBar {
     /// Short labels of the quick-access commands, painted at the trailing end of the
     /// tab row.
     quick_access: Vec<String>,
+    /// Attribute-carrying quick-access commands. When non-empty these take precedence over
+    /// [`Self::quick_access`].
+    quick_access_items: Vec<QuickAccessItem>,
+    /// Whether commands that do not fit collapse behind an overflow marker.
+    quick_access_overflow_menu: bool,
+    /// Whether the overflow panel is open.
+    quick_access_overflow_open: bool,
     /// Indices of tabs that are context tabs (tinted with the accent).
     context_tabs: Vec<usize>,
     /// The item the keyboard is focused on.
@@ -264,6 +337,9 @@ pub struct RibbonBar {
     pub application_clicked: GenericSignal,
     /// Emitted with the quick-access index when one of its labels is pressed.
     pub quick_access_clicked: Signal1<usize>,
+    /// Emitted when the overflow marker is pressed. Carries no payload; the caller opens its
+    /// own menu, or reads [`RibbonBar::quick_access_overflowed_indices`] for the hidden entries.
+    pub quick_access_overflow_clicked: GenericSignal,
     /// Emitted with `(tab, group)` when a group's overflow marker is pressed.
     pub group_overflow_clicked: Signal1<(usize, usize)>,
 }
@@ -379,6 +455,9 @@ impl RibbonBar {
             temporarily_expanded: false,
             application_button: None,
             quick_access: Vec::new(),
+            quick_access_items: Vec::new(),
+            quick_access_overflow_menu: false,
+            quick_access_overflow_open: false,
             context_tabs: Vec::new(),
             focused_item: None,
             key_tips_visible: false,
@@ -388,6 +467,7 @@ impl RibbonBar {
             item_triggered: Signal1::new(),
             application_clicked: GenericSignal::new(),
             quick_access_clicked: Signal1::new(),
+            quick_access_overflow_clicked: GenericSignal::new(),
             group_overflow_clicked: Signal1::new(),
         }
     }
@@ -698,6 +778,170 @@ impl RibbonBar {
         }
         self.quick_access = labels;
         self.base.request_redraw();
+    }
+
+    /// The attribute-carrying quick-access commands.
+    pub fn quick_access_items(&self) -> &[QuickAccessItem] {
+        &self.quick_access_items
+    }
+
+    /// Replaces the quick-access commands with attribute-carrying items.
+    ///
+    /// An empty list restores the legacy label layout.
+    pub fn set_quick_access_items(&mut self, items: Vec<QuickAccessItem>) {
+        if self.quick_access_items == items {
+            return;
+        }
+        self.quick_access_items = items;
+        self.quick_access_overflow_open = false;
+        self.base.request_redraw();
+    }
+
+    /// Whether commands that do not fit collapse behind an overflow marker.
+    pub fn quick_access_overflow_menu(&self) -> bool {
+        self.quick_access_overflow_menu
+    }
+
+    /// Enables or disables the quick-access overflow marker.
+    pub fn set_quick_access_overflow_menu(&mut self, enabled: bool) {
+        if self.quick_access_overflow_menu == enabled {
+            return;
+        }
+        self.quick_access_overflow_menu = enabled;
+        if !enabled {
+            self.quick_access_overflow_open = false;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether the quick-access overflow panel is open.
+    pub fn is_quick_access_overflow_open(&self) -> bool {
+        self.quick_access_overflow_open
+    }
+
+    /// Indices of the quick-access items the overflow marker hides.
+    pub fn quick_access_overflowed_indices(&self) -> Vec<usize> {
+        let mut indices = Vec::new();
+        for index in self.visible_quick_access_items()..self.quick_access_items.len() {
+            indices.push(index);
+        }
+        indices
+    }
+
+    /// Width one quick-access item reserves on the tab row.
+    fn quick_access_item_width(item: &QuickAccessItem, font: &crate::core::Font) -> i32 {
+        if item.separator {
+            return 9;
+        }
+        let icon = if item.icon.is_empty() { 0 } else { 14 };
+        let check = if item.checkable { 12 } else { 0 };
+        icon + check + estimate_text_width(&item.label, font, 1.0) as i32 + QUICK_ACCESS_PADDING * 2
+    }
+
+    /// The horizontal span the quick-access strip may use, left to right.
+    fn quick_access_span(&self) -> (i32, i32) {
+        let row = self.tab_row_rect();
+        let left = match self.tabs.len().checked_sub(1).and_then(|i| self.tab_rect(i)) {
+            Some(last) => last.x + last.width as i32 + 4,
+            None => {
+                row.x
+                    + if self.application_button.is_some() {
+                        Self::APPLICATION_BUTTON_WIDTH as i32
+                    } else {
+                        0
+                    }
+            }
+        };
+        let right = row.x + row.width as i32 - MINIMIZE_BUTTON_SIZE - MINIMIZE_MARGIN * 2;
+        (left, right.max(left))
+    }
+
+    /// How many leading items fit in the quick-access span.
+    fn visible_quick_access_items(&self) -> usize {
+        if self.quick_access_items.is_empty() {
+            return 0;
+        }
+        let (left, right) = self.quick_access_span();
+        let available = (right - left).max(0);
+        let font = effective_font(self.style());
+        let mut used = 0;
+        let mut visible = 0;
+        for (index, item) in self.quick_access_items.iter().enumerate() {
+            let width = Self::quick_access_item_width(item, font);
+            let reserve_overflow =
+                if self.quick_access_overflow_menu { QUICK_ACCESS_OVERFLOW_WIDTH } else { 0 };
+            if used + width + reserve_overflow > available {
+                break;
+            }
+            used += width + QUICK_ACCESS_GAP;
+            visible = index + 1;
+        }
+        if !self.quick_access_overflow_menu {
+            self.quick_access_items.len()
+        } else {
+            visible
+        }
+    }
+
+    /// The box of quick-access item `index`, or `None` when it is not visible.
+    pub fn quick_access_item_rect(&self, index: usize) -> Option<Rect> {
+        if index >= self.visible_quick_access_items() {
+            return None;
+        }
+        let row = self.tab_row_rect();
+        let (left, _) = self.quick_access_span();
+        let font = effective_font(self.style());
+        let mut x = left;
+        for item in self.quick_access_items.iter().take(index) {
+            x += Self::quick_access_item_width(item, font) + QUICK_ACCESS_GAP;
+        }
+        let width = Self::quick_access_item_width(&self.quick_access_items[index], font).max(1);
+        Some(Rect::new(x, row.y + 2, width as u32, row.height.saturating_sub(4)))
+    }
+
+    /// The overflow marker's box, when it is painted.
+    pub fn quick_access_overflow_rect(&self) -> Option<Rect> {
+        if !self.quick_access_overflow_menu
+            || self.quick_access_items.is_empty()
+            || self.visible_quick_access_items() >= self.quick_access_items.len()
+        {
+            return None;
+        }
+        let row = self.tab_row_rect();
+        let (left, right) = self.quick_access_span();
+        let x = right.saturating_sub(QUICK_ACCESS_OVERFLOW_WIDTH).max(left);
+        Some(Rect::new(
+            x,
+            row.y + 2,
+            QUICK_ACCESS_OVERFLOW_WIDTH as u32,
+            row.height.saturating_sub(4),
+        ))
+    }
+
+    /// The overflow panel's box, when it is open.
+    pub fn quick_access_overflow_panel_rect(&self) -> Option<Rect> {
+        if !self.quick_access_overflow_open {
+            return None;
+        }
+        let marker = self.quick_access_overflow_rect()?;
+        let hidden = self.quick_access_overflowed_indices().len() as u32;
+        Some(Rect::new(
+            marker.x,
+            marker.y + marker.height as i32,
+            marker.width.max(120),
+            hidden.max(1) * QUICK_ACCESS_OVERFLOW_ROW,
+        ))
+    }
+
+    /// Emits a quick-access click and toggles a checkable item.
+    fn emit_quick_access(&mut self, index: usize) {
+        if let Some(item) = self.quick_access_items.get_mut(index) {
+            if item.checkable {
+                item.checked = !item.checked;
+                self.base.request_redraw();
+            }
+        }
+        self.quick_access_clicked.emit(index);
     }
 
     /// The box of quick-access label `index`, or `None` when out of range.
@@ -1483,7 +1727,29 @@ impl Widget for RibbonBar {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(800, 120)
+        // The width is measured from the tab labels rather than fixed at 800: a ribbon with two
+        // short tabs reported the same width as one with ten long ones, so a layout had to
+        // shrink or clip it after the fact.
+        let font = effective_font(self.style());
+        let app = if self.application_button.is_some() {
+            Self::APPLICATION_BUTTON_WIDTH as i32
+        } else {
+            0
+        };
+        let tabs: i32 = self
+            .tabs
+            .iter()
+            .map(|title| estimate_text_width(title, font, 1.0) as i32 + TAB_TEXT_PADDING * 2)
+            .sum::<i32>()
+            + TAB_SPACING * self.tabs.len().saturating_sub(1) as i32;
+        let quick = self
+            .quick_access_items
+            .iter()
+            .map(|item| Self::quick_access_item_width(item, font) + QUICK_ACCESS_GAP)
+            .sum::<i32>();
+        let width =
+            (app + tabs + quick + MINIMIZE_BUTTON_SIZE + MINIMIZE_MARGIN * 2).max(320) as u32;
+        crate::core::Size::new(width, 120)
     }
 
     /// Advances the panel reveal; `true` while it owes frames.
@@ -1545,6 +1811,10 @@ impl Widget for RibbonBar {
                 &self.quick_access_clicked,
                 |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
             )),
+            "quick_access_overflow_clicked" => Some(EventSignalRef::unit(
+                "quick_access_overflow_clicked",
+                &self.quick_access_overflow_clicked,
+            )),
             _ => None,
         }
     }
@@ -1562,6 +1832,24 @@ impl WidgetProperties for RibbonBar {
             "current_tab" => Ok(CapabilityValue::UInt(self.current_tab() as u64)),
             "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
             "minimized" => Ok(CapabilityValue::Bool(self.is_minimized())),
+            "quick_access_items" => Ok(CapabilityValue::Tuple(
+                self.quick_access_items
+                    .iter()
+                    .map(|item| {
+                        CapabilityValue::String(format!(
+                            "{}|{}|{}|{}|{}",
+                            item.label,
+                            item.icon,
+                            item.checkable as u8,
+                            item.checked as u8,
+                            item.separator as u8
+                        ))
+                    })
+                    .collect(),
+            )),
+            "quick_access_overflow_menu" => {
+                Ok(CapabilityValue::Bool(self.quick_access_overflow_menu()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -1580,13 +1868,39 @@ impl WidgetProperties for RibbonBar {
                 self.set_minimized(expect_bool(value)?);
                 Ok(())
             }
+            "quick_access_items" => {
+                let mut items = Vec::new();
+                for entry in expect_string_list(value)? {
+                    let mut parts = entry.splitn(5, '|');
+                    let label = parts.next().unwrap_or_default().to_string();
+                    let icon = parts.next().unwrap_or_default().to_string();
+                    let checkable = parts.next().is_some_and(|token| token == "1");
+                    let checked = parts.next().is_some_and(|token| token == "1");
+                    let separator = parts.next().is_some_and(|token| token == "1");
+                    items.push(QuickAccessItem { label, icon, checkable, checked, separator });
+                }
+                self.set_quick_access_items(items);
+                Ok(())
+            }
+            "quick_access_overflow_menu" => {
+                self.set_quick_access_overflow_menu(expect_bool(value)?);
+                Ok(())
+            }
             "tab_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["tab_count", "current_tab", "expanded", "minimized", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "tab_count",
+            "current_tab",
+            "expanded",
+            "minimized",
+            "quick_access_items",
+            "quick_access_overflow_menu",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `ribbon_bar` publishes.
@@ -1646,6 +1960,38 @@ impl EventHandler for RibbonBar {
                 if self.application_button_rect().is_some_and(|rect| rect.contains_point(*pos)) {
                     self.application_clicked.emit();
                     return;
+                }
+                // An open overflow panel takes the press before the items behind it.
+                if let Some(panel) = self.quick_access_overflow_panel_rect() {
+                    if panel.contains_point(*pos) {
+                        let row =
+                            ((pos.y - panel.y) / QUICK_ACCESS_OVERFLOW_ROW as i32).max(0) as usize;
+                        if let Some(index) =
+                            self.quick_access_overflowed_indices().get(row).copied()
+                        {
+                            self.quick_access_overflow_open = false;
+                            self.emit_quick_access(index);
+                            return;
+                        }
+                    } else {
+                        self.quick_access_overflow_open = false;
+                        self.base.request_redraw();
+                    }
+                }
+                if self.quick_access_overflow_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.quick_access_overflow_open = !self.quick_access_overflow_open;
+                    self.quick_access_overflow_clicked.emit();
+                    self.base.request_redraw();
+                    return;
+                }
+                for index in 0..self.visible_quick_access_items() {
+                    if self
+                        .quick_access_item_rect(index)
+                        .is_some_and(|rect| rect.contains_point(*pos))
+                    {
+                        self.emit_quick_access(index);
+                        return;
+                    }
                 }
                 for index in 0..self.quick_access.len() {
                     if self.quick_access_rect(index).is_some_and(|rect| rect.contains_point(*pos)) {
@@ -1857,18 +2203,113 @@ impl Draw for RibbonBar {
         }
 
         // ── Quick-access labels ──
-        for index in 0..self.quick_access.len() {
-            if let Some(rect) = self.quick_access_rect(index) {
-                let font = effective_font(self.style());
+        if self.quick_access_items.is_empty() {
+            for index in 0..self.quick_access.len() {
+                if let Some(rect) = self.quick_access_rect(index) {
+                    let font = effective_font(self.style());
+                    let line = context.text_line(rect, font);
+                    context.draw_text_fitted_cow(
+                        rect,
+                        self.quick_access[index].as_str(),
+                        font,
+                        palette.ink,
+                        HorizontalAlignment::Center,
+                    );
+                    let _ = line;
+                }
+            }
+        } else {
+            let font = effective_font(self.style());
+            for index in 0..self.visible_quick_access_items() {
+                let Some(rect) = self.quick_access_item_rect(index) else {
+                    continue;
+                };
+                let item = &self.quick_access_items[index];
+                if item.separator {
+                    let x = rect.x + rect.width as i32 / 2;
+                    context.draw_line(
+                        Point::new(x, rect.y + 3),
+                        Point::new(x, rect.y + rect.height as i32 - 3),
+                        palette.border,
+                    );
+                    continue;
+                }
+                let mut x = rect.x + QUICK_ACCESS_PADDING;
                 let line = context.text_line(rect, font);
+                if !item.icon.is_empty() {
+                    context.draw_text_fitted_cow(
+                        Rect::new(x, line.y, 14, line.height),
+                        item.icon.as_str(),
+                        font,
+                        palette.accent,
+                        HorizontalAlignment::Center,
+                    );
+                    x += 14;
+                }
+                if item.checkable {
+                    let ink = if item.checked { palette.accent } else { palette.muted };
+                    context.draw_text_fitted_cow(
+                        Rect::new(x, line.y, 12, line.height),
+                        if item.checked { "✓" } else { " " },
+                        font,
+                        ink,
+                        HorizontalAlignment::Center,
+                    );
+                    x += 12;
+                }
                 context.draw_text_fitted_cow(
-                    rect,
-                    self.quick_access[index].as_str(),
+                    Rect::new(
+                        x,
+                        line.y,
+                        (rect.x + rect.width as i32 - x).max(0) as u32,
+                        line.height,
+                    ),
+                    item.label.as_str(),
+                    font,
+                    palette.ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+            if let Some(marker) = self.quick_access_overflow_rect() {
+                context.fill_rect(marker, palette.tab);
+                context.draw_text_fitted_cow(
+                    marker,
+                    "»",
                     font,
                     palette.ink,
                     HorizontalAlignment::Center,
                 );
-                let _ = line;
+            }
+            if let Some(panel) = self.quick_access_overflow_panel_rect() {
+                context.fill_rect(panel, palette.surface);
+                context.draw_rect(panel, palette.border);
+                for (row, index) in self.quick_access_overflowed_indices().into_iter().enumerate() {
+                    let Some(item) = self.quick_access_items.get(index) else {
+                        continue;
+                    };
+                    let band = Rect::new(
+                        panel.x + 2,
+                        panel.y + row as i32 * QUICK_ACCESS_OVERFLOW_ROW as i32,
+                        panel.width.saturating_sub(4),
+                        QUICK_ACCESS_OVERFLOW_ROW,
+                    );
+                    if item.separator {
+                        let y = band.y + band.height as i32 / 2;
+                        context.draw_line(
+                            Point::new(band.x, y),
+                            Point::new(band.x + band.width as i32, y),
+                            palette.border,
+                        );
+                    } else {
+                        context.draw_text_fitted_cow(
+                            band,
+                            item.label.as_str(),
+                            font,
+                            palette.ink,
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                }
             }
         }
 
@@ -2249,5 +2690,29 @@ mod tests {
             ribbon.tick(16);
         }
         assert!(!ribbon.is_animating());
+    }
+
+    #[test]
+    fn quick_access_items_overflow_and_the_hint_follows_the_tabs() {
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 200, 160));
+        let narrow = ribbon.size_hint().width;
+        for index in 0..8 {
+            ribbon.add_tab(format!("A much longer tab title {index}"));
+        }
+        assert!(ribbon.size_hint().width > narrow, "the hint follows the measured tabs");
+
+        ribbon.set_quick_access_items(vec![
+            QuickAccessItem::new("Save").with_icon("S"),
+            QuickAccessItem::new("Undo").with_checkable(true),
+            QuickAccessItem::separator(),
+            QuickAccessItem::new("Redo"),
+        ]);
+        ribbon.set_quick_access_overflow_menu(true);
+        assert_eq!(ribbon.quick_access_items().len(), 4);
+        // A very narrow bar cannot fit all four, so the tail becomes overflow.
+        ribbon.set_geometry(Rect::new(0, 0, 80, 160));
+        assert!(!ribbon.quick_access_overflowed_indices().is_empty());
+        assert!(ribbon.quick_access_overflow_rect().is_some());
+        assert!(ribbon.event_signal_dyn("quick_access_overflow_clicked").is_some());
     }
 }

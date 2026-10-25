@@ -255,6 +255,124 @@ pub fn find_event_schema<'a>(
     capability.events.iter().find(|schema| same_key(schema.name, name))
 }
 
+/// A normalised-name index over one capability's property table.
+///
+/// The table is a `&'static [PropertySchema]`, so its address identifies it for the lifetime of
+/// the process and the index can be cached per thread without a lock. `len` is checked before a
+/// hit is trusted, so a capability built over a different slice that happens to reuse the address
+/// rebuilds instead of answering from the old table.
+#[cfg(full_widgets)]
+struct PropertyIndex {
+    len: usize,
+    /// Normalised-name hash -> the first schema position with that name (the same entry a linear
+    /// `find` would return).
+    by_hash: HashMap<u64, usize>,
+}
+
+#[cfg(full_widgets)]
+thread_local! {
+    /// Property indexes, keyed by the address of the `&'static [PropertySchema]` slice.
+    ///
+    /// The table has at most a few dozen entries per control and there are ~190 controls, so the
+    /// map is bounded in practice; the cap is a guard against a host that builds and drops many
+    /// custom factories on one thread.
+    static PROPERTY_INDICES: crate::compat::RefCell<HashMap<usize, PropertyIndex>> =
+        crate::compat::RefCell::new(HashMap::new());
+}
+
+/// The hash [`same_key`] implies: separators ignored and the rest lower-cased.
+#[cfg(full_widgets)]
+fn normalized_hash(name: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for ch in name.chars().filter(|ch| !matches!(*ch, '_' | '-' | ' ')).flat_map(char::to_lowercase)
+    {
+        for byte in (ch as u32).to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+    hash
+}
+
+/// Finds a property schema by any spelling [`same_key`] accepts, in O(1) table probes (G-35).
+///
+/// # Why an index and not a linear `find`
+///
+/// Every `read_property` / `write_property` / `default_property_value` / `property_schema` call
+/// used to scan the whole schema table, comparing names one at a time. The table is static and
+/// immutable after construction, so a per-thread hash index turns the common case into one map
+/// probe. A hash collision (or a different table at a reused address) falls back to the original
+/// linear `find`, which keeps the first-match semantics exactly.
+#[cfg(full_widgets)]
+fn find_property<'a>(capability: &'a WidgetCapability, name: &str) -> Option<&'a PropertySchema> {
+    let properties = capability.properties;
+    if properties.is_empty() {
+        return None;
+    }
+    let key = properties.as_ptr() as usize;
+    let hash = normalized_hash(name);
+    let index = PROPERTY_INDICES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        let entry = cache.entry(key).or_insert_with(|| {
+            let mut by_hash = HashMap::new();
+            for (index, schema) in properties.iter().enumerate() {
+                by_hash.entry(normalized_hash(schema.name)).or_insert(index);
+            }
+            PropertyIndex { len: properties.len(), by_hash }
+        });
+        if entry.len != properties.len() {
+            let mut by_hash = HashMap::new();
+            for (index, schema) in properties.iter().enumerate() {
+                by_hash.entry(normalized_hash(schema.name)).or_insert(index);
+            }
+            *entry = PropertyIndex { len: properties.len(), by_hash };
+        }
+        entry.by_hash.get(&hash).copied()
+    });
+
+    let Some(index) = index else {
+        // No schema hashes to this value, so no spelling can compare equal to it.
+        return None;
+    };
+    match properties.get(index) {
+        Some(schema) if same_key(schema.name, name) => Some(schema),
+        // A hash collision reached another property: fall back to the exact linear rule.
+        _ => properties.iter().find(|schema| same_key(schema.name, name)),
+    }
+}
+
+#[cfg(all(test, full_widgets))]
+mod property_lookup_tests {
+    use super::*;
+
+    /// Every spelling `same_key` accepts must reach the same schema, and an unknown name must not.
+    ///
+    /// The index is built from the normalised form, so the separators and case are the parts that
+    /// a hand-written lookup could easily disagree with (G-35).
+    #[test]
+    fn the_property_index_accepts_the_same_spellings_as_the_linear_rule() {
+        let factory = WidgetFactory::shared();
+        let canonical = factory.property_schema("combobox", "current_index").expect("schema");
+        for spelling in ["current_index", "current-index", "current index", "CURRENT_INDEX"] {
+            let found = factory.property_schema("combobox", spelling).expect(spelling);
+            assert_eq!(
+                found.name, canonical.name,
+                "{spelling} must resolve to the canonical schema"
+            );
+        }
+        assert_eq!(
+            factory.property_schema("combobox", "no-such-property"),
+            Err(CapabilityAccessError::UnknownProperty),
+            "an unknown name is refused, not mapped to an arbitrary schema"
+        );
+    }
+}
+
 /// Runs `f` with the canonical name of `kind`, reusing one scratch buffer per thread.
 ///
 /// The allocating form above is fine for one-shot use, but
@@ -536,6 +654,116 @@ fn canonical_name_for_kind(kind: crate::widget::WidgetKind) -> &'static str {
         crate::widget::WidgetKind::MenuItem => "menu_item",
         _ => "",
     }
+}
+
+/// One capability name that is a second spelling of another control.
+///
+/// # Why this table is the single source of alias identity
+///
+/// A few capability rows name the same struct twice, because the second name adds a mode
+/// rather than a control: `password_edit`, `phone_input` and `email_input` are `LineEdit` with
+/// an echo mode or a validator installed, `split_layout` is the two-pane spelling of
+/// `Splitter`, `time_picker` is `TimeEdit` under the kind's own name, and `context_menu` is
+/// `Menu` in its role spelling. Each name keeps its own capability — its own published events
+/// and defaults — so the rows must stay distinct; the *identity* underneath them must not be
+/// restated.
+///
+/// Before this table that identity was written down in every consumer that needed it: the
+/// payload deriver, the emit gate, the dynamic-wiring gate and the concrete-type tie-break each
+/// carried their own copy. Copies of a fact drift, and a drifted copy in a gate produces the
+/// worst failure a gate can have — a comparison between one control's published names and
+/// another control's `event_signal_dyn` arms.
+///
+/// # Who reads it
+///
+/// `tools/check_event_signal_dyn.py` parses this table by its `AliasRow` shape and holds its
+/// `CONVERTED` list to it: an alias must be converted, its row must name the canonical
+/// control's struct and file, and its published names are compared against that struct's arms
+/// rather than against its own narrower row. [`canonical_of`] and [`aliases_of`] are the
+/// in-crate face of the same data.
+///
+/// `implementation` and `file` are stored, not derived from the alias: a row that names a
+/// struct its file does not implement is a claim a reader can check, while a derived value
+/// would restate the mistake it exists to catch.
+pub struct AliasRow {
+    /// The second spelling, as the census and `factory.create(..)` spell it.
+    pub alias: &'static str,
+    /// The control the alias spells — the row whose capability the same struct serves.
+    pub canonical: &'static str,
+    /// The Rust type both names construct.
+    pub implementation: &'static str,
+    /// The file holding that type's `impl Widget`, relative to the crate root.
+    pub file: &'static str,
+}
+
+/// Every capability name that is a second spelling of another capability's control.
+///
+/// Adding a row is what makes the alias addressable as one identity with its canonical name;
+/// removing one is what makes the wiring gate treat it as a control of its own. Rows are
+/// ordered by `alias` so the table reads as a lookup.
+pub static ALIAS_OF: &[AliasRow] = &[
+    AliasRow {
+        alias: "context_menu",
+        canonical: "menu",
+        implementation: "Menu",
+        file: "src/widget/menu_toolbar/menu.rs",
+    },
+    AliasRow {
+        alias: "email_input",
+        canonical: "line_edit",
+        implementation: "LineEdit",
+        file: "src/widget/input_widgets/lineedit.rs",
+    },
+    AliasRow {
+        alias: "password_edit",
+        canonical: "line_edit",
+        implementation: "LineEdit",
+        file: "src/widget/input_widgets/lineedit.rs",
+    },
+    AliasRow {
+        alias: "phone_input",
+        canonical: "line_edit",
+        implementation: "LineEdit",
+        file: "src/widget/input_widgets/lineedit.rs",
+    },
+    AliasRow {
+        alias: "split_layout",
+        canonical: "splitter",
+        implementation: "Splitter",
+        file: "src/widget/container_widgets/splitter.rs",
+    },
+    AliasRow {
+        alias: "time_picker",
+        canonical: "time_edit",
+        implementation: "TimeEdit",
+        file: "src/widget/advanced_widgets/time_edit.rs",
+    },
+];
+
+/// The control `name` is a second spelling of, or `None` when `name` is its own control.
+pub fn canonical_of(name: &str) -> Option<&'static str> {
+    ALIAS_OF.iter().find(|row| row.alias == name).map(|row| row.canonical)
+}
+
+/// Every alias spelling of `canonical`, in table order. Empty when the name has no alias.
+///
+/// This is not [`WidgetFactory::aliases_of`]: that answers which *doc names* one row also
+/// accepts (`btn` for `button`), while this answers which other **capability rows** the same
+/// struct serves. A `context_menu` row cannot be an entry in `menu`'s `aliases` list — a name may
+/// not be both an alias and a canonical row — which is why the relationship needs its own table.
+pub fn aliases_of(canonical: &str) -> impl Iterator<Item = &'static str> + '_ {
+    ALIAS_OF.iter().filter(move |row| row.canonical == canonical).map(|row| row.alias)
+}
+
+/// The struct and file that implement `name`, whether `name` is a canonical spelling or an alias.
+///
+/// This is the third column pair of an [`AliasRow`]: the identity a caller needs when the
+/// question is "which code answers for this name" rather than "what is this name called".
+pub fn implementation_of(name: &str) -> Option<(&'static str, &'static str)> {
+    ALIAS_OF
+        .iter()
+        .find(|row| row.alias == name || row.canonical == name)
+        .map(|row| (row.implementation, row.file))
 }
 
 // ── Profile-specific parts ──────────────────────────────────────────────────
@@ -1054,9 +1282,7 @@ impl WidgetFactory {
         let capability =
             self.capability_for_widget(widget).ok_or(CapabilityAccessError::UnknownWidget)?;
 
-        let Some(property) =
-            capability.properties.iter().find(|schema| same_key(schema.name, property_name))
-        else {
+        let Some(property) = find_property(capability, property_name) else {
             return Err(CapabilityAccessError::UnknownProperty);
         };
 
@@ -1079,9 +1305,7 @@ impl WidgetFactory {
         let capability =
             self.capability_for_widget(widget).ok_or(CapabilityAccessError::UnknownWidget)?;
 
-        let Some(property) =
-            capability.properties.iter().find(|schema| same_key(schema.name, property_name))
-        else {
+        let Some(property) = find_property(capability, property_name) else {
             return Err(CapabilityAccessError::UnknownProperty);
         };
 
@@ -1432,27 +1656,27 @@ impl WidgetFactory {
     /// kind with another control and had no row.
     #[cfg(full_widgets)]
     fn widget_matches_capability(&self, widget: &dyn Widget, canonical_name: &str) -> bool {
+        // The row key is the canonical name, so an alias is folded into it first. That identity is
+        // stated once, in `ALIAS_OF`, and both spellings of one control therefore reach the same
+        // row instead of each needing its own alternative in the patterns below.
+        let canonical_name = canonical_of(canonical_name).unwrap_or(canonical_name);
         match canonical_name {
             // `WidgetKind::GroupBox`, which `panel` shares because `Panel` is a
             // `pub type` for `GroupBox`.
             "group_box" | "panel" => self::coercion::widget_as::<GroupBox>(widget).is_some(),
             // `WidgetKind::LineEdit`. Three validated variants share the kind with the plain
             // field, and all four are the same concrete control: the variant is a constructor
-            // that installs an echo mode or a grammar. One concrete check therefore answers
-            // every row, exactly as `table_widget` / `table` does above.
-            "line_edit" | "password_edit" | "phone_input" | "email_input" => {
-                self::coercion::widget_as::<LineEdit>(widget).is_some()
-            }
+            // that installs an echo mode or a grammar, so `canonical_of` folds every one of them
+            // onto this row.
+            "line_edit" => self::coercion::widget_as::<LineEdit>(widget).is_some(),
             // `WidgetKind::Splitter`. `split_layout` is the two-pane spelling of the same
-            // control, so one concrete check answers both rows — the same shape as
-            // `table_widget` / `table` below.
-            "splitter" | "split_layout" => self::coercion::widget_as::<Splitter>(widget).is_some(),
+            // control, folded into this row by `canonical_of`.
+            "splitter" => self::coercion::widget_as::<Splitter>(widget).is_some(),
             // `WidgetKind::TimePicker`. `time_edit` is the field and `time_picker` the kind's own
             // spelling of it, so one concrete check answers both rows.
-            "time_edit" | "time_picker" => self::coercion::widget_as::<TimeEdit>(widget).is_some(),
-            // `WidgetKind::Menu`. `context_menu` is the role spelling of the same control, so
-            // one concrete check answers both rows.
-            "menu" | "context_menu" => self::coercion::widget_as::<Menu>(widget).is_some(),
+            "time_edit" => self::coercion::widget_as::<TimeEdit>(widget).is_some(),
+            // `WidgetKind::Menu`. `context_menu` is the role spelling of the same control.
+            "menu" => self::coercion::widget_as::<Menu>(widget).is_some(),
             // `WidgetKind::Table`
             "data_grid" => self::coercion::widget_as::<DataGrid>(widget).is_some(),
             "virtual_table" => self::coercion::widget_as::<VirtualTable>(widget).is_some(),
@@ -1548,9 +1772,7 @@ impl WidgetFactory {
         let capability =
             self.capability(kind_or_name).ok_or(CapabilityAccessError::UnknownWidget)?;
 
-        let Some(property) =
-            capability.properties.iter().find(|schema| same_key(schema.name, property_name))
-        else {
+        let Some(property) = find_property(capability, property_name) else {
             return Err(CapabilityAccessError::UnknownProperty);
         };
 
@@ -1592,9 +1814,7 @@ impl WidgetFactory {
         let capability =
             self.capability(kind_or_name).ok_or(CapabilityAccessError::UnknownWidget)?;
 
-        let Some(property) =
-            capability.properties.iter().find(|schema| same_key(schema.name, property_name))
-        else {
+        let Some(property) = find_property(capability, property_name) else {
             return Err(CapabilityAccessError::UnknownProperty);
         };
 

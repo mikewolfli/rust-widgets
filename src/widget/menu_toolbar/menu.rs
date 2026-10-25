@@ -13,17 +13,18 @@
 //! has a fixed height the control owns, so the layout only rediscovered constants — on each draw,
 //! which is once per frame while the popup reveals.
 
-use crate::compat::Vec;
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::compat::{Rc, RefCell, Vec};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{
-    expect_bool, expect_string, expect_text_direction, text_direction_to_str,
+    expect_bool, expect_string, expect_text_direction, expect_u32, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::menu_toolbar::action::Action;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 pub use crate::widget::menu_toolbar::MAX_SUBMENU_DEPTH;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width};
@@ -90,6 +91,28 @@ fn mnemonic_letter(key: u32) -> Option<char> {
     }
 }
 
+/// Width of the gap between two item columns, in logical pixels.
+const MENU_COLUMN_GAP: u32 = 8;
+
+/// Where `Menu::open_at` places the popup relative to the anchor point.
+///
+/// A context menu has no host-owned frame to position it, so the direction is a
+/// property of the menu rather than of the caller. [`PopupDirection::Down`] keeps the
+/// historical lower-right placement; [`PopupDirection::Up`] anchors the popup's bottom
+/// edge at the anchor; [`PopupDirection::Auto`] flips up when the popup would overflow
+/// the viewport's bottom edge, which is what keeps a menu opened near the bottom of the
+/// screen reachable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PopupDirection {
+    /// Anchor the popup's top edge at the invocation point (historical behaviour).
+    Down,
+    /// Anchor the popup's bottom edge at the invocation point.
+    Up,
+    /// Use [`PopupDirection::Down`] when it fits and [`PopupDirection::Up`] otherwise.
+    #[default]
+    Auto,
+}
+
 /// A single item in a menu.
 #[derive(Debug, Clone)]
 pub struct MenuEntry {
@@ -106,6 +129,22 @@ pub struct MenuEntry {
     submenu: Option<Vec<MenuEntry>>,
     /// Whether the row is a section caption rather than a choice.
     section: bool,
+    /// The registry command this row presents, when it was built from an [`ActionManager`].
+    ///
+    /// A plain row has no id: its meaning is its text. A row built from the registry keeps the
+    /// id so activation can be routed to the command and state can be refreshed without
+    /// re-creating the menu.
+    action_id: Option<String>,
+    /// The hover hint a host may show for this row.
+    ///
+    /// Stored, not painted: a tooltip is a popup owned by the host's tooltip pipeline, so
+    /// keeping it on the row is what lets that pipeline answer without a second table.
+    tooltip: String,
+    /// The widget id of the [`Action`] this row presents, when it was built from one.
+    ///
+    /// Unlike [`Self::action_id`] (a registry string used by `ActionManager`), this is the
+    /// live widget identity a host can use to look the action up and connect to its signals.
+    action: Option<ObjectId>,
 }
 impl MenuEntry {
     /// Creates a visible, enabled entry carrying `text`.
@@ -124,6 +163,9 @@ impl MenuEntry {
             icon: None,
             submenu: None,
             section: false,
+            action_id: None,
+            tooltip: String::new(),
+            action: None,
         }
     }
     /// Creates a separator entry: an empty-text entry marked
@@ -305,6 +347,79 @@ impl MenuEntry {
     pub fn mnemonic(&self) -> Option<char> {
         menu_mnemonic(&self.text)
     }
+
+    /// The registry command this row presents, or `None` for a plain row.
+    pub fn action_id(&self) -> Option<&str> {
+        self.action_id.as_deref()
+    }
+
+    /// Links this row to a registry command without changing its presentation.
+    pub fn set_action_id(&mut self, action_id: impl Into<String>) {
+        self.action_id = Some(action_id.into());
+    }
+
+    /// The hover hint shown for this row, or `""` when none was set.
+    pub fn tooltip(&self) -> &str {
+        &self.tooltip
+    }
+
+    /// Replaces the hover hint. Metadata only: the menu does not paint a tooltip.
+    pub fn set_tooltip(&mut self, tooltip: impl Into<String>) {
+        self.tooltip = tooltip.into();
+    }
+
+    /// Sets the hover hint and returns `self`, for chaining onto [`MenuEntry::new`].
+    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.set_tooltip(tooltip);
+        self
+    }
+
+    /// The widget id of the [`Action`] this row presents, if any.
+    pub fn action(&self) -> Option<ObjectId> {
+        self.action
+    }
+
+    /// Links this row to the widget id of an [`Action`].
+    pub fn set_action(&mut self, action: Option<ObjectId>) {
+        self.action = action;
+    }
+}
+
+/// The facts [`Menu::item_bands`] is a pure function of.
+///
+/// A version counter alongside the geometry is what makes the cache cheap to validate: every
+/// entry mutation bumps the counter, so a cached run cannot survive a change that moves a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ItemBandsKey {
+    version: u64,
+    width: u32,
+    scroll_offset: usize,
+    tearoff: bool,
+    columns: u8,
+}
+
+/// Builds the menu row that presents `action`.
+///
+/// Presentation is copied rather than borrowed because a menu owns its rows; the live link is
+/// the action's widget id in [`MenuEntry::action`] plus the command id used by
+/// [`Menu::action_triggered`].
+fn menu_entry_from_action(action: &Action) -> MenuEntry {
+    let mut entry = MenuEntry::new(action.text());
+    if let Some(id) = action.command_id() {
+        entry.set_action_id(id);
+    }
+    if !action.shortcut().is_empty() {
+        entry.set_shortcut(action.shortcut());
+    }
+    entry.set_checkable(action.is_checkable());
+    if action.is_checkable() {
+        entry.set_checked(action.is_checked());
+    }
+    entry.set_enabled(action.cmd().is_enabled());
+    entry.set_icon(action.icon_source());
+    entry.set_tooltip(action.status_tip());
+    entry.set_action(Some(action.base().id()));
+    entry
 }
 
 /// One open nested panel of a [`Menu`].
@@ -354,6 +469,12 @@ pub struct Menu {
     /// Emitted with the index of the entry that was chosen, alongside
     /// [`Self::triggered`]. Use this when two entries share a label.
     pub triggered_index: Signal1<usize>,
+    /// Emitted with the **action id** of a row built from an [`ActionManager`].
+    ///
+    /// This is the consumer path the action registry was missing: a menu item carries the id it
+    /// was resolved from, so a host can route the activation to `ActionManager::trigger_action`
+    /// without parsing the label. A plain row emits nothing here.
+    pub action_triggered: Signal1<String>,
     /// Emitted just before the menu is shown, from [`Self::open_at`].
     pub about_to_show: GenericSignal,
     /// Emitted with the label of an entry whose **submenu** the user asked to open.
@@ -415,10 +536,24 @@ pub struct Menu {
     scroll_offset: usize,
     /// Cached heading line height, keyed by the font size's bit pattern.
     ///
-    /// `menu_config`'s `caching` flag controls whether this is used. The heading is one
-    /// shaped measurement per frame; a menu that is open while an animation runs paid it
-    /// on every frame of the reveal.
+    /// The heading is one shaped measurement per frame; a menu that is open while an
+    /// animation runs paid it on every frame of the reveal. The cache is now unconditional:
+    /// selection of the font never changes inside one menu, so gating it on the effect
+    /// policy only made the default path pay the measurement.
     heading_line_cache: core::cell::Cell<Option<(u32, u32)>>,
+    /// The number of columns the popup arranges its entries into.
+    ///
+    /// `1` (the default) is the historical single-column list. A value above one splits the
+    /// popup's inner width into equal columns and fills them row-major, which is what lets a
+    /// menu of short entries stop being needlessly tall.
+    column_count: u8,
+    /// Where [`Self::open_at`] anchors the popup. See [`PopupDirection`].
+    popup_direction: PopupDirection,
+    /// Bumped by every entry mutation; [`ItemBandsKey`] compares it to decide whether the
+    /// cached row boxes are still valid.
+    items_version: u64,
+    /// The cached row boxes, keyed by [`ItemBandsKey`].
+    item_bands_cache: RefCell<Option<(ItemBandsKey, Rc<Vec<Rect>>)>>,
     /// The open nested panels, deepest last. One step per level, up to
     /// [`MAX_SUBMENU_DEPTH`]; level 0 is the menu's own list.
     submenu_path: Vec<SubmenuLevel>,
@@ -453,6 +588,7 @@ impl Menu {
             invoker_position: None,
             triggered: Signal1::new(),
             triggered_index: Signal1::new(),
+            action_triggered: Signal1::new(),
             about_to_show: GenericSignal::new(),
             submenu_requested: Signal1::new(),
             about_to_hide: GenericSignal::new(),
@@ -461,6 +597,10 @@ impl Menu {
             show_heading: true,
             scroll_offset: 0,
             heading_line_cache: core::cell::Cell::new(None),
+            column_count: 1,
+            popup_direction: PopupDirection::Auto,
+            items_version: 0,
+            item_bands_cache: RefCell::new(None),
             submenu_path: Vec::new(),
             tearoff: false,
             tearoff_requested: GenericSignal::new(),
@@ -486,8 +626,10 @@ impl Menu {
     /// keeps a menu opened near the right or bottom edge fully reachable instead of
     /// clipped at the edge.
     ///
-    /// The popup is positioned by its top-left corner, so the menu appears to the
-    /// lower-right of the pointer, matching the platform convention.
+    /// The popup's vertical anchor follows [`Self::popup_direction`]. With the default
+    /// [`PopupDirection::Auto`] the popup opens downward when it fits and is anchored by its
+    /// bottom edge when the remaining space below the invocation point is too small, so a
+    /// menu opened near the bottom of the screen flips up instead of being clipped.
     pub fn open_at(&mut self, position: Point, viewport: Rect) {
         // A menu created through `create_menu(.., width = 0, height = 0)` — the shape every
         // documented call site uses — has a zero-width geometry. Opening it as-is painted a
@@ -506,7 +648,18 @@ impl Menu {
         let max_x = (viewport.x + viewport.width as i32).saturating_sub(popup_w);
         let max_y = (viewport.y + viewport.height as i32).saturating_sub(popup_h);
         let x = position.x.clamp(viewport.x, max_x.max(viewport.x));
-        let y = position.y.clamp(viewport.y, max_y.max(viewport.y));
+        let below = viewport.y + viewport.height as i32 - position.y;
+        let opens_up = match self.popup_direction {
+            PopupDirection::Down => false,
+            PopupDirection::Up => true,
+            // Flipping only when the space above actually fits avoids trading a clipped
+            // bottom for a clipped top on a viewport shorter than the popup itself.
+            PopupDirection::Auto => {
+                below < popup_h && position.y.saturating_sub(popup_h) >= viewport.y
+            }
+        };
+        let anchor_y = if opens_up { position.y.saturating_sub(popup_h) } else { position.y };
+        let y = anchor_y.clamp(viewport.y, max_y.max(viewport.y));
 
         // The geometry is the rectangle `contains_point`, the hit test and `render_frame`
         // read, so it must be the rectangle `draw` paints rather than the caller-supplied
@@ -599,6 +752,57 @@ impl Menu {
         }
     }
 
+    /// Where [`Self::open_at`] anchors the popup. Defaults to [`PopupDirection::Auto`].
+    pub fn popup_direction(&self) -> PopupDirection {
+        self.popup_direction
+    }
+
+    /// Selects the popup's anchor edge. The geometry is recomputed by the next
+    /// [`Self::open_at`] call, so a menu already on screen is not moved.
+    pub fn set_popup_direction(&mut self, direction: PopupDirection) {
+        if self.popup_direction != direction {
+            self.popup_direction = direction;
+            self.base.request_redraw();
+        }
+    }
+
+    /// The number of columns the popup arranges its entries into. Defaults to `1`.
+    pub fn columns(&self) -> u8 {
+        self.column_count
+    }
+
+    /// Arranges the entries into `columns` equal-width columns and repaints.
+    ///
+    /// A count below one is raised to one, which is the historical single-column list. A
+    /// single-column menu lays rows out exactly as before, separator height included; a
+    /// multi-column menu fills row-major so the reading order still matches the entry list.
+    pub fn set_column_count(&mut self, columns: u8) {
+        let columns = columns.max(1);
+        if self.column_count == columns {
+            return;
+        }
+        self.column_count = columns;
+        self.base.request_redraw();
+    }
+
+    /// Programmatically highlights the entry at `index`.
+    ///
+    /// This is the public counterpart of the highlight the pointer and the arrow keys move:
+    /// without it a host that drives a menu from its own model (a command palette, a test, a
+    /// remote-control surface) could not put the selection on the row it considers active.
+    /// Separators, section captions and disabled entries are not selectable, so pointing at one
+    /// leaves the highlight untouched and returns `false`.
+    pub fn set_active_action(&mut self, index: usize) -> bool {
+        let selectable = self.items.get(index).is_some_and(MenuEntry::is_selectable);
+        if !selectable {
+            return false;
+        }
+        self.hovered_index = Some(index);
+        self.ensure_hovered_visible();
+        self.base.request_redraw();
+        true
+    }
+
     /// Moves the highlight by `delta` entries in reading order, skipping anything that cannot be
     /// chosen, and reports whether it landed on an enabled entry.
     ///
@@ -686,6 +890,7 @@ impl Menu {
             return false;
         }
         let text = entry.text().to_string();
+        let action_id = entry.action_id().map(String::from);
         if entry.has_submenu() {
             self.open_submenu_at(level, index);
             self.submenu_requested.emit(text);
@@ -694,6 +899,9 @@ impl Menu {
         }
         self.triggered.emit(text);
         self.triggered_index.emit(index);
+        if let Some(action_id) = action_id {
+            self.action_triggered.emit(action_id);
+        }
         self.hide();
         true
     }
@@ -726,11 +934,112 @@ impl Menu {
     /// something else invalidates it.
     pub fn add_item(&mut self, item: MenuEntry) {
         self.items.push(item);
+        self.touch_items();
         self.clamp_scroll();
+    }
+
+    /// Appends a row resolved from the action registry.
+    ///
+    /// `text`, `enabled`, `checked`, `checkable` and the shortcut label all come from the
+    /// registered command, so the menu is a view of the registry rather than a second declaration
+    /// of it. The row keeps the action id; activating it emits [`Self::action_triggered`].
+    /// Returns `None` when the id is unknown, which is the same answer
+    /// [`ActionManager::action_definition`] gives instead of inventing an empty row.
+    pub fn add_action_from_manager(
+        &mut self,
+        manager: &mut crate::action::ActionManager,
+        action_id: &str,
+    ) -> Option<usize> {
+        let definition = manager.action_definition(action_id)?;
+        // Resolving an item and recording the host binding are one step on purpose: a row in this
+        // menu that was *not* registered as a host would make `bindings_for_host` report less than
+        // the UI shows.
+        if !manager.bind_action_to_menu(definition.id.clone(), self.base.id()) {
+            return None;
+        }
+        let mut entry = MenuEntry::new(definition.text);
+        entry.set_action_id(definition.id.clone());
+        entry.set_enabled(definition.enabled);
+        entry.set_checkable(definition.checkable);
+        if definition.checkable {
+            entry.set_checked(definition.checked);
+        }
+        if !definition.shortcut.is_empty() {
+            entry.set_shortcut(definition.shortcut);
+        }
+        let index = self.items.len();
+        self.items.push(entry);
+        self.touch_items();
+        self.clamp_scroll();
+        self.base.request_redraw();
+        Some(index)
+    }
+
+    /// Re-reads every linked row from `manager`.
+    ///
+    /// The registry is the source of truth; a host calls this after changing an action's state
+    /// rather than mutating the same fact twice. Rows without an action id are left alone.
+    pub fn refresh_action_states(&mut self, manager: &crate::action::ActionManager) {
+        let mut changed = false;
+        for item in &mut self.items {
+            let Some(action_id) = item.action_id().map(String::from) else {
+                continue;
+            };
+            let Some(definition) = manager.action_definition(&action_id) else {
+                continue;
+            };
+            if item.text() != definition.text {
+                item.set_text(definition.text);
+                changed = true;
+            }
+            if item.is_enabled() != definition.enabled {
+                item.set_enabled(definition.enabled);
+                changed = true;
+            }
+            if item.is_checkable() != definition.checkable {
+                item.set_checkable(definition.checkable);
+                changed = true;
+            }
+            if definition.checkable && item.is_checked() != definition.checked {
+                item.set_checked(definition.checked);
+                changed = true;
+            }
+            if item.shortcut() != definition.shortcut {
+                item.set_shortcut(definition.shortcut);
+                changed = true;
+            }
+        }
+        if changed {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Registers every linked row's shortcut in the global registry.
+    ///
+    /// This is the "native menu shortcut becomes a registry binding" step: a row's displayed
+    /// accelerator is parsed once and inserted into [`ShortcutManager`], so conflict detection
+    /// and dispatch see it like any other chord. A glyph spelling that
+    /// [`crate::shortcut::Shortcut::from_string`] cannot parse is skipped rather than guessed at.
+    /// Returns the number of bindings registered.
+    pub fn register_shortcuts_with(&self, manager: &mut crate::shortcut::ShortcutManager) -> usize {
+        let mut registered = 0usize;
+        for item in &self.items {
+            let Some(action_id) = item.action_id() else {
+                continue;
+            };
+            let Some(binding) = crate::shortcut::Shortcut::from_string(item.shortcut()) else {
+                continue;
+            };
+            if manager.register(String::from(action_id), binding, item.text()) {
+                registered += 1;
+            }
+        }
+        registered
     }
     /// Appends a separator entry.
     pub fn add_separator(&mut self) {
         self.items.push(MenuEntry::separator());
+        self.touch_items();
         self.clamp_scroll();
     }
     /// Appends a plain action labeled `text` and returns its index.
@@ -741,6 +1050,7 @@ impl Menu {
     pub fn add_action(&mut self, text: impl Into<String>) -> usize {
         let idx = self.items.len();
         self.items.push(MenuEntry::new(text));
+        self.touch_items();
         idx
     }
     /// Appends an action labeled `text` with `shortcut` shown beside it, and
@@ -755,7 +1065,90 @@ impl Menu {
     ) -> usize {
         let idx = self.items.len();
         self.items.push(MenuEntry::new(text).with_shortcut(shortcut));
+        self.touch_items();
         idx
+    }
+
+    /// Appends a row built from a live [`Action`] and returns its index.
+    ///
+    /// Label, shortcut label, checkability, checked and enabled state, icon, status hint and
+    /// command id are read from the action, so the menu is a view of the action rather than a
+    /// second declaration of it. The row also records the action's widget id in
+    /// [`MenuEntry::action`], which is what lets a host find the live action again; activation
+    /// still emits [`Self::action_triggered`] with the command id.
+    pub fn add_action_item(&mut self, action: &Action) -> usize {
+        let index = self.items.len();
+        self.items.push(menu_entry_from_action(action));
+        self.touch_items();
+        self.base.request_redraw();
+        index
+    }
+
+    /// Removes the first row linked to `action_id` and returns whether one was removed.
+    ///
+    /// The id is the registry command id a row was built with — the same string
+    /// [`Self::action_triggered`] carries. Rows without an id never match.
+    pub fn remove_action(&mut self, action_id: &str) -> bool {
+        let Some(index) = self.items.iter().position(|item| item.action_id() == Some(action_id))
+        else {
+            return false;
+        };
+        self.remove_item(index).is_some()
+    }
+
+    /// Inserts a pre-built entry at `index` and returns the index it actually landed on.
+    ///
+    /// An index past the end appends, matching the clamping convention of the other index
+    /// setters in this control.
+    pub fn insert_item(&mut self, index: usize, item: MenuEntry) -> usize {
+        let index = index.min(self.items.len());
+        self.items.insert(index, item);
+        if let Some(hovered) = self.hovered_index {
+            if hovered >= index {
+                self.hovered_index = Some(hovered + 1);
+            }
+        }
+        if index < self.scroll_offset {
+            self.scroll_offset += 1;
+        }
+        self.submenu_path.clear();
+        self.touch_items();
+        self.base.request_redraw();
+        index
+    }
+
+    /// Inserts a separator at `index` and returns the index it landed on.
+    pub fn insert_separator(&mut self, index: usize) -> usize {
+        self.insert_item(index, MenuEntry::separator())
+    }
+
+    /// Removes the entry at `index`, returning it when the index was in range.
+    ///
+    /// The highlight, the scroll window and the open cascade are adjusted with the list: a
+    /// cursor left pointing at the removed row would name a different entry afterwards.
+    pub fn remove_item(&mut self, index: usize) -> Option<MenuEntry> {
+        if index >= self.items.len() {
+            return None;
+        }
+        let removed = self.items.remove(index);
+        self.hovered_index = match self.hovered_index {
+            Some(at) if at == index => None,
+            Some(at) if at > index => Some(at - 1),
+            other => other,
+        };
+        if self.scroll_offset > index {
+            self.scroll_offset -= 1;
+        }
+        self.submenu_path.clear();
+        self.clamp_scroll();
+        self.touch_items();
+        self.base.request_redraw();
+        Some(removed)
+    }
+
+    /// Marks the cached row boxes stale. Every mutation of `items` must call this.
+    fn touch_items(&mut self) {
+        self.items_version = self.items_version.wrapping_add(1);
     }
     /// Enables or disables the entry at `index`.
     ///
@@ -797,6 +1190,8 @@ impl Menu {
         self.items.clear();
         self.scroll_offset = 0;
         self.submenu_path.clear();
+        self.hovered_index = None;
+        self.touch_items();
     }
     fn item_height() -> f32 {
         22.0
@@ -855,7 +1250,33 @@ impl Menu {
     /// The popup's own `MENU_POPUP_PADDING` is the column's padding rather than a `+ 2.0` the paint
     /// loop added before the first row, so the inset is part of the run instead of a constant that
     /// only the first row knows about.
-    fn item_bands(&self) -> Vec<Rect> {
+    /// The row boxes, served from a cache keyed by the list version and geometry.
+    ///
+    /// The run is a pure function of the entries' separator flags, the popup's width, the scroll
+    /// offset, the tear-off strip and the column count. Rebuilding it on every paint meant a
+    /// `Vec` allocation per frame during the open reveal even though none of those facts had
+    /// changed; the version counter is bumped by every entry mutation, so a stale run cannot be
+    /// served after an edit.
+    fn item_bands(&self) -> Rc<Vec<Rect>> {
+        let key = ItemBandsKey {
+            version: self.items_version,
+            width: self.geometry().width,
+            scroll_offset: self.scroll_offset,
+            tearoff: self.tearoff,
+            columns: self.column_count,
+        };
+        if let Some((cached_key, bands)) = self.item_bands_cache.borrow().as_ref() {
+            if *cached_key == key {
+                return Rc::clone(bands);
+            }
+        }
+        let bands = Rc::new(self.compute_item_bands());
+        *self.item_bands_cache.borrow_mut() = Some((key, Rc::clone(&bands)));
+        bands
+    }
+
+    /// Rebuilds the row boxes; [`Self::item_bands`] is the cached entry point.
+    fn compute_item_bands(&self) -> Vec<Rect> {
         if self.items.is_empty() {
             return Vec::new();
         }
@@ -866,7 +1287,29 @@ impl Menu {
         // state are the same three lines below: the run starts at the popup's padding, each row
         // follows the previous one, and the run is as tall as `popup_height` reports.
         let padding = dimensions::MENU_POPUP_PADDING;
-        let width = self.geometry().width.saturating_sub(padding * 2);
+        let available = self.geometry().width.saturating_sub(padding * 2);
+        let top = padding as i32 + self.tearoff_band_height() as i32;
+
+        if self.column_count > 1 {
+            // Row-major grid: entry `i` owns cell `(i / columns, i % columns)`. Every cell is
+            // `item_height` tall, including a separator's, so the columns stay aligned; the
+            // single-column branch keeps the historical separator height.
+            let columns = self.column_count as u32;
+            let gaps = MENU_COLUMN_GAP.saturating_mul(columns - 1);
+            let column_width = available.saturating_sub(gaps) / columns;
+            let column_width = column_width.max(1);
+            let first_row = (self.scroll_offset / columns as usize) as i32;
+            let mut placed = Vec::with_capacity(self.items.len());
+            for index in 0..self.items.len() {
+                let row = (index / columns as usize) as i32 - first_row;
+                let column = (index % columns as usize) as u32;
+                let x = padding as i32 + (column * (column_width + MENU_COLUMN_GAP)) as i32;
+                let y = top + row * Self::item_height() as i32;
+                placed.push(Rect::new(x, y, column_width, Self::item_height() as u32));
+            }
+            return placed;
+        }
+
         let mut placed = Vec::with_capacity(self.items.len());
         // Rows above the window are laid out too (with negative `y`) rather than omitted:
         // the painter, the hit test and the keyboard all address an entry by its **list**
@@ -883,14 +1326,14 @@ impl Menu {
                 }
             })
             .sum();
-        let mut y = padding as i32 + self.tearoff_band_height() as i32 - skipped;
+        let mut y = top - skipped;
         for item in self.items.iter() {
             let height = if item.is_separator() {
                 Self::separator_height() as u32
             } else {
                 Self::item_height() as u32
             };
-            placed.push(Rect::new(padding as i32, y, width, height));
+            placed.push(Rect::new(padding as i32, y, available, height));
             y += height as i32;
         }
         placed
@@ -1463,6 +1906,12 @@ impl Menu {
     }
     fn popup_height(&self) -> f32 {
         let range = self.visible_range();
+        let tearoff = self.tearoff_band_height() as f32;
+        if self.column_count > 1 {
+            let visible = range.len();
+            let rows = visible.div_ceil(self.column_count as usize);
+            return rows as f32 * Self::item_height() + 4.0 + tearoff;
+        }
         self.items[range]
             .iter()
             .map(
@@ -1476,7 +1925,7 @@ impl Menu {
             )
             .sum::<f32>()
             + 4.0
-            + self.tearoff_band_height() as f32
+            + tearoff
     }
 
     /// Paints the popup's elevation shadow.
@@ -1495,10 +1944,22 @@ impl Menu {
         }
         let bands = self.item_bands();
         let body_top = self.body_top();
+        let left = self.geometry().x;
         for index in self.visible_range() {
             let Some(row) = bands.get(index) else { continue };
             let top = body_top + row.y;
-            if pos.y >= top && pos.y < top + row.height as i32 {
+            // A single-column menu historically addressed a row by its y band alone, which is
+            // what makes the popup's horizontal padding part of the row. A grid has real
+            // columns, so it must test x as well or every column would answer for the first.
+            let hit = if self.column_count > 1 {
+                pos.x >= left + row.x
+                    && pos.x < left + row.x + row.width as i32
+                    && pos.y >= top
+                    && pos.y < top + row.height as i32
+            } else {
+                pos.y >= top && pos.y < top + row.height as i32
+            };
+            if hit {
                 return Some(index);
             }
         }
@@ -1605,6 +2066,11 @@ impl Widget for Menu {
             "tearoff_requested" => {
                 Some(EventSignalRef::unit("tearoff_requested", &self.tearoff_requested))
             }
+            "action_triggered" => {
+                Some(EventSignalRef::mapped("action_triggered", &self.action_triggered, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
             _ => None,
         }
     }
@@ -1628,6 +2094,7 @@ impl WidgetProperties for Menu {
                 Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
             }
             "show_heading" => Ok(CapabilityValue::Bool(self.shows_heading())),
+            "column_count" => Ok(CapabilityValue::UInt(self.columns() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -1646,6 +2113,11 @@ impl WidgetProperties for Menu {
                 self.set_show_heading(expect_bool(value)?);
                 Ok(())
             }
+            "column_count" => {
+                let columns = expect_u32(value)?.clamp(1, u8::MAX as u32) as u8;
+                self.set_column_count(columns);
+                Ok(())
+            }
             "hovered_index" => Err(CapabilityAccessError::ReadOnlyProperty),
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -1659,6 +2131,7 @@ impl WidgetProperties for Menu {
             "hovered_index",
             "direction",
             "show_heading",
+            "column_count",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1816,10 +2289,16 @@ impl EventHandler for Menu {
                         self.activate_level_hovered(self.focus_level());
                     }
                     38 => {
-                        self.move_level_hovered(self.focus_level(), -1);
+                        let level = self.focus_level();
+                        // A grid's vertical step is one row, i.e. `columns` entries; a
+                        // single-column menu keeps the historical ±1.
+                        let stride = if level == 0 { self.column_count as i32 } else { 1 };
+                        self.move_level_hovered(level, -stride);
                     }
                     40 => {
-                        self.move_level_hovered(self.focus_level(), 1);
+                        let level = self.focus_level();
+                        let stride = if level == 0 { self.column_count as i32 } else { 1 };
+                        self.move_level_hovered(level, stride);
                     }
                     // The horizontal pair is the only part of the navigation that follows the
                     // writing direction; see the `direction` field.
@@ -1836,6 +2315,8 @@ impl EventHandler for Menu {
                         if is_branch {
                             self.activate_level_hovered(level);
                         } else if level == 0 {
+                            // One entry to the right is one cell in a grid and the next row
+                            // entry in a single-column list.
                             self.move_hovered_horizontally(true);
                         } else {
                             self.move_level_hovered(level, 1);
@@ -1942,7 +2423,10 @@ impl Draw for Menu {
             // difference between the strip and the line box. Passing the strip's midline put the
             // glyph's top *at* the centre, so a 14 px label in a 20 px heading ended at y = 24 —
             // four pixels below the strip it belongs to.
-            let heading_text_h = if effects.caching {
+            // The heading line height is one shaped measurement and is a function of the font
+            // alone, so it is cached unconditionally. Gating the cache on `effects.caching`
+            // made the default policy pay the measurement on every frame of the open reveal.
+            let heading_text_h = {
                 let key = font.size().to_bits();
                 match self.heading_line_cache.get() {
                     Some((cached_key, height)) if cached_key == key => height,
@@ -1952,8 +2436,6 @@ impl Draw for Menu {
                         height
                     }
                 }
-            } else {
-                context.measure_text("M", font).height
             };
             context.draw_text(
                 Point::new(rect.x + 8, rect.y + (heading_h as i32 - heading_text_h as i32) / 2),
@@ -3271,5 +3753,121 @@ mod tests {
         });
         assert_eq!(torn.load(Ordering::SeqCst), 1);
         assert!(menu.is_visible(), "tearing off must not dismiss the source menu");
+    }
+
+    /// Auto flips a popup up when the space below the anchor cannot hold it.
+    #[test]
+    fn the_popup_direction_anchors_up_when_the_bottom_is_crowded() {
+        let viewport = Rect::new(0, 0, 220, 160);
+        let mut auto = context_menu();
+        auto.open_at(Point::new(10, 150), viewport);
+        let total = auto.geometry().height as i32;
+        assert!(
+            auto.geometry().y + total <= 150,
+            "an Auto menu must end at or above the anchor: {}",
+            auto.geometry().y
+        );
+        assert!(auto.geometry().y >= 0, "and stay inside the viewport");
+
+        // Down keeps the historical top-left anchor when there is room.
+        let wide = Rect::new(0, 0, 800, 800);
+        let mut down = context_menu();
+        down.set_popup_direction(PopupDirection::Down);
+        down.open_at(Point::new(100, 200), wide);
+        assert_eq!(down.geometry().y, 200);
+
+        let mut up = context_menu();
+        up.set_popup_direction(PopupDirection::Up);
+        up.open_at(Point::new(100, 200), wide);
+        assert_eq!(up.geometry().y + up.geometry().height as i32, 200);
+    }
+
+    /// The host can place the highlight on a row by index.
+    #[test]
+    fn set_active_action_highlights_only_a_selectable_row() {
+        let mut menu = context_menu();
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+        assert!(menu.set_active_action(1));
+        assert_eq!(menu.hovered_index(), Some(1));
+
+        // Index 2 is the separator: it is not a destination.
+        assert!(!menu.set_active_action(2));
+        assert_eq!(menu.hovered_index(), Some(1), "a refused write must not move the highlight");
+        assert!(!menu.set_active_action(99));
+    }
+
+    /// Items can be inserted, removed and looked up by their action id.
+    #[test]
+    fn items_can_be_inserted_and_removed_by_position_and_action() {
+        let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+        menu.add_action("A");
+        menu.add_action("C");
+        let at = menu.insert_item(1, MenuEntry::new("B"));
+        assert_eq!(at, 1);
+        assert_eq!(menu.items().iter().map(MenuEntry::text).collect::<Vec<_>>(), ["A", "B", "C"]);
+
+        let removed = menu.remove_item(1).expect("an in-range index returns the row");
+        assert_eq!(removed.text(), "B");
+        assert!(menu.remove_item(99).is_none());
+
+        menu.insert_separator(1);
+        assert!(menu.items()[1].is_separator());
+
+        let mut action = Action::new("Save", Rect::new(0, 0, 80, 22));
+        action.set_command_id("save");
+        menu.add_action_item(&action);
+        assert!(menu.remove_action("save"), "the linked row is found by command id");
+        assert!(!menu.remove_action("save"), "and removed only once");
+    }
+
+    /// An action's metadata reaches the row it creates.
+    #[test]
+    fn add_action_item_mirrors_the_action() {
+        let mut action = Action::new("Save", Rect::new(0, 0, 80, 22));
+        action.set_command_id("save");
+        action.set_checkable(true);
+        action.set_checked(true);
+        action.set_status_tip("Write the document");
+        let id = action.base().id();
+
+        let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+        let index = menu.add_action_item(&action);
+        let row = &menu.items()[index];
+        assert_eq!(row.text(), "Save");
+        assert_eq!(row.action_id(), Some("save"));
+        assert_eq!(row.action(), Some(id), "the live widget identity is recorded");
+        assert_eq!(row.tooltip(), "Write the document");
+        assert!(row.is_checkable() && row.is_checked());
+    }
+
+    /// A column count lays rows out as a row-major grid and navigation follows it.
+    #[test]
+    fn a_column_count_makes_a_grid_that_the_pointer_and_keys_follow() {
+        let mut menu = Menu::new("File", Rect::new(0, 0, 400, 200));
+        for index in 0..6 {
+            menu.add_action(format!("Item {index}"));
+        }
+        menu.set_column_count(2);
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 800, 800));
+        assert_eq!(menu.columns(), 2);
+
+        let bands = menu.item_bands();
+        assert_eq!(bands[1].y, bands[0].y, "the second entry shares the first row");
+        assert!(
+            bands[1].x >= bands[0].x + bands[0].width as i32,
+            "and sits in the next column: {bands:?}"
+        );
+        assert_eq!(bands[2].x, bands[0].x, "entry two starts the second row");
+        assert_eq!(bands[2].y, bands[0].y + Menu::item_height() as i32);
+
+        assert!(menu.set_active_action(0));
+        menu.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(menu.hovered_index(), Some(2), "Down moves one grid row");
+        menu.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
+        assert_eq!(menu.hovered_index(), Some(3), "Right moves one column");
+
+        let row = bands[3];
+        let pos = Point::new(menu.geometry().x + row.x + 2, menu.body_top() + row.y + 2);
+        assert_eq!(menu.item_index_at(pos), Some(3), "the hit test addresses the column");
     }
 }

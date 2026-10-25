@@ -238,42 +238,55 @@ impl DirtyRegionTracker {
     /// `merge_intersecting_rects`, because that helper cannot carry the metadata the union
     /// must preserve.
     ///
-    /// # Cost (D09-RENDER-01)
+    /// # Cost (D09-RENDER-01, G-05)
     ///
     /// Unioning bounding boxes is transitive: a union can grow to reach a region the scan already
-    /// passed, so the scan restarts from the beginning after each union. That is what makes the
-    /// work grow with the square of the region count in the worst case, and it is why the caller
-    /// must bound the count *before* calling this: [`DirtyRegionTracker::over_capacity`] lets a
-    /// renderer switch to a single covering repaint instead of merging an unbounded bag. The
-    /// regions are sorted by left edge first so that the restart is cheap for the clustered
-    /// damage a frame actually produces, and the ordering never changes the result because a
-    /// union is commutative in geometry and the metadata merge is a `max`.
+    /// passed. The first version restarted the scan from the beginning after each union, which made
+    /// the work grow with the square of the region count. This version sweeps by left edge and
+    /// keeps only the regions whose right edge can still reach the current one (`active`); a
+    /// finished region can never be intersected again, because every later rectangle starts to its
+    /// right. Each union re-checks the active set, but that set is the band of x-overlapping
+    /// damage rather than the whole bag.
+    ///
+    /// The ordering never changes the result because a union is commutative in geometry and the
+    /// metadata merge is a `max`. The caller still bounds the count *before* calling this, through
+    /// [`DirtyRegionTracker::over_capacity`].
     pub fn merge(&mut self) {
         if self.merged || self.regions.len() <= 1 {
             return;
         }
-        // Sorting by left edge does not change which rectangles end up in which union; it only
-        // makes the restarts below walk regions that are near each other in `x`.
         self.regions.sort_by_key(|region| region.rect.x);
         let mut merged: Vec<DirtyRegion> = Vec::with_capacity(self.regions.len());
+        let mut active: Vec<DirtyRegion> = Vec::new();
         for mut current in self.regions.drain(..) {
-            let mut i = 0;
-            while i < merged.len() {
-                if current.rect.intersects(&merged[i].rect) {
-                    current.rect = current.rect.union(&merged[i].rect);
-                    // A union sits on the highest layer and keeps the highest retention
-                    // priority of the regions it absorbed, so `optimize` can still order it.
-                    current.layer = current.layer.max(merged[i].layer);
-                    current.priority = current.priority.max(merged[i].priority);
-                    merged.swap_remove(i);
-                    i = 0;
+            let left = i64::from(current.rect.x);
+            // Retire regions that end strictly left of `left`: with the input sorted by x, no
+            // future rectangle can intersect one of them either.
+            let mut index = 0;
+            while index < active.len() {
+                let right = i64::from(active[index].rect.x) + i64::from(active[index].rect.width);
+                if right < left {
+                    merged.push(active.swap_remove(index));
                 } else {
-                    i += 1;
+                    index += 1;
                 }
             }
+            // Fold in every active region the growing union reaches. Re-scanning the active set
+            // (rather than the whole result) is what removes the quadratic restart.
+            loop {
+                let hit = active.iter().position(|other| current.rect.intersects(&other.rect));
+                let Some(hit) = hit else { break };
+                let other = active.swap_remove(hit);
+                current.rect = current.rect.union(&other.rect);
+                // A union sits on the highest layer and keeps the highest retention priority of
+                // the regions it absorbed, so `optimize` can still order it.
+                current.layer = current.layer.max(other.layer);
+                current.priority = current.priority.max(other.priority);
+            }
             current.id = RegionId::new();
-            merged.push(current);
+            active.push(current);
         }
+        merged.extend(active);
         self.regions = merged;
         self.merged = true;
     }
@@ -459,6 +472,31 @@ mod tests {
 
     /// `over_capacity` reports the limit without dropping anything: it is a query, so the regions
     /// are untouched. (D09-RENDER-01)
+    /// Chained overlap merges in one sweep, and disjoint touching regions stay separate (G-05).
+    #[test]
+    fn merge_sweeps_chained_overlaps_without_restarting() {
+        let mut tracker = DirtyRegionTracker::new();
+        tracker.add(Rect::new(0, 0, 10, 10));
+        tracker.add(Rect::new(5, 5, 10, 10));
+        tracker.add(Rect::new(12, 12, 10, 10));
+        tracker.merge();
+        assert_eq!(tracker.len(), 1, "a chain of overlaps is one connected region");
+        assert_eq!(tracker.regions[0].rect, Rect::new(0, 0, 22, 22));
+
+        let mut touching = DirtyRegionTracker::new();
+        touching.add(Rect::new(0, 0, 10, 10));
+        touching.add(Rect::new(10, 0, 10, 10));
+        touching.merge();
+        assert_eq!(touching.len(), 2, "rectangles that only touch share no area");
+
+        let mut scattered = DirtyRegionTracker::new();
+        for i in 0..64 {
+            scattered.add(Rect::new(i * 20, 0, 4, 4));
+        }
+        scattered.merge();
+        assert_eq!(scattered.len(), 64, "disjoint damage is never widened");
+    }
+
     #[test]
     fn over_capacity_reports_without_dropping() {
         let mut tracker = DirtyRegionTracker::with_max_regions(2);

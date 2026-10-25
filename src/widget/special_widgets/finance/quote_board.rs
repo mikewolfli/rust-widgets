@@ -18,6 +18,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::fmt::Write as _;
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
@@ -140,6 +141,8 @@ pub struct QuoteBoard {
     sort: QuoteSort,
     hovered: Option<usize>,
     selected: Option<usize>,
+    /// The first row drawn; keeps a long watchlist reachable.
+    scroll_offset: usize,
     rising_color: Color,
     falling_color: Color,
     /// Bumped on every change to the data the column ranges are measured from
@@ -215,6 +218,7 @@ impl QuoteBoard {
             sort: QuoteSort::default(),
             hovered: None,
             selected: None,
+            scroll_offset: 0,
             rising_color: Color::rgb(38, 166, 91),
             falling_color: Color::rgb(220, 68, 70),
             data_generation: 0,
@@ -254,8 +258,8 @@ impl QuoteBoard {
         self.quotes = quotes;
         self.original_order = self.quotes.clone();
         self.data_generation = self.data_generation.wrapping_add(1);
-        self.apply_sort();
         self.revalidate_selection();
+        self.clamp_scroll();
         self.base.request_redraw();
     }
 
@@ -424,6 +428,7 @@ impl QuoteBoard {
                 });
             }
         }
+        self.clamp_scroll();
     }
 
     /// Drops a selection or hover that no longer points at a row.
@@ -465,12 +470,45 @@ impl QuoteBoard {
         if offset < 0 {
             return None;
         }
-        let index = (offset / self.row_height()) as usize;
+        let index = self.scroll_offset + (offset / self.row_height()) as usize;
         if index < self.quotes.len() {
             Some(index)
         } else {
             None
         }
+    }
+
+    /// The number of rows the board can show at once.
+    fn visible_row_count(&self) -> usize {
+        let geometry = self.base.geometry();
+        ((geometry.height as i32 - self.row_height()) / self.row_height()).max(0) as usize
+    }
+
+    /// The first row drawn.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Sets the first row drawn, clamped so the last row can reach the top.
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        let max = self.quotes.len().saturating_sub(self.visible_row_count());
+        let offset = offset.min(max);
+        if self.scroll_offset == offset {
+            return;
+        }
+        self.scroll_offset = offset;
+        self.base.request_redraw();
+    }
+
+    /// Scrolls by `delta` rows.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let next = (self.scroll_offset as isize + delta).max(0) as usize;
+        self.set_scroll_offset(next);
+    }
+
+    fn clamp_scroll(&mut self) {
+        let max = self.quotes.len().saturating_sub(self.visible_row_count());
+        self.scroll_offset = self.scroll_offset.min(max);
     }
 
     /// The horizontal range of each column, as `(start, width)` pairs.
@@ -529,8 +567,11 @@ impl QuoteBoard {
                 // stable, data-ordered sample, so column widths do not shift while scrolling;
                 // a value beyond it is ellipsized by the fitted draw.
                 const MAX_MEASURED_ROWS: usize = 64;
+                // One buffer for the whole sample: the formatted cell lives here instead of in a
+                // fresh `String` per row per measure pass.
+                let mut text = String::new();
                 for quote in self.quotes.iter().take(MAX_MEASURED_ROWS) {
-                    let text = self.cell_text(quote, *column, decimals);
+                    self.write_cell_text(quote, *column, decimals, &mut text);
                     widest = widest.max(measure_body_text(&text, &body_font) as i32);
                 }
                 widest + inset * 2
@@ -585,33 +626,48 @@ impl QuoteBoard {
         }
     }
 
-    /// The text for one cell.
-    fn cell_text(&self, quote: &Quote, column: QuoteColumn, decimals: usize) -> String {
+    /// Writes the text for one cell into `out`.
+    ///
+    /// The caller owns the buffer so a whole row (or a whole measurement sample) formats into
+    /// one reused allocation rather than one `String` per cell per frame. `out` is cleared first.
+    fn write_cell_text(
+        &self,
+        quote: &Quote,
+        column: QuoteColumn,
+        decimals: usize,
+        out: &mut String,
+    ) {
+        out.clear();
         match column {
-            QuoteColumn::Symbol => quote.symbol.clone(),
-            QuoteColumn::Name => quote.name.clone(),
-            QuoteColumn::Last => format_decimal(quote.last, decimals),
+            QuoteColumn::Symbol => out.push_str(&quote.symbol),
+            QuoteColumn::Name => out.push_str(&quote.name),
+            QuoteColumn::Last => write_decimal(quote.last, decimals, out),
             QuoteColumn::Change => {
                 let change = quote.change();
                 if change.is_finite() {
-                    let sign = if change >= 0.0 { "+" } else { "" };
-                    alloc::format!("{sign}{}", format_decimal(change, decimals))
+                    // The sign is part of the cell's text, so it is written before the magnitude.
+                    if change >= 0.0 {
+                        out.push('+');
+                    }
+                    write_decimal(change, decimals, out);
                 } else {
-                    String::from("—")
+                    out.push('—');
                 }
             }
             QuoteColumn::ChangePercent => {
                 let percent = quote.change_percent();
                 if percent.is_finite() {
-                    let sign = if percent >= 0.0 { "+" } else { "" };
-                    alloc::format!("{sign}{:.2}%", percent)
+                    if percent >= 0.0 {
+                        out.push('+');
+                    }
+                    let _ = write!(out, "{percent:.2}%");
                 } else {
-                    String::from("—")
+                    out.push('—');
                 }
             }
-            QuoteColumn::High => format_decimal(quote.high, decimals),
-            QuoteColumn::Low => format_decimal(quote.low, decimals),
-            QuoteColumn::Volume => format_volume(quote.volume),
+            QuoteColumn::High => write_decimal(quote.high, decimals, out),
+            QuoteColumn::Low => write_decimal(quote.low, decimals, out),
+            QuoteColumn::Volume => write_volume(quote.volume, out),
         }
     }
 
@@ -632,50 +688,72 @@ impl QuoteBoard {
     }
 }
 
-/// Formats a price at a fixed precision.
-fn format_decimal(value: f64, decimals: usize) -> String {
+/// Writes a price at a fixed precision into `out`, matching the previous `format!` output
+/// byte for byte.
+fn write_decimal(value: f64, decimals: usize, out: &mut String) {
     if !value.is_finite() {
-        return String::from("—");
+        out.push('—');
+        return;
     }
     let factor = 10f64.powi(decimals as i32);
     let scaled = (value * factor).round() as i64;
-    let negative = scaled < 0;
-    let digits = scaled.unsigned_abs().to_string();
-    if decimals == 0 {
-        return if negative { alloc::format!("-{digits}") } else { digits };
+    if scaled < 0 {
+        out.push('-');
     }
-    let padded = if digits.len() <= decimals {
-        let mut padded = String::new();
-        for _ in 0..(decimals - digits.len()) {
-            padded.push('0');
+    let digits = scaled.unsigned_abs();
+    if decimals == 0 {
+        let _ = write!(out, "{digits}");
+        return;
+    }
+    let digits_len = digit_count(digits);
+    if digits_len <= decimals {
+        // Matches the padded form: "." followed by enough zeros to reach `decimals` places.
+        out.push('.');
+        for _ in 0..(decimals - digits_len) {
+            out.push('0');
         }
-        padded.push_str(&digits);
-        padded
+        let _ = write!(out, "{digits}");
     } else {
-        digits
-    };
-    let split = padded.len() - decimals;
-    let sign = if negative { "-" } else { "" };
-    alloc::format!("{sign}{}.{}", &padded[..split], &padded[split..])
+        let divisor = 10u64.pow(decimals as u32);
+        let whole = digits / divisor;
+        let fraction = digits % divisor;
+        let _ = write!(out, "{whole}.");
+        let fraction_digits = digit_count(fraction);
+        for _ in 0..(decimals - fraction_digits) {
+            out.push('0');
+        }
+        let _ = write!(out, "{fraction}");
+    }
 }
 
-/// Formats a volume with a magnitude suffix.
+/// The number of decimal digits in `value` (`0` has one).
+fn digit_count(mut value: u64) -> usize {
+    let mut digits = 1;
+    while value >= 10 {
+        value /= 10;
+        digits += 1;
+    }
+    digits
+}
+
+/// Writes a volume with a magnitude suffix into `out`.
 ///
 /// A quote board shows volumes in the millions, where the exact digits are unreadable
 /// and the magnitude is the whole message. A suffix is what every platform does, and a
 /// caller wanting exact figures reads them from `Quote::volume` rather than the cell.
-fn format_volume(volume: f64) -> String {
+fn write_volume(volume: f64, out: &mut String) {
     if !volume.is_finite() {
-        return String::from("—");
+        out.push('—');
+        return;
     }
     if volume.abs() >= 1_000_000_000.0 {
-        alloc::format!("{:.2}B", volume / 1_000_000_000.0)
+        let _ = write!(out, "{:.2}B", volume / 1_000_000_000.0);
     } else if volume.abs() >= 1_000_000.0 {
-        alloc::format!("{:.2}M", volume / 1_000_000.0)
+        let _ = write!(out, "{:.2}M", volume / 1_000_000.0);
     } else if volume.abs() >= 1_000.0 {
-        alloc::format!("{:.2}K", volume / 1_000.0)
+        let _ = write!(out, "{:.2}K", volume / 1_000.0);
     } else {
-        alloc::format!("{volume:.0}")
+        let _ = write!(out, "{volume:.0}");
     }
 }
 
@@ -784,6 +862,9 @@ impl crate::event::EventHandler for QuoteBoard {
                     self.select(Some(index));
                 }
             }
+            Event::Wheel { delta, .. } if delta.y != 0 => {
+                self.scroll_by(if delta.y > 0 { 3 } else { -3 });
+            }
             _ => {}
         }
         self.base.handle_event(event);
@@ -859,17 +940,18 @@ impl Draw for QuoteBoard {
             Rect::new(geometry.x, geometry.y, geometry.width, row_height as u32),
             header_fill,
         );
+        // The header face is the **effective font** at its role size, so the theme family and the
+        // user's text scale reach the board's headings (D09-STYLE-01). Resolved once outside the
+        // column loop: `role_font` rebuilt (and re-cloned its family) once per heading per frame.
+        let heading_font = role_font(style, HEADING_FONT_SIZE);
         for (column, (start, width)) in self.columns.iter().zip(ranges.iter()) {
-            // The header face is the **effective font** at its role size, so the theme family and the
-            // user's text scale reach the board's headings (D09-STYLE-01).
-            let font = role_font(style, HEADING_FONT_SIZE);
             let title = column.title();
-            let label_x = heading_origin(*start, *width, title, &font);
-            if heading_fits(*width, title, &font) {
+            let label_x = heading_origin(*start, *width, title, &heading_font);
+            if heading_fits(*width, title, &heading_font) {
                 context.draw_text(
                     Point { x: label_x, y: geometry.y + 5 },
                     title,
-                    &font,
+                    &heading_font,
                     header_text,
                     HorizontalAlignment::Left,
                 );
@@ -882,12 +964,12 @@ impl Draw for QuoteBoard {
                     *start,
                     geometry.y + 5,
                     (*width).max(1) as u32,
-                    font.size().max(1.0) as u32,
+                    heading_font.size().max(1.0) as u32,
                 );
                 context.draw_text_fitted_cow(
                     band,
                     title,
-                    &font,
+                    &heading_font,
                     header_text,
                     HorizontalAlignment::Left,
                 );
@@ -929,8 +1011,13 @@ impl Draw for QuoteBoard {
         // (cloning the family string) per call, and this used to sit inside the cell
         // loop — once per cell per frame.
         let cell_font = role_font(style, BODY_FONT_SIZE);
-        for (index, quote) in self.quotes.iter().enumerate().take(available) {
-            let y = self.first_row_y() + index as i32 * row_height;
+        // One text buffer for every cell: formatting into it reuses the allocation instead of
+        // building a fresh `String` for each of the visible cells on every frame.
+        let mut cell_text = String::new();
+        for (index, quote) in
+            self.quotes.iter().enumerate().skip(self.scroll_offset).take(available)
+        {
+            let y = self.first_row_y() + (index - self.scroll_offset) as i32 * row_height;
             if self.selected == Some(index) {
                 context.fill_rect(
                     Rect::new(geometry.x, y, geometry.width, row_height as u32),
@@ -956,7 +1043,8 @@ impl Draw for QuoteBoard {
             for (column, (start, width)) in self.columns.iter().zip(ranges.iter()) {
                 let start = *start;
                 let width = *width;
-                let text = self.cell_text(quote, *column, decimals);
+                self.write_cell_text(quote, *column, decimals, &mut cell_text);
+                let text = cell_text.as_str();
                 // A signed column is coloured by the quote's direction, not by the text's
                 // own sign, so a change and its percentage can never disagree about colour.
                 let color = if column.is_signed() {
@@ -988,7 +1076,7 @@ impl Draw for QuoteBoard {
                 // keeping the label inside its column; this is that fix's other half. Fitting
                 // is the honest reading: a clipped value reads as truncated, one that has run
                 // into its neighbour reads as a corrupted table.
-                let text_width = measure_body_text(&text, font) as i32;
+                let text_width = measure_body_text(text, font) as i32;
                 let inset = self.cell_inset();
                 let band = if column.is_numeric() {
                     // Reserved from the trailing edge so the digits line up column-wise.
@@ -1006,7 +1094,7 @@ impl Draw for QuoteBoard {
                     // whole and still right-aligned.
                     context.draw_text(
                         Point { x: line.x, y: line.y },
-                        &text,
+                        text,
                         font,
                         color,
                         HorizontalAlignment::Left,
@@ -1014,7 +1102,7 @@ impl Draw for QuoteBoard {
                 } else {
                     context.draw_text_fitted_cow(
                         line,
-                        &text,
+                        text,
                         font,
                         color,
                         HorizontalAlignment::Left,
@@ -1130,6 +1218,7 @@ impl WidgetProperties for QuoteBoard {
                 None => Ok(CapabilityValue::Null),
             },
             "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            "scroll_offset" => Ok(CapabilityValue::UInt(self.scroll_offset() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -1168,12 +1257,25 @@ impl WidgetProperties for QuoteBoard {
                 Ok(())
             }
             "row_height" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "scroll_offset" => {
+                let CapabilityValue::UInt(offset) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_scroll_offset(usize::try_from(offset).unwrap_or(usize::MAX));
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["sort", "selected_index", "row_height", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "sort",
+            "selected_index",
+            "row_height",
+            "scroll_offset",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `quote_board` publishes.
@@ -1203,6 +1305,37 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     /// The board carries the quotes it was given.
+    /// A scrolled board draws and hit-tests the same rows.
+    #[test]
+    fn scrolling_reaches_rows_past_the_first_window() {
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 240, 120));
+        let quotes: Vec<Quote> = (0..20)
+            .map(|index| Quote {
+                symbol: format!("S{index}"),
+                name: format!("Name {index}"),
+                last: 10.0 + index as f64,
+                ..Quote::default()
+            })
+            .collect();
+        board.set_quotes(quotes);
+        assert_eq!(board.visible_row_count(), 4);
+
+        board.set_scroll_offset(10);
+        assert_eq!(board.scroll_offset(), 10);
+        let first_row_y = board.first_row_y();
+        assert_eq!(board.row_at(first_row_y + 1), Some(10));
+        assert_eq!(board.row_at(first_row_y + 22 + 1), Some(11));
+
+        // The wheel moves the window, clamped to the last full page.
+        board.handle_event(&Event::wheel(0, 1, 0));
+        assert_eq!(board.scroll_offset(), 13);
+        board.handle_event(&Event::wheel(0, -1, 0));
+        assert_eq!(board.scroll_offset(), 10);
+
+        assert!(board.set("scroll_offset", CapabilityValue::UInt(12)).is_ok());
+        assert_eq!(board.scroll_offset(), 12);
+    }
+
     #[test]
     fn a_board_carries_its_quotes() {
         let mut board = QuoteBoard::new(Rect::new(0, 0, 640, 240));

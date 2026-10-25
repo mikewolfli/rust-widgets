@@ -187,6 +187,39 @@ fn gallery_image_from_record(
     })
 }
 
+/// Which gesture an un-modified wheel performs on the gallery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GalleryWheelMode {
+    /// Scroll the thumbnail strip (the default).
+    #[default]
+    Strip,
+    /// Step to the previous/next image.
+    Navigate,
+    /// Zoom the preview and the strip.
+    Zoom,
+}
+
+impl GalleryWheelMode {
+    /// The token this mode is spelled as in a property write.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GalleryWheelMode::Strip => "strip",
+            GalleryWheelMode::Navigate => "navigate",
+            GalleryWheelMode::Zoom => "zoom",
+        }
+    }
+
+    /// Parses the token back, rejecting anything else.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "strip" => GalleryWheelMode::Strip,
+            "navigate" => GalleryWheelMode::Navigate,
+            "zoom" => GalleryWheelMode::Zoom,
+            _ => return None,
+        })
+    }
+}
+
 /// ImageGallery — an image gallery/browser widget with thumbnails and large view.
 pub struct ImageGallery {
     base: BaseWidget,
@@ -227,6 +260,26 @@ pub struct ImageGallery {
     pub selection_changed: Signal1<Vec<usize>>,
     /// Emitted when the current image is double-clicked (a full-screen request).
     pub fullscreen_requested: Signal1<usize>,
+    /// The first image index the thumbnail strip shows.
+    ///
+    /// The strip used to derive its first slot from `current_index` alone, so a gallery with more
+    /// images than visible slots could not reach the tail of the list: the offset was always
+    /// clamped back to "centred on the selection". This is the manual scroll position, and
+    /// selecting an image still reveals it through [`Self::reveal_index`].
+    strip_offset: usize,
+    /// Whether the wheel may scroll the thumbnail strip.
+    strip_scroll_enabled: bool,
+    /// What an un-modified wheel does.
+    wheel_mode: GalleryWheelMode,
+    /// Whether arrow keys navigate when the gallery has focus.
+    arrow_key_navigation_enabled: bool,
+    /// Horizontal/vertical pan of the zoomed preview, in pixels.
+    pan_x: i32,
+    pan_y: i32,
+    /// An in-flight preview drag: the last pointer position while panning.
+    pan_drag: Option<(f32, f32)>,
+    /// Emitted with the new strip offset whenever it changes.
+    pub strip_scrolled: Signal1<usize>,
 }
 
 impl ImageGallery {
@@ -247,6 +300,14 @@ impl ImageGallery {
             selected: std::collections::BTreeSet::new(),
             selection_changed: Signal1::new(),
             fullscreen_requested: Signal1::new(),
+            strip_offset: 0,
+            strip_scroll_enabled: true,
+            wheel_mode: GalleryWheelMode::default(),
+            arrow_key_navigation_enabled: true,
+            pan_x: 0,
+            pan_y: 0,
+            pan_drag: None,
+            strip_scrolled: Signal1::new(),
         }
     }
 
@@ -327,6 +388,10 @@ impl ImageGallery {
         let new_index = index.min(self.images.len() - 1);
         if new_index != self.current_index {
             self.current_index = new_index;
+            // A new image is read at its natural scale, so the previous image's pan is not
+            // carried over to a picture it never described.
+            self.pan_x = 0;
+            self.pan_y = 0;
             // The new image **arrives** rather than replacing the old one between two frames. Every
             // navigation path funnels through here (`next_image`/`previous_image` call this), so the
             // reveal is aimed at the one choke point instead of at each of the three -- which is how
@@ -334,6 +399,7 @@ impl ImageGallery {
             self.reveal.jump_to(0.0);
             self.reveal.set_target(1.0);
             self.image_changed.emit(self.current_index);
+            self.reveal_index(self.current_index);
             self.base.request_redraw();
         }
     }
@@ -423,13 +489,144 @@ impl ImageGallery {
         );
         let thumb_total = self.effective_thumbnail_size() + THUMB_SPACING;
         let max_visible = strip.width.checked_div(thumb_total).map_or(1, |v| v.max(1) as usize);
-        let start_offset = if self.current_index >= max_visible / 2 {
-            (self.current_index - max_visible / 2)
-                .min(self.images.len().saturating_sub(max_visible))
-        } else {
-            0
-        };
+        // The first slot is the stored scroll position, clamped to the tail of the list. The
+        // previous derivation always re-centred on `current_index`, so any thumbnail past the
+        // visible window was unreachable no matter what the user did.
+        let start_offset = self.strip_offset.min(self.images.len().saturating_sub(max_visible));
         Some((strip, max_visible, start_offset))
+    }
+
+    /// How many thumbnails the strip can show at once.
+    fn visible_thumb_count(&self) -> usize {
+        let rect = self.geometry();
+        let thumb_total = self.effective_thumbnail_size() + THUMB_SPACING;
+        rect.width.checked_div(thumb_total).map_or(1, |v| v.max(1) as usize)
+    }
+
+    /// The largest offset that still fills the strip with thumbnails.
+    fn max_strip_offset(&self) -> usize {
+        self.images.len().saturating_sub(self.visible_thumb_count())
+    }
+
+    /// The first image index the thumbnail strip shows.
+    pub fn strip_offset(&self) -> usize {
+        self.strip_offset.min(self.max_strip_offset())
+    }
+
+    /// Scrolls the strip to `offset`, clamped to the last full window.
+    pub fn set_strip_offset(&mut self, offset: usize) {
+        let next = offset.min(self.max_strip_offset());
+        if next == self.strip_offset {
+            return;
+        }
+        self.strip_offset = next;
+        self.strip_scrolled.emit(next);
+        self.base.request_redraw();
+    }
+
+    /// Whether the wheel scrolls the thumbnail strip.
+    pub fn strip_scroll_enabled(&self) -> bool {
+        self.strip_scroll_enabled
+    }
+
+    /// Enables or disables wheel scrolling of the thumbnail strip.
+    pub fn set_strip_scroll_enabled(&mut self, enabled: bool) {
+        if self.strip_scroll_enabled == enabled {
+            return;
+        }
+        self.strip_scroll_enabled = enabled;
+        self.base.request_redraw();
+    }
+
+    /// What an un-modified wheel does.
+    pub fn wheel_mode(&self) -> GalleryWheelMode {
+        self.wheel_mode
+    }
+
+    /// Sets what an un-modified wheel does.
+    pub fn set_wheel_mode(&mut self, mode: GalleryWheelMode) {
+        if self.wheel_mode == mode {
+            return;
+        }
+        self.wheel_mode = mode;
+        self.base.request_redraw();
+    }
+
+    /// Whether arrow keys navigate while the gallery has focus.
+    pub fn arrow_key_navigation_enabled(&self) -> bool {
+        self.arrow_key_navigation_enabled
+    }
+
+    /// Enables or disables arrow-key navigation.
+    pub fn set_arrow_key_navigation_enabled(&mut self, enabled: bool) {
+        self.arrow_key_navigation_enabled = enabled;
+    }
+
+    /// Scrolls the strip by `delta` images: positive moves toward later images.
+    pub fn scroll_strip_by(&mut self, delta: isize) {
+        let next = (self.strip_offset() as isize + delta).max(0) as usize;
+        self.set_strip_offset(next);
+    }
+
+    /// Moves the strip's window so `index` is visible.
+    ///
+    /// Called whenever the selection changes: selecting a thumbnail at the edge of the window must
+    /// be able to pull the next one in, otherwise keyboard navigation walks a selection off screen.
+    fn reveal_index(&mut self, index: usize) {
+        let visible = self.visible_thumb_count().max(1);
+        let offset = self.strip_offset();
+        if index < offset {
+            self.set_strip_offset(index);
+        } else if index >= offset + visible {
+            self.set_strip_offset(index + 1 - visible);
+        }
+    }
+
+    /// The current preview pan, in pixels.
+    pub fn pan(&self) -> (i32, i32) {
+        (self.pan_x, self.pan_y)
+    }
+
+    /// Pans the zoomed preview by `(dx, dy)`, clamped so the picture cannot be dragged fully off
+    /// its stage.
+    pub fn pan_by(&mut self, dx: i32, dy: i32) {
+        let (max_x, max_y) = self.pan_bounds();
+        let next_x = (self.pan_x + dx).clamp(-max_x, max_x);
+        let next_y = (self.pan_y + dy).clamp(-max_y, max_y);
+        if (next_x, next_y) == (self.pan_x, self.pan_y) {
+            return;
+        }
+        self.pan_x = next_x;
+        self.pan_y = next_y;
+        self.base.request_redraw();
+    }
+
+    /// Returns the preview to its centred position.
+    pub fn reset_pan(&mut self) {
+        if self.pan_x == 0 && self.pan_y == 0 {
+            return;
+        }
+        self.pan_x = 0;
+        self.pan_y = 0;
+        self.base.request_redraw();
+    }
+
+    /// How far the picture may be panned on each axis.
+    fn pan_bounds(&self) -> (i32, i32) {
+        let preview = self.preview_rect();
+        let Some(image) = self.images.get(self.current_index) else {
+            return (0, 0);
+        };
+        let (width, height) = (image.width.max(1), image.height.max(1));
+        let scale = (preview.width as f32 / width as f32)
+            .min(preview.height as f32 / height as f32)
+            * self.zoom;
+        let drawn_w = (width as f32 * scale) as i32;
+        let drawn_h = (height as f32 * scale) as i32;
+        (
+            ((drawn_w - preview.width as i32) / 2).max(0),
+            ((drawn_h - preview.height as i32) / 2).max(0),
+        )
     }
 
     /// The box of the `i`-th visible slot in `strip`, which paints image
@@ -616,6 +813,11 @@ impl Widget for ImageGallery {
                     )
                 }))
             }
+            "strip_scrolled" => {
+                Some(EventSignalRef::mapped("strip_scrolled", &self.strip_scrolled, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
             _ => None,
         }
     }
@@ -638,6 +840,12 @@ impl WidgetProperties for ImageGallery {
             }
             "thumbnail_size" => Ok(CapabilityValue::UInt(self.thumbnail_size() as u64)),
             "show_thumbnails" => Ok(CapabilityValue::Bool(self.show_thumbnails())),
+            "strip_offset" => Ok(CapabilityValue::UInt(self.strip_offset() as u64)),
+            "strip_scroll_enabled" => Ok(CapabilityValue::Bool(self.strip_scroll_enabled())),
+            "wheel_mode" => Ok(CapabilityValue::String(self.wheel_mode().as_str().to_string())),
+            "arrow_key_navigation_enabled" => {
+                Ok(CapabilityValue::Bool(self.arrow_key_navigation_enabled()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -682,6 +890,27 @@ impl WidgetProperties for ImageGallery {
                 self.set_show_thumbnails(expect_bool(value)?);
                 Ok(())
             }
+            "strip_offset" => {
+                self.set_strip_offset(expect_usize(value)?);
+                Ok(())
+            }
+            "strip_scroll_enabled" => {
+                self.set_strip_scroll_enabled(expect_bool(value)?);
+                Ok(())
+            }
+            "wheel_mode" => {
+                let CapabilityValue::String(text) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                let mode =
+                    GalleryWheelMode::from_name(&text).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_wheel_mode(mode);
+                Ok(())
+            }
+            "arrow_key_navigation_enabled" => {
+                self.set_arrow_key_navigation_enabled(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -692,6 +921,10 @@ impl WidgetProperties for ImageGallery {
             "images",
             "thumbnail_size",
             "show_thumbnails",
+            "strip_offset",
+            "strip_scroll_enabled",
+            "wheel_mode",
+            "arrow_key_navigation_enabled",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -800,6 +1033,40 @@ impl Draw for ImageGallery {
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(stage_fallback);
         context.fill_rect(preview_rect, stage);
+
+        // The decoded picture, when the host (or `load_from_path`) supplied one. It is fitted to
+        // the stage at the current zoom and then displaced by the pan, so `pan_by` moves a
+        // picture that is actually painted rather than a value nothing reads.
+        #[cfg(feature = "image")]
+        if let Some(image) = self.images.get(self.current_index) {
+            if let Some(decoded) = image.image.as_ref() {
+                if let crate::image::ImageData::Rgba8(pixels) = &decoded.inner.data {
+                    if !pixels.is_empty() && preview_rect.width > 0 && preview_rect.height > 0 {
+                        let (source_w, source_h) =
+                            (decoded.width().max(1), decoded.height().max(1));
+                        let scale = (preview_rect.width as f32 / source_w as f32)
+                            .min(preview_rect.height as f32 / source_h as f32)
+                            * self.zoom;
+                        let draw_w = (source_w as f32 * scale).round().max(1.0) as u32;
+                        let draw_h = (source_h as f32 * scale).round().max(1.0) as u32;
+                        let x = preview_rect.x
+                            + (preview_rect.width as i32 - draw_w as i32) / 2
+                            + self.pan_x;
+                        let y = preview_rect.y
+                            + (preview_rect.height as i32 - draw_h as i32) / 2
+                            + self.pan_y;
+                        context.push_clip(
+                            preview_rect.x,
+                            preview_rect.y,
+                            preview_rect.width,
+                            preview_rect.height,
+                        );
+                        context.draw_image(x, y, draw_w, draw_h, pixels);
+                        context.pop_clip();
+                    }
+                }
+            }
+        }
         // One step from the stage toward its own contrast colour. The old near-whites are what this
         // expression produces on the default dark stage (`(30,30,30)` -> `contrast_color()` white ->
         // blend 0.85), so an unstyled gallery looks exactly as it did while a themed stage carries
@@ -1070,6 +1337,10 @@ impl EventHandler for ImageGallery {
                                 return;
                             }
                         }
+                        // A press anywhere else on the stage begins a pan. `pan_by` clamps to
+                        // the space the zoomed picture actually overhangs, so at zoom 1.0 this
+                        // gesture is a no-op rather than a way to slide the image off-screen.
+                        self.pan_drag = Some((pos.x as f32, pos.y as f32));
                         return;
                     }
 
@@ -1095,6 +1366,15 @@ impl EventHandler for ImageGallery {
                 }
             }
             Event::MouseMove { pos, .. } => {
+                if let Some((last_x, last_y)) = self.pan_drag {
+                    let dx = pos.x as f32 - last_x;
+                    let dy = pos.y as f32 - last_y;
+                    if dx != 0.0 || dy != 0.0 {
+                        self.pan_by(dx.round() as i32, dy.round() as i32);
+                        self.pan_drag = Some((pos.x as f32, pos.y as f32));
+                        return;
+                    }
+                }
                 // Hover is the thumbnail under the pointer, from the same slot boxes the
                 // paint and the press read. `MouseMove` fires far more often than the
                 // highlight changes, so the redraw is requested only on an actual change.
@@ -1103,6 +1383,9 @@ impl EventHandler for ImageGallery {
                     self.hovered_thumb = hovered;
                     self.base.request_redraw();
                 }
+            }
+            Event::MouseRelease { .. } => {
+                self.pan_drag = None;
             }
             Event::MouseLeave { .. } => {
                 if self.hovered_thumb.take().is_some() {
@@ -1119,24 +1402,53 @@ impl EventHandler for ImageGallery {
                 if mods.contains(crate::shortcut::Modifiers::CTRL) {
                     let step = if delta.y > 0 { -0.1 } else { 0.1 };
                     self.set_zoom(self.zoom + step);
-                } else if delta.y < 0 {
-                    self.next_image();
-                } else if delta.y > 0 {
-                    self.previous_image();
+                } else {
+                    // An un-modified wheel scrolls the strip by default: the previous arm stepped
+                    // the *image*, which made the strip the one thing the wheel could not reach.
+                    match self.wheel_mode {
+                        GalleryWheelMode::Strip if self.strip_scroll_enabled => {
+                            // A wheel "toward the user" (positive `y`) walks back through the strip.
+                            self.scroll_strip_by(if delta.y < 0 {
+                                1
+                            } else if delta.y > 0 {
+                                -1
+                            } else {
+                                0
+                            });
+                        }
+                        GalleryWheelMode::Strip | GalleryWheelMode::Navigate => {
+                            if delta.y < 0 {
+                                self.next_image();
+                            } else if delta.y > 0 {
+                                self.previous_image();
+                            }
+                        }
+                        GalleryWheelMode::Zoom => {
+                            let step = if delta.y > 0 { -0.1 } else { 0.1 };
+                            self.set_zoom(self.zoom + step);
+                        }
+                    }
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => {
-                match key {
-                    // Right arrow or Down arrow = next.
-                    39 | 40 => {
+            // Named key constants instead of the bare 37-40 literals, and a focus gate: an
+            // unfocused gallery used to consume every arrow key in the window.
+            Event::KeyPress { key, .. }
+                if self.base.focus_reason().is_some() && self.arrow_key_navigation_enabled =>
+            {
+                match *key {
+                    crate::event::key_codes::RIGHT | crate::event::key_codes::DOWN => {
                         self.next_image();
                     }
-                    // Left arrow or Up arrow = previous.
-                    37 | 38 => {
+                    crate::event::key_codes::LEFT | crate::event::key_codes::UP => {
                         self.previous_image();
                     }
                     _ => {}
                 }
+            }
+            Event::KeyPress { .. } => {
+                // An unfocused gallery (or one with arrow navigation disabled) forwards the key
+                // to the base rather than swallowing it.
+                self.base.handle_event(event);
             }
             _ => {
                 self.base.handle_event(event);
@@ -1495,6 +1807,8 @@ mod tests {
         g.set_zoom(f32::NAN);
         assert_eq!(g.zoom(), 2.0, "a non-finite zoom is ignored");
 
+        // The wheel scrolls the strip by default; navigation is an explicit mode now.
+        g.set_wheel_mode(GalleryWheelMode::Navigate);
         g.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
         assert!(g.selected_index().unwrap_or(0) > 0 || g.image_count() < 2);
         g.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0b0010 });

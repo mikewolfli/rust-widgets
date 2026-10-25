@@ -190,6 +190,24 @@ pub struct QueryBuilderGroup {
 const ROW_HEIGHT: u32 = 30;
 const HEADER_HEIGHT: u32 = 34;
 
+/// Width of the row's field column, measured from its own leading edge.
+const FIELD_COLUMN_WIDTH: i32 = 84;
+
+/// Width of the row's operator column.
+const OPERATOR_COLUMN_WIDTH: i32 = 96;
+
+/// The part of a condition row a press landed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum QueryRowPart {
+    /// The field-label column.
+    Field,
+    /// The operator token column.
+    Operator,
+    /// The operand input box.
+    Operand,
+}
+
 /// QueryBuilder — edits a recursive filter as a list of rows.
 pub struct QueryBuilder {
     base: BaseWidget,
@@ -218,6 +236,18 @@ pub struct QueryBuilder {
     groups: Vec<QueryBuilderGroup>,
     /// The next group identifier.
     next_group_id: usize,
+    /// Whether every keystroke emits `query_changed`.
+    live_update: bool,
+    /// How long the editor waits after the last keystroke before committing, in milliseconds.
+    commit_delay_ms: u32,
+    /// Elapsed time since the last uncommitted edit, when one is pending.
+    pending_commit_ms: Option<u32>,
+    /// Emitted when the edit is committed: Enter, focus loss, or the debounce expiring.
+    pub query_committed: Signal1<FilterExpr>,
+    /// Emitted with the row index when its field column is clicked.
+    pub row_field_clicked: Signal1<usize>,
+    /// Emitted with the row index when its operator column is clicked.
+    pub row_operator_clicked: Signal1<usize>,
 }
 
 impl QueryBuilder {
@@ -238,6 +268,12 @@ impl QueryBuilder {
             drag_row: None,
             groups: Vec::new(),
             next_group_id: 0,
+            live_update: true,
+            commit_delay_ms: 300,
+            pending_commit_ms: None,
+            query_committed: Signal1::new(),
+            row_field_clicked: Signal1::new(),
+            row_operator_clicked: Signal1::new(),
         }
     }
 
@@ -742,13 +778,170 @@ impl QueryBuilder {
         })
     }
 
-    /// Emits the current query.
+    /// Emits the current query when live update is on, otherwise marks a commit pending.
     fn emit_query(&mut self) {
-        let query = self.build_query();
-        if self.query_changed.slot_count() > 0 {
-            self.query_changed.emit(query);
+        if self.live_update {
+            let query = self.build_query();
+            if self.query_changed.slot_count() > 0 {
+                self.query_changed.emit(query);
+            }
+        } else if self.commit_delay_ms == 0 {
+            // A zero delay is a debounce with no wait: every edit commits.
+            self.commit();
+        } else {
+            // The edit is staged; `tick` commits it once the user pauses.
+            self.pending_commit_ms = Some(0);
         }
         self.base.request_redraw();
+    }
+
+    /// Whether every keystroke emits `query_changed` immediately.
+    pub fn live_update(&self) -> bool {
+        self.live_update
+    }
+
+    /// Enables or disables live query emission.
+    ///
+    /// With live update off the builder still repaints every edit but only emits
+    /// `query_committed` — that is the point of the split: a host that rebuilds a `FilterExpr` and
+    /// re-filters a table on every keystroke pays for each character, which is what this switch
+    /// exists to avoid.
+    pub fn set_live_update(&mut self, live_update: bool) {
+        if self.live_update == live_update {
+            return;
+        }
+        self.live_update = live_update;
+        self.base.request_redraw();
+    }
+
+    /// The debounce delay before an edit is committed, in milliseconds.
+    pub fn commit_delay_ms(&self) -> u32 {
+        self.commit_delay_ms
+    }
+
+    /// Sets the debounce delay; `0` commits on every edit.
+    pub fn set_commit_delay_ms(&mut self, delay_ms: u32) {
+        self.commit_delay_ms = delay_ms;
+    }
+
+    /// Whether an edit is waiting for its debounce to expire.
+    pub fn has_pending_commit(&self) -> bool {
+        self.pending_commit_ms.is_some()
+    }
+
+    /// Commits the current query, emitting `query_committed`.
+    ///
+    /// Returns whether there was anything to commit: a builder with no pending edit still
+    /// accepts an explicit commit, because Enter on a focused row is a meaningful "apply now".
+    pub fn commit(&mut self) -> bool {
+        self.pending_commit_ms = None;
+        let query = self.build_query();
+        if self.query_committed.slot_count() > 0 {
+            self.query_committed.emit(query);
+        }
+        true
+    }
+
+    /// Advances the commit debounce by `delta_ms`; `true` while a commit is still pending.
+    pub fn tick_commit(&mut self, delta_ms: u32) -> bool {
+        let Some(elapsed) = self.pending_commit_ms.as_mut() else {
+            return false;
+        };
+        *elapsed = elapsed.saturating_add(delta_ms);
+        if *elapsed >= self.commit_delay_ms {
+            self.commit();
+            return false;
+        }
+        true
+    }
+
+    /// Switches a row to its field's next field, wrapping at the end.
+    ///
+    /// Returns `false` when the row or the field list does not exist. When the new field does
+    /// not offer the row's current operator, the operator moves to that field's default — a
+    /// `starts_with` left on a numeric field would otherwise be a row the builder cannot build.
+    pub fn cycle_row_field(&mut self, index: usize) -> bool {
+        if self.fields.is_empty() {
+            return false;
+        }
+        let Some(field) = self.rows.get(index).map(|row| row.field) else {
+            return false;
+        };
+        let next_field = (field + 1) % self.fields.len();
+        let operator = self.rows.get(index).map(|row| row.operator);
+        if let Some(row) = self.rows.get_mut(index) {
+            row.field = next_field;
+        }
+        let offered = operator.is_some_and(|operator| {
+            self.fields.get(next_field).is_some_and(|field| field.operators.contains(&operator))
+        });
+        if !offered {
+            let default = self.fields.get(next_field).map(|field| field.default_operator());
+            if let (Some(row), Some(default)) = (self.rows.get_mut(index), default) {
+                row.operator = default;
+            }
+        }
+        self.notify_rows_changed();
+        self.emit_query();
+        true
+    }
+
+    /// Switches a row to the next operator its field offers, wrapping at the end.
+    pub fn cycle_row_operator(&mut self, index: usize) -> bool {
+        let Some((field_index, operator)) =
+            self.rows.get(index).map(|row| (row.field, row.operator))
+        else {
+            return false;
+        };
+        let Some(field) = self.fields.get(field_index) else {
+            return false;
+        };
+        if field.operators.is_empty() {
+            return false;
+        }
+        let current =
+            field.operators.iter().position(|candidate| *candidate == operator).unwrap_or(0);
+        let next = field.operators[(current + 1) % field.operators.len()];
+        self.set_row_operator(index, next)
+    }
+
+    /// The field, operator and operand boxes of row `index`.
+    ///
+    /// The paint path and the press arm both read this one derivation, so a column cannot be
+    /// drawn in one place and hit-tested in another — the defect class `draw_row` already
+    /// records for its `x` cursor.
+    fn row_columns(&self, index: usize) -> Option<(Rect, Rect, Rect)> {
+        let row_rect = self.row_rect(index)?;
+        let depth = self.row_group_depth(index);
+        // The leading inset, the scope guide indent and the negation marker share one cursor,
+        // exactly as `draw_row` walks it.
+        let x = row_rect.x + 8 + depth as i32 * 10 + 16;
+        let field = Rect::new(x, row_rect.y, FIELD_COLUMN_WIDTH as u32, ROW_HEIGHT);
+        let operator =
+            Rect::new(x + FIELD_COLUMN_WIDTH, row_rect.y, OPERATOR_COLUMN_WIDTH as u32, ROW_HEIGHT);
+        let operand_x = x + FIELD_COLUMN_WIDTH + OPERATOR_COLUMN_WIDTH;
+        let operand = Rect::new(
+            operand_x,
+            row_rect.y + 6,
+            row_rect.width.saturating_sub((operand_x - row_rect.x).max(0) as u32 + 30),
+            18,
+        );
+        Some((field, operator, operand))
+    }
+
+    /// Which part of which row `pos` is over, if any.
+    fn row_part_at(&self, pos: Point) -> Option<(usize, QueryRowPart)> {
+        let index = self.row_at(pos)?;
+        let (field, operator, operand) = self.row_columns(index)?;
+        if field.contains_point(pos) {
+            Some((index, QueryRowPart::Field))
+        } else if operator.contains_point(pos) {
+            Some((index, QueryRowPart::Operator))
+        } else if operand.contains_point(pos) {
+            Some((index, QueryRowPart::Operand))
+        } else {
+            None
+        }
     }
 
     /// The rectangle of the row at `index`.
@@ -817,6 +1010,16 @@ impl Widget for QueryBuilder {
     fn size_hint(&self) -> Size {
         Size::new(360, 120)
     }
+
+    /// Advances the commit debounce; `true` while a commit is still pending.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.tick_commit(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.has_pending_commit()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -839,6 +1042,21 @@ impl Widget for QueryBuilder {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
+            "query_committed" => {
+                Some(EventSignalRef::mapped("query_committed", &self.query_committed, |v| {
+                    CapabilityValue::String(crate::compat::format!("{v:?}"))
+                }))
+            }
+            "row_field_clicked" => {
+                Some(EventSignalRef::mapped("row_field_clicked", &self.row_field_clicked, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "row_operator_clicked" => Some(EventSignalRef::mapped(
+                "row_operator_clicked",
+                &self.row_operator_clicked,
+                |v| CapabilityValue::UInt(*v as u64),
+            )),
             "query_changed" => {
                 Some(EventSignalRef::mapped("query_changed", &self.query_changed, |v| {
                     CapabilityValue::String(format!("{v:?}"))
@@ -903,6 +1121,9 @@ impl WidgetProperties for QueryBuilder {
                 Some(index) => CapabilityValue::UInt(index as u64),
                 None => CapabilityValue::Null,
             }),
+            "live_update" => Ok(CapabilityValue::Bool(self.live_update())),
+            "commit_delay_ms" => Ok(CapabilityValue::UInt(self.commit_delay_ms() as u64)),
+            "has_pending_commit" => Ok(CapabilityValue::Bool(self.has_pending_commit())),
             _ => base_property_get(self, name),
         }
     }
@@ -929,8 +1150,21 @@ impl WidgetProperties for QueryBuilder {
             },
             // Derived from the row list, which is written through `add_row` /
             // `remove_row` / `set_row_*`.
-            "row_count" | "incomplete_row_count" | "field_count" => {
+            "row_count" | "incomplete_row_count" | "field_count" | "has_pending_commit" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            "live_update" => {
+                let enabled = match value {
+                    CapabilityValue::Bool(enabled) => enabled,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_live_update(enabled);
+                Ok(())
+            }
+            "commit_delay_ms" => {
+                let delay = expect_usize(value)?;
+                self.set_commit_delay_ms(u32::try_from(delay).unwrap_or(u32::MAX));
+                Ok(())
             }
             _ => base_property_set(self, name, value),
         }
@@ -944,6 +1178,9 @@ impl WidgetProperties for QueryBuilder {
             "field_count",
             "conjunction",
             "active_row",
+            "live_update",
+            "commit_delay_ms",
+            "has_pending_commit",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1267,6 +1504,10 @@ impl QueryBuilder {
         // boundary is visible without a synthetic header row. Root rows (the default) are
         // laid out exactly as before.
         let depth = self.row_group_depth(index);
+        let (field_box, operator_box, operand_box) = match self.row_columns(index) {
+            Some(columns) => columns,
+            None => return,
+        };
         if depth > 0 {
             let guide_x = row_rect.x + 4 + (depth.saturating_sub(1)) as i32 * 10;
             context
@@ -1284,64 +1525,53 @@ impl QueryBuilder {
                 HorizontalAlignment::Left,
             );
         }
-        x += 16;
-
         // Field name. The label is host-supplied, so it is fitted to the column it owns rather
-        // than placed and left to run: `x` is the column's leading edge and the column is 84 px
-        // wide, so a long field name must elide at 80 rather than spill into the operator. The
-        // box top is the old origin (`row_rect.y + 19`), which keeps the label at the same
-        // height while the fit supplies the horizontal bound.
+        // than placed and left to run: a long field name must elide at the column's edge rather
+        // than spill into the operator. Both boxes come from `row_columns`, the same derivation
+        // the press arm hit-tests.
         let field_label: &str =
             self.fields.get(row.field).map_or("(field)", |field| field.label.as_str());
         context.draw_text_fitted_cow(
-            Rect::new(x, row_rect.y + 19, 80, 11),
+            Rect::new(field_box.x, field_box.y + 19, field_box.width.saturating_sub(4), 11),
             field_label,
             fonts.small,
             chrome.text(),
             HorizontalAlignment::Left,
         );
-        x += 84;
 
         // Operator token.
         context.draw_text(
-            Point::new(x, row_rect.y + 19),
+            Point::new(operator_box.x, operator_box.y + 19),
             row.operator.as_str(),
             fonts.tiny,
             chrome.placeholder_text(),
             HorizontalAlignment::Left,
         );
-        x += 96;
 
         // Operand field, drawn as an input box so an empty row reads as "type here".
-        let operand_box = Rect::new(
-            x,
-            row_rect.y + 6,
-            row_rect.width.saturating_sub(200 + depth as u32 * 10),
-            18,
-        );
-        context.fill_rect(operand_box, chrome.field());
-        context.draw_rect(operand_box, chrome.border);
-        let (text, color): (&str, Color) = if row.operand.is_empty() {
-            ("type a value", chrome.placeholder_text())
-        } else {
-            (row.operand.as_str(), chrome.text())
-        };
-        // The operand is host-supplied too, and it is the value most likely to be long, so it is
-        // fitted to its own input box: the placement origin was `operand_box.y + 13`, so the box
-        // keeps that top edge and a value wider than the box elides at its trailing edge instead
-        // of painting over the row's remove button.
-        context.draw_text_fitted_cow(
-            Rect::new(
-                operand_box.x + 5,
-                operand_box.y + 13,
-                operand_box.width.saturating_sub(8),
-                11,
-            ),
-            text,
-            fonts.small,
-            color,
-            HorizontalAlignment::Left,
-        );
+        if operand_box.width > 0 {
+            context.fill_rect(operand_box, chrome.field());
+            context.draw_rect(operand_box, chrome.border);
+            let (text, color): (&str, Color) = if row.operand.is_empty() {
+                ("type a value", chrome.placeholder_text())
+            } else {
+                (row.operand.as_str(), chrome.text())
+            };
+            // The operand is host-supplied too, and it is the value most likely to be long, so it
+            // is fitted to its own input box instead of painting over the row's remove button.
+            context.draw_text_fitted_cow(
+                Rect::new(
+                    operand_box.x + 5,
+                    operand_box.y + 13,
+                    operand_box.width.saturating_sub(8),
+                    11,
+                ),
+                text,
+                fonts.small,
+                color,
+                HorizontalAlignment::Left,
+            );
+        }
 
         // Remove button.
         let remove = Rect::new(row_rect.x + row_rect.width as i32 - 24, row_rect.y + 8, 16, 16);
@@ -1424,8 +1654,26 @@ impl EventHandler for QueryBuilder {
                     if remove.contains_point(*pos) {
                         self.remove_row(index);
                     } else {
+                        // The field and operator columns are live controls, not decoration: a
+                        // press cycles them, which is the only way to change an existing row
+                        // without deleting and re-adding it. The columns come from
+                        // `row_columns`, the same derivation `draw_row` paints through.
+                        // The row is focused by a press on any of its parts; the field and
+                        // operator columns additionally cycle their token.
                         self.set_active_row(index);
-                        self.drag_row = Some(index);
+                        match self.row_part_at(*pos).map(|(_, part)| part) {
+                            Some(QueryRowPart::Field) => {
+                                self.row_field_clicked.emit(index);
+                                self.cycle_row_field(index);
+                            }
+                            Some(QueryRowPart::Operator) => {
+                                self.row_operator_clicked.emit(index);
+                                self.cycle_row_operator(index);
+                            }
+                            _ => {
+                                self.drag_row = Some(index);
+                            }
+                        }
                     }
                 }
             }
@@ -1447,6 +1695,20 @@ impl EventHandler for QueryBuilder {
                         row.operand.pop();
                     }
                     self.emit_query();
+                }
+            }
+            // Enter, focus loss and the debounce are the three commit points. Without them a
+            // host re-built the filter on every keystroke and had no way to say "the edit is
+            // finished".
+            Event::KeyPress { key: crate::event::key_codes::ENTER, .. }
+            | Event::KeyDown((crate::event::key_codes::ENTER, _))
+                if self.active_row.is_some() =>
+            {
+                self.commit();
+            }
+            Event::FocusLost => {
+                if self.has_pending_commit() {
+                    self.commit();
                 }
             }
             Event::KeyDown((38, _)) if self.active_row.is_some() => {

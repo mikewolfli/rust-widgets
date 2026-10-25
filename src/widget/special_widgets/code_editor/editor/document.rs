@@ -133,8 +133,9 @@ impl CodeEditor {
         // document also rebuilds its spans.
         self.read_only_spans.clear();
         // Bookmarks are document coordinates too; a wholesale replacement makes
-        // them point at unrelated text.
+        // them point at unrelated text. Breakpoints are anchored the same way.
         self.bookmarks.clear();
+        self.breakpoints.clear();
         self.invalidate_line_states();
         self.minimap_line_count = 0;
         self.scale = DocumentScale::for_lines(self.line_count());

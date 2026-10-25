@@ -20,7 +20,7 @@
 //! }
 //! ```
 
-use crate::core::Color;
+use crate::core::{Color, HorizontalAlignment};
 use crate::core::{Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -32,12 +32,19 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// The height reserved for the column-heading band, when headings are present.
+const GRID_HEADER_HEIGHT: u32 = 22;
+
 /// Grid widget for layout management.
 ///
 /// Displays a visual grid with configurable rows, columns, spacing,
 /// and grid-line rendering. Children can be assigned to cells via
 /// the parent's layout manager (typically a `GridLayout`), or
 /// positioned absolutely within the grid area.
+///
+/// The control also owns the text each cell shows: use
+/// [`GridWidget::set_cell_text`] for a cell and [`GridWidget::set_headers`] for the
+/// heading band. A grid used purely as a layout guide simply leaves both empty.
 pub struct GridWidget {
     base: BaseWidget,
     /// Number of rows in the grid (minimum 1).
@@ -72,12 +79,18 @@ pub struct GridWidget {
     page_rows: Option<u32>,
     /// The page currently drawn when paging is enabled.
     page: u32,
+    /// Per-cell text, indexed by `[row][column]`.
+    cells: Vec<Vec<String>>,
+    /// Optional column headings, one per column.
+    headers: Vec<String>,
     /// Emitted when a cell is clicked.
     pub cell_clicked: Signal1<(u32, u32)>,
     /// Emitted when pointer hover changes to another cell.
     pub cell_hovered: Signal1<(u32, u32)>,
     /// Emitted when a context menu is requested over a cell.
     pub context_menu_requested: Signal1<(u32, u32)>,
+    /// Emitted with the new page index when paging moves.
+    pub page_changed: Signal1<u32>,
 }
 
 impl GridWidget {
@@ -100,9 +113,12 @@ impl GridWidget {
             spans: Vec::new(),
             page_rows: None,
             page: 0,
+            cells: Vec::new(),
+            headers: Vec::new(),
             cell_clicked: Signal1::new(),
             cell_hovered: Signal1::new(),
             context_menu_requested: Signal1::new(),
+            page_changed: Signal1::new(),
         }
     }
 
@@ -125,9 +141,12 @@ impl GridWidget {
             spans: Vec::new(),
             page_rows: None,
             page: 0,
+            cells: Vec::new(),
+            headers: Vec::new(),
             cell_clicked: Signal1::new(),
             cell_hovered: Signal1::new(),
             context_menu_requested: Signal1::new(),
+            page_changed: Signal1::new(),
         }
     }
 
@@ -144,6 +163,7 @@ impl GridWidget {
             return;
         }
         self.rows = rows;
+        self.sync_cells();
         self.update_cell_dimensions();
         self.base.request_redraw();
     }
@@ -158,6 +178,7 @@ impl GridWidget {
             return;
         }
         self.columns = columns;
+        self.sync_cells();
         self.update_cell_dimensions();
         self.base.request_redraw();
     }
@@ -199,6 +220,72 @@ impl GridWidget {
         self.base.request_redraw();
     }
 
+    // ── Cell content ───────────────────────────────────────
+
+    /// Returns the text of `(row, column)`, or an empty string outside the grid.
+    pub fn cell_text(&self, row: u32, column: u32) -> &str {
+        self.cells
+            .get(row as usize)
+            .and_then(|cells| cells.get(column as usize))
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+
+    /// Sets the text of `(row, column)`.
+    ///
+    /// The backing store is grown to the grid's dimensions on demand, so a caller can fill
+    /// cells in any order. An out-of-range address is refused rather than silently stored,
+    /// because a cell that the control will never paint is not a model.
+    pub fn set_cell_text(&mut self, row: u32, column: u32, text: impl Into<String>) -> bool {
+        if row >= self.rows || column >= self.columns {
+            return false;
+        }
+        self.cells.resize_with(self.rows as usize, || vec![String::new(); self.columns as usize]);
+        for cells in &mut self.cells {
+            cells.resize_with(self.columns as usize, String::new);
+        }
+        self.cells[row as usize][column as usize] = text.into();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The column headings, one per column.
+    pub fn headers(&self) -> &[String] {
+        &self.headers
+    }
+
+    /// Replaces the column headings.
+    ///
+    /// Headings reserve a band above the matrix; an empty list removes that band and
+    /// restores the previous cell geometry.
+    pub fn set_headers(&mut self, headers: Vec<String>) {
+        if self.headers == headers {
+            return;
+        }
+        self.headers = headers;
+        self.update_cell_dimensions();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    fn sync_cells(&mut self) {
+        let columns = self.columns as usize;
+        self.cells.resize_with(self.rows as usize, || vec![String::new(); columns]);
+        for cells in &mut self.cells {
+            cells.resize_with(columns, String::new);
+        }
+    }
+
+    /// The band the matrix itself occupies, below the heading row when one is present.
+    fn body_rect(&self) -> Rect {
+        let rect = self.base.geometry();
+        if self.headers.is_empty() {
+            return rect;
+        }
+        let header = GRID_HEADER_HEIGHT.min(rect.height);
+        Rect::new(rect.x, rect.y + header as i32, rect.width, rect.height - header)
+    }
+
     // ── Cell info ──────────────────────────────────────────
 
     /// Returns the cached cell width computed during the last draw.
@@ -211,8 +298,8 @@ impl GridWidget {
     }
 
     /// Returns the cell row for a given y-coordinate, or `None` if outside.
-    pub fn cell_at_y(&self, y: i32) -> Option<u32> {
-        let rect = self.base.geometry();
+    fn cell_at_y(&self, y: i32) -> Option<u32> {
+        let rect = self.body_rect();
         if y < rect.y || y >= rect.y + rect.height as i32 {
             return None;
         }
@@ -230,7 +317,7 @@ impl GridWidget {
     }
 
     /// Returns the cell column for a given x-coordinate, or `None` if outside.
-    pub fn cell_at_x(&self, x: i32) -> Option<u32> {
+    fn cell_at_x(&self, x: i32) -> Option<u32> {
         let rect = self.base.geometry();
         if x < rect.x || x >= rect.x + rect.width as i32 {
             return None;
@@ -260,7 +347,7 @@ impl GridWidget {
         if row >= self.rows || col >= self.columns {
             return None;
         }
-        let rect = self.base.geometry();
+        let rect = self.body_rect();
         let visible_row = row.saturating_sub(self.first_row());
         if row < self.first_row() || visible_row >= self.visible_rows() {
             return None;
@@ -367,6 +454,7 @@ impl GridWidget {
         }
         self.page_rows = rows_per_page;
         self.page = 0;
+        self.update_cell_dimensions();
         self.base.request_redraw();
     }
 
@@ -388,6 +476,8 @@ impl GridWidget {
             return;
         }
         self.page = page;
+        self.update_cell_dimensions();
+        self.page_changed.emit(page);
         self.base.request_redraw();
     }
 
@@ -414,9 +504,12 @@ impl GridWidget {
 
     // ── Recalculate cell dimensions ────────────────────────
     fn update_cell_dimensions(&mut self) {
-        let rect = self.base.geometry();
+        let rect = self.body_rect();
         let cols = self.columns.max(1);
-        let rows = self.rows.max(1);
+        // The matrix is divided over the rows **drawn on this page**, not over every row in
+        // the model. Dividing by `rows` made a paged grid occupy only its first `page_rows`
+        // rows' worth of the control, leaving the rest of the rectangle empty.
+        let rows = self.visible_rows().max(1);
         let total_spacing_w = self.spacing.saturating_mul(cols.saturating_sub(1));
         let total_spacing_h = self.spacing.saturating_mul(rows.saturating_sub(1));
         self.cell_width = (rect.width.saturating_sub(total_spacing_w)) / cols;
@@ -490,6 +583,11 @@ impl Widget for GridWidget {
                     ]))
                 },
             )),
+            "page_changed" => {
+                Some(EventSignalRef::mapped("page_changed", &self.page_changed, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
             _ => None,
         }
     }
@@ -527,6 +625,10 @@ impl WidgetProperties for GridWidget {
             }),
             "selected_count" => Ok(CapabilityValue::UInt(self.selected_cells.len() as u64)),
             "page" => Ok(CapabilityValue::UInt(u64::from(self.page))),
+            "page_count" => Ok(CapabilityValue::UInt(u64::from(self.page_count()))),
+            "headers" => Ok(CapabilityValue::Tuple(
+                self.headers.iter().cloned().map(CapabilityValue::String).collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -590,6 +692,21 @@ impl WidgetProperties for GridWidget {
                 self.set_page(page);
                 Ok(())
             }
+            "headers" => {
+                let CapabilityValue::Tuple(items) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                let mut headers = Vec::with_capacity(items.len());
+                for item in items {
+                    let CapabilityValue::String(text) = item else {
+                        return Err(CapabilityAccessError::TypeMismatch);
+                    };
+                    headers.push(text);
+                }
+                self.set_headers(headers);
+                Ok(())
+            }
+            "page_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -605,6 +722,8 @@ impl WidgetProperties for GridWidget {
             "selected_cell",
             "selected_count",
             "page",
+            "page_count",
+            "headers",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -649,6 +768,7 @@ impl Draw for GridWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
         self.update_cell_dimensions();
+        let body = self.body_rect();
 
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
         // this control, and only then a literal. Every colour below used to be a literal, so a
@@ -709,6 +829,7 @@ impl Draw for GridWidget {
         // visible over a filled cell.
         let selection_fill = ink.blend(&cell_fill, 0.72);
         let hover_fill = ink.blend(&cell_fill, 0.88);
+        let cell_font = crate::widget::metrics::role_font(self.style(), 12.0);
         for row in self.first_row()..self.first_row() + self.visible_rows() {
             for column in 0..self.columns {
                 let Some(cell) = self.cell_rect(row, column) else {
@@ -719,7 +840,54 @@ impl Draw for GridWidget {
                 } else if self.hovered_cell == Some((row, column)) {
                     context.fill_rect(cell, hover_fill);
                 }
+                let text = self.cell_text(row, column);
+                if !text.is_empty() {
+                    let line = context.text_line(cell, &cell_font);
+                    let inset = 3u32.min(cell.width / 2);
+                    context.draw_text_fitted_cow(
+                        Rect::new(
+                            cell.x + inset as i32,
+                            line.y,
+                            cell.width.saturating_sub(inset * 2).max(1),
+                            line.height,
+                        ),
+                        text,
+                        &cell_font,
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
+        }
+
+        // ── Column headings ──
+        //
+        // Headings reserve their own band above the matrix, so a heading cannot be mistaken
+        // for row 0's data and the cell geometry stays a single derivation (`body_rect`).
+        if !self.headers.is_empty() && body.y > rect.y {
+            let band = Rect::new(rect.x, rect.y, rect.width, (body.y - rect.y) as u32);
+            context.fill_rect(band, ink.blend(&cell_fill, 0.9));
+            let font = crate::widget::metrics::role_font(self.style(), 11.0);
+            for column in 0..self.columns {
+                let Some(title) = self.headers.get(column as usize) else {
+                    continue;
+                };
+                let x = body.x + (column * (self.cell_width + self.spacing)) as i32;
+                let width = self.cell_width.max(1);
+                let line = context.text_line(Rect::new(x, band.y, width, band.height), &font);
+                context.draw_text_fitted_cow(
+                    Rect::new(x + 3, line.y, width.saturating_sub(6).max(1), line.height),
+                    title,
+                    &font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+            context.draw_line(
+                Point::new(band.x, band.y + band.height as i32),
+                Point::new(band.x + band.width as i32, band.y + band.height as i32),
+                border_color,
+            );
         }
         if !self.selected_cells.is_empty() {
             // A focused cell keeps a visible ring after the pointer leaves, so keyboard
@@ -748,24 +916,24 @@ impl Draw for GridWidget {
 
         // Vertical lines
         for col in 1..self.columns {
-            let x = rect.x + (col * (self.cell_width + self.spacing)) as i32
+            let x = body.x + (col * (self.cell_width + self.spacing)) as i32
                 - (self.spacing / 2) as i32;
-            let x = x.max(rect.x).min(rect.x + total_w as i32);
+            let x = x.max(body.x).min(body.x + total_w as i32);
             context.draw_line(
-                Point::new(x, rect.y),
-                Point::new(x, rect.y + total_h as i32),
+                Point::new(x, body.y),
+                Point::new(x, body.y + total_h as i32),
                 line_color,
             );
         }
 
         // Horizontal lines
         for row in 1..self.visible_rows() {
-            let y = rect.y + (row * (self.cell_height + self.spacing)) as i32
+            let y = body.y + (row * (self.cell_height + self.spacing)) as i32
                 - (self.spacing / 2) as i32;
-            let y = y.max(rect.y).min(rect.y + total_h as i32);
+            let y = y.max(body.y).min(body.y + total_h as i32);
             context.draw_line(
-                Point::new(rect.x, y),
-                Point::new(rect.x + total_w as i32, y),
+                Point::new(body.x, y),
+                Point::new(body.x + total_w as i32, y),
                 line_color,
             );
         }
@@ -825,6 +993,10 @@ impl EventHandler for GridWidget {
                     Some(crate::shortcut::Key::Enter) | Some(crate::shortcut::Key::Space) => {
                         self.select_cell(current);
                         self.cell_clicked.emit(current);
+                        return;
+                    }
+                    Some(crate::shortcut::Key::Escape) => {
+                        self.clear_selection();
                         return;
                     }
                     _ => return,
@@ -1016,6 +1188,45 @@ mod tests {
             V::Null,
             "and it reads back as null"
         );
+    }
+
+    /// A paged matrix fills the control with the rows it shows, not with a share of every
+    /// row in the model.
+    #[test]
+    fn a_paged_grid_fills_the_control_with_its_visible_rows() {
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 100, 100), 8, 2);
+        grid.set_page_rows(Some(2));
+        assert_eq!(grid.page_count(), 4);
+        assert_eq!(grid.cell_height(), 50, "two visible rows share the 100 px body");
+
+        let changed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+        let sink = std::sync::Arc::clone(&changed);
+        grid.page_changed.connect(move |page| sink.lock().unwrap().push(*page));
+        grid.set_page(2);
+        assert_eq!(grid.page(), 2);
+        assert_eq!(*changed.lock().unwrap(), vec![2]);
+    }
+
+    /// The grid owns per-cell text and a heading band; both are painted from that model.
+    #[test]
+    fn cell_text_and_headers_are_drawn_and_round_trip() {
+        use crate::widget::svg::render_to_svg;
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 200, 100), 2, 2);
+        let empty = render_to_svg(&mut grid);
+        assert!(grid.set_cell_text(0, 0, "Alpha"));
+        assert!(grid.set_cell_text(1, 1, "Beta"));
+        assert!(!grid.set_cell_text(4, 0, "out of range"));
+        assert_eq!(grid.cell_text(0, 0), "Alpha");
+        grid.set_headers(vec!["One".to_string(), "Two".to_string()]);
+
+        let painted = render_to_svg(&mut grid);
+        assert_ne!(empty, painted, "cell text and headings change the picture");
+
+        // Escape clears the selection without clearing the focus.
+        grid.select_cell((1, 1));
+        assert_eq!(grid.selected_cells().len(), 1);
+        grid.handle_event(&Event::key_press(27, 0));
+        assert!(grid.selected_cells().is_empty());
     }
 
     #[test]

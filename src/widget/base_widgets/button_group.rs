@@ -26,20 +26,29 @@
 //! reason groups cannot leak between tests: a group created by one test is not reachable from the
 //! next one. Entries are also removed as soon as their last member leaves, so a long-lived thread
 //! does not accumulate dead groups.
-use crate::compat::{HashMap, RefCell, String, Vec};
+use crate::compat::{Cell, HashMap, RefCell, String, Vec};
 use crate::core::{ObjectId, Rect};
+use crate::signal::Signal1;
 
 /// The key that names a group.
 ///
-/// Three spellings, because the three controls that use this registry group themselves
-/// differently: a radio button by its caller-chosen `group_id`, a check box by its parent (the
-/// reference toolkit's auto-exclusive rule), and a control with neither by nothing at all.
+/// Three spellings, because a group can be created three ways: a radio button by its
+/// caller-chosen `group_id`, a check box by its parent (the reference toolkit's auto-exclusive
+/// rule), and a public [`ButtonGroup`] handle by its own name or generated identity. The variants
+/// are distinct so an unnamed handle can never silently join — or capture — a group that a caller
+/// named.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum GroupKey {
     /// A caller-chosen group identifier.
     Name(String),
     /// Every exclusive control under one parent.
     Parent(ObjectId),
+    /// The identity of a [`ButtonGroup`] handle that has no caller-chosen id.
+    ///
+    /// A separate variant rather than a reserved `Name`: a caller's string and a handle's
+    /// generated number can never collide, so an id-less handle cannot silently adopt — or be
+    /// adopted by — a named group.
+    Handle(ObjectId),
 }
 
 /// One member of a group, as the group needs to see it.
@@ -65,6 +74,75 @@ struct Group {
 
 thread_local! {
     static GROUPS: RefCell<HashMap<GroupKey, Group>> = RefCell::new(HashMap::new());
+    /// Which group each member id is currently registered with.
+    ///
+    /// Kept beside `GROUPS` so the reverse question ("which group is this member in?") has an
+    /// answer that does not walk every group. `register` maintains it and `unregister` drops the
+    /// entry, so one widget's id maps to at most one group — the invariant the registry relies on
+    /// when it notifies a group's listeners.
+    static MEMBER_KEYS: RefCell<HashMap<ObjectId, GroupKey>> = RefCell::new(HashMap::new());
+    /// A group handle's explicit membership: the adopted group plus the caller-assigned numeric id.
+    ///
+    /// This is what lets a [`ButtonGroup`] adopt a control whose own `auto_exclusive`/`group_id`
+    /// properties say nothing about the handle. The member's effective key is resolved through
+    /// this map first, so an adopted control behaves exactly like one that joined by name.
+    static MEMBERSHIP: RefCell<HashMap<ObjectId, GroupMembership>> = RefCell::new(HashMap::new());
+    /// The group-level signals, created by a [`ButtonGroup`] handle.
+    ///
+    /// A group with no handle has no entry, so the common auto-exclusive case pays nothing: the
+    /// notification path looks the hub up and returns when there is none.
+    static HUBS: RefCell<HashMap<GroupKey, GroupSignals>> = RefCell::new(HashMap::new());
+    /// Source of the identities given to id-less [`ButtonGroup`] handles.
+    static NEXT_HANDLE: Cell<ObjectId> = const { Cell::new(1) };
+}
+
+/// The group a handle has adopted a member into, with the numeric id it answers to there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GroupMembership {
+    key: GroupKey,
+    /// The caller-assigned numeric id; defaults to the member's own widget id.
+    id: u64,
+}
+
+/// The four actions a group reports about its members.
+///
+/// One enum rather than four entry points because every member reports the same fact the same
+/// way — "this member did X" — and the hub is what decides which signal X is. A control therefore
+/// calls one function per event it already emits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemberEvent {
+    /// A member's press began (or repeated).
+    Pressed,
+    /// A member's press ended (or repeated).
+    Released,
+    /// A member was activated.
+    Clicked,
+    /// A member's latched state changed.
+    Toggled,
+}
+
+/// A group's group-level signals.
+///
+/// `Clone` shares the underlying signal instances, which is what lets a [`ButtonGroup`] handle and
+/// the thread-local hub hold the same four signals: the handle subscribes, the members emit, and
+/// no member needs a reference to the handle.
+#[derive(Clone, Default)]
+struct GroupSignals {
+    pressed: Signal1<u64>,
+    released: Signal1<u64>,
+    clicked: Signal1<u64>,
+    toggled: Signal1<u64>,
+}
+
+impl GroupSignals {
+    fn emit(&self, event: MemberEvent, id: ObjectId) {
+        match event {
+            MemberEvent::Pressed => self.pressed.emit(id),
+            MemberEvent::Released => self.released.emit(id),
+            MemberEvent::Clicked => self.clicked.emit(id),
+            MemberEvent::Toggled => self.toggled.emit(id),
+        }
+    }
 }
 
 /// Adds `member` to the group named by `key`, or refreshes its recorded facts.
@@ -74,6 +152,17 @@ thread_local! {
 /// control cannot know whether it has already announced itself, and re-announcing is idempotent.
 pub(crate) fn register(key: GroupKey, id: ObjectId, rect: Rect, enabled: bool) {
     let member = GroupMember { id, rect, enabled };
+    // A member belongs to exactly one group, so a registration under a new key first leaves the
+    // old one. The reverse index is updated before the unregister runs, which is why the two
+    // borrows cannot overlap.
+    let previous = MEMBER_KEYS
+        .try_with(|keys| keys.borrow_mut().insert(id, key.clone()))
+        .ok()
+        .flatten()
+        .filter(|previous| *previous != key);
+    if let Some(previous) = previous {
+        unregister(&previous, id);
+    }
     let _ = GROUPS.try_with(|groups| {
         let mut groups = groups.borrow_mut();
         let group = groups.entry(key).or_default();
@@ -100,6 +189,14 @@ pub(crate) fn unregister(key: &GroupKey, id: ObjectId) {
         }
         if group.members.is_empty() {
             groups.remove(key);
+        }
+    });
+    // The reverse index is dropped only when it still points at this group: a member that has
+    // already moved elsewhere must not lose the entry describing its new home.
+    let _ = MEMBER_KEYS.try_with(|keys| {
+        let mut keys = keys.borrow_mut();
+        if keys.get(&id) == Some(key) {
+            keys.remove(&id);
         }
     });
 }
@@ -186,6 +283,389 @@ pub(crate) fn notify_checked(ids: &[ObjectId], checked: bool) {
 #[cfg(alloc_frugal)]
 pub(crate) fn notify_checked(_ids: &[ObjectId], _checked: bool) {}
 
+/// The group a `ButtonGroup` handle has adopted `id` into, if any.
+///
+/// Every control resolves its effective group through this first, so a member added through
+/// [`ButtonGroup::add_button`] behaves exactly like one that joined by `group_id` or by being an
+/// auto-exclusive sibling: the group owns the selection and the member reads it back.
+pub(crate) fn membership(id: ObjectId) -> Option<GroupKey> {
+    MEMBERSHIP.try_with(|m| m.borrow().get(&id).map(|entry| entry.key.clone())).ok().flatten()
+}
+
+/// Reports one of a member's actions to the group it currently belongs to.
+///
+/// A group with no [`ButtonGroup`] handle has no hub, so this returns without allocating anything:
+/// the auto-exclusive-only case pays one map lookup per reported event and nothing else. The hub
+/// is cloned **before** emitting, so a listener that re-enters the registry cannot alias the
+/// borrow the lookup held.
+pub(crate) fn notify_member_event(id: ObjectId, event: MemberEvent) {
+    let Some(key) = MEMBER_KEYS
+        .try_with(|keys| keys.borrow().get(&id).cloned())
+        .ok()
+        .flatten()
+        .or_else(|| membership(id))
+    else {
+        return;
+    };
+    let hub = HUBS.try_with(|hubs| hubs.borrow().get(&key).cloned()).ok().flatten();
+    if let Some(hub) = hub {
+        hub.emit(event, id);
+    }
+}
+
+/// Detaches `id` from every group: handle membership, the reverse index and the group itself.
+///
+/// Called from each control's `Drop`, so a control that is destroyed cannot leave a stale member
+/// behind for a peer's navigation to find.
+pub(crate) fn leave_all(id: ObjectId) {
+    let _ = MEMBERSHIP.try_with(|m| m.borrow_mut().remove(&id));
+    let key = MEMBER_KEYS.try_with(|keys| keys.borrow_mut().remove(&id)).ok().flatten();
+    if let Some(key) = key {
+        // Removed from the reverse index already, so `unregister` only touches the group itself.
+        unregister(&key, id);
+    }
+}
+
+/// The group-level signals of one group, cloned out of the hub.
+fn hub_for(key: &GroupKey) -> GroupSignals {
+    HUBS.try_with(|hubs| hubs.borrow_mut().entry(key.clone()).or_default().clone())
+        .unwrap_or_default()
+}
+
+/// Allocates the identity a [`ButtonGroup`] handle uses when it has no caller-chosen id.
+///
+/// The number is only ever compared inside [`GroupKey::Handle`], so it cannot collide with a
+/// caller's name or with a widget id used as a parent key. A thread whose TLS is already being
+/// torn down still gets a value rather than a panic; it can only happen while the thread is going
+/// away.
+fn next_handle_identity() -> ObjectId {
+    NEXT_HANDLE
+        .try_with(|next| {
+            let value = next.get();
+            next.set(value.saturating_add(1));
+            value
+        })
+        .unwrap_or(1)
+}
+
+/// Moves one group — members, selection, reverse index and signal hub — to `new_key`.
+///
+/// Used by [`ButtonGroup::set_id`]. When the destination already holds a group, the two are
+/// merged: members keep their registration order, the destination's selection wins because it is
+/// the group the caller named, and the old key disappears. The signal hub moves only when the
+/// destination has none, so an existing handle's subscribers are never silently replaced by a
+/// rename.
+fn move_group(old_key: &GroupKey, new_key: &GroupKey) {
+    if old_key == new_key {
+        return;
+    }
+    let moved = GROUPS.try_with(|groups| {
+        let mut groups = groups.borrow_mut();
+        groups.remove(old_key)
+    });
+    if let Some(moved) = moved.ok().flatten() {
+        let _ = GROUPS.try_with(|groups| {
+            let mut groups = groups.borrow_mut();
+            let destination = groups.entry(new_key.clone()).or_default();
+            for member in moved.members {
+                match destination.members.iter_mut().find(|existing| existing.id == member.id) {
+                    Some(existing) => *existing = member,
+                    None => destination.members.push(member),
+                }
+            }
+            if destination.selected.is_none() {
+                destination.selected = moved.selected;
+            }
+        });
+    }
+    let moved_hub = HUBS.try_with(|hubs| {
+        let mut hubs = hubs.borrow_mut();
+        if hubs.contains_key(new_key) {
+            // The destination already has a hub; its subscribers win, and the old hub is dropped
+            // with the old key.
+            let _ = hubs.remove(old_key);
+        } else if let Some(hub) = hubs.remove(old_key) {
+            // Move the hub rather than recreating it: the handle's subscribers are connected to
+            // these signal instances, so replacing them would silently silence the group.
+            let _ = hubs.insert(new_key.clone(), hub);
+        }
+    });
+    let _ = moved_hub;
+    let _ = MEMBERSHIP.try_with(|m| {
+        for entry in m.borrow_mut().values_mut() {
+            if entry.key == *old_key {
+                entry.key = new_key.clone();
+            }
+        }
+    });
+    let _ = MEMBER_KEYS.try_with(|keys| {
+        for key in keys.borrow_mut().values_mut() {
+            if *key == *old_key {
+                *key = new_key.clone();
+            }
+        }
+    });
+}
+
+/// The facts the registry needs to order and notify a member: rectangle, enabled, checked.
+///
+/// Read through the widget registry, which is the only place an id resolves to a control. Under
+/// `alloc_frugal` there is no registry, so a member is recorded with a zero rectangle and reported
+/// enabled: it corrects the snapshot on its own next event, which is the documented limit of a
+/// build with no widget tree.
+#[cfg(not(alloc_frugal))]
+fn member_facts(id: ObjectId) -> Option<(Rect, bool, bool)> {
+    use crate::widget::capability::properties_trait::widget_property_get;
+    use crate::widget::capability::types::CapabilityValue;
+    crate::widget::runtime::with_widget_mut(id, |widget| {
+        let checked =
+            matches!(widget_property_get(widget, "checked"), Ok(CapabilityValue::Bool(true)));
+        (widget.geometry(), widget.is_enabled(), checked)
+    })
+}
+
+#[cfg(alloc_frugal)]
+fn member_facts(_id: ObjectId) -> Option<(Rect, bool, bool)> {
+    Some((Rect::new(0, 0, 0, 0), true, false))
+}
+
+/// A handle to one exclusive button group.
+///
+/// # What this adds over `auto_exclusive` / `group_id`
+///
+/// Those properties make controls exclude each other; they give the application no way to *ask*
+/// which member is selected, to add or remove a member, or to observe a member's action at the
+/// group level. This handle is that surface: it is the reference toolkit's `QButtonGroup`, built
+/// on the registry this module already keeps rather than on a second one.
+///
+/// # Identity
+///
+/// A group is named either by a caller-chosen [`ButtonGroup::set_id`] or by the handle's own
+/// generated identity. A named group is the same group a radio button joins through its `group_id`
+/// property, so a handle created with [`ButtonGroup::with_id`] immediately sees the controls that
+/// already form that group. Adding a member through [`ButtonGroup::add_button`] additionally makes
+/// the handle own the widget's grouping regardless of its own properties.
+///
+/// # Signals
+///
+/// The four group-level signals carry the member's widget id as their payload, which is the only
+/// handle this layer has on a control. They are emitted **in addition to** the member's own
+/// signals, never instead of them, so an existing per-control subscription keeps working.
+///
+/// # Cost
+///
+/// Signals live in a thread-local hub created on first use, so a group that no handle observes
+/// allocates nothing and reports nothing. Create one handle and keep it; creating a handle per
+/// frame would keep one hub per group alive for the thread's lifetime.
+#[derive(Clone)]
+pub struct ButtonGroup {
+    key: GroupKey,
+    signals: GroupSignals,
+}
+
+impl Default for ButtonGroup {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ButtonGroup {
+    /// Creates a group with a generated identity.
+    pub fn new() -> Self {
+        let key = GroupKey::Handle(next_handle_identity());
+        Self { signals: hub_for(&key), key }
+    }
+
+    /// Creates (or adopts) the group named `id`.
+    ///
+    /// Adopting rather than replacing is what makes two handles for one name observe the same
+    /// group: the second one shares the first one's signals and members.
+    pub fn with_id(id: impl Into<String>) -> Self {
+        let key = GroupKey::Name(id.into());
+        Self { signals: hub_for(&key), key }
+    }
+
+    /// The group's caller-chosen name, or `None` for a generated identity.
+    pub fn id(&self) -> Option<&str> {
+        match &self.key {
+            GroupKey::Name(name) => Some(name.as_str()),
+            GroupKey::Parent(_) | GroupKey::Handle(_) => None,
+        }
+    }
+
+    /// Renames the group to `id`, moving its members, selection and signals with it.
+    ///
+    /// A rename onto an existing group merges the two, which is what makes "give this anonymous
+    /// group the name the radio buttons already use" mean what it says rather than silently
+    /// producing two groups under one name.
+    pub fn set_id(&mut self, id: impl Into<String>) {
+        let new_key = GroupKey::Name(id.into());
+        if new_key == self.key {
+            return;
+        }
+        move_group(&self.key, &new_key);
+        self.key = new_key;
+        self.signals = hub_for(&self.key);
+    }
+
+    /// Removes the caller-chosen name, leaving the group under a fresh generated identity.
+    pub fn clear_id(&mut self) {
+        let new_key = GroupKey::Handle(next_handle_identity());
+        move_group(&self.key, &new_key);
+        self.key = new_key;
+        self.signals = hub_for(&self.key);
+    }
+
+    /// Adds `button` to the group, reporting whether the group now owns it.
+    ///
+    /// The member is registered with the facts the widget registry reports — geometry, enabled
+    /// state and checked state — so arrow navigation orders it correctly without waiting for its
+    /// first event. A member that was already checked becomes the group's selected member, which
+    /// is the same rule a radio button follows when it joins a group already holding a selection.
+    ///
+    /// A checkable member (check box, radio button, toggle button) keeps the selection current
+    /// through its own `set_checked`; a push button has no latch, so its default emphasis still
+    /// follows `auto_exclusive` rather than membership. Call [`ButtonGroup::set_checked_button`]
+    /// to move a button group's selection programmatically.
+    pub fn add_button(&mut self, button: ObjectId) -> bool {
+        self.add_button_with_id(button, button)
+    }
+
+    /// Adds `button` under a caller-chosen numeric id.
+    ///
+    /// The numeric id is what [`ButtonGroup::checked_id`] reports, which is the reference
+    /// toolkit's `QButtonGroup::addButton(button, id)`. Without it a member's id is its own widget
+    /// id, so the two accessors agree by default.
+    pub fn add_button_with_id(&mut self, button: ObjectId, id: u64) -> bool {
+        // One widget belongs to one group: registering it here leaves whatever group it was in.
+        if let Some(previous) =
+            MEMBER_KEYS.try_with(|keys| keys.borrow().get(&button).cloned()).ok().flatten()
+        {
+            if previous != self.key {
+                unregister(&previous, button);
+            }
+        }
+        let _ = MEMBERSHIP.try_with(|m| {
+            let _ = m.borrow_mut().insert(button, GroupMembership { key: self.key.clone(), id });
+        });
+        // Ensure the hub exists even for a group created before any member joined, so a control
+        // that reports an event before `add_button` returns is still observed.
+        let _ = hub_for(&self.key);
+        if let Some((rect, enabled, checked)) = member_facts(button) {
+            register(self.key.clone(), button, rect, enabled);
+            if checked {
+                select(&self.key, button);
+            }
+        }
+        true
+    }
+
+    /// Removes `button` from the group, reporting whether it was a member.
+    pub fn remove_button(&mut self, button: ObjectId) -> bool {
+        let in_handle = MEMBERSHIP
+            .try_with(|m| m.borrow().get(&button).is_some_and(|entry| entry.key == self.key))
+            .unwrap_or(false);
+        if in_handle {
+            let _ = MEMBERSHIP.try_with(|m| m.borrow_mut().remove(&button));
+        }
+        let registered = MEMBER_KEYS
+            .try_with(|keys| keys.borrow().get(&button) == Some(&self.key))
+            .unwrap_or(false);
+        unregister(&self.key, button);
+        in_handle || registered
+    }
+
+    /// The group's members, in registration order.
+    ///
+    /// A member added through [`ButtonGroup::add_button`] while it is not mounted has no registry
+    /// entry yet, so it is reported after the registered members, sorted by id. That keeps the
+    /// answer honest — the handle does own it — without pretending it has a rectangle it has not
+    /// reported.
+    pub fn buttons(&self) -> Vec<ObjectId> {
+        let mut ids: Vec<ObjectId> =
+            members(&self.key).into_iter().map(|member| member.id).collect();
+        let extra = MEMBERSHIP.try_with(|m| {
+            let mut extra: Vec<ObjectId> = m
+                .borrow()
+                .iter()
+                .filter(|(id, entry)| entry.key == self.key && !ids.contains(*id))
+                .map(|(id, _)| *id)
+                .collect();
+            extra.sort_unstable();
+            extra
+        });
+        if let Ok(extra) = extra {
+            ids.extend(extra);
+        }
+        ids
+    }
+
+    /// Whether `button` is currently a member of this group.
+    pub fn contains(&self, button: ObjectId) -> bool {
+        members(&self.key).iter().any(|member| member.id == button)
+            || membership(button) == Some(self.key.clone())
+    }
+
+    /// The widget id of the group's selected member, if one has been chosen.
+    pub fn checked_button(&self) -> Option<ObjectId> {
+        selected(&self.key)
+    }
+
+    /// The numeric id of the group's selected member, if one has been chosen.
+    ///
+    /// A member added without an explicit id answers with its own widget id, so `checked_id` and
+    /// `checked_button` describe the same member until a caller assigns a different number.
+    pub fn checked_id(&self) -> Option<u64> {
+        let selected = selected(&self.key)?;
+        MEMBERSHIP
+            .try_with(|m| {
+                m.borrow()
+                    .get(&selected)
+                    .filter(|entry| entry.key == self.key)
+                    .map(|entry| entry.id)
+            })
+            .ok()
+            .flatten()
+            .or(Some(selected))
+    }
+
+    /// Makes `button` the group's selected member, reporting the member it replaced.
+    ///
+    /// The member is notified through the property layer when it is mounted, so a check box or
+    /// radio button unchecks itself and emits its own signals. An unmounted member derives the
+    /// answer from this registry on its next read.
+    pub fn set_checked_button(&mut self, button: ObjectId) -> Option<ObjectId> {
+        if !self.contains(button) {
+            return None;
+        }
+        let previous = select(&self.key, button);
+        if let Some(previous) = previous.filter(|previous| *previous != button) {
+            notify_checked(&[previous], false);
+        }
+        previous
+    }
+
+    /// Emitted when a member is pressed, with the member's widget id.
+    pub fn button_pressed(&self) -> &Signal1<u64> {
+        &self.signals.pressed
+    }
+
+    /// Emitted when a member is released, with the member's widget id.
+    pub fn button_released(&self) -> &Signal1<u64> {
+        &self.signals.released
+    }
+
+    /// Emitted when a member is clicked, with the member's widget id.
+    pub fn button_clicked(&self) -> &Signal1<u64> {
+        &self.signals.clicked
+    }
+
+    /// Emitted when a member's latched state changes, with the member's widget id.
+    pub fn button_toggled(&self) -> &Signal1<u64> {
+        &self.signals.toggled
+    }
+}
+
 /// Forgets every group on this thread.
 ///
 /// Exposed for the tests that exercise the registry directly; production code has no reason to
@@ -193,6 +673,10 @@ pub(crate) fn notify_checked(_ids: &[ObjectId], _checked: bool) {}
 #[cfg(test)]
 pub(crate) fn clear() {
     let _ = GROUPS.try_with(|groups| groups.borrow_mut().clear());
+    let _ = MEMBER_KEYS.try_with(|keys| keys.borrow_mut().clear());
+    let _ = MEMBERSHIP.try_with(|m| m.borrow_mut().clear());
+    let _ = HUBS.try_with(|hubs| hubs.borrow_mut().clear());
+    let _ = NEXT_HANDLE.try_with(|next| next.set(1));
 }
 
 #[cfg(test)]

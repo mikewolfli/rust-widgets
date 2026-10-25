@@ -8,6 +8,7 @@
 //! optional icon, enabled state, and optional children for submenu support.
 //! Selecting an item emits an `item_selected` signal with the item's value.
 
+use crate::compat::HashMap;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -228,6 +229,13 @@ fn draw_item_list(
     palette: ListPalette,
 ) {
     let item_font = effective_font(style);
+    // One lookup table for the whole paint. The previous per-row `iter().find(..)` made a
+    // full list of n rows O(n²); the table is built once and every row resolves its icon in
+    // constant time. It borrows the ids, so building it allocates no strings.
+    let mut icon_sources: HashMap<&str, IconSource> = HashMap::new();
+    for (id, source) in paint.icon_sources {
+        icon_sources.insert(id.as_str(), *source);
+    }
     for index in paint.first..paint.end {
         let Some(item) = paint.items.get(index) else {
             continue;
@@ -265,8 +273,7 @@ fn draw_item_list(
         }
 
         // Item icon
-        let icon_source =
-            paint.icon_sources.iter().find(|(id, _)| id == &item.value).map(|(_, s)| *s);
+        let icon_source = icon_sources.get(item.value.as_str()).copied();
         if let Some(source) = icon_source {
             let icon_line = context.text_line(row, item_font);
             let side = icon_line.height.clamp(1, 16);

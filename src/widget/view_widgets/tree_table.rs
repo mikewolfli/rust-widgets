@@ -3,14 +3,15 @@
 
 //! TreeTable widget combining hierarchical rows with table columns.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::Event;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
-use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -28,6 +29,19 @@ pub trait TreeTableModel: Send + Sync {
     fn column_count(&self) -> usize;
     /// Returns cell text for node path and column.
     fn data(&self, path: &[usize], column: usize) -> Option<String>;
+    /// The heading a column is painted with, if the model names its columns.
+    fn column_name(&self, column: usize) -> Option<&str> {
+        let _ = column;
+        None
+    }
+    /// The value a sibling sort compares for `path`/`column`.
+    ///
+    /// Defaults to [`Self::data`], so an existing model sorts by its painted text. A model that
+    /// wants a dedicated ordering key (a date, a numeric id, a rank) can return it without changing
+    /// what the cell paints.
+    fn sort_key(&self, path: &[usize], column: usize) -> Option<String> {
+        self.data(path, column)
+    }
     /// Writes the cell text into `out`, returning whether the cell exists.
     ///
     /// The default implementation delegates to [`Self::data`], so existing models keep working.
@@ -89,6 +103,88 @@ impl TreeTableModel for FlatTreeTableModel {
     }
 }
 
+/// How sibling sort keys are compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TreeTableSortRole {
+    /// Text order, case-folded unless `case_sensitive` is on.
+    #[default]
+    Text,
+    /// Numeric order when both sides parse as a number, text order otherwise.
+    Number,
+}
+
+/// How much of the tree a projection materialises.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TreeTableProjectionStrategy {
+    /// Only the rows around the viewport (the default).
+    #[default]
+    Windowed,
+    /// Every visible row, however long the tree.
+    Eager,
+}
+
+fn projection_strategy_to_str(strategy: TreeTableProjectionStrategy) -> &'static str {
+    match strategy {
+        TreeTableProjectionStrategy::Windowed => "windowed",
+        TreeTableProjectionStrategy::Eager => "eager",
+    }
+}
+
+fn expect_projection_strategy(
+    value: CapabilityValue,
+) -> Result<TreeTableProjectionStrategy, CapabilityAccessError> {
+    match value {
+        CapabilityValue::String(token) => match token.as_str() {
+            "windowed" => Ok(TreeTableProjectionStrategy::Windowed),
+            "eager" => Ok(TreeTableProjectionStrategy::Eager),
+            _ => Err(CapabilityAccessError::TypeMismatch),
+        },
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
+/// A normalised sibling sort key, cached for the life of one sort generation.
+type SortKey = (String, Option<f64>);
+
+fn normalise_sort_key(text: &str, role: TreeTableSortRole, case_sensitive: bool) -> SortKey {
+    let trimmed = text.trim();
+    let text = if case_sensitive { trimmed.to_string() } else { trimmed.to_lowercase() };
+    let number = match role {
+        TreeTableSortRole::Number => trimmed.parse::<f64>().ok(),
+        TreeTableSortRole::Text => None,
+    };
+    (text, number)
+}
+
+fn compare_sort_keys(left: &SortKey, right: &SortKey) -> core::cmp::Ordering {
+    if let (Some(left), Some(right)) = (left.1, right.1) {
+        if let Some(order) = left.partial_cmp(&right) {
+            return order;
+        }
+    }
+    left.0.cmp(&right.0)
+}
+
+fn tree_table_sort_role_to_str(role: TreeTableSortRole) -> &'static str {
+    match role {
+        TreeTableSortRole::Text => "text",
+        TreeTableSortRole::Number => "number",
+    }
+}
+
+fn expect_tree_table_sort_role(
+    value: CapabilityValue,
+) -> Result<TreeTableSortRole, CapabilityAccessError> {
+    match value {
+        CapabilityValue::String(token) => match token.as_str() {
+            "text" => Ok(TreeTableSortRole::Text),
+            "number" => Ok(TreeTableSortRole::Number),
+            _ => Err(CapabilityAccessError::TypeMismatch),
+        },
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct VisibleRow {
     path: Vec<usize>,
@@ -136,6 +232,24 @@ pub struct TreeTable {
     window_overscan: usize,
     /// Whether the last projection stopped before the end of the tree.
     projection_truncated: bool,
+    /// How sibling sort keys are compared.
+    sort_role: TreeTableSortRole,
+    /// Whether text sort keys are compared case-sensitively.
+    case_sensitive: bool,
+    /// Sort keys cached for the current sort column/role/case while the data generation holds.
+    sort_key_cache: HashMap<Vec<usize>, SortKey>,
+    /// The data generation `sort_key_cache` was populated from.
+    sort_key_generation: u64,
+    /// Advanced by the model's `data_changed` signal.
+    data_generation: Arc<AtomicU64>,
+    /// Whether a double-click on a branch expands or collapses it.
+    expands_on_double_click: bool,
+    /// Whether the middle button still toggles a branch.
+    middle_click_expands: bool,
+    /// Labels supplied through [`TreeTable::set_header_labels`].
+    header_labels: Vec<String>,
+    /// Emitted with the visible row a double-click activated.
+    row_activated: Signal1<usize>,
 }
 
 impl TreeTable {
@@ -161,9 +275,18 @@ impl TreeTable {
             sort_descending: false,
             sort_changed: Signal1::new(),
             context_menu_requested: Signal1::new(),
-            windowed_projection: false,
+            windowed_projection: true,
             window_overscan: 8,
             projection_truncated: false,
+            sort_role: TreeTableSortRole::Text,
+            case_sensitive: false,
+            sort_key_cache: HashMap::new(),
+            sort_key_generation: 0,
+            data_generation: Arc::new(AtomicU64::new(0)),
+            expands_on_double_click: true,
+            middle_click_expands: true,
+            header_labels: Vec::new(),
+            row_activated: Signal1::new(),
         }
     }
 
@@ -183,13 +306,18 @@ impl TreeTable {
         if let Some(data_changed) = model.data_changed_signal() {
             let redraw = self.base.redraw_requested_signal().clone();
             let layout = self.base.layout_requested_signal().clone();
+            let generation = Arc::clone(&self.data_generation);
             data_changed.connect_scoped(&self.model_connection_scope, move || {
+                generation.fetch_add(1, Ordering::Relaxed);
                 redraw.emit();
                 layout.emit();
             });
         }
 
         self.model = Some(model);
+        self.data_generation.fetch_add(1, Ordering::Relaxed);
+        self.sort_key_cache.clear();
+        self.sort_key_generation = self.data_generation.load(Ordering::Relaxed);
         self.expanded_paths.clear();
         // A new model invalidates the old selection: the visible rows no longer refer to the same
         // nodes. The clear is captured before it happens so it can be **announced** afterwards
@@ -309,12 +437,18 @@ impl TreeTable {
         if !self.path_has_children(&path) {
             return false;
         }
-        if self.expanded_paths.insert(path.clone()) {
-            self.expansion_changed.emit((path, true));
-            self.rebuild_projection();
-            self.base.request_layout();
-            self.base.request_redraw();
+        if !self.expanded_paths.insert(path.clone()) {
+            return true;
         }
+        self.expansion_changed.emit((path.clone(), true));
+        // Insert only the rows the branch reveals when the projection is complete. A truncated
+        // windowed projection cannot prove where the tail belongs, so it falls back to one full
+        // (budget-limited) rebuild rather than splicing a row into the wrong slot.
+        if !self.insert_expanded_rows(row, &path) {
+            self.rebuild_projection();
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
         true
     }
 
@@ -323,13 +457,16 @@ impl TreeTable {
         let Some(path) = self.row_path(row).map(ToOwned::to_owned) else {
             return false;
         };
-        if self.expanded_paths.remove(&path) {
-            self.expanded_paths.retain(|expanded| !Self::is_descendant_of(expanded, &path));
-            self.expansion_changed.emit((path, false));
-            self.rebuild_projection();
-            self.base.request_layout();
-            self.base.request_redraw();
+        if !self.expanded_paths.remove(&path) {
+            return true;
         }
+        self.expanded_paths.retain(|expanded| !Self::is_descendant_of(expanded, &path));
+        self.expansion_changed.emit((path.clone(), false));
+        if !self.remove_expanded_rows(&path) {
+            self.rebuild_projection();
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
         true
     }
 
@@ -339,6 +476,159 @@ impl TreeTable {
             Some(true) => self.collapse_row(row),
             Some(false) => self.expand_row(row),
             None => false,
+        }
+    }
+
+    /// Expands every branch in the tree.
+    ///
+    /// Returns how many branches changed state. The projection is rebuilt once after the state is
+    /// collected, rather than once per `expand_row` call.
+    pub fn expand_all(&mut self) -> usize {
+        let Some(model) = self.model.clone() else {
+            return 0;
+        };
+        let mut paths = Vec::new();
+        self.collect_paths(model.as_ref(), None, model.root_count(), &mut paths);
+        let mut changed = 0usize;
+        for path in paths {
+            if self.path_has_children(&path) && self.expanded_paths.insert(path.clone()) {
+                self.expansion_changed.emit((path, true));
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.rebuild_projection();
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+        changed
+    }
+
+    /// Collapses every branch in the tree.
+    pub fn collapse_all(&mut self) -> usize {
+        let mut paths: Vec<Vec<usize>> = self.expanded_paths.iter().cloned().collect();
+        // Deepest first keeps the signal order consistent with a sequence of individual collapses.
+        paths.sort_by_key(|left| core::cmp::Reverse(left.len()));
+        let changed = paths.len();
+        self.expanded_paths.clear();
+        for path in paths {
+            self.expansion_changed.emit((path, false));
+        }
+        if changed > 0 {
+            self.rebuild_projection();
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+        changed
+    }
+
+    /// Collects every node path in model order, depth-first.
+    fn collect_paths(
+        &mut self,
+        model: &dyn TreeTableModel,
+        parent: Option<&[usize]>,
+        count: usize,
+        out: &mut Vec<Vec<usize>>,
+    ) {
+        for child in self.ordered_children(model, parent, count) {
+            let mut path = parent.map(ToOwned::to_owned).unwrap_or_default();
+            path.push(child);
+            out.push(path.clone());
+            let child_count = model.child_count(&path);
+            if child_count > 0 {
+                self.collect_paths(model, Some(&path), child_count, out);
+            }
+        }
+    }
+
+    /// Inserts the rows below an expanded branch, returning whether it could do so incrementally.
+    fn insert_expanded_rows(&mut self, row: usize, path: &[usize]) -> bool {
+        let Some(model) = self.model.clone() else {
+            return false;
+        };
+        let Some(depth) = self.row_depth(row) else {
+            return false;
+        };
+        let remaining = if self.windowed_projection {
+            self.projection_budget().saturating_sub(self.visible_rows.len()).saturating_add(1)
+        } else {
+            usize::MAX
+        };
+        let mut added = Vec::new();
+        let mut child_path = path.to_vec();
+        let child_count = model.child_count(path);
+        let complete = self.flatten_children(
+            model.as_ref(),
+            &mut added,
+            &mut child_path,
+            depth + 1,
+            Some(path),
+            child_count,
+            remaining,
+        );
+        if !complete && self.windowed_projection {
+            return false;
+        }
+        let previous_path = self.selected_path();
+        self.visible_rows.splice(row.saturating_add(1)..row.saturating_add(1), added);
+        self.projection_truncated = false;
+        self.restore_selection_by_path(previous_path);
+        self.projection_changed.emit(self.visible_rows.len());
+        true
+    }
+
+    /// Removes the rows below a collapsed branch, returning whether it could do so incrementally.
+    fn remove_expanded_rows(&mut self, path: &[usize]) -> bool {
+        let previous_path = self.selected_path();
+        let before = self.visible_rows.len();
+        self.visible_rows.retain(|row| !Self::is_descendant_of(&row.path, path));
+        let removed = before.saturating_sub(self.visible_rows.len());
+        if self.windowed_projection && self.projection_truncated {
+            // The rows below the removed section were never materialized; refill the window.
+            return false;
+        }
+        self.restore_selection_by_path(previous_path);
+        if removed > 0 {
+            self.projection_changed.emit(self.visible_rows.len());
+        }
+        true
+    }
+
+    /// Flattens the children of `parent` into `acc`, with the same budget rule as a full rebuild.
+    #[allow(clippy::too_many_arguments)]
+    fn flatten_children(
+        &mut self,
+        model: &dyn TreeTableModel,
+        acc: &mut Vec<VisibleRow>,
+        path: &mut Vec<usize>,
+        depth: usize,
+        parent: Option<&[usize]>,
+        child_count: usize,
+        budget: usize,
+    ) -> bool {
+        for child in self.ordered_children(model, parent, child_count) {
+            path.push(child);
+            let keep_going = self.flatten_path(model, acc, path, depth, budget);
+            path.pop();
+            if !keep_going {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The selected row's model path, used to hold its identity across a splice.
+    fn selected_path(&self) -> Option<Vec<usize>> {
+        self.selected_row.and_then(|row| self.visible_rows.get(row).map(|row| row.path.clone()))
+    }
+
+    /// Re-points the selection at the same path after rows were inserted or removed.
+    fn restore_selection_by_path(&mut self, previous: Option<Vec<usize>>) {
+        let restored =
+            previous.and_then(|path| self.visible_rows.iter().position(|row| row.path == path));
+        if restored != self.selected_row {
+            self.selected_row = restored;
+            self.selection_changed.emit(self.selected_row);
         }
     }
 
@@ -363,7 +653,7 @@ impl TreeTable {
     fn rebuild_projection(&mut self) {
         let previous_selection = self.selected_row;
         let mut next = Vec::new();
-        let Some(model) = self.model.as_ref() else {
+        let Some(model) = self.model.clone() else {
             self.visible_rows = next;
             self.projection_truncated = false;
             self.selected_row = None;
@@ -409,7 +699,7 @@ impl TreeTable {
     /// Returns `false` when the budget was reached, which lets the caller stop walking the
     /// remaining roots and report a truncated projection.
     fn flatten_path(
-        &self,
+        &mut self,
         model: &dyn TreeTableModel,
         acc: &mut Vec<VisibleRow>,
         path: &mut Vec<usize>,
@@ -440,10 +730,12 @@ impl TreeTable {
 
     /// The child indices below `parent` in painted order.
     ///
-    /// Model order is preserved unless a sort column is set; the sort compares the cell text
-    /// case-insensitively and falls back to the child index so equal keys keep a stable order.
+    /// Model order is preserved unless a sort column is set. Keys are normalised through the
+    /// configured role and case policy and cached by path, so a rebuild does not re-lowercase (and
+    /// re-parse) every child again; the cache is dropped when the sort inputs or the data
+    /// generation change.
     fn ordered_children(
-        &self,
+        &mut self,
         model: &dyn TreeTableModel,
         parent: Option<&[usize]>,
         count: usize,
@@ -452,21 +744,29 @@ impl TreeTable {
         let Some(column) = self.sort_column else {
             return children;
         };
-        let mut keyed: Vec<(String, usize)> = children
+        let generation = self.data_generation.load(Ordering::Relaxed);
+        if generation != self.sort_key_generation {
+            self.sort_key_cache.clear();
+            self.sort_key_generation = generation;
+        }
+        let mut keyed: Vec<(SortKey, usize)> = children
             .iter()
             .map(|child| {
-                let key = match parent {
-                    Some(parent) => {
-                        let mut path = parent.to_vec();
-                        path.push(*child);
-                        model.data(&path, column).unwrap_or_default().to_lowercase()
+                let mut path = parent.map(ToOwned::to_owned).unwrap_or_default();
+                path.push(*child);
+                let key = match self.sort_key_cache.get(path.as_slice()) {
+                    Some(key) => key.clone(),
+                    None => {
+                        let raw = model.sort_key(&path, column).unwrap_or_default();
+                        let key = normalise_sort_key(&raw, self.sort_role, self.case_sensitive);
+                        self.sort_key_cache.insert(path, key.clone());
+                        key
                     }
-                    None => model.data(&[*child], column).unwrap_or_default().to_lowercase(),
                 };
                 (key, *child)
             })
             .collect();
-        keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        keyed.sort_by(|a, b| compare_sort_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
         if self.sort_descending {
             keyed.reverse();
         }
@@ -547,6 +847,52 @@ impl TreeTable {
         self.base.request_redraw();
     }
 
+    /// Whether the column-title row is painted (`show_header`'s alias).
+    pub fn header_visible(&self) -> bool {
+        self.show_header
+    }
+
+    /// Shows or hides the column-title row (`set_show_header`'s alias).
+    pub fn set_header_visible(&mut self, visible: bool) {
+        self.set_show_header(visible);
+    }
+
+    /// The header labels supplied by the host.
+    pub fn header_labels(&self) -> &[String] {
+        &self.header_labels
+    }
+
+    /// Replaces the header labels, taking precedence over [`TreeTableModel::column_name`].
+    pub fn set_header_labels(&mut self, labels: &[&str]) {
+        self.header_labels = labels.iter().map(|label| (*label).to_string()).collect();
+        self.base.request_redraw();
+    }
+
+    /// Whether a double-click on a branch expands or collapses it.
+    pub fn expands_on_double_click(&self) -> bool {
+        self.expands_on_double_click
+    }
+
+    /// Enables or disables double-click expansion.
+    pub fn set_expands_on_double_click(&mut self, expands: bool) {
+        self.expands_on_double_click = expands;
+    }
+
+    /// Whether the middle button toggles a branch.
+    pub fn middle_click_expands(&self) -> bool {
+        self.middle_click_expands
+    }
+
+    /// Enables or disables middle-button expansion.
+    pub fn set_middle_click_expands(&mut self, expands: bool) {
+        self.middle_click_expands = expands;
+    }
+
+    /// The signal emitted with the row a double-click activated.
+    pub fn row_activated_signal(&self) -> &Signal1<usize> {
+        &self.row_activated
+    }
+
     /// The column whose sibling order is sorted, if any.
     pub fn sort_column(&self) -> Option<usize> {
         self.sort_column
@@ -565,6 +911,8 @@ impl TreeTable {
         }
         self.sort_column = column;
         self.sort_descending = false;
+        self.sort_key_cache.clear();
+        self.sort_key_generation = self.data_generation.load(Ordering::Relaxed);
         self.rebuild_projection();
         self.base.request_redraw();
     }
@@ -581,8 +929,42 @@ impl TreeTable {
             self.sort_descending = false;
         }
         let descending = self.sort_descending;
+        self.sort_key_cache.clear();
+        self.sort_key_generation = self.data_generation.load(Ordering::Relaxed);
         self.rebuild_projection();
         self.sort_changed.emit((column, descending));
+        self.base.request_redraw();
+    }
+
+    /// How sibling sort keys are compared.
+    pub fn sort_role(&self) -> TreeTableSortRole {
+        self.sort_role
+    }
+
+    /// Sets how sibling sort keys are compared.
+    pub fn set_sort_role(&mut self, role: TreeTableSortRole) {
+        if self.sort_role == role {
+            return;
+        }
+        self.sort_role = role;
+        self.sort_key_cache.clear();
+        self.rebuild_projection();
+        self.base.request_redraw();
+    }
+
+    /// Whether text sort keys are compared case-sensitively.
+    pub fn case_sensitive(&self) -> bool {
+        self.case_sensitive
+    }
+
+    /// Sets the case policy for text sort keys.
+    pub fn set_case_sensitive(&mut self, case_sensitive: bool) {
+        if self.case_sensitive == case_sensitive {
+            return;
+        }
+        self.case_sensitive = case_sensitive;
+        self.sort_key_cache.clear();
+        self.rebuild_projection();
         self.base.request_redraw();
     }
 
@@ -591,13 +973,28 @@ impl TreeTable {
         self.windowed_projection
     }
 
+    /// The materialisation strategy in its named form.
+    pub fn projection_strategy(&self) -> TreeTableProjectionStrategy {
+        if self.windowed_projection {
+            TreeTableProjectionStrategy::Windowed
+        } else {
+            TreeTableProjectionStrategy::Eager
+        }
+    }
+
+    /// Sets the materialisation strategy.
+    pub fn set_projection_strategy(&mut self, strategy: TreeTableProjectionStrategy) {
+        self.set_windowed_projection(strategy == TreeTableProjectionStrategy::Windowed);
+    }
+
     /// Enables or disables the windowed projection.
     ///
-    /// Off by default because the un-windowed projection is what `row_count` has always
-    /// reported. When on, a rebuild materializes only the rows the viewport can show plus
+    /// On by default: a large tree's expansion must not flatten the whole document to paint the
+    /// viewport. When on, a rebuild materializes only the rows the viewport can show plus
     /// overscan, so opening a branch of a large tree stops flattening as soon as the visible
     /// window is full. [`Self::projection_truncated`] says whether more rows remain, and
-    /// scrolling extends the projection on demand.
+    /// scrolling extends the projection on demand. Turning it off restores the eager projection
+    /// for a caller that needs `row_count` to describe the whole tree.
     pub fn set_windowed_projection(&mut self, windowed: bool) {
         if self.windowed_projection == windowed {
             return;
@@ -749,6 +1146,16 @@ impl WidgetProperties for TreeTable {
             },
             "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
             "column_width" => Ok(CapabilityValue::UInt(self.column_width() as u64)),
+            "header_visible" => Ok(CapabilityValue::Bool(self.header_visible())),
+            "expands_on_double_click" => Ok(CapabilityValue::Bool(self.expands_on_double_click())),
+            "middle_click_expands" => Ok(CapabilityValue::Bool(self.middle_click_expands())),
+            "sort_role" => Ok(CapabilityValue::String(
+                tree_table_sort_role_to_str(self.sort_role()).to_string(),
+            )),
+            "case_sensitive" => Ok(CapabilityValue::Bool(self.case_sensitive())),
+            "projection_strategy" => Ok(CapabilityValue::String(
+                projection_strategy_to_str(self.projection_strategy()).to_string(),
+            )),
             "projection_state" => {
                 let selected = match self.selected_row() {
                     Some(row) => format!("Some({row})"),
@@ -793,6 +1200,30 @@ impl WidgetProperties for TreeTable {
                 self.set_column_width(crate::widget::capability::coercion::expect_u32(value)?);
                 Ok(())
             }
+            "header_visible" => {
+                self.set_header_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "expands_on_double_click" => {
+                self.set_expands_on_double_click(expect_bool(value)?);
+                Ok(())
+            }
+            "middle_click_expands" => {
+                self.set_middle_click_expands(expect_bool(value)?);
+                Ok(())
+            }
+            "sort_role" => {
+                self.set_sort_role(expect_tree_table_sort_role(value)?);
+                Ok(())
+            }
+            "case_sensitive" => {
+                self.set_case_sensitive(expect_bool(value)?);
+                Ok(())
+            }
+            "projection_strategy" => {
+                self.set_projection_strategy(expect_projection_strategy(value)?);
+                Ok(())
+            }
             // Derived counts and the projection summary are computed from the
             // model, so they are refused as read-only rather than reported as
             // names this control does not know.
@@ -811,6 +1242,12 @@ impl WidgetProperties for TreeTable {
             "selected_row",
             "row_height",
             "column_width",
+            "header_visible",
+            "expands_on_double_click",
+            "middle_click_expands",
+            "sort_role",
+            "case_sensitive",
+            "projection_strategy",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -916,6 +1353,7 @@ impl Draw for TreeTable {
 
         if self.show_header {
             let columns = self.column_count();
+            let model_names = self.model.as_ref();
             for col in 0..columns {
                 let x = rect.x + col as i32 * col_w;
                 if x >= rect.x + rect.width as i32 {
@@ -923,14 +1361,21 @@ impl Draw for TreeTable {
                 }
                 let band = Rect::new(x, rect.y, self.column_width, self.row_height);
                 context.fill_rect(band, surface.blend(&ink, 0.08));
-                let label = std::format!("Column {}", col + 1);
-                context.draw_text_fitted_cow(
-                    context.text_line(band, cell_font),
-                    &label,
-                    cell_font,
-                    ink,
-                    HorizontalAlignment::Left,
-                );
+                let label = self
+                    .header_labels
+                    .get(col)
+                    .map(String::as_str)
+                    .filter(|label| !label.is_empty())
+                    .or_else(|| model_names.and_then(|model| model.column_name(col)));
+                if let Some(label) = label {
+                    context.draw_text_fitted_cow(
+                        context.text_line(band, cell_font),
+                        label,
+                        cell_font,
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
         }
 
@@ -1013,8 +1458,19 @@ impl crate::event::EventHandler for TreeTable {
             }
             Event::ContextMenu { pos } => self.context_menu_requested.emit(*pos),
             Event::MousePress { pos, button, .. } if *button == 2 => {
+                if self.middle_click_expands {
+                    if let Some(row) = self.row_at(pos.y) {
+                        let _ = self.toggle_row_expanded(row);
+                    }
+                }
+            }
+            Event::MouseDoubleClick { pos, button: 1 } => {
                 if let Some(row) = self.row_at(pos.y) {
-                    let _ = self.toggle_row_expanded(row);
+                    let _ = self.select_row(row);
+                    self.row_activated.emit(row);
+                    if self.expands_on_double_click && self.is_row_expanded(row).is_some() {
+                        let _ = self.toggle_row_expanded(row);
+                    }
                 }
             }
             // Row hover, derived from the same `row_at` the clicks use, so the row that is
@@ -1543,6 +1999,9 @@ mod tests {
         let mut tree = TreeTable::new(Rect::new(0, 0, 300, 200));
         tree.set_row_height(24);
         tree.set_model(Arc::new(ManyRoots));
+        // Windowed is the default; prove the eager projection still reports the whole tree.
+        tree.set_windowed_projection(false);
+        assert!(!tree.windowed_projection());
         assert_eq!(tree.row_count(), 2_000, "the eager projection is complete");
 
         tree.set_windowed_projection(true);

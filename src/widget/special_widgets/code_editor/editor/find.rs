@@ -22,6 +22,8 @@ impl CodeEditor {
         self.find.visible = true;
         self.find.replace_visible = replace;
         self.find.focus_replace = false;
+        self.goto_bar_visible = false;
+        self.goto_mode = false;
         self.dismiss_completion();
         self.close_context_menu();
         self.recompute_match_cache();
@@ -35,6 +37,8 @@ impl CodeEditor {
             return;
         }
         self.find.visible = false;
+        self.goto_bar_visible = false;
+        self.goto_mode = false;
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -44,12 +48,72 @@ impl CodeEditor {
         self.find.visible
     }
 
+    /// Returns whether the find bar is acting as a "go to line" bar.
+    pub fn goto_bar_visible(&self) -> bool {
+        self.goto_bar_visible
+    }
+
+    /// Opens the "go to line" bar, reusing the find bar's input row.
+    pub fn open_goto_bar(&mut self) {
+        self.goto_bar_visible = true;
+        self.goto_mode = true;
+        self.find.visible = true;
+        self.find.query.clear();
+        self.find.replace_visible = false;
+        self.find.focus_replace = false;
+        self.dismiss_completion();
+        self.close_context_menu();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Closes the "go to line" bar.
+    pub fn close_goto_bar(&mut self) {
+        if !self.goto_bar_visible && !self.goto_mode {
+            return;
+        }
+        self.goto_bar_visible = false;
+        self.goto_mode = false;
+        self.find.visible = false;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Opens or closes the "go to line" bar.
+    pub fn set_goto_bar_visible(&mut self, visible: bool) {
+        if visible {
+            self.open_goto_bar();
+        } else {
+            self.close_goto_bar();
+        }
+    }
+
+    /// Jumps to the line number currently typed into the goto bar.
+    ///
+    /// Line numbers are one-based, as every editor and compiler reports them.
+    /// A non-numeric or zero entry closes the bar without moving the caret rather
+    /// than jumping to an invented line.
+    pub fn commit_goto(&mut self) -> bool {
+        let query = self.find.query.trim().to_string();
+        let line = query.parse::<usize>().ok();
+        let moved = match line {
+            Some(line) if line > 0 => {
+                self.goto_line(line - 1);
+                true
+            }
+            _ => false,
+        };
+        self.close_goto_bar();
+        moved
+    }
+
     /// Sets the search query and recomputes hits.
     pub fn set_search_query(&mut self, query: impl Into<String>) {
         self.find.query = query.into();
         self.find.current = 0;
         self.recompute_match_cache();
         self.search_changed.emit(self.find.match_count());
+        self.emit_search_result();
         self.base.request_redraw();
     }
 
@@ -65,7 +129,23 @@ impl CodeEditor {
         self.find.current = 0;
         self.recompute_match_cache();
         self.search_changed.emit(self.find.match_count());
+        self.emit_search_result();
         self.base.request_redraw();
+    }
+
+    /// Emits the active hit, total and its document position.
+    ///
+    /// `current` and `line`/`column` are one-based (the values a status bar
+    /// shows), and `current` is zero when there is no hit.
+    pub fn emit_search_result(&self) {
+        let total = self.find.matches.len();
+        let (current, line, column) = self
+            .find
+            .matches
+            .get(self.find.current)
+            .map(|hit| (self.find.current + 1, hit.line + 1, hit.start_column + 1))
+            .unwrap_or((0, 0, 0));
+        self.search_result.emit((current, total, line, column));
     }
 
     /// Returns the current search hits.
@@ -87,6 +167,10 @@ impl CodeEditor {
             return Vec::new();
         }
         let needle: Vec<char> = query.chars().collect();
+        // Lowercase the needle once. The old loop lowercased every character of
+        // the needle on every window position, allocating a `String` per character.
+        let needle_lower = lowercase_chars(&needle);
+        let needle_ascii = needle.iter().all(|ch| ch.is_ascii());
         let language = self.config.language;
         let model = self.model.borrow();
         let mut matches = Vec::new();
@@ -113,14 +197,7 @@ impl CodeEditor {
                 let equal = if options.case_sensitive {
                     candidate == needle.as_slice()
                 } else {
-                    candidate
-                        .iter()
-                        .map(|ch| ch.to_lowercase().collect::<String>())
-                        .collect::<Vec<_>>()
-                        == needle
-                            .iter()
-                            .map(|ch| ch.to_lowercase().collect::<String>())
-                            .collect::<Vec<_>>()
+                    window_matches_ignore_case(candidate, &needle, needle_ascii, &needle_lower)
                 };
                 if equal && whole_word_ok(&haystack, start, needle.len(), options, language) {
                     matches.push(SearchMatch {
@@ -217,6 +294,8 @@ impl CodeEditor {
         if needle.is_empty() {
             return;
         }
+        let needle_lower = lowercase_chars(&needle);
+        let needle_ascii = needle.iter().all(|ch| ch.is_ascii());
         let haystack: Vec<char> = text.chars().collect();
         if options.use_regex {
             for (start, end) in regex_matches(&haystack, &needle, options.case_sensitive) {
@@ -240,10 +319,7 @@ impl CodeEditor {
             let equal = if options.case_sensitive {
                 window == needle.as_slice()
             } else {
-                window
-                    .iter()
-                    .flat_map(|ch| ch.to_lowercase())
-                    .eq(needle.iter().flat_map(|ch| ch.to_lowercase()))
+                window_matches_ignore_case(window, &needle, needle_ascii, &needle_lower)
             };
             if equal && whole_word_ok(&haystack, start, needle.len(), options, language) {
                 out.push(SearchMatch {
@@ -296,7 +372,9 @@ impl CodeEditor {
             self.find.wrapped = self.find.current + 1 >= count;
             self.find.current = (self.find.current + 1) % count;
         }
-        self.reveal_current_match()
+        self.reveal_current_match();
+        self.emit_search_result();
+        true
     }
 
     /// Whether the last find navigation wrapped past a document edge.
@@ -376,6 +454,7 @@ impl CodeEditor {
         self.commit_edit(before, after, head);
         self.recompute_match_cache();
         self.search_changed.emit(self.find.match_count());
+        self.emit_search_result();
         replaced
     }
 
@@ -845,9 +924,33 @@ fn match_atom(
 fn chars_eq(left: char, right: char, case_sensitive: bool) -> bool {
     if case_sensitive {
         left == right
+    } else if left.is_ascii() && right.is_ascii() {
+        left.eq_ignore_ascii_case(&right)
     } else {
         left.to_lowercase().eq(right.to_lowercase())
     }
+}
+
+/// Lowercases a character sequence once, preserving multi-character expansions.
+fn lowercase_chars(chars: &[char]) -> Vec<char> {
+    chars.iter().flat_map(|ch| ch.to_lowercase()).collect()
+}
+
+/// Compares one equal-length window against the needle, ignoring case.
+///
+/// The ASCII fast path avoids allocating while scanning the overwhelmingly
+/// common source-text case; the general path compares against the needle that
+/// was already lowercased by the caller.
+fn window_matches_ignore_case(
+    window: &[char],
+    needle: &[char],
+    needle_ascii: bool,
+    needle_lower: &[char],
+) -> bool {
+    if needle_ascii && window.iter().all(|ch| ch.is_ascii()) {
+        return window.iter().zip(needle).all(|(left, right)| left.eq_ignore_ascii_case(right));
+    }
+    window.iter().flat_map(|ch| ch.to_lowercase()).eq(needle_lower.iter().copied())
 }
 
 fn is_word_boundary(text: &[char], position: usize) -> bool {

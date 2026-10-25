@@ -24,7 +24,10 @@
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::widget::capability::coercion::{expect_f32, expect_number_list};
+use crate::signal::Signal1;
+use crate::widget::capability::coercion::{
+    expect_bool, expect_f32, expect_number_list, expect_u32,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -76,6 +79,25 @@ pub struct Sparkline {
     max: Option<f64>,
     /// Whether the final sample's value is printed beside the trace.
     show_end_value: bool,
+    /// Whether the area under the trace is filled.
+    fill: bool,
+    /// Whether every sample gets a small disc.
+    show_points: bool,
+    /// Maximum number of retained samples; `0` means unbounded.
+    capacity: usize,
+    /// The sample index under the pointer, while one is hovered.
+    hovered_index: Option<usize>,
+    /// Emitted with `(index, value)` when the pointer enters a different sample.
+    pub value_hovered: Signal1<(usize, f64)>,
+    /// Emitted with the final sample's value when the last-point marker is clicked.
+    pub last_value_clicked: Signal1<f64>,
+    /// Smallest and largest finite sample, maintained incrementally as the series grows.
+    ///
+    /// `None` while the series is empty. Kept in step by `set_data`, `add_value` and
+    /// `clear`; `resolve_y_range` reads it instead of scanning the whole series on
+    /// every paint.
+    series_min: Option<f64>,
+    series_max: Option<f64>,
 }
 
 impl Sparkline {
@@ -94,6 +116,14 @@ impl Sparkline {
             min: None,
             max: None,
             show_end_value: false,
+            fill: false,
+            show_points: false,
+            capacity: 0,
+            hovered_index: None,
+            value_hovered: Signal1::new(),
+            last_value_clicked: Signal1::new(),
+            series_min: None,
+            series_max: None,
         }
     }
 
@@ -102,7 +132,29 @@ impl Sparkline {
     /// Non-finite values are dropped: a `NaN` sample has no honest baseline position and an infinite
     /// one stretches the auto-range so every real sample collapses onto one pixel.
     pub fn set_data(&mut self, values: Vec<f64>) {
-        self.data = values.into_iter().filter(|value| value.is_finite()).collect();
+        let mut data = Vec::with_capacity(values.len());
+        let mut min = f64::INFINITY;
+        let mut max = f64::NEG_INFINITY;
+        for value in values {
+            if value.is_finite() {
+                min = min.min(value);
+                max = max.max(value);
+                data.push(value);
+            }
+        }
+        self.data = data;
+        let removed = self.apply_capacity();
+        if self.data.is_empty() {
+            self.series_min = None;
+            self.series_max = None;
+        } else {
+            if removed {
+                self.recompute_extents();
+            } else {
+                self.series_min = Some(min);
+                self.series_max = Some(max);
+            }
+        }
         self.base.request_redraw();
     }
 
@@ -179,6 +231,8 @@ impl Sparkline {
     /// Clears all data values.
     pub fn clear(&mut self) {
         self.data.clear();
+        self.series_min = None;
+        self.series_max = None;
         self.base.request_redraw();
     }
 
@@ -191,7 +245,102 @@ impl Sparkline {
             return;
         }
         self.data.push(value);
+        let evicted = self.apply_capacity();
+        if evicted {
+            self.recompute_extents();
+        } else {
+            self.series_min = Some(self.series_min.map_or(value, |min| min.min(value)));
+            self.series_max = Some(self.series_max.map_or(value, |max| max.max(value)));
+        }
         self.base.request_redraw();
+    }
+
+    /// Truncates the series to [`Self::capacity`], keeping the newest samples.
+    ///
+    /// Returns whether anything was dropped, so the caller knows the cached extents are stale.
+    fn apply_capacity(&mut self) -> bool {
+        if self.capacity == 0 || self.data.len() <= self.capacity {
+            return false;
+        }
+        let excess = self.data.len() - self.capacity;
+        self.data.drain(0..excess);
+        true
+    }
+
+    /// Recomputes the cached extents from the whole series.
+    fn recompute_extents(&mut self) {
+        if self.data.is_empty() {
+            self.series_min = None;
+            self.series_max = None;
+            return;
+        }
+        let mut min = f64::INFINITY;
+        let mut max = f64::NEG_INFINITY;
+        for value in &self.data {
+            min = min.min(*value);
+            max = max.max(*value);
+        }
+        self.series_min = Some(min);
+        self.series_max = Some(max);
+    }
+
+    /// Whether the area under the trace is filled.
+    pub fn fill(&self) -> bool {
+        self.fill
+    }
+
+    /// Enables or disables the area fill.
+    pub fn set_fill(&mut self, fill: bool) {
+        if self.fill == fill {
+            return;
+        }
+        self.fill = fill;
+        self.base.request_redraw();
+    }
+
+    /// Whether every sample is marked with a disc.
+    pub fn show_points(&self) -> bool {
+        self.show_points
+    }
+
+    /// Shows or hides a disc on every sample.
+    pub fn set_show_points(&mut self, show: bool) {
+        if self.show_points == show {
+            return;
+        }
+        self.show_points = show;
+        self.base.request_redraw();
+    }
+
+    /// The retained-sample limit; `0` means unbounded.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Caps the number of retained samples, dropping the oldest beyond the limit.
+    ///
+    /// `0` removes the cap. A cap that is smaller than the current series truncates it
+    /// immediately, so the limit is a fact about the control rather than a future promise.
+    pub fn set_capacity(&mut self, capacity: usize) {
+        if self.capacity == capacity {
+            return;
+        }
+        self.capacity = capacity;
+        if self.apply_capacity() {
+            self.recompute_extents();
+            self.hovered_index = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// The last-point marker's visibility, the documented `show_last_marker` spelling.
+    pub fn show_last_marker(&self) -> bool {
+        self.show_last_point
+    }
+
+    /// Shows or hides the last-point marker.
+    pub fn set_show_last_marker(&mut self, show: bool) {
+        self.set_show_last_point(show);
     }
 
     /// Sets manual min/max values for the Y range.
@@ -237,17 +386,54 @@ impl Sparkline {
         self.data.last().map(|value| format_end_value(*value))
     }
 
+    /// The plot's pixel extents as `(x0, x1, y_top, y_bottom)`.
+    ///
+    /// Shared by the paint pass and the hover hit test, so the sample a pointer reports is the
+    /// sample whose ink is under it.
+    fn plot_extents(&self) -> (i32, i32, i32, i32) {
+        let rect = self.base.geometry();
+        let stroke_w = self.stroke_width as u32;
+        let dot_radius =
+            if self.show_last_point || self.show_points { SPARKLINE_DOT_RADIUS } else { 0 };
+        let half_stroke = (stroke_w.max(1) as i32 + 1) / 2;
+        let inset = half_stroke.max(dot_radius as i32) + SPARKLINE_PLOT_MARGIN;
+        let inset = inset.min(rect.width as i32 / 2).min(rect.height as i32 / 2);
+        (
+            rect.x + inset,
+            rect.x + rect.width as i32 - 1 - inset,
+            rect.y + inset,
+            rect.y + rect.height as i32 - 1 - inset,
+        )
+    }
+
+    /// Nearest sample to `pos`, when the pointer is inside the plot.
+    fn sample_at(&self, pos: Point) -> Option<usize> {
+        if self.data.is_empty() {
+            return None;
+        }
+        let (x0, x1, y_top, y_bottom) = self.plot_extents();
+        if pos.x < x0 || pos.x > x1 || pos.y < y_top || pos.y > y_bottom {
+            return None;
+        }
+        let n = self.data.len();
+        if n == 1 {
+            return Some(0);
+        }
+        let span = (x1 - x0).max(1);
+        let index =
+            ((pos.x - x0) as i64 * (n as i64 - 1) / span as i64).clamp(0, n as i64 - 1) as usize;
+        Some(index)
+    }
+
     /// Resolves the Y range: uses manual if set, otherwise auto-computes.
     fn resolve_y_range(&self) -> (f64, f64) {
         match (self.min, self.max) {
             (Some(min), Some(max)) => (min, max),
             _ => {
-                let data = &self.data;
-                if data.is_empty() {
-                    return (0.0, 1.0);
-                }
-                let min = data.iter().cloned().fold(f64::INFINITY, f64::min);
-                let max = data.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let (min, max) = match (self.series_min, self.series_max) {
+                    (Some(min), Some(max)) => (min, max),
+                    _ => return (0.0, 1.0),
+                };
                 if (max - min).abs() < f64::EPSILON {
                     return (min - 1.0, min + 1.0);
                 }
@@ -275,6 +461,27 @@ impl Widget for Sparkline {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Resolves the sparkline's published events to its signals.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "value_hovered" => {
+                Some(EventSignalRef::mapped("value_hovered", &self.value_hovered, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::Float(v.1),
+                    ]))
+                }))
+            }
+            "last_value_clicked" => {
+                Some(EventSignalRef::mapped("last_value_clicked", &self.last_value_clicked, |v| {
+                    CapabilityValue::Float(*v)
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `Sparkline`'s property contract.
@@ -287,6 +494,10 @@ impl WidgetProperties for Sparkline {
         match name {
             "stroke_width" => Ok(CapabilityValue::Float(self.stroke_width() as f64)),
             "show_end_value" => Ok(CapabilityValue::Bool(self.show_end_value)),
+            "fill" => Ok(CapabilityValue::Bool(self.fill)),
+            "show_points" => Ok(CapabilityValue::Bool(self.show_points)),
+            "show_last_marker" => Ok(CapabilityValue::Bool(self.show_last_marker())),
+            "capacity" => Ok(CapabilityValue::UInt(self.capacity as u64)),
             // The series is a *property*, not only the `set_data` command, so a document can spell
             // the samples and a designer can read them back. It is a `NumberList`: order is the
             // value and samples are not identifiable rows.
@@ -311,6 +522,22 @@ impl WidgetProperties for Sparkline {
                 self.set_show_end_value(show);
                 Ok(())
             }
+            "fill" => {
+                self.set_fill(expect_bool(value)?);
+                Ok(())
+            }
+            "show_points" => {
+                self.set_show_points(expect_bool(value)?);
+                Ok(())
+            }
+            "show_last_marker" => {
+                self.set_show_last_marker(expect_bool(value)?);
+                Ok(())
+            }
+            "capacity" => {
+                self.set_capacity(expect_u32(value)? as usize);
+                Ok(())
+            }
             "data" => {
                 self.set_data(expect_number_list(value)?);
                 Ok(())
@@ -320,7 +547,16 @@ impl WidgetProperties for Sparkline {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["data", "stroke_width", "show_end_value", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "data",
+            "stroke_width",
+            "show_end_value",
+            "fill",
+            "show_points",
+            "show_last_marker",
+            "capacity",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -354,14 +590,9 @@ impl Draw for Sparkline {
         // half-stroke, which is what makes the trace read as a series on a surface rather than
         // as a border decoration.
         let stroke_w = self.stroke_width as u32;
-        let dot_radius = if self.show_last_point { SPARKLINE_DOT_RADIUS } else { 0 };
-        let half_stroke = (stroke_w.max(1) as i32 + 1) / 2;
-        let inset = half_stroke.max(dot_radius as i32) + SPARKLINE_PLOT_MARGIN;
-        let inset = inset.min(rect.width as i32 / 2).min(rect.height as i32 / 2);
-        let x0 = rect.x + inset;
-        let x1 = rect.x + rect.width as i32 - 1 - inset;
-        let y_top = rect.y + inset;
-        let y_bottom = rect.y + rect.height as i32 - 1 - inset;
+        let dot_radius =
+            if self.show_last_point || self.show_points { SPARKLINE_DOT_RADIUS } else { 0 };
+        let (x0, x1, y_top, y_bottom) = self.plot_extents();
         let plot_height = (y_bottom - y_top).max(1) as f64;
         // Pixel mapping is pure, so it is recomputed per segment instead of materialising a
         // `Vec<Point>` once per frame. The highlight dot maps the last sample directly.
@@ -371,6 +602,22 @@ impl Draw for Sparkline {
             Point::new(px, py.max(y_top))
         };
 
+        // ── Area fill ──
+        //
+        // One strip per segment down to the plot's baseline, the same construction the line chart
+        // uses. Drawn before the trace so the line stays the strongest mark.
+        if self.fill && is_enabled {
+            let fill_color = line_color.with_alpha(40);
+            for (i, pair) in self.data.windows(2).enumerate() {
+                let from = map_at(i, pair[0]);
+                let to = map_at(i + 1, pair[1]);
+                let strip_width = (to.x - from.x).max(1) as u32;
+                let top = from.y.min(to.y);
+                let height = (y_bottom - top).max(1) as u32;
+                context.fill_rect(Rect::new(from.x, top, strip_width, height), fill_color);
+            }
+        }
+
         // ── Draw line segments ──
         for (i, pair) in self.data.windows(2).enumerate() {
             context.draw_line_stroke_aa(
@@ -379,6 +626,27 @@ impl Draw for Sparkline {
                 line_color,
                 stroke_w.max(1),
             );
+        }
+
+        // ── Sample discs ──
+        if self.show_points && is_enabled {
+            let point_color = line_color;
+            for (i, value) in self.data.iter().enumerate() {
+                context.fill_circle(map_at(i, *value), dot_radius, point_color);
+            }
+        }
+
+        // ── Hovered sample marker ──
+        if let Some(index) = self.hovered_index {
+            if is_enabled {
+                if let Some(value) = self.data.get(index) {
+                    context.fill_circle(
+                        map_at(index, *value),
+                        dot_radius + 1,
+                        line_color.with_alpha(140),
+                    );
+                }
+            }
         }
 
         // ── Draw last-point highlight dot ──
@@ -442,6 +710,36 @@ fn format_end_value(value: f64) -> String {
 impl EventHandler for Sparkline {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MouseMove { pos } => {
+                let next = self.sample_at(*pos);
+                if next != self.hovered_index {
+                    self.hovered_index = next;
+                    if let Some(index) = next {
+                        if let Some(value) = self.data.get(index) {
+                            self.value_hovered.emit((index, *value));
+                        }
+                    }
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_index.take().is_some() {
+                    self.base.request_redraw();
+                }
+            }
+            Event::MousePress { pos, button, .. } if *button == 1 => {
+                if let (Some(last), Some(index)) = (self.data.last(), self.sample_at(*pos)) {
+                    if index + 1 == self.data.len() {
+                        self.last_value_clicked.emit(*last);
+                    }
+                }
+            }
+            _ => { /* Other events are not relevant */ }
+        }
     }
 }
 
@@ -623,5 +921,52 @@ mod tests {
         assert!(!crate::widget::svg::text_ink_boxes(&svg).is_empty(), "the value is painted");
         assert_eq!(format_end_value(3.0), "3");
         assert_eq!(format_end_value(12_500.0), "12500.0");
+    }
+
+    #[test]
+    fn capacity_keeps_the_newest_samples_and_updates_the_range() {
+        let mut sl = Sparkline::new(Rect::new(0, 0, 80, 24));
+        sl.set_capacity(3);
+        for value in [5.0, 1.0, 9.0, 2.0, 3.0] {
+            sl.add_value(value);
+        }
+        assert_eq!(sl.data(), &[9.0, 2.0, 3.0]);
+        assert_eq!(sl.capacity(), 3);
+        sl.set_capacity(0);
+        sl.add_value(4.0);
+        assert_eq!(sl.data().len(), 4, "zero clears the cap");
+    }
+
+    #[test]
+    fn fill_points_and_last_marker_are_painted_when_enabled() {
+        let mut sl = Sparkline::new(Rect::new(0, 0, 80, 24));
+        sl.set_data(vec![1.0, 3.0, 2.0]);
+        let plain = render_to_svg(&mut sl);
+        sl.set_fill(true);
+        sl.set_show_points(true);
+        let richer = render_to_svg(&mut sl);
+        assert!(richer.len() > plain.len(), "fill and point marks add ink");
+        assert!(sl.fill());
+        assert!(sl.show_points());
+        assert!(sl.show_last_marker());
+    }
+
+    #[test]
+    fn pointer_events_resolve_and_emit() {
+        use crate::event::{Event, EventHandler};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let mut sl = Sparkline::new(Rect::new(0, 0, 80, 24));
+        sl.set_data(vec![1.0, 2.0, 3.0]);
+        let _ = render_to_svg(&mut sl);
+        assert!(sl.event_signal_dyn("value_hovered").is_some());
+        assert!(sl.event_signal_dyn("last_value_clicked").is_some());
+        let hit = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&hit);
+        sl.last_value_clicked.connect(move |_| flag.store(true, Ordering::SeqCst));
+        let (_, x1, _, _) = sl.plot_extents();
+        sl.handle_event(&Event::MousePress { pos: Point::new(x1, 12), button: 1, modifiers: 0 });
+        assert!(hit.load(Ordering::SeqCst), "a click on the final sample reports it");
     }
 }

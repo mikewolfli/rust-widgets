@@ -9,13 +9,13 @@ use crate::core::Point;
 use crate::core::{Color, HorizontalAlignment, MediaClock, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use alloc::sync::Arc;
 
@@ -113,6 +113,8 @@ pub struct MediaPlayer {
     adjusting_volume: bool,
     /// Media queued after the current one.
     playlist: Vec<String>,
+    /// The playlist entry currently loaded, when the source came from the playlist.
+    playlist_index: Option<usize>,
     /// The chapter markers, as `(position_ms, title)`.
     chapters: Vec<(u64, String)>,
     /// Emitted when the host should change the window's fullscreen state.
@@ -125,6 +127,10 @@ pub struct MediaPlayer {
     pub volume_changed: Signal1<u8>,
     /// Emitted when source changes.
     pub source_changed: Signal1<String>,
+    /// Emitted exactly once when playback reaches the media's end.
+    pub media_ended: GenericSignal,
+    /// Emitted with the chapter index when a chapter marker is pressed.
+    pub chapter_selected: Signal1<usize>,
 }
 
 impl MediaPlayer {
@@ -143,12 +149,15 @@ impl MediaPlayer {
             scrubbing: false,
             adjusting_volume: false,
             playlist: Vec::new(),
+            playlist_index: None,
             chapters: Vec::new(),
             fullscreen_requested: Signal1::new(),
             playback_changed: Signal1::new(),
             position_changed: Signal1::new(),
             volume_changed: Signal1::new(),
             source_changed: Signal1::new(),
+            media_ended: GenericSignal::new(),
+            chapter_selected: Signal1::new(),
         }
     }
 
@@ -355,12 +364,56 @@ impl MediaPlayer {
     /// Replaces the playlist.
     pub fn set_playlist(&mut self, playlist: Vec<String>) {
         self.playlist = playlist;
+        // A source that names a playlist entry keeps its position, so a host that sets the
+        // list after the source does not lose the "where am I" answer.
+        self.playlist_index = self
+            .source
+            .as_ref()
+            .and_then(|source| self.playlist.iter().position(|item| item == source));
         self.base.request_redraw();
     }
 
     /// Returns the playlist.
     pub fn playlist(&self) -> &[String] {
         &self.playlist
+    }
+
+    /// The playlist entry currently loaded, if the source came from the playlist.
+    pub fn playlist_index(&self) -> Option<usize> {
+        self.playlist_index.filter(|index| *index < self.playlist.len())
+    }
+
+    /// Loads playlist entry `index`.
+    pub fn select_track(&mut self, index: usize) -> bool {
+        let Some(source) = self.playlist.get(index).cloned() else {
+            return false;
+        };
+        self.playlist_index = Some(index);
+        self.set_source(source, 0);
+        true
+    }
+
+    /// Loads the next playlist entry.
+    pub fn next_track(&mut self) -> bool {
+        if self.playlist.is_empty() {
+            return false;
+        }
+        let next = match self.playlist_index() {
+            Some(index) => index + 1,
+            None => 0,
+        };
+        self.select_track(next)
+    }
+
+    /// Loads the previous playlist entry.
+    pub fn previous_track(&mut self) -> bool {
+        let Some(index) = self.playlist_index() else {
+            return false;
+        };
+        if index == 0 {
+            return false;
+        }
+        self.select_track(index - 1)
     }
 
     /// Sets the chapter markers.
@@ -386,10 +439,37 @@ impl MediaPlayer {
         )
     }
 
-    /// The volume rail's rectangle, to the left of the progress rule.
+    /// The volume rail's rectangle, to the right of the transport buttons.
     fn volume_rect(&self) -> Rect {
         let bar = self.progress_rect();
-        Rect::new(bar.x, bar.y.saturating_sub(12), 72, 6)
+        Rect::new(bar.x.saturating_add(42), bar.y.saturating_sub(12), 64.min(bar.width), 6)
+    }
+
+    /// The play/pause button, leading the transport row above the progress rule.
+    fn play_rect(&self) -> Rect {
+        let bar = self.progress_rect();
+        let side = 16.min(bar.width);
+        Rect::new(bar.x, bar.y.saturating_sub(18), side, side)
+    }
+
+    /// The mute button, beside the play button.
+    fn mute_rect(&self) -> Rect {
+        let bar = self.progress_rect();
+        let side = 16.min(bar.width.saturating_sub(20));
+        Rect::new(bar.x.saturating_add(20), bar.y.saturating_sub(18), side, side)
+    }
+
+    /// The chapter marker under `pos`, with its index.
+    fn chapter_at(&self, pos: Point) -> Option<usize> {
+        let bar = self.progress_rect();
+        if self.duration_ms == 0 || bar.width == 0 {
+            return None;
+        }
+        self.chapters.iter().position(|(position, _)| {
+            let ratio = (*position as f64 / self.duration_ms as f64).clamp(0.0, 1.0) as f32;
+            let x = bar.x + (bar.width as f32 * ratio).round() as i32;
+            (pos.x - x).abs() <= 4
+        })
     }
 
     /// Seeks to the ratio under `pos` on the progress rule.
@@ -465,6 +545,10 @@ impl MediaPlayer {
             // changed". Returning `true` keeps the frame that observed the stop flowing, so the
             // pause is painted in the same frame it happened.
             self.playback_changed.emit(false);
+            // A distinct end-of-media fact, so a host that wants to advance its playlist does
+            // not have to infer "ended" from `playing == false` (a user pause has the same
+            // value). Emitted on the same frame the clock reports `Ended`, once.
+            self.media_ended.emit();
             return true;
         }
         true
@@ -546,6 +630,12 @@ impl Widget for MediaPlayer {
                 &self.fullscreen_requested,
                 |v| crate::widget::capability::CapabilityValue::Bool(*v),
             )),
+            "media_ended" => Some(EventSignalRef::unit("media_ended", &self.media_ended)),
+            "chapter_selected" => {
+                Some(EventSignalRef::mapped("chapter_selected", &self.chapter_selected, |v| {
+                    crate::widget::capability::CapabilityValue::UInt(*v as u64)
+                }))
+            }
             _ => None,
         }
     }
@@ -571,6 +661,11 @@ impl WidgetProperties for MediaPlayer {
             "volume" => Ok(CapabilityValue::UInt(self.volume() as u64)),
             "muted" => Ok(CapabilityValue::Bool(self.muted())),
             "fullscreen" => Ok(CapabilityValue::Bool(self.fullscreen())),
+            "playlist_index" => match self.playlist_index() {
+                Some(index) => Ok(CapabilityValue::UInt(index as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "track_count" => Ok(CapabilityValue::UInt(self.playlist.len() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -614,6 +709,23 @@ impl WidgetProperties for MediaPlayer {
                 self.set_fullscreen(expect_bool(value)?);
                 Ok(())
             }
+            "playlist_index" => match value {
+                CapabilityValue::UInt(index) => {
+                    let index =
+                        usize::try_from(index).map_err(|_| CapabilityAccessError::OutOfRange)?;
+                    if self.select_track(index) {
+                        Ok(())
+                    } else {
+                        Err(CapabilityAccessError::OutOfRange)
+                    }
+                }
+                CapabilityValue::Null => {
+                    self.playlist_index = None;
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "track_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -627,6 +739,8 @@ impl WidgetProperties for MediaPlayer {
             "volume",
             "muted",
             "fullscreen",
+            "playlist_index",
+            "track_count",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -659,6 +773,20 @@ impl WidgetProperties for MediaPlayer {
                 Ok(())
             }
             "seek_to" | "set_source" | "set_volume" => Err(CapabilityAccessError::OutOfRange),
+            "next_track" => {
+                if self.next_track() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "previous_track" => {
+                if self.previous_track() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }
@@ -689,6 +817,22 @@ impl EventHandler for MediaPlayer {
                 _ => {}
             },
             Event::MousePress { pos, button: 1, .. } => {
+                if self.play_rect().contains_point(*pos) {
+                    let _ = self.toggle_playback();
+                    return;
+                }
+                if self.mute_rect().contains_point(*pos) {
+                    self.toggle_mute();
+                    return;
+                }
+                if let Some(index) = self.chapter_at(*pos) {
+                    if let Some((position, _)) = self.chapters.get(index) {
+                        let position = *position;
+                        self.seek_to(position);
+                        self.chapter_selected.emit(index);
+                    }
+                    return;
+                }
                 let volume_rail = self.volume_rect();
                 if volume_rail.contains_point(*pos) {
                     self.adjusting_volume = true;
@@ -699,8 +843,6 @@ impl EventHandler for MediaPlayer {
                 if bar_rect.contains_point(*pos) {
                     self.scrubbing = true;
                     self.seek_from_point(*pos);
-                } else {
-                    let _ = self.toggle_playback();
                 }
             }
             Event::MouseMove { pos } => {
@@ -902,6 +1044,33 @@ impl Draw for MediaPlayer {
                 HorizontalAlignment::Left,
             );
         }
+
+        // ── Transport buttons ──
+        //
+        // Dedicated hit regions rather than "a press anywhere that is not a rail toggles
+        // playback". The old rule made every stray click on the panel start or stop the media.
+        let play = self.play_rect();
+        if play.width > 0 {
+            let icon = if self.is_playing_internal() { IconName::Pause } else { IconName::Play };
+            crate::widget::draw_icon_centered(
+                context,
+                play,
+                play.width.min(play.height),
+                ink,
+                icon,
+            );
+        }
+        let mute = self.mute_rect();
+        if mute.width > 0 {
+            let icon = if self.muted { IconName::VolumeOff } else { IconName::VolumeUp };
+            crate::widget::draw_icon_centered(
+                context,
+                mute,
+                mute.width.min(mute.height),
+                muted,
+                icon,
+            );
+        }
     }
 }
 
@@ -1086,6 +1255,65 @@ mod tests {
 
         let volume_events = volume.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(volume_events, vec![65]);
+    }
+
+    /// The playlist is navigable and the end of the media is its own signal.
+    #[test]
+    fn playlist_navigation_and_end_signal() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        player.set_playlist(vec!["a.mp3".to_string(), "b.mp3".to_string()]);
+        assert_eq!(player.playlist_index(), None);
+        assert!(player.next_track());
+        assert_eq!(player.source(), Some("a.mp3"));
+        assert_eq!(player.playlist_index(), Some(0));
+        assert!(player.next_track());
+        assert_eq!(player.source(), Some("b.mp3"));
+        assert!(!player.next_track(), "past the last entry");
+        assert!(player.previous_track());
+        assert_eq!(player.playlist_index(), Some(0));
+
+        // The end-of-media signal is distinct from a pause: `playback_changed` carries both.
+        let ended = player.media_ended.clone();
+        let count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let sink = std::sync::Arc::clone(&count);
+        ended.connect(move || *sink.lock().unwrap() += 1);
+        player.set_source("short.mp3", 1_000);
+        assert!(player.play());
+        assert!(player.tick(5.0));
+        assert_eq!(*count.lock().unwrap(), 1);
+        assert!(player.event_signal_dyn("media_ended").is_some());
+    }
+
+    /// Chapter markers are clickable and report their index.
+    #[test]
+    fn a_chapter_marker_seeks_and_reports_its_index() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        player.set_source("movie.mp4", 100_000);
+        player.set_chapters(vec![(50_000, "Middle".to_string())]);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        player.chapter_selected.connect(move |index| sink.lock().unwrap().push(*index));
+
+        let bar = player.progress_rect();
+        let x = bar.x + bar.width as i32 / 2;
+        player.handle_event(&Event::mouse_press(x, bar.y + 1, 1));
+        assert_eq!(*seen.lock().unwrap(), vec![0]);
+        assert_eq!(player.position_ms(), 50_000);
+    }
+
+    /// The mute button has a hit region of its own; a blank panel press no longer toggles play.
+    #[test]
+    fn the_mute_button_toggles_and_blank_clicks_do_not_play() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        player.set_source("clip.mp4", 10_000);
+        let mute = player.mute_rect();
+        player.handle_event(&Event::mouse_press(mute.x + 2, mute.y + 2, 1));
+        assert!(player.muted());
+
+        // A press on the empty panel (the centre of the title band) does nothing.
+        assert!(!player.is_playing());
+        player.handle_event(&Event::mouse_press(160, 8, 1));
+        assert!(!player.is_playing(), "a stray click must not start playback");
     }
 
     #[test]

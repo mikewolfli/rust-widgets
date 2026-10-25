@@ -3,21 +3,27 @@
 
 //! MarkdownEditor widget.
 
-use crate::core::{Color, HorizontalAlignment, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::Signal1;
+use crate::style::animation::CursorBlink;
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
+use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 use crate::widget::metrics::{effective_font, estimate_text_width};
+use crate::widget::special_widgets::code_editor::{
+    BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter, TokenKind,
+};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 /// The top of the first text row below the header band.
@@ -120,6 +126,96 @@ pub struct MarkdownOutlineEntry {
     pub title: String,
 }
 
+/// One run of preview text with the style the inline parser resolved for it.
+struct PreviewRun {
+    text: String,
+    style: PreviewStyle,
+    /// The measured advance, resolved when the line was parsed so a still frame measures nothing.
+    width: u32,
+}
+
+/// The inline style of one preview run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewStyle {
+    /// Ordinary body text.
+    Text,
+    /// `**strong**`: drawn with a one-pixel overprint, like every bold run in this crate.
+    Bold,
+    /// `*emphasis*`: the face has no italic, so emphasis is a slight ink shift.
+    Italic,
+    /// `~~struck~~`: drawn faint with a rule through it.
+    Strike,
+    /// `` `code` ``: tinted backing.
+    Code,
+    /// `[label](target)`: accent ink with an underline.
+    Link,
+    /// Syntax that was recognised and is not shown as body text (fences, list markers).
+    Dim,
+    /// A list bullet, task box or quote bar.
+    Accent,
+    /// One token of a highlighted fenced block.
+    Token(TokenKind),
+}
+
+/// How a preview row is laid out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewRow {
+    /// Runs drawn from left to right.
+    Inline,
+    /// A heading, carrying its level.
+    Heading(u8),
+    /// A horizontal rule.
+    Rule,
+    /// An opening or closing code fence.
+    Fence,
+    /// The body of a fenced code block.
+    Code,
+    /// A table row (the runs already contain the cell separators).
+    Table,
+}
+
+/// A parsed preview row, cached by line index and text hash.
+struct ParsedLine {
+    runs: Vec<PreviewRun>,
+    row: PreviewRow,
+}
+
+/// Where a line sits relative to a fenced code block.
+#[derive(Clone, Copy)]
+enum BlockStart {
+    /// Outside any fence.
+    Normal,
+    /// The opening or closing fence line itself.
+    Fence,
+    /// Inside a fence, with the lexer state the line starts in.
+    Code(LanguageId, LineState),
+}
+
+/// An IME composition that has not been committed yet.
+#[derive(Debug, Clone, Default)]
+struct Preedit {
+    text: String,
+    /// Byte offset of the insertion point inside `text`.
+    cursor: usize,
+}
+
+/// Document statistics, cached per revision.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Metrics {
+    lines: usize,
+    words: usize,
+    headings: usize,
+}
+
+/// The find bar's state.
+#[derive(Debug, Clone, Default)]
+struct FindState {
+    visible: bool,
+    query: String,
+    /// Byte offset of the current match, when one is highlighted.
+    current: Option<usize>,
+}
+
 /// Lightweight markdown editor with preview toggle and metrics.
 pub struct MarkdownEditor {
     base: BaseWidget,
@@ -138,14 +234,69 @@ pub struct MarkdownEditor {
     pub text_changed: Signal1<String>,
     /// Emitted when preview mode changes.
     pub preview_mode_changed: Signal1<bool>,
+    /// Emitted when a selection appears (`true`) or disappears (`false`).
+    pub selection_changed: Signal1<bool>,
+    /// Emitted when a heading row is activated by a click, with its outline index.
+    pub heading_activated: Signal1<usize>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// The configured undo depth, so the property can be read back after a write.
+    undo_stack_limit: usize,
+    /// The selection as ordered document character offsets.
+    selection: Option<(usize, usize)>,
+    /// Where the selection started, as `(line, column)`, for shift-extension.
+    selection_anchor: Option<(usize, usize)>,
+    /// Whether a pointer drag is still extending the selection.
+    selecting: bool,
+    /// Uncommitted IME composition, drawn at the caret.
+    preedit: Option<Preedit>,
+    /// The caret blink. Unlike the other two text controls this one had none.
+    cursor_blink: CursorBlink,
+    /// Whether the editor paints a scrollbar beside the text.
+    show_scrollbar: bool,
+    /// Whether a drag on the scrollbar thumb is in progress.
+    dragging_scrollbar: bool,
+    /// The find bar.
+    find: FindState,
+    /// Whether GFM constructs (tables, tasks, strikethrough, quotes, fences, rules) are parsed.
+    gfm_extensions: bool,
+    /// Whether fenced code blocks are tokenized with the shared lexer.
+    code_highlight: bool,
+    /// Counts text mutations, so caches can tell a stale frame from a live one.
+    revision: u64,
+    /// `line_count` / `word_count` / `heading_count`, keyed by revision.
+    metrics: RefCell<Option<(u64, Metrics)>>,
+    /// Parsed preview rows, keyed by line index and text hash.
+    preview_cache: HashMap<(usize, u64), Rc<ParsedLine>>,
+    /// Per-line block classification, rebuilt when the revision changes.
+    blocks: Vec<BlockStart>,
+    /// Whether the line *after* each line is a table divider, so a row can be recognised as a
+    /// table header without the paint path looking ahead (which would be quadratic).
+    table_header: Vec<bool>,
+    /// The revision `blocks` was built for.
+    blocks_revision: u64,
+    /// Measured glyph advances for the caret's line prefix, keyed by font size.
+    char_widths: Vec<(char, f32, i32)>,
 }
 
 impl MarkdownEditor {
     /// Creates editor.
     pub fn new(geometry: Rect) -> Self {
+        Self::with_undo_limit(geometry, 100)
+    }
+
+    /// Creates an editor whose undo history keeps at most `undo_limit` steps.
+    ///
+    /// The stack used to be the default 100 with no way to reach it, so a long writing session
+    /// silently lost everything past the hundredth edit.
+    pub fn with_undo_limit(geometry: Rect, undo_limit: usize) -> Self {
+        let undo_limit = undo_limit.max(1);
+        let mut cursor_blink = CursorBlink::new();
+        // The editor is an input surface by definition, so a freshly mounted one is already
+        // waiting for typing; waiting for a focus event a host may not send would make this the
+        // only text control in the crate whose caret never blinks.
+        cursor_blink.start();
         Self {
             base: BaseWidget::new(WidgetKind::RichEdit, geometry, "MarkdownEditor"),
             text: String::new(),
@@ -155,9 +306,29 @@ impl MarkdownEditor {
             first_visible_line: 0,
             text_changed: Signal1::new(),
             preview_mode_changed: Signal1::new(),
-            undo_stack: UndoStack::new(),
+            selection_changed: Signal1::new(),
+            heading_activated: Signal1::new(),
+            undo_stack: UndoStack::with_capacity(undo_limit),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            undo_stack_limit: undo_limit,
+            selection: None,
+            selection_anchor: None,
+            selecting: false,
+            preedit: None,
+            cursor_blink,
+            show_scrollbar: true,
+            dragging_scrollbar: false,
+            find: FindState::default(),
+            gfm_extensions: true,
+            code_highlight: true,
+            revision: 0,
+            metrics: RefCell::new(None),
+            preview_cache: HashMap::new(),
+            blocks: Vec::new(),
+            table_header: Vec::new(),
+            blocks_revision: u64::MAX,
+            char_widths: Vec::new(),
         }
     }
 
@@ -185,14 +356,41 @@ impl MarkdownEditor {
         if filtered.is_empty() {
             return;
         }
-        self.clamp_cursor();
-        let at = self.cursor_byte_offset();
-        let mut next = String::with_capacity(self.text.len() + filtered.len());
-        next.push_str(&self.text[..at]);
-        next.push_str(&filtered);
-        next.push_str(&self.text[at..]);
-        self.cursor_col += filtered.chars().count();
+        // Typing over a selection replaces it in the same undo step.
+        self.replace_selection_or_caret(&filtered);
+    }
+
+    /// Replaces the selection with `insert`, or inserts at the caret when nothing is selected.
+    ///
+    /// One commit, so typing over a selection is one undo step rather than a delete followed by
+    /// an insert.
+    fn replace_selection_or_caret(&mut self, insert: &str) {
+        let chars: Vec<char> = self.text.chars().collect();
+        let caret = self.doc_char_offset_of_caret();
+        let (start, end) = self.selection.unwrap_or((caret, caret));
+        let start = start.min(chars.len());
+        let end = end.min(chars.len()).max(start);
+        let mut next: String = chars[..start].iter().collect();
+        next.push_str(insert);
+        next.extend(chars[end..].iter());
+        let (line, col) = self.line_col_of(start);
+        self.cursor_line = line;
+        self.cursor_col = col + insert.chars().count();
+        self.selection_anchor = None;
+        self.apply_selection(None);
         self.commit_text(next);
+    }
+
+    /// The caret as a document character offset.
+    fn doc_char_offset_of_caret(&self) -> usize {
+        let mut offset = 0usize;
+        for (index, line) in self.text.split('\n').enumerate() {
+            if index == self.cursor_line {
+                return offset + self.cursor_col;
+            }
+            offset += line.chars().count() + 1;
+        }
+        offset + self.cursor_col
     }
 
     /// Appends one line to markdown.
@@ -233,21 +431,37 @@ impl MarkdownEditor {
 
     /// Returns line count.
     pub fn line_count(&self) -> usize {
-        if self.text.is_empty() {
-            0
-        } else {
-            self.text.lines().count()
-        }
+        self.metrics_snapshot().lines
     }
 
     /// Returns word count.
     pub fn word_count(&self) -> usize {
-        self.text.split_whitespace().count()
+        self.metrics_snapshot().words
     }
 
     /// Returns heading count.
     pub fn heading_count(&self) -> usize {
-        self.text.lines().filter(|line| line.trim_start().starts_with('#')).count()
+        self.metrics_snapshot().headings
+    }
+
+    /// The document statistics, computed once per revision.
+    ///
+    /// The three public counters each walked the whole document, and the paint path called all
+    /// three per frame just to build its header line. One pass per revision answers all of them.
+    fn metrics_snapshot(&self) -> Metrics {
+        if let Some((revision, metrics)) = *self.metrics.borrow() {
+            if revision == self.revision {
+                return metrics;
+            }
+        }
+        let metrics = self.text.lines().fold(Metrics::default(), |mut total, line| {
+            total.lines += 1;
+            total.words += line.split_whitespace().count();
+            total.headings += usize::from(line.trim_start().starts_with('#'));
+            total
+        });
+        *self.metrics.borrow_mut() = Some((self.revision, metrics));
+        metrics
     }
 
     /// Returns headings in document order, as navigation targets.
@@ -294,6 +508,333 @@ impl MarkdownEditor {
         self.cursor_col
     }
 
+    /// The selection as ordered document character offsets.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        self.selection
+    }
+
+    /// The selected text, when a selection exists.
+    pub fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection?;
+        let chars: Vec<char> = self.text.chars().collect();
+        let start = start.min(chars.len());
+        let end = end.min(chars.len());
+        Some(chars[start..end.max(start)].iter().collect())
+    }
+
+    /// Selects the whole document.
+    pub fn select_all(&mut self) {
+        let length = self.text.chars().count();
+        self.selection_anchor = Some((0, 0));
+        self.apply_selection(if length == 0 { None } else { Some((0, length)) });
+        self.cursor_line = self.edit_line_count().saturating_sub(1);
+        self.cursor_col = self.current_line_char_len();
+        self.base.request_redraw();
+    }
+
+    /// Copies the selection to the clipboard, reporting whether anything was copied.
+    pub fn copy(&mut self) -> bool {
+        let Some(text) = self.selected_text() else {
+            return false;
+        };
+        crate::clipboard::ClipboardManager::set_text(text)
+    }
+
+    /// Cuts the selection to the clipboard, reporting whether anything was cut.
+    pub fn cut(&mut self) -> bool {
+        let Some(text) = self.selected_text() else {
+            return false;
+        };
+        let copied = crate::clipboard::ClipboardManager::set_text(text);
+        self.delete_selection();
+        copied
+    }
+
+    /// Pastes the clipboard at the caret, replacing any selection.
+    pub fn paste(&mut self) -> bool {
+        let text = crate::clipboard::ClipboardManager::text();
+        if text.is_empty() {
+            return false;
+        }
+        let filtered: String = text.chars().filter(|ch| !ch.is_control() || *ch == '\n').collect();
+        if filtered.is_empty() {
+            return false;
+        }
+        self.replace_selection_or_caret(&filtered);
+        true
+    }
+
+    /// Moves the caret to `line` and scrolls it into view.
+    pub fn goto_line(&mut self, line: usize) -> bool {
+        if line >= self.edit_line_count() {
+            return false;
+        }
+        self.cursor_line = line;
+        self.cursor_col = 0;
+        self.selection_anchor = None;
+        self.apply_selection(None);
+        self.reveal_caret();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Finds the next occurrence of `needle` at or after the caret, wrapping to the start.
+    ///
+    /// The match becomes the selection and the caret moves to its end, which is what makes
+    /// repeated calls step through the document instead of finding the same match again.
+    pub fn find_next(&mut self, needle: &str) -> bool {
+        if needle.is_empty() {
+            return false;
+        }
+        let haystack = self.text.clone();
+        let from = self.find_search_origin(true);
+        let found = haystack
+            .get(from..)
+            .and_then(|tail| tail.find(needle).map(|offset| from + offset))
+            .or_else(|| haystack.find(needle));
+        let Some(byte) = found else {
+            self.find.current = None;
+            return false;
+        };
+        self.find.current = Some(byte);
+        self.select_byte_range(byte, byte + needle.len());
+        true
+    }
+
+    /// Finds the previous occurrence of `needle` before the caret, wrapping to the end.
+    pub fn find_previous(&mut self, needle: &str) -> bool {
+        if needle.is_empty() {
+            return false;
+        }
+        let haystack = self.text.clone();
+        let from = self.find_search_origin(false);
+        let found = haystack
+            .get(..from.min(haystack.len()))
+            .and_then(|head| head.rfind(needle))
+            .or_else(|| haystack.rfind(needle));
+        let Some(byte) = found else {
+            self.find.current = None;
+            return false;
+        };
+        self.find.current = Some(byte);
+        self.select_byte_range(byte, byte + needle.len());
+        true
+    }
+
+    /// Whether the find bar is showing.
+    pub fn find_bar_visible(&self) -> bool {
+        self.find.visible
+    }
+
+    /// The find bar's current query.
+    pub fn find_query(&self) -> &str {
+        &self.find.query
+    }
+
+    /// Opens the find bar and focuses its query field.
+    pub fn open_find(&mut self) {
+        self.find.visible = true;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Closes the find bar, leaving the document and the current match untouched.
+    pub fn close_find(&mut self) {
+        if self.find.visible {
+            self.find.visible = false;
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+    }
+
+    /// Advances the caret's blink by `delta_ms` and reports whether another frame is owed.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        let owes_frame = self.cursor_blink.tick(delta_ms);
+        if owes_frame {
+            self.base.request_redraw();
+        }
+        owes_frame
+    }
+
+    /// Whether the caret is drawn on the current frame.
+    pub fn is_caret_visible(&self) -> bool {
+        self.cursor_blink.is_visible()
+    }
+
+    /// Whether the editor paints a scrollbar.
+    pub fn show_scrollbar(&self) -> bool {
+        self.show_scrollbar
+    }
+
+    /// Shows or hides the scrollbar.
+    pub fn set_show_scrollbar(&mut self, show: bool) {
+        if self.show_scrollbar == show {
+            return;
+        }
+        self.show_scrollbar = show;
+        self.base.request_redraw();
+    }
+
+    /// Whether GFM extensions are parsed in preview.
+    pub fn gfm_extensions(&self) -> bool {
+        self.gfm_extensions
+    }
+
+    /// Enables or disables the GFM extension set.
+    pub fn set_gfm_extensions(&mut self, enabled: bool) {
+        if self.gfm_extensions == enabled {
+            return;
+        }
+        self.gfm_extensions = enabled;
+        self.preview_cache.clear();
+        self.base.request_redraw();
+    }
+
+    /// Whether fenced code blocks are syntax-highlighted.
+    pub fn code_highlight(&self) -> bool {
+        self.code_highlight
+    }
+
+    /// Enables or disables fenced-code highlighting.
+    pub fn set_code_highlight(&mut self, enabled: bool) {
+        if self.code_highlight == enabled {
+            return;
+        }
+        self.code_highlight = enabled;
+        self.preview_cache.clear();
+        self.base.request_redraw();
+    }
+
+    /// The configured undo depth.
+    pub fn undo_stack_limit(&self) -> usize {
+        self.undo_stack_limit
+    }
+
+    /// Sets the undo depth and trims the existing history to it.
+    pub fn set_undo_limit(&mut self, limit: usize) {
+        let limit = limit.max(1);
+        if self.undo_stack_limit == limit {
+            return;
+        }
+        self.undo_stack_limit = limit;
+        self.undo_stack.set_max_capacity(limit);
+    }
+
+    /// The IME composition's screen rectangle, for a host placing its candidate window.
+    ///
+    /// The rectangle starts at the composition caret — the insertion point inside the preedit —
+    /// not at the start of the composition, because that is where the candidate window belongs.
+    /// Returns `None` when no composition is in progress: a rectangle for text that is not on
+    /// screen would put the candidate window somewhere the user is not typing.
+    pub fn preedit_screen_rect(&self) -> Option<Rect> {
+        let preedit = self.preedit.as_ref()?;
+        if preedit.text.is_empty() {
+            return None;
+        }
+        let rect = self.geometry();
+        let font = effective_font(self.base.style());
+        let (line_start, line_end) = self.cursor_line_span();
+        let prefix: String =
+            self.text[line_start..line_end].chars().take(self.cursor_col).collect();
+        let before_caret = &preedit.text[..char_boundary_at(&preedit.text, preedit.cursor)];
+        let x = rect.x
+            + 12
+            + estimate_text_width(&prefix, font, 1.0) as i32
+            + estimate_text_width(before_caret, font, 1.0) as i32;
+        let row = self.cursor_line.saturating_sub(self.visible_start());
+        let y = rect.y + TEXT_TOP + (row as i32) * TEXT_ROW_HEIGHT;
+        let width = estimate_text_width(&preedit.text, font, 1.0).max(1);
+        Some(Rect::new(x, y, width, TEXT_ROW_HEIGHT as u32))
+    }
+
+    /// Moves the caret to the start or the end of the current line.
+    pub fn move_to_line_edge(&mut self, start: bool) {
+        self.cursor_col = if start { 0 } else { self.current_line_char_len() };
+        self.selection_anchor = None;
+        self.apply_selection(None);
+        self.base.request_redraw();
+    }
+
+    /// Scrolls the viewport by whole visible pages.
+    ///
+    /// A positive `direction` moves toward the end of the document. Returns whether the viewport
+    /// moved.
+    pub fn scroll_page(&mut self, direction: i32) -> bool {
+        let page = self.visible_line_count().max(1) as i32;
+        let moved = self.scroll_lines(direction.signum() * page);
+        if moved {
+            self.base.request_redraw();
+        }
+        moved
+    }
+
+    /// Stores a selection and reports the presence change.
+    fn apply_selection(&mut self, next: Option<(usize, usize)>) {
+        if self.selection == next {
+            return;
+        }
+        self.selection = next;
+        self.selection_changed.emit(next.is_some());
+    }
+
+    /// Selects the document characters spanned by the byte range `[start, end)`.
+    fn select_byte_range(&mut self, start: usize, end: usize) {
+        let start_char = self.text[..start.min(self.text.len())].chars().count();
+        let end_char = start_char
+            + self.text[start.min(self.text.len())..end.min(self.text.len())].chars().count();
+        self.selection_anchor = Some(self.line_col_of(start_char));
+        self.apply_selection(Some((start_char, end_char)));
+        let (line, col) = self.line_col_of(end_char);
+        self.cursor_line = line;
+        self.cursor_col = col;
+        self.reveal_caret();
+        self.base.request_redraw();
+    }
+
+    /// Where the next forward/backward search starts.
+    fn find_search_origin(&self, forward: bool) -> usize {
+        let caret = self.cursor_byte_offset();
+        match self.find.current {
+            Some(current) if forward => current + 1,
+            Some(current) => current,
+            None if forward => caret,
+            None => caret,
+        }
+    }
+
+    /// Deletes the selected characters, if any, and reports whether anything was deleted.
+    fn delete_selection(&mut self) -> bool {
+        if self.selection.is_none() {
+            return false;
+        }
+        self.replace_selection_or_caret("");
+        true
+    }
+
+    /// Maps a document character offset to `(line, column)`.
+    fn line_col_of(&self, offset: usize) -> (usize, usize) {
+        let mut remaining = offset;
+        for (line, text) in self.text.split('\n').enumerate() {
+            let length = text.chars().count();
+            if remaining <= length {
+                return (line, remaining);
+            }
+            remaining -= length + 1;
+        }
+        let last = self.edit_line_count().saturating_sub(1);
+        (last, self.text.split('\n').nth(last).map(|l| l.chars().count()).unwrap_or(0))
+    }
+
+    /// Keeps the caret in view after a caret move or a search hit.
+    fn reveal_caret(&mut self) {
+        let visible = self.visible_line_count().max(1);
+        if self.cursor_line < self.first_visible_line {
+            self.first_visible_line = self.cursor_line;
+        } else if self.cursor_line >= self.first_visible_line + visible {
+            self.first_visible_line = self.cursor_line + 1 - visible;
+        }
+    }
+
     /// Reverts the most recent markdown text mutation.
     ///
     /// Returns `false` and changes nothing when there is nothing to undo;
@@ -332,7 +873,10 @@ impl MarkdownEditor {
         self.restoring_history = true;
         self.text = self.history_target.borrow().clone();
         self.restoring_history = false;
+        self.revision = self.revision.wrapping_add(1);
         self.clamp_cursor();
+        self.selection_anchor = None;
+        self.apply_selection(None);
         self.text_changed.emit(self.text.clone());
         self.base.request_layout();
         self.base.request_redraw();
@@ -437,6 +981,7 @@ impl MarkdownEditor {
         }
         let before = core::mem::take(&mut self.text);
         self.text = next;
+        self.revision = self.revision.wrapping_add(1);
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.text.clone();
             self.undo_stack.push(Box::new(MarkdownTextDeltaCommand::new(
@@ -451,8 +996,59 @@ impl MarkdownEditor {
         self.base.request_redraw();
     }
 
+    /// Rebuilds the per-line block classification when the document changed.
+    ///
+    /// The preview needs to know which lines are inside a fenced code block before it can parse
+    /// them, and that fact depends on every line above. Computing it once per revision keeps it
+    /// out of the paint loop; the lexer state carried through the fence is what lets a block
+    /// comment that spans lines continue to be highlighted.
+    fn ensure_blocks(&mut self) {
+        if self.blocks_revision == self.revision {
+            return;
+        }
+        let mut blocks = Vec::new();
+        let mut fence: Option<(LanguageId, LineState)> = None;
+        for line in self.text.split('\n') {
+            let trimmed = line.trim_start();
+            match fence {
+                Some((language, state)) => {
+                    if fence_marker(trimmed).is_some() {
+                        blocks.push(BlockStart::Fence);
+                        fence = None;
+                    } else {
+                        blocks.push(BlockStart::Code(language, state));
+                        let highlighter = BuiltinHighlighter::new(language);
+                        let (_, next) = highlighter.highlight_line(line, state);
+                        fence = Some((language, next));
+                    }
+                }
+                None => match fence_marker(trimmed) {
+                    Some(info) => {
+                        blocks.push(BlockStart::Fence);
+                        fence = Some((language_from_info(info), LineState::initial()));
+                    }
+                    None => blocks.push(BlockStart::Normal),
+                },
+            }
+        }
+        self.blocks = blocks;
+        // GFM recognises a table by its *delimiter row*, so whether a line is a header depends on
+        // the line after it. Resolving that once per revision keeps the paint path from looking
+        // ahead per row.
+        let lines: Vec<&str> = self.text.split('\n').collect();
+        self.table_header = (0..lines.len())
+            .map(|index| {
+                lines.get(index + 1).is_some_and(|next| is_table_divider(next.trim_start()))
+            })
+            .collect();
+        self.blocks_revision = self.revision;
+    }
+
     /// Deletes the character before the caret, merging lines at a line start.
     fn backspace_at_cursor(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         self.clamp_cursor();
         let at = self.cursor_byte_offset();
         if self.cursor_col > 0 {
@@ -478,6 +1074,7 @@ impl MarkdownEditor {
 
     /// Splits the caret's line at the caret.
     fn insert_newline_at_cursor(&mut self) {
+        self.delete_selection();
         self.clamp_cursor();
         let at = self.cursor_byte_offset();
         let mut next = String::with_capacity(self.text.len() + 1);
@@ -544,6 +1141,17 @@ impl Widget for MarkdownEditor {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(500, 300)
     }
+
+    /// One frame of the caret's blink. The frame bus calls this; nothing else does.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        MarkdownEditor::tick(self, delta_ms)
+    }
+
+    /// A blinking caret always owes frames while it runs.
+    fn is_animating(&self) -> bool {
+        self.cursor_blink.is_running()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -570,6 +1178,16 @@ impl Widget for MarkdownEditor {
                 &self.preview_mode_changed,
                 |v| CapabilityValue::Bool(*v),
             )),
+            "selection_changed" => {
+                Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "heading_activated" => {
+                Some(EventSignalRef::mapped("heading_activated", &self.heading_activated, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
             _ => None,
         }
     }
@@ -590,6 +1208,10 @@ impl WidgetProperties for MarkdownEditor {
             "word_count" => Ok(CapabilityValue::UInt(self.word_count() as u64)),
             "heading_count" => Ok(CapabilityValue::UInt(self.heading_count() as u64)),
             "cursor_line" => Ok(CapabilityValue::UInt(self.cursor_line() as u64)),
+            "show_scrollbar" => Ok(CapabilityValue::Bool(self.show_scrollbar)),
+            "gfm_extensions" => Ok(CapabilityValue::Bool(self.gfm_extensions)),
+            "code_highlight" => Ok(CapabilityValue::Bool(self.code_highlight)),
+            "undo_stack_limit" => Ok(CapabilityValue::UInt(self.undo_stack_limit as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -613,6 +1235,22 @@ impl WidgetProperties for MarkdownEditor {
             "line_count" | "word_count" | "heading_count" | "cursor_line" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
+            "show_scrollbar" => {
+                self.set_show_scrollbar(expect_bool(value)?);
+                Ok(())
+            }
+            "gfm_extensions" => {
+                self.set_gfm_extensions(expect_bool(value)?);
+                Ok(())
+            }
+            "code_highlight" => {
+                self.set_code_highlight(expect_bool(value)?);
+                Ok(())
+            }
+            "undo_stack_limit" => {
+                self.set_undo_limit(expect_usize(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -625,6 +1263,10 @@ impl WidgetProperties for MarkdownEditor {
             "word_count",
             "heading_count",
             "cursor_line",
+            "show_scrollbar",
+            "gfm_extensions",
+            "code_highlight",
+            "undo_stack_limit",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -667,10 +1309,26 @@ impl EventHandler for MarkdownEditor {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
+            self.cursor_blink.stop();
             return;
+        }
+        if !self.cursor_blink.is_running() {
+            self.cursor_blink.start();
         }
 
         match event {
+            // The find bar owns text input while it is open: otherwise typing a query would edit
+            // the document behind it.
+            Event::TextInput { text } if self.find.visible => {
+                self.find.query.push_str(text);
+                self.find.current = None;
+                self.base.request_redraw();
+            }
+            Event::ImeCommit { text } if self.find.visible => {
+                self.find.query.push_str(text);
+                self.find.current = None;
+                self.base.request_redraw();
+            }
             // Printable text and IME commits are what the platform delivers for typing; a
             // handler with only a `KeyPress` arm never sees them. Both insert at the caret
             // through the same undo-guarded path as `set_text` (the filter mirrors
@@ -678,61 +1336,129 @@ impl EventHandler for MarkdownEditor {
             Event::TextInput { text }
                 if text.chars().all(|ch| !ch.is_control()) && !text.is_empty() =>
             {
+                self.preedit = None;
                 self.insert_text_at_cursor(text);
             }
             Event::ImeCommit { text } => {
+                self.preedit = None;
                 self.insert_text_at_cursor(text);
             }
-            Event::KeyPress { key, modifiers } => match *key {
-                // Undo and redo are the platform primary chord: Control+Z/Y on
-                // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
-                // different binding and stays unbound here.
-                _ if primary_shortcut_pressed(*key, *modifiers, Key::Z) => {
-                    let _ = self.undo();
-                }
-                _ if primary_shortcut_pressed(*key, *modifiers, Key::Y) => {
-                    let _ = self.redo();
-                }
-                8 => self.backspace_at_cursor(),
-                13 => self.insert_newline_at_cursor(),
-                37 => self.move_cursor_left(),
-                39 => self.move_cursor_right(),
-                38 => self.move_cursor(-1),
-                40 => self.move_cursor(1),
-                80 | 112 if primary_shortcut_pressed(*key, *modifiers, Key::P) => {
-                    self.toggle_preview_mode()
-                }
-                _ => { /* Other keys are not relevant */ }
-            },
+            Event::ImePreedit { text, cursor } => {
+                // The composition has to be visible before it is committed, and the caret inside
+                // it is what anchors the candidate window.
+                self.preedit =
+                    Some(Preedit { text: text.clone(), cursor: (*cursor).min(text.len()) });
+                self.base.request_redraw();
+            }
+            Event::KeyPress { key, modifiers } => self.handle_key(*key, *modifiers),
             // Wheel: positive `delta.y` moves the content down, so the viewport moves toward the
             // start. Three lines per notch is the desktop default shared with the other text
             // controls.
-            Event::MousePress { pos, button: 1, .. } => {
-                // Clicking a text row moves the caret to the nearest character boundary on it.
+            Event::MousePress { pos, button: 1, modifiers, .. } => {
                 let rect = self.geometry();
+                if self.show_scrollbar && self.scrollbar_track_contains(*pos) {
+                    let on_thumb = self.scrollbar_thumb().is_some_and(|thumb| {
+                        pos.x >= thumb.x
+                            && pos.x < thumb.x + thumb.width as i32
+                            && pos.y >= thumb.y
+                            && pos.y < thumb.y + thumb.height as i32
+                    });
+                    if on_thumb {
+                        self.dragging_scrollbar = true;
+                    } else {
+                        self.scroll_to_track(pos.y);
+                    }
+                    return;
+                }
                 let row = (pos.y - rect.y - TEXT_TOP) / TEXT_ROW_HEIGHT;
-                if row >= 0 {
-                    let line = self.visible_start() + row as usize;
-                    if line < self.edit_line_count() {
-                        self.cursor_line = line;
+                if row < 0 {
+                    return;
+                }
+                let line = self.visible_start() + row as usize;
+                if line >= self.edit_line_count() {
+                    return;
+                }
+                let font = effective_font(self.base.style());
+                let x = pos.x - rect.x - 12;
+                let text = self.text.split('\n').nth(line).unwrap_or("").to_string();
+                let mut offset = 0i32;
+                let mut column = 0usize;
+                for ch in text.chars() {
+                    let width = cached_char_width(&mut self.char_widths, ch, font, 1.0);
+                    if x < offset + width / 2 {
+                        break;
+                    }
+                    offset += width;
+                    column += 1;
+                }
+                let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                    .contains(crate::shortcut::Modifiers::SHIFT);
+                self.cursor_line = line;
+                self.cursor_col = column.min(text.chars().count());
+                if !shift {
+                    self.selection_anchor = Some((self.cursor_line, self.cursor_col));
+                    self.apply_selection(None);
+                }
+                self.selecting = true;
+                if self.preview_mode {
+                    // A heading row in preview is a navigation target, so a click on it announces
+                    // which outline entry it is.
+                    let heading =
+                        self.outline().iter().position(|entry| entry.line == self.cursor_line);
+                    if let Some(index) = heading {
+                        self.heading_activated.emit(index);
+                        let _ = self.goto_outline(index);
+                    }
+                }
+                self.base.request_redraw();
+            }
+            Event::MouseMove { pos } => {
+                if self.dragging_scrollbar {
+                    self.scroll_to_track(pos.y);
+                    return;
+                }
+                if self.selecting {
+                    let rect = self.geometry();
+                    let row = (pos.y - rect.y - TEXT_TOP) / TEXT_ROW_HEIGHT;
+                    if row >= 0 {
+                        let line = (self.visible_start() + row as usize)
+                            .min(self.edit_line_count().saturating_sub(1));
                         let font = effective_font(self.base.style());
+                        let text = self.text.split('\n').nth(line).unwrap_or("").to_string();
                         let x = pos.x - rect.x - 12;
-                        let text = self.text.split('\n').nth(line).unwrap_or("");
                         let mut offset = 0i32;
-                        self.cursor_col = 0;
+                        let mut column = 0usize;
                         for ch in text.chars() {
-                            let width = estimate_text_width(&ch.to_string(), font, 1.0) as i32;
+                            let width = cached_char_width(&mut self.char_widths, ch, font, 1.0);
                             if x < offset + width / 2 {
                                 break;
                             }
                             offset += width;
-                            self.cursor_col += 1;
+                            column += 1;
                         }
+                        self.cursor_line = line;
+                        self.cursor_col = column.min(text.chars().count());
+                        self.sync_selection_from_anchor();
                         self.base.request_redraw();
                     }
                 }
             }
-            Event::MouseMove { .. } => {}
+            Event::MouseRelease { .. } => {
+                self.selecting = false;
+                self.dragging_scrollbar = false;
+            }
+            Event::MouseLeave { .. } => {
+                // A release outside the control is not delivered to it, so leaving is the last
+                // signal that the drag ended.
+                self.selecting = false;
+                self.dragging_scrollbar = false;
+            }
+            Event::Resize { .. } => {
+                self.cursor_line = self.cursor_line.min(self.edit_line_count().saturating_sub(1));
+                self.clamp_cursor_col();
+                self.base.request_layout();
+                self.base.request_redraw();
+            }
             Event::Wheel { delta, modifiers, .. } => {
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 3);
                 if self.scroll_lines(-scroll.lines_y) {
@@ -744,9 +1470,251 @@ impl EventHandler for MarkdownEditor {
     }
 }
 
+impl MarkdownEditor {
+    /// Routes one key press to the editor or to the open find bar.
+    fn handle_key(&mut self, key: u32, modifiers: u32) {
+        let shift = crate::shortcut::Modifiers::from_event_bits(modifiers)
+            .contains(crate::shortcut::Modifiers::SHIFT);
+        let primary = crate::shortcut::Modifiers::from_event_bits(modifiers)
+            .contains(crate::shortcut::Modifiers::PRIMARY);
+
+        if self.find.visible {
+            match key {
+                8 => {
+                    self.find.query.pop();
+                    self.find.current = None;
+                }
+                13 => {
+                    let query = self.find.query.clone();
+                    if !self.find_next(&query) {
+                        self.find.current = None;
+                    }
+                }
+                27 => self.close_find(),
+                _ if primary_shortcut_pressed(key, modifiers, Key::F) => self.close_find(),
+                _ => { /* The find bar ignores editing chords it does not own. */ }
+            }
+            self.base.request_redraw();
+            return;
+        }
+
+        if primary {
+            if primary_shortcut_pressed(key, modifiers, Key::A) {
+                self.select_all();
+                return;
+            }
+            if primary_shortcut_pressed(key, modifiers, Key::C) {
+                self.copy();
+                return;
+            }
+            if primary_shortcut_pressed(key, modifiers, Key::X) {
+                self.cut();
+                return;
+            }
+            if primary_shortcut_pressed(key, modifiers, Key::V) {
+                self.paste();
+                return;
+            }
+            if primary_shortcut_pressed(key, modifiers, Key::F) {
+                self.open_find();
+                return;
+            }
+        }
+        match key {
+            _ if primary_shortcut_pressed(key, modifiers, Key::Z) => {
+                let _ = self.undo();
+            }
+            _ if primary_shortcut_pressed(key, modifiers, Key::Y) => {
+                let _ = self.redo();
+            }
+            8 => self.backspace_at_cursor(),
+            13 => self.insert_newline_at_cursor(),
+            46 | 127 => self.delete_forward(),
+            36 => {
+                if shift {
+                    self.begin_shift_selection();
+                    self.cursor_col = 0;
+                    self.sync_selection_from_anchor();
+                    self.base.request_redraw();
+                } else {
+                    self.move_to_line_edge(true);
+                }
+            }
+            35 => {
+                if shift {
+                    self.begin_shift_selection();
+                    self.cursor_col = self.current_line_char_len();
+                    self.sync_selection_from_anchor();
+                    self.base.request_redraw();
+                } else {
+                    self.move_to_line_edge(false);
+                }
+            }
+            33 => {
+                self.scroll_page(-1);
+            }
+            34 => {
+                self.scroll_page(1);
+            }
+            37 => {
+                if shift {
+                    self.begin_shift_selection();
+                } else {
+                    self.selection_anchor = None;
+                    self.apply_selection(None);
+                }
+                self.move_cursor_left();
+                if shift {
+                    self.sync_selection_from_anchor();
+                }
+            }
+            39 => {
+                if shift {
+                    self.begin_shift_selection();
+                } else {
+                    self.selection_anchor = None;
+                    self.apply_selection(None);
+                }
+                self.move_cursor_right();
+                if shift {
+                    self.sync_selection_from_anchor();
+                }
+            }
+            38 => self.move_vertical(-1, shift),
+            40 => self.move_vertical(1, shift),
+            80 | 112 if primary_shortcut_pressed(key, modifiers, Key::P) => {
+                self.toggle_preview_mode()
+            }
+            _ => { /* Other keys are not relevant */ }
+        }
+    }
+
+    /// Deletes the character after the caret, or merges the next line at a line end.
+    fn delete_forward(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        self.clamp_cursor();
+        let at = self.cursor_byte_offset();
+        let Some(ch) = self.text[at..].chars().next() else {
+            return;
+        };
+        let mut next = String::with_capacity(self.text.len());
+        next.push_str(&self.text[..at]);
+        next.push_str(&self.text[at + ch.len_utf8()..]);
+        self.commit_text(next);
+    }
+
+    /// Moves the caret by whole lines, extending the selection when `shift` is held.
+    fn move_vertical(&mut self, delta: isize, shift: bool) {
+        if shift {
+            self.begin_shift_selection();
+        } else {
+            self.selection_anchor = None;
+            self.apply_selection(None);
+        }
+        self.move_cursor(delta);
+        if shift {
+            self.sync_selection_from_anchor();
+        }
+        self.reveal_caret();
+    }
+
+    /// Remembers the caret as the selection anchor if no selection is being extended yet.
+    fn begin_shift_selection(&mut self) {
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some((self.cursor_line, self.cursor_col));
+        }
+    }
+
+    /// Recomputes the selection from the anchor and the current caret.
+    fn sync_selection_from_anchor(&mut self) {
+        let Some((anchor_line, anchor_col)) = self.selection_anchor else {
+            self.apply_selection(None);
+            return;
+        };
+        let anchor = self.doc_char_offset(anchor_line, anchor_col);
+        let caret = self.doc_char_offset_of_caret();
+        let (start, end) = if anchor <= caret { (anchor, caret) } else { (caret, anchor) };
+        self.apply_selection((start != end).then_some((start, end)));
+    }
+
+    /// The document character offset of `(line, column)`.
+    fn doc_char_offset(&self, line: usize, column: usize) -> usize {
+        let mut offset = 0usize;
+        for (index, text) in self.text.split('\n').enumerate() {
+            if index == line {
+                return offset + column.min(text.chars().count());
+            }
+            offset += text.chars().count() + 1;
+        }
+        offset + column
+    }
+
+    /// A glyph advance, measured at most once per size.
+    /// The scrollbar track, or `None` when hidden or the document fits.
+    fn scrollbar_track(&self) -> Option<Rect> {
+        if !self.show_scrollbar {
+            return None;
+        }
+        let total = self.line_count();
+        if total <= self.visible_line_count().max(1) {
+            return None;
+        }
+        let rect = self.geometry();
+        let top = rect.y + TEXT_TOP;
+        let bottom = rect.y + rect.height as i32 - TEXT_BOTTOM_INSET;
+        if bottom <= top {
+            return None;
+        }
+        Some(Rect::new(rect.x + rect.width as i32 - 10, top, 6, (bottom - top) as u32))
+    }
+
+    /// The scrollbar thumb, sized and placed from the scroll state.
+    fn scrollbar_thumb(&self) -> Option<Rect> {
+        let track = self.scrollbar_track()?;
+        let total = self.line_count().max(1);
+        let visible = self.visible_line_count().max(1).min(total);
+        let height = ((track.height as i64 * visible as i64) / total as i64).max(12) as u32;
+        let height = height.min(track.height);
+        let range = total.saturating_sub(visible);
+        let travel = track.height.saturating_sub(height) as i64;
+        let top = self.visible_start().min(range);
+        let y = track.y + if range > 0 { (travel * top as i64 / range as i64) as i32 } else { 0 };
+        Some(Rect::new(track.x, y, track.width, height))
+    }
+
+    /// Whether `pos` falls on the painted scrollbar track.
+    fn scrollbar_track_contains(&self, pos: Point) -> bool {
+        self.scrollbar_track().is_some_and(|track| {
+            pos.x >= track.x
+                && pos.x < track.x + track.width as i32
+                && pos.y >= track.y
+                && pos.y < track.y + track.height as i32
+        })
+    }
+
+    /// Scrolls so the first visible line is where `y` points on the track.
+    fn scroll_to_track(&mut self, y: i32) {
+        let Some(track) = self.scrollbar_track() else {
+            return;
+        };
+        let ratio = ((y - track.y) as f32 / track.height.max(1) as f32).clamp(0.0, 1.0);
+        let max_first = self.line_count().saturating_sub(self.visible_line_count());
+        let next = (ratio * max_first as f32).round() as usize;
+        if next != self.first_visible_line {
+            self.first_visible_line = next.min(max_first);
+            self.base.request_redraw();
+        }
+    }
+}
+
 impl Draw for MarkdownEditor {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        // The fence table depends on every line above it, so it is rebuilt once per revision —
+        // before the style borrow is taken, because building it needs `&mut self`.
+        self.ensure_blocks();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. Without the theme step
@@ -789,30 +1757,27 @@ impl Draw for MarkdownEditor {
         context.face_with_gradient(
             rect,
             surface,
-            self.style().background_gradient.as_ref(),
-            self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            style.background_gradient.as_ref(),
+            style.surface.unwrap_or_default(),
+            style.border_radius.unwrap_or(0),
             Color::BLACK,
         );
         context.draw_rect(rect, border);
 
-        // One pass over the text for all three counts, and the header is built from them.
-        // `line_count`/`word_count`/`heading_count` each scanned the whole document, so the
-        // header cost three full passes plus a `format!` on every repaint of a ten-line pane.
-        let (line_total, word_total, heading_total) =
-            self.text.lines().fold((0usize, 0usize, 0usize), |(lines, words, headings), line| {
-                (
-                    lines + 1,
-                    words + line.split_whitespace().count(),
-                    headings + usize::from(line.trim_start().starts_with('#')),
-                )
-            });
-        let header = if self.preview_mode {
+        // The counts come from the revision-keyed cache, so a still frame walks no document.
+        let metrics = self.metrics_snapshot();
+        let header = if self.find.visible {
+            format!("Find: {}   (Enter next, Esc close)", self.find.query)
+        } else if self.preview_mode {
             format!(
-                "Markdown Preview  lines:{line_total} words:{word_total} headings:{heading_total}"
+                "Markdown Preview  lines:{} words:{} headings:{}",
+                metrics.lines, metrics.words, metrics.headings
             )
         } else {
-            format!("Markdown Edit  lines:{line_total} words:{word_total} headings:{heading_total}")
+            format!(
+                "Markdown Edit  lines:{} words:{} headings:{}",
+                metrics.lines, metrics.words, metrics.headings
+            )
         };
         // Fitted to the control's width: the header is a long line of counts, and a narrow
         // editor previously drew it straight past its own right edge.
@@ -825,41 +1790,103 @@ impl Draw for MarkdownEditor {
             HorizontalAlignment::Left,
         );
 
-        for (row, line) in
-            self.text.lines().skip(self.visible_start()).take(self.visible_line_count()).enumerate()
+        let start = self.visible_start();
+        let count = self.visible_line_count();
+        let font = effective_font(style);
+        // Selection endpoints, resolved once. `line_col_of` is two document walks; doing it per
+        // row would be quadratic, and the whole point of this path is that a frame is cheap.
+        let selection =
+            self.selection.map(|(first, last)| (self.line_col_of(first), self.line_col_of(last)));
+        let scrollbar_width = if self.scrollbar_track().is_some() { 12 } else { 0 };
+        let row_width = rect.width.saturating_sub(24 + scrollbar_width);
+
         {
-            let idx = self.visible_start() + row;
-            let y = rect.y + TEXT_TOP + (row as i32) * TEXT_ROW_HEIGHT;
-            // Rows below the control are not painted, which keeps a short editor from drawing
-            // past its own bottom edge.
-            if y > rect.y + rect.height as i32 - TEXT_BOTTOM_INSET {
-                break;
+            let text = &self.text;
+            let cache = &mut self.preview_cache;
+            let blocks = &self.blocks;
+            let table_headers = &self.table_header;
+            let gfm = self.gfm_extensions;
+            let highlight = self.code_highlight;
+            for (row, line) in text.split('\n').skip(start).take(count).enumerate() {
+                let idx = start + row;
+                let y = rect.y + TEXT_TOP + (row as i32) * TEXT_ROW_HEIGHT;
+                // Rows below the control are not painted, which keeps a short editor from drawing
+                // past its own bottom edge.
+                if y > rect.y + rect.height as i32 - TEXT_BOTTOM_INSET {
+                    break;
+                }
+                let color = if idx == self.cursor_line { cursor_ink } else { ink };
+                let band = Rect::new(rect.x + 12, y, row_width, TEXT_ROW_HEIGHT as u32);
+
+                // The selection band is drawn behind the text, trimmed to the exact characters
+                // on the first and last rows.
+                if let Some(((first_line, first_col), (last_line, last_col))) = selection {
+                    if idx >= first_line && idx <= last_line {
+                        let line_chars = line.chars().count();
+                        let from = if idx == first_line { first_col } else { 0 };
+                        let to = if idx == last_line { last_col } else { line_chars };
+                        let prefix: String = line.chars().take(from).collect();
+                        let run: String =
+                            line.chars().skip(from).take(to.saturating_sub(from)).collect();
+                        let x = band.x + estimate_text_width(&prefix, font, 1.0) as i32;
+                        let width = estimate_text_width(&run, font, 1.0);
+                        context.fill_rect(
+                            Rect::new(x, y, width.max(1), TEXT_ROW_HEIGHT as u32),
+                            cursor_ink.with_alpha(60),
+                        );
+                    }
+                }
+
+                if self.preview_mode {
+                    let block = blocks.get(idx).copied().unwrap_or(BlockStart::Normal);
+                    let key = (idx, text_hash(line));
+                    let parsed = match cache.get(&key).cloned() {
+                        Some(parsed) => parsed,
+                        None => {
+                            let parsed = Rc::new(parse_preview_line(
+                                line,
+                                block,
+                                gfm,
+                                highlight,
+                                table_headers.get(idx).copied().unwrap_or(false),
+                                font,
+                                context,
+                            ));
+                            cache.insert(key, parsed.clone());
+                            parsed
+                        }
+                    };
+                    draw_parsed_line(context, band, &parsed, font, color, cursor_ink, surface);
+                } else {
+                    // Fitted to the pane, so a long line ends in an ellipsis inside the control
+                    // instead of painting over the widget beside it.
+                    context.draw_text_fitted_cow(
+                        band,
+                        line,
+                        font,
+                        color,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
-            let color = if idx == self.cursor_line { cursor_ink } else { ink };
-            let band =
-                Rect::new(rect.x + 12, y, rect.width.saturating_sub(24), TEXT_ROW_HEIGHT as u32);
-            if self.preview_mode {
-                draw_markdown_line(context, band, line, effective_font(style), color, cursor_ink);
-            } else {
-                // Fitted to the pane, so a long line ends in an ellipsis inside the control
-                // instead of painting over the widget beside it.
-                context.draw_text_fitted_cow(
-                    band,
-                    line,
-                    effective_font(style),
-                    color,
-                    HorizontalAlignment::Left,
-                );
+            // The cache is keyed by line index and text hash, so entries for lines that moved or
+            // changed are simply unused; this bound is what keeps a long session from retaining
+            // every version of every line.
+            let bound = text.split('\n').count().saturating_mul(4).saturating_add(64);
+            if cache.len() > bound {
+                cache.clear();
             }
         }
 
-        // Visible caret: a 1 px bar at the caret's line and column.
-        //
-        // `cursor_col` is a character offset, so the x position comes from measuring the
-        // line prefix with the same estimator the layout uses — a byte-per-8px formula
-        // would put the bar in the middle of a CJK glyph. Preview mode paints no caret
-        // because there is nothing to edit there. The row's y matches the text rows
-        // above, so the caret also lands on the blank trailing line that Enter creates.
+        if let Some(track) = self.scrollbar_track() {
+            context.fill_rect(track, ink.blend(&surface, 0.10));
+            if let Some(thumb) = self.scrollbar_thumb() {
+                context.fill_rect(thumb, ink.with_alpha(110));
+            }
+        }
+
+        // The caret, the composition and the selection are edit-mode furniture: preview has no
+        // caret because there is nothing to edit there.
         if !self.preview_mode {
             let start = self.visible_start();
             if let Some(row) =
@@ -868,100 +1895,406 @@ impl Draw for MarkdownEditor {
                 let (line_start, line_end) = self.cursor_line_span();
                 let prefix: String =
                     self.text[line_start..line_end].chars().take(self.cursor_col).collect();
-                let x =
-                    rect.x + 12 + estimate_text_width(&prefix, effective_font(style), 1.0) as i32;
+                let x = rect.x + 12 + estimate_text_width(&prefix, font, 1.0) as i32;
                 let y = rect.y + TEXT_TOP + (row as i32) * TEXT_ROW_HEIGHT;
                 if y + 14 <= rect.y + rect.height as i32 && x <= rect.x + rect.width as i32 - 12 {
-                    context.fill_rect(Rect::new(x, y - 2, 1, 16), cursor_ink);
+                    if let Some(preedit) = &self.preedit {
+                        // The composition is drawn where the caret is and semi-transparent, so a
+                        // user can see what has not been committed yet — the previous build drew
+                        // nothing at all and the text appeared only after a candidate landed.
+                        context.draw_text(
+                            Point::new(x, y),
+                            &preedit.text,
+                            font,
+                            cursor_ink.with_alpha(160),
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                    if self.is_caret_visible() || self.preedit.is_some() {
+                        context.fill_rect(Rect::new(x, y - 2, 1, 16), cursor_ink);
+                    }
                 }
             }
         }
     }
 }
 
-/// Draws one preview row with the inline markdown the document actually uses.
+/// A glyph advance, measured at most once per font size.
 ///
-/// Headings grow with their level, bullet items get a marker, `**bold**` is drawn with a
-/// one-pixel overprint (the same trick the rest of the crate uses where the face has one
-/// weight), `` `code` `` gets a tinted backing, and `[text](url)` is drawn in the accent with
-/// its target omitted. The previous preview only removed leading `#` characters, so bold,
-/// italics, code, lists and links all arrived as their source syntax.
-fn draw_markdown_line(
-    context: &mut RenderContext,
-    band: Rect,
-    line: &str,
-    font: &crate::core::Font,
-    color: Color,
-    accent: Color,
-) {
-    let trimmed = line.trim_start();
-    let level = trimmed.chars().take_while(|ch| *ch == '#').count().min(6);
-    let (font, text) = if level > 0 {
-        let size = font.size() + (7 - level) as f32;
-        (font.with_size(size), trimmed[level..].trim_start())
-    } else {
-        (font.clone(), line)
-    };
-    let mut x = band.x;
-    let right = band.x + band.width as i32;
-    let bullet = text.starts_with("- ") || text.starts_with("* ") || text.starts_with("+ ");
-    if bullet {
-        let marker = "•";
-        context.draw_text(
-            crate::core::Point::new(x, band.y),
-            marker,
-            &font,
-            accent,
-            HorizontalAlignment::Left,
-        );
-        x += context.measure_text(marker, &font).width as i32 + 4;
+/// Free rather than a method because the callers hold a borrow of the widget's style (and thus of
+/// `self.base`) while they need the cache mutably; taking the cache as its own parameter keeps
+/// those two borrows disjoint.
+fn cached_char_width(cache: &mut Vec<(char, f32, i32)>, ch: char, font: &Font, scale: f32) -> i32 {
+    let size = font.size();
+    if let Some((_, _, width)) = cache
+        .iter()
+        .find(|(candidate, cached, _)| *candidate == ch && (*cached - size).abs() < f32::EPSILON)
+    {
+        return *width;
     }
-    let body = if bullet { &text[2..] } else { text };
-    let mut chars = body.chars().peekable();
-    let mut run = String::new();
-    let draw_run = |context: &mut RenderContext, run: &mut String, x: &mut i32, bold: bool| {
-        if run.is_empty() {
-            return;
+    let mut buffer = [0u8; 4];
+    let glyph = ch.encode_utf8(&mut buffer);
+    let width = estimate_text_width(glyph, font, scale) as i32;
+    cache.push((ch, size, width));
+    width
+}
+
+/// A stable hash of one preview line, used as the cache key beside its index.
+fn text_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in text.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    hash
+}
+
+/// The largest character boundary at or below `offset`.
+///
+/// A platform-supplied byte offset is usually a boundary, but slicing on one that is not would
+/// panic inside a draw/hit-test path; clamping is the only behaviour that cannot crash.
+fn char_boundary_at(text: &str, offset: usize) -> usize {
+    let offset = offset.min(text.len());
+    (0..=offset).rev().find(|index| text.is_char_boundary(*index)).unwrap_or(0)
+}
+
+/// The info string of a fenced code block opener, if `trimmed` opens one.
+fn fence_marker(trimmed: &str) -> Option<&str> {
+    let rest = trimmed.strip_prefix("```").or_else(|| trimmed.strip_prefix("~~~"))?;
+    Some(rest.trim())
+}
+
+/// Maps a fence's info string onto one of the shared lexer's languages.
+fn language_from_info(info: &str) -> LanguageId {
+    let token = info.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    match token.as_str() {
+        "rust" | "rs" => LanguageId::Rust,
+        "python" | "py" => LanguageId::Python,
+        "javascript" | "js" | "typescript" | "ts" | "tsx" | "jsx" => LanguageId::JavaScript,
+        "go" | "golang" => LanguageId::Go,
+        "c" | "h" | "cpp" | "c++" | "cc" | "hpp" | "java" | "cs" | "csharp" | "kt" => {
+            LanguageId::CLike
         }
-        let text = core::mem::take(run);
-        context.draw_text(
-            crate::core::Point::new(*x, band.y),
-            &text,
-            &font,
-            color,
-            HorizontalAlignment::Left,
-        );
-        *x += context.measure_text(&text, &font).width as i32;
-        if bold {
-            context.draw_text(
-                crate::core::Point::new(*x - 1, band.y),
-                &text,
-                &font,
-                color,
-                HorizontalAlignment::Left,
-            );
+        "markdown" | "md" => LanguageId::Markdown,
+        _ => LanguageId::PlainText,
+    }
+}
+
+/// Builds one measured run.
+fn push_run(
+    runs: &mut Vec<PreviewRun>,
+    text: &str,
+    style: PreviewStyle,
+    font: &Font,
+    context: &RenderContext,
+) {
+    if text.is_empty() {
+        return;
+    }
+    runs.push(PreviewRun {
+        text: text.to_string(),
+        style,
+        width: context.measure_text(text, font).width,
+    });
+}
+
+/// Parses one preview row.
+///
+/// This is where the GFM block constructs are recognised: fenced code (through the per-revision
+/// fence table), headings, bullets and ordered items, task boxes, quotes, tables, rules, images
+/// and the inline emphasis/code/link/delete run styles. Everything the previous preview did not
+/// know about arrived as literal source text.
+fn parse_preview_line(
+    line: &str,
+    block: BlockStart,
+    gfm: bool,
+    highlight: bool,
+    table_follows: bool,
+    font: &Font,
+    context: &RenderContext,
+) -> ParsedLine {
+    let mut runs = Vec::new();
+    match block {
+        BlockStart::Fence => {
+            push_run(&mut runs, line.trim(), PreviewStyle::Dim, font, context);
+            return ParsedLine { runs, row: PreviewRow::Fence };
         }
-    };
+        BlockStart::Code(language, state) => {
+            if highlight {
+                let highlighter = BuiltinHighlighter::new(language);
+                let (spans, _) = highlighter.highlight_line(line, state);
+                if spans.is_empty() {
+                    push_run(&mut runs, line, PreviewStyle::Token(TokenKind::Plain), font, context);
+                } else {
+                    let mut cursor = 0usize;
+                    for span in spans {
+                        let start = span.start.min(line.len()).max(cursor);
+                        let end = span.end.min(line.len()).max(start);
+                        if start > cursor {
+                            push_run(
+                                &mut runs,
+                                &line[cursor..start],
+                                PreviewStyle::Token(TokenKind::Plain),
+                                font,
+                                context,
+                            );
+                        }
+                        if end > start {
+                            push_run(
+                                &mut runs,
+                                &line[start..end],
+                                PreviewStyle::Token(span.kind),
+                                font,
+                                context,
+                            );
+                        }
+                        cursor = end;
+                    }
+                    if cursor < line.len() {
+                        push_run(
+                            &mut runs,
+                            &line[cursor..],
+                            PreviewStyle::Token(TokenKind::Plain),
+                            font,
+                            context,
+                        );
+                    }
+                }
+            } else {
+                push_run(&mut runs, line, PreviewStyle::Text, font, context);
+            }
+            return ParsedLine { runs, row: PreviewRow::Code };
+        }
+        BlockStart::Normal => {}
+    }
+
+    let trimmed = line.trim_start();
+    let indent = line.len() - trimmed.len();
+
+    // Heading: the leading `#` markers are syntax, so they are consumed rather than rendered.
+    let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if hashes > 0 && hashes <= 6 && trimmed[hashes..].starts_with(' ') {
+        let level = hashes as u8;
+        let heading_font = font.with_size(font.size() + (7 - hashes) as f32);
+        let body = trimmed[hashes..].trim_start();
+        parse_inline(body, gfm, &heading_font, context, &mut runs);
+        return ParsedLine { runs, row: PreviewRow::Heading(level) };
+    }
+
+    if gfm && is_rule(trimmed) {
+        return ParsedLine { runs, row: PreviewRow::Rule };
+    }
+    if gfm && is_table_divider(trimmed) {
+        return ParsedLine { runs, row: PreviewRow::Rule };
+    }
+
+    let mut body = trimmed;
+    let mut prefix_width = 0u32;
+    if gfm && body.starts_with('>') {
+        push_run(&mut runs, "▏", PreviewStyle::Accent, font, context);
+        prefix_width = context.measure_text("▏ ", font).width;
+        body = body.trim_start_matches('>').trim_start();
+    } else if body.starts_with("- [ ] ") || body.starts_with("- [x] ") || body.starts_with("- [X] ")
+    {
+        let checked = !body.starts_with("- [ ]");
+        let marker = if checked { "☑ " } else { "☐ " };
+        push_run(&mut runs, marker, PreviewStyle::Accent, font, context);
+        prefix_width = context.measure_text(marker, font).width;
+        body = &body[6..];
+    } else if let Some(rest) = strip_bullet(body) {
+        push_run(&mut runs, "• ", PreviewStyle::Accent, font, context);
+        prefix_width = context.measure_text("• ", font).width;
+        body = rest;
+    } else if let Some((marker, rest)) = strip_ordered(body) {
+        let marker = format!("{marker} ");
+        push_run(&mut runs, &marker, PreviewStyle::Accent, font, context);
+        prefix_width = context.measure_text(&marker, font).width;
+        body = rest;
+    }
+
+    // A table needs its delimiter row (or pipes on both outer edges), exactly as GFM does; one
+    // `|` in prose is not a table.
+    if gfm && body.contains('|') && (table_follows || body.trim().starts_with('|')) {
+        let row = render_table_row(body, font, context, &mut runs);
+        return ParsedLine { runs, row };
+    }
+
+    // The indent is kept so a nested list item still lines up under its parent.
+    if indent > 0 && prefix_width == 0 {
+        let pad = " ".repeat(indent);
+        push_run(&mut runs, &pad, PreviewStyle::Text, font, context);
+    }
+    parse_inline(body, gfm, font, context, &mut runs);
+    ParsedLine { runs, row: PreviewRow::Inline }
+}
+
+/// Strips a bullet marker, returning the item body.
+fn strip_bullet(text: &str) -> Option<&str> {
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(rest) = text.strip_prefix(marker) {
+            return Some(rest);
+        }
+    }
+    None
+}
+
+/// Strips an ordered-list marker, returning the number and the item body.
+fn strip_ordered(text: &str) -> Option<(&str, &str)> {
+    let digits = text.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digits == 0 {
+        return None;
+    }
+    let rest = &text[digits..];
+    let rest = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") "))?;
+    Some((&text[..digits], rest))
+}
+
+/// Whether a line is a horizontal rule (`---`, `***`, `___`).
+fn is_rule(trimmed: &str) -> bool {
+    let mut marker = None;
+    let mut count = 0usize;
+    for ch in trimmed.chars() {
+        if ch == ' ' {
+            continue;
+        }
+        match marker {
+            None if ch == '-' || ch == '*' || ch == '_' => marker = Some(ch),
+            Some(existing) if existing == ch => {}
+            _ => return false,
+        }
+        count += 1;
+    }
+    count >= 3
+}
+
+/// Whether a table row is the `|---|:--:|` divider.
+fn is_table_divider(trimmed: &str) -> bool {
+    if !trimmed.contains('-') || !trimmed.contains('|') {
+        return false;
+    }
+    trimmed.chars().all(|ch| matches!(ch, '|' | '-' | ':' | ' ' | '\t'))
+}
+
+/// Splits a table row into measured cells with separators between them.
+///
+/// Columns are separated but not padded to a shared width: padding needs the widest cell in the
+/// whole table, which is a table-wide layout pass rather than a per-row one, and this preview
+/// renders rows independently. The cells themselves keep their inline markup.
+fn render_table_row(
+    body: &str,
+    font: &Font,
+    context: &RenderContext,
+    runs: &mut Vec<PreviewRun>,
+) -> PreviewRow {
+    let trimmed = body.trim().trim_start_matches('|').trim_end_matches('|');
+    for (index, cell) in trimmed.split('|').enumerate() {
+        if index > 0 {
+            push_run(runs, " │ ", PreviewStyle::Dim, font, context);
+        }
+        let cell = cell.trim();
+        // The cell's own inline markup still applies, so a bold cell is bold.
+        parse_inline(cell, true, font, context, runs);
+    }
+    PreviewRow::Table
+}
+
+/// Splits inline markdown into styled runs.
+fn parse_inline(
+    text: &str,
+    gfm: bool,
+    font: &Font,
+    context: &RenderContext,
+    runs: &mut Vec<PreviewRun>,
+) {
+    let mut plain = String::new();
+    let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {
-        if x >= right {
-            break;
-        }
         match ch {
             '*' if chars.peek() == Some(&'*') => {
                 chars.next();
-                draw_run(context, &mut run, &mut x, false);
+                push_run(runs, &core::mem::take(&mut plain), PreviewStyle::Text, font, context);
                 let mut inner = String::new();
+                let mut closed = false;
                 while let Some(next) = chars.next() {
                     if next == '*' && chars.peek() == Some(&'*') {
                         chars.next();
+                        closed = true;
                         break;
                     }
                     inner.push(next);
                 }
-                draw_run(context, &mut inner, &mut x, true);
+                push_run(
+                    runs,
+                    &inner,
+                    if closed { PreviewStyle::Bold } else { PreviewStyle::Text },
+                    font,
+                    context,
+                );
+            }
+            '_' if chars.peek() == Some(&'_') => {
+                chars.next();
+                push_run(runs, &core::mem::take(&mut plain), PreviewStyle::Text, font, context);
+                let mut inner = String::new();
+                let mut closed = false;
+                while let Some(next) = chars.next() {
+                    if next == '_' && chars.peek() == Some(&'_') {
+                        chars.next();
+                        closed = true;
+                        break;
+                    }
+                    inner.push(next);
+                }
+                push_run(
+                    runs,
+                    &inner,
+                    if closed { PreviewStyle::Bold } else { PreviewStyle::Text },
+                    font,
+                    context,
+                );
+            }
+            '*' | '_' => {
+                push_run(runs, &core::mem::take(&mut plain), PreviewStyle::Text, font, context);
+                let marker = ch;
+                let mut inner = String::new();
+                let mut closed = false;
+                while let Some(next) = chars.next() {
+                    if next == marker {
+                        closed = true;
+                        break;
+                    }
+                    inner.push(next);
+                }
+                push_run(
+                    runs,
+                    &inner,
+                    if closed { PreviewStyle::Italic } else { PreviewStyle::Text },
+                    font,
+                    context,
+                );
+            }
+            '~' if gfm && chars.peek() == Some(&'~') => {
+                chars.next();
+                push_run(runs, &core::mem::take(&mut plain), PreviewStyle::Text, font, context);
+                let mut inner = String::new();
+                let mut closed = false;
+                while let Some(next) = chars.next() {
+                    if next == '~' && chars.peek() == Some(&'~') {
+                        chars.next();
+                        closed = true;
+                        break;
+                    }
+                    inner.push(next);
+                }
+                push_run(
+                    runs,
+                    &inner,
+                    if closed { PreviewStyle::Strike } else { PreviewStyle::Text },
+                    font,
+                    context,
+                );
             }
             '`' => {
-                draw_run(context, &mut run, &mut x, false);
+                push_run(runs, &core::mem::take(&mut plain), PreviewStyle::Text, font, context);
                 let mut inner = String::new();
                 for next in chars.by_ref() {
                     if next == '`' {
@@ -969,22 +2302,34 @@ fn draw_markdown_line(
                     }
                     inner.push(next);
                 }
-                let width = context.measure_text(&inner, &font).width;
-                context.fill_rect(
-                    Rect::new(x - 2, band.y, width + 4, band.height.max(1)),
-                    color.with_alpha(24),
-                );
-                context.draw_text(
-                    crate::core::Point::new(x, band.y),
-                    &inner,
-                    &font,
-                    color,
-                    HorizontalAlignment::Left,
-                );
-                x += width as i32 + 2;
+                push_run(runs, &inner, PreviewStyle::Code, font, context);
+            }
+            '!' if chars.peek() == Some(&'[') => {
+                chars.next();
+                push_run(runs, &core::mem::take(&mut plain), PreviewStyle::Text, font, context);
+                let mut alt = String::new();
+                let mut target = String::new();
+                while let Some(next) = chars.next() {
+                    if next == ']' {
+                        if chars.peek() == Some(&'(') {
+                            chars.next();
+                            for part in chars.by_ref() {
+                                if part == ')' {
+                                    break;
+                                }
+                                target.push(part);
+                            }
+                        }
+                        break;
+                    }
+                    alt.push(next);
+                }
+                let label = if alt.is_empty() { target } else { alt };
+                push_run(runs, "▣ ", PreviewStyle::Accent, font, context);
+                push_run(runs, &label, PreviewStyle::Link, font, context);
             }
             '[' => {
-                draw_run(context, &mut run, &mut x, false);
+                push_run(runs, &core::mem::take(&mut plain), PreviewStyle::Text, font, context);
                 let mut label = String::new();
                 let mut is_link = false;
                 while let Some(next) = chars.next() {
@@ -1002,19 +2347,130 @@ fn draw_markdown_line(
                     }
                     label.push(next);
                 }
-                context.draw_text(
-                    crate::core::Point::new(x, band.y),
+                push_run(
+                    runs,
                     &label,
-                    &font,
-                    if is_link { accent } else { color },
-                    HorizontalAlignment::Left,
+                    if is_link { PreviewStyle::Link } else { PreviewStyle::Text },
+                    font,
+                    context,
                 );
-                x += context.measure_text(&label, &font).width as i32;
             }
-            _ => run.push(ch),
+            _ => plain.push(ch),
         }
     }
-    draw_run(context, &mut run, &mut x, false);
+    push_run(runs, &plain, PreviewStyle::Text, font, context);
+}
+
+/// The ink a fenced-code token is drawn in.
+fn token_color(kind: TokenKind, ink: Color, accent: Color, surface: Color) -> Color {
+    match kind {
+        TokenKind::Keyword | TokenKind::Preprocessor => accent,
+        TokenKind::String | TokenKind::Character => {
+            crate::style::semantic_color(crate::style::SemanticColor::Success)
+                .map(|token| token.legible_on(surface, 3.0))
+                .unwrap_or(ink)
+        }
+        TokenKind::Number => crate::style::semantic_color(crate::style::SemanticColor::Warning)
+            .map(|token| token.legible_on(surface, 3.0))
+            .unwrap_or(ink),
+        TokenKind::Comment | TokenKind::BlockComment => ink.blend(&surface, 0.45),
+        TokenKind::Type | TokenKind::Function => {
+            crate::style::semantic_color(crate::style::SemanticColor::Info)
+                .map(|token| token.legible_on(surface, 3.0))
+                .unwrap_or(ink)
+        }
+        _ => ink,
+    }
+}
+
+/// Draws one parsed preview row.
+fn draw_parsed_line(
+    context: &mut RenderContext,
+    band: Rect,
+    parsed: &ParsedLine,
+    base_font: &Font,
+    ink: Color,
+    accent: Color,
+    surface: Color,
+) {
+    match parsed.row {
+        PreviewRow::Rule => {
+            context.fill_rect(
+                Rect::new(band.x, band.y + (band.height as i32 / 2), band.width, 1),
+                ink.blend(&surface, 0.5),
+            );
+            return;
+        }
+        PreviewRow::Code => {
+            context.fill_rect(band, ink.with_alpha(12));
+        }
+        PreviewRow::Fence => {}
+        // The heading's runs were measured with the level's own size; the drawing font below
+        // re-derives the same size.
+        PreviewRow::Heading(_) => {}
+        PreviewRow::Inline | PreviewRow::Table => {}
+    }
+    let font = match parsed.row {
+        PreviewRow::Heading(level) => {
+            base_font.with_size(base_font.size() + (7 - level.min(6)) as f32)
+        }
+        _ => base_font.clone(),
+    };
+    let mut x = band.x;
+    for run in &parsed.runs {
+        draw_preview_run(context, run, &font, x, band.y, ink, accent, surface);
+        x += run.width as i32;
+    }
+}
+
+/// Draws one styled run at `x`.
+fn draw_preview_run(
+    context: &mut RenderContext,
+    run: &PreviewRun,
+    font: &Font,
+    x: i32,
+    y: i32,
+    ink: Color,
+    accent: Color,
+    surface: Color,
+) {
+    let color = match run.style {
+        PreviewStyle::Text => ink,
+        PreviewStyle::Bold => ink,
+        PreviewStyle::Italic => ink.blend(&surface, 0.15),
+        PreviewStyle::Strike => ink.blend(&surface, 0.45),
+        PreviewStyle::Code => ink,
+        PreviewStyle::Link => accent,
+        PreviewStyle::Dim => ink.blend(&surface, 0.5),
+        PreviewStyle::Accent => accent,
+        PreviewStyle::Token(kind) => token_color(kind, ink, accent, surface),
+    };
+    if matches!(run.style, PreviewStyle::Code) {
+        context.fill_rect(
+            Rect::new(x - 2, y, run.width + 4, TEXT_ROW_HEIGHT as u32),
+            ink.with_alpha(24),
+        );
+    }
+    context.draw_text(Point::new(x, y), &run.text, font, color, HorizontalAlignment::Left);
+    match run.style {
+        PreviewStyle::Bold => {
+            // The face has one weight, so bold is the crate's one-pixel overprint.
+            context.draw_text(
+                Point::new(x + 1, y),
+                &run.text,
+                font,
+                color,
+                HorizontalAlignment::Left,
+            );
+        }
+        PreviewStyle::Link => {
+            context.fill_rect(Rect::new(x, y + TEXT_ROW_HEIGHT - 3, run.width.max(1), 1), color);
+        }
+        PreviewStyle::Strike => {
+            context.fill_rect(Rect::new(x, y + TEXT_ROW_HEIGHT / 2, run.width.max(1), 1), color);
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -1239,5 +2695,338 @@ mod tests {
         assert_eq!(editor.text(), "alpha\nbeta\ngamma");
         assert!(editor.redo());
         assert_eq!(editor.text(), "alpha\nBETA 你好\ngamma");
+    }
+
+    /// Runs `f` with a real paint context, for the paths that need measurements.
+    fn with_context<T>(f: impl FnOnce(&RenderContext) -> T) -> T {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+        let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(400, 300), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let result = {
+            let context = RenderContext::new(&mut backend);
+            f(&context)
+        };
+        backend.end_frame();
+        result
+    }
+
+    /// The counts are cached against the revision, so a still frame walks no document.
+    ///
+    /// `line_count`/`word_count`/`heading_count` each scanned the whole document, and the paint
+    /// path called all three per frame.
+    #[test]
+    fn metrics_are_cached_until_the_revision_changes() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("# One\ntwo words here");
+        assert_eq!((editor.line_count(), editor.word_count(), editor.heading_count()), (2, 5, 1));
+        let cached = *editor.metrics.borrow();
+        assert_eq!(cached.map(|(revision, _)| revision), Some(editor.revision));
+
+        editor.set_text("# One\ntwo words here\nthree");
+        assert_eq!(editor.word_count(), 6, "an edit invalidates the cache");
+        assert_eq!(
+            editor.metrics.borrow().map(|(revision, _)| revision),
+            Some(editor.revision),
+            "and the next read refreshes it"
+        );
+    }
+
+    /// An IME composition is visible before it is committed, anchored at the caret.
+    #[test]
+    fn ime_preedit_is_visible_at_the_caret() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("ab");
+        // `set_text` leaves the caret where it was, so it is moved to the end explicitly.
+        editor.handle_event(&Event::key_press(35, 0));
+        assert!(editor.preedit_screen_rect().is_none(), "nothing is composing yet");
+
+        editor.handle_event(&Event::ime_preedit("你好", 3));
+        let at_end = editor.preedit_screen_rect().expect("a composition has a rectangle");
+        assert_eq!(editor.preedit.as_ref().map(|p| p.cursor), Some(3));
+
+        editor.handle_event(&Event::key_press(37, 0));
+        let mid_line = editor.preedit_screen_rect().expect("still composing");
+        assert!(mid_line.x < at_end.x, "the composition moved back with the caret");
+
+        editor.handle_event(&Event::ime_commit("你好"));
+        assert!(editor.preedit_screen_rect().is_none(), "a commit ends the composition");
+    }
+
+    /// The preview recognises the GFM blocks and inline styles it used to print as source.
+    #[test]
+    fn preview_recognises_gfm_constructs() {
+        with_context(|context| {
+            let style = crate::style::WidgetStyle::default();
+            let font = effective_font(&style);
+            let heading =
+                parse_preview_line("# Title", BlockStart::Normal, true, true, false, font, context);
+            assert!(matches!(heading.row, PreviewRow::Heading(1)));
+            assert!(heading.runs.iter().all(|run| !run.text.contains('#')));
+
+            let task = parse_preview_line(
+                "- [x] done",
+                BlockStart::Normal,
+                true,
+                true,
+                false,
+                font,
+                context,
+            );
+            assert_eq!(task.runs.first().map(|run| run.text.as_str()), Some("☑ "));
+
+            let strike = parse_preview_line(
+                "~~gone~~",
+                BlockStart::Normal,
+                true,
+                true,
+                false,
+                font,
+                context,
+            );
+            assert!(strike.runs.iter().any(|run| run.style == PreviewStyle::Strike));
+
+            let quote = parse_preview_line(
+                "> quoted",
+                BlockStart::Normal,
+                true,
+                true,
+                false,
+                font,
+                context,
+            );
+            assert_eq!(quote.runs.first().map(|run| run.style), Some(PreviewStyle::Accent));
+
+            let rule =
+                parse_preview_line("---", BlockStart::Normal, true, true, false, font, context);
+            assert!(matches!(rule.row, PreviewRow::Rule));
+
+            let fence =
+                parse_preview_line("```rust", BlockStart::Fence, true, true, false, font, context);
+            assert!(matches!(fence.row, PreviewRow::Fence));
+
+            let table = parse_preview_line(
+                "| a | b |",
+                BlockStart::Normal,
+                true,
+                true,
+                false,
+                font,
+                context,
+            );
+            assert!(matches!(table.row, PreviewRow::Table));
+            assert!(table.runs.iter().any(|run| run.text.contains('│')));
+
+            // GFM recognises a table by the delimiter row after it; a pipe in prose is not one.
+            let header =
+                parse_preview_line("a | b", BlockStart::Normal, true, true, true, font, context);
+            assert!(matches!(header.row, PreviewRow::Table));
+            let prose =
+                parse_preview_line("a | b", BlockStart::Normal, true, true, false, font, context);
+            assert!(!matches!(prose.row, PreviewRow::Table));
+
+            let image = parse_preview_line(
+                "![alt](x.png)",
+                BlockStart::Normal,
+                true,
+                true,
+                false,
+                font,
+                context,
+            );
+            assert!(image.runs.iter().any(|run| run.style == PreviewStyle::Link));
+
+            // With the extensions off, the same text stays literal.
+            let plain = parse_preview_line(
+                "~~gone~~",
+                BlockStart::Normal,
+                false,
+                true,
+                false,
+                font,
+                context,
+            );
+            assert!(plain.runs.iter().all(|run| run.style != PreviewStyle::Strike));
+            assert!(plain.runs.iter().any(|run| run.text.contains("~~")));
+        });
+    }
+
+    /// Fenced code is tokenized with the shared lexer, so keywords are not body text.
+    #[test]
+    fn fenced_code_is_highlighted_with_the_shared_lexer() {
+        with_context(|context| {
+            let style = crate::style::WidgetStyle::default();
+            let font = effective_font(&style);
+            let parsed = parse_preview_line(
+                "let x = 1;",
+                BlockStart::Code(LanguageId::Rust, LineState::initial()),
+                true,
+                true,
+                false,
+                font,
+                context,
+            );
+            assert!(matches!(parsed.row, PreviewRow::Code));
+            assert!(
+                parsed.runs.iter().any(|run| run.style == PreviewStyle::Token(TokenKind::Keyword)),
+                "`let` must be a keyword token"
+            );
+        });
+    }
+
+    /// Selection, typing over it and cutting all work on the real document.
+    #[test]
+    fn selection_replaces_text_and_cut_deletes_it() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("alpha beta");
+        editor.select_all();
+        assert_eq!(editor.selected_text().as_deref(), Some("alpha beta"));
+
+        editor.insert_text_at_cursor("X");
+        assert_eq!(editor.text(), "X", "typing replaces the selection in one step");
+        assert!(editor.selection().is_none());
+
+        editor.set_text("abc");
+        editor.select_all();
+        editor.cut();
+        assert_eq!(editor.text(), "", "cut removes the selected run");
+    }
+
+    /// The selection signal reports presence, and Ctrl+A drives it from the keyboard.
+    #[test]
+    fn select_all_emits_selection_changed() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("text");
+        let seen = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let sink = seen.clone();
+        editor.selection_changed.connect(move |present| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*present);
+            }
+        });
+
+        editor.handle_event(&Event::key_press(65, primary_modifier_event_bits()));
+        assert_eq!(editor.selected_text().as_deref(), Some("text"));
+
+        editor.handle_event(&Event::key_press(37, 0));
+        let seen = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(seen, vec![true, false], "a plain arrow clears the selection");
+    }
+
+    /// Home/End/Delete/PageDown and the scrollbar reach the document.
+    #[test]
+    fn keyboard_covers_line_edges_delete_and_paging() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 100));
+        let text: Vec<String> = (0..30).map(|n| format!("line{n}")).collect();
+        editor.set_text(text.join("\n"));
+
+        editor.handle_event(&Event::key_press(35, 0));
+        assert_eq!(editor.cursor_col(), "line0".chars().count(), "End reaches the line's end");
+        editor.handle_event(&Event::key_press(36, 0));
+        assert_eq!(editor.cursor_col(), 0, "Home returns to its start");
+
+        editor.handle_event(&Event::key_press(46, 0));
+        assert_eq!(editor.text().split('\n').next(), Some("ine0"), "Delete removes forward");
+
+        assert!(editor.scroll_page(1));
+        assert!(editor.first_visible_line > 0, "PageDown moves the viewport");
+        editor.handle_event(&Event::key_press(33, 0));
+        assert_eq!(editor.first_visible_line, 0, "PageUp returns to the top");
+    }
+
+    /// The caret blinks on the ticks it is given — this control was the only text field in the
+    /// crate whose caret never moved.
+    #[test]
+    fn the_caret_blinks_on_the_ticks_it_is_given() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        assert!(editor.is_animating());
+        assert!(editor.is_caret_visible());
+        editor.tick(crate::style::animation::CURSOR_BLINK_HALF_PERIOD_MS);
+        assert!(!editor.is_caret_visible(), "one half-period hides the caret");
+        editor.tick(crate::style::animation::CURSOR_BLINK_HALF_PERIOD_MS);
+        assert!(editor.is_caret_visible());
+
+        editor.set_enabled(false);
+        editor.handle_event(&Event::key_press(65, 0));
+        assert!(!editor.is_animating(), "a disabled editor holds a steady caret");
+    }
+
+    /// The scrollbar track jumps the viewport, and clicking a preview heading announces it.
+    #[test]
+    fn scrollbar_and_heading_clicks_navigate() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 200));
+        let text: Vec<String> = (0..40).map(|n| format!("line{n}")).collect();
+        editor.set_text(text.join("\n"));
+
+        editor.handle_event(&Event::mouse_press(414, 190, 1));
+        assert!(editor.first_visible_line > 0, "a click near the track's bottom jumps forward");
+
+        let mut headings = MarkdownEditor::new(Rect::new(0, 0, 420, 200));
+        headings.set_text("# First\n## Second");
+        headings.set_preview_mode(true);
+        let seen = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = seen.clone();
+        headings.heading_activated.connect(move |index| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*index);
+            }
+        });
+        headings.handle_event(&Event::mouse_press(40, TEXT_TOP + 2, 1));
+        let seen = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(seen, vec![0], "the heading row announces its outline index");
+    }
+
+    /// The find bar takes typed text and Enter selects the next match.
+    #[test]
+    fn find_bar_selects_matches() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("alpha beta alpha");
+        assert!(editor.find_next("alpha"));
+        assert_eq!(editor.selection(), Some((0, 5)));
+        assert!(editor.find_next("alpha"));
+        assert_eq!(editor.selection(), Some((11, 16)), "the next call moves past the match");
+        assert!(editor.find_previous("alpha"));
+        assert_eq!(editor.selection(), Some((0, 5)));
+
+        editor.open_find();
+        assert!(editor.find_bar_visible());
+        editor.handle_event(&Event::text_input("beta"));
+        assert_eq!(editor.find_query(), "beta", "typing goes to the query, not the document");
+        editor.handle_event(&Event::key_press(13, 0));
+        assert_eq!(editor.selected_text().as_deref(), Some("beta"));
+        editor.handle_event(&Event::key_press(27, 0));
+        assert!(!editor.find_bar_visible());
+    }
+
+    /// The undo depth is a constructor argument and a property.
+    #[test]
+    fn undo_depth_is_configurable() {
+        let mut editor = MarkdownEditor::with_undo_limit(Rect::new(0, 0, 420, 240), 2);
+        assert_eq!(editor.undo_stack_limit(), 2);
+        editor.set_text("a");
+        editor.insert_text_at_cursor("b");
+        editor.insert_text_at_cursor("c");
+
+        assert!(editor.undo());
+        assert!(editor.undo());
+        assert!(!editor.undo(), "only the configured depth is retained");
+        assert_eq!(editor.text(), "a");
+
+        editor.set_undo_limit(8);
+        assert_eq!(editor.undo_stack_limit(), 8);
+    }
+
+    /// The new properties round-trip through the property contract.
+    #[test]
+    fn new_properties_round_trip() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        assert_eq!(editor.get("gfm_extensions").ok(), Some(CapabilityValue::Bool(true)));
+        editor.set("gfm_extensions", CapabilityValue::Bool(false)).expect("writable");
+        assert!(!editor.gfm_extensions());
+        editor.set("code_highlight", CapabilityValue::Bool(false)).expect("writable");
+        assert!(!editor.code_highlight());
+        editor.set("show_scrollbar", CapabilityValue::Bool(false)).expect("writable");
+        assert!(!editor.show_scrollbar());
+        editor.set("undo_stack_limit", CapabilityValue::UInt(7)).expect("writable");
+        assert_eq!(editor.undo_stack_limit(), 7);
     }
 }

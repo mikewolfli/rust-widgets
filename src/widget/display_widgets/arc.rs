@@ -5,10 +5,10 @@
 use core::fmt::Write as _;
 
 use crate::compat::String;
-use crate::core::{deg_to_rad, Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{deg_to_rad, Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::render::{RenderCommand, RenderContext};
-use crate::widget::capability::coercion::{expect_bool, expect_u32};
+use crate::render::{RenderCommand, RenderContext, TextMetrics};
+use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -72,6 +72,19 @@ pub struct Arc {
     signed_min: i32,
     /// The installed signed range's upper bound.
     signed_max: i32,
+    /// Scratch buffer for the centre reading, reused across frames.
+    ///
+    /// A determinate arc can sit on one value for many frames, so building the label in a
+    /// fresh `String` every draw allocated for a string that had not changed.
+    value_text: String,
+    /// The percentage [`Self::value_text`] currently holds, or `None` before the first draw.
+    cached_value_pct: Option<u32>,
+    /// The resolved font the cached measurement was taken in.
+    cached_value_font: Option<Font>,
+    /// The device scale the cached measurement was taken at.
+    cached_value_scale: f32,
+    /// The measured bounds of [`Self::value_text`] under the cached font and scale.
+    cached_value_metrics: TextMetrics,
 }
 
 impl Arc {
@@ -97,6 +110,11 @@ impl Arc {
             signed: false,
             signed_min: 0,
             signed_max: 0,
+            value_text: String::new(),
+            cached_value_pct: None,
+            cached_value_font: None,
+            cached_value_scale: 1.0,
+            cached_value_metrics: TextMetrics::default(),
         }
     }
 
@@ -118,6 +136,29 @@ impl Arc {
     /// Returns the total sweep angle in degrees.
     pub fn sweep_angle(&self) -> u16 {
         self.sweep_angle
+    }
+
+    /// Returns the arc's start angle in degrees (`0` is 12 o'clock, clockwise).
+    pub fn start_angle(&self) -> f32 {
+        f32::from(self.start_angle)
+    }
+
+    /// Sets the start angle in degrees (`0` is 12 o'clock, clockwise).
+    ///
+    /// The field stores whole degrees, so the value is rounded and clamped to the `i16` range it
+    /// can hold; a non-finite input is ignored rather than turned into a sentinel angle. This is
+    /// the same 12-o'clock origin [`crate::widget::display_widgets::ProgressCircle`] paints from,
+    /// so a gauge arc and a progress ring can start at the same place.
+    pub fn set_start_angle(&mut self, angle: f32) {
+        if !angle.is_finite() {
+            return;
+        }
+        let rounded = angle.round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
+        if self.start_angle == rounded {
+            return;
+        }
+        self.start_angle = rounded;
+        self.base.request_redraw();
     }
 
     /// Returns the arc thickness in pixels.
@@ -375,7 +416,14 @@ impl Arc {
     /// A control that is unmounted falls back to [`BaseWidget::request_redraw`], keeping the
     /// redraw signal contract for host-owned controls; a tick frame passes the rectangle it
     /// already has because the animation sweep holds the registry across `tick`.
+    ///
+    /// A tick frame keeps the base signal in [`crate::widget::runtime::RepaintMode::Full`]: the
+    /// whole-control fallback would re-enter the registry borrow the sweep holds, so only
+    /// interaction paths (`bounds == None`) take it. This is the same split
+    /// `progress_circle` and `switch` use.
     fn request_frame_repaint(&self, bounds: Option<Rect>) {
+        // Silences the unused-parameter warning in the `alloc_frugal` build, where the damage
+        // submit below is compiled out and `request_redraw` is the only route.
         let _ = bounds;
         #[cfg(not(alloc_frugal))]
         {
@@ -507,6 +555,7 @@ impl WidgetProperties for Arc {
             "maximum" => Ok(CapabilityValue::UInt(self.maximum() as u64)),
             "thickness" => Ok(CapabilityValue::UInt(self.thickness() as u64)),
             "sweep_angle" => Ok(CapabilityValue::UInt(self.sweep_angle() as u64)),
+            "start_angle" => Ok(CapabilityValue::Float(f64::from(self.start_angle()))),
             "indeterminate" => Ok(CapabilityValue::Bool(self.is_indeterminate())),
             "rounded" => Ok(CapabilityValue::Bool(self.rounded())),
             "show_value" => Ok(CapabilityValue::Bool(self.show_value())),
@@ -536,6 +585,10 @@ impl WidgetProperties for Arc {
                 self.set_sweep_angle(expect_u32(value)? as u16);
                 Ok(())
             }
+            "start_angle" => {
+                self.set_start_angle(expect_f64(value)? as f32);
+                Ok(())
+            }
             "indeterminate" => {
                 self.set_indeterminate(expect_bool(value)?);
                 Ok(())
@@ -559,6 +612,7 @@ impl WidgetProperties for Arc {
             "maximum",
             "thickness",
             "sweep_angle",
+            "start_angle",
             "indeterminate",
             "rounded",
             "show_value",
@@ -715,11 +769,34 @@ impl Draw for Arc {
         // painted over the ring itself. It is also dropped when it cannot fit, rather than
         // straddling the arc: a reading that covers the progress it reports is worse than no
         // reading, and the raster backend hides the overflow while the SVG one shows it.
-        let mut text = String::new();
+        let mut text = core::mem::take(&mut self.value_text);
+        text.clear();
         self.write_value_text(&mut text);
         if !text.is_empty() && inner_radius > 0 {
+            // The reading only changes when the value or the resolved font changes, and its
+            // measurement additionally depends on the backend's device scale. The pct, the
+            // font value and the scale are therefore the whole cache key: measured bounds
+            // are not a function of the control's rectangle.
+            let pct = (self.normalized_value() * 100.0).round() as u32;
+            let scale = context.dpi_scale();
+            let stale = {
+                let font = effective_font(self.style());
+                self.cached_value_pct != Some(pct)
+                    || self.cached_value_scale != scale
+                    || self.cached_value_font.as_ref() != Some(font)
+            };
+            if stale {
+                let metrics = {
+                    let font = effective_font(self.style());
+                    context.measure_text(&text, font)
+                };
+                self.cached_value_pct = Some(pct);
+                self.cached_value_scale = scale;
+                self.cached_value_font = Some(effective_font(self.style()).clone());
+                self.cached_value_metrics = metrics;
+            }
+            let metrics = self.cached_value_metrics;
             let font = effective_font(self.style());
-            let metrics = context.measure_text(&text, font);
             let hole = inner_radius.saturating_mul(2);
             // A one-pixel margin on each side of the hole, so the glyphs do not touch the
             // ring they sit inside.
@@ -738,6 +815,9 @@ impl Draw for Arc {
                 );
             }
         }
+        // The buffer keeps its capacity, so the next frame's `write!` does not allocate while
+        // the reading stays the same length or shorter.
+        self.value_text = text;
     }
 }
 

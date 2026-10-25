@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Input dialog widget.
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -89,7 +89,7 @@ pub struct InputDialog {
     int_step: i64,
     double_min: f64,
     double_max: f64,
-    _double_step: f64,
+    double_step: f64,
     double_decimals: u8,
     /// How far the caret sits into [`InputDialog::text_value`], in characters.
     text_caret: usize,
@@ -113,6 +113,11 @@ pub struct InputDialog {
     pub accepted: GenericSignal,
     /// Emitted by [`InputDialog::reject`].
     pub rejected: GenericSignal,
+    /// Emitted when Tab moves the focus ring; the payload is this dialog's own object id (the
+    /// dialog is one `ObjectId`; its self-drawn field and buttons are not separate objects).
+    pub focus_changed: Signal1<ObjectId>,
+    /// The focus target: `0` is the input field, `1 + index` is the action button at `index`.
+    focus: Option<usize>,
 }
 impl InputDialog {
     /// Creates a modal, empty dialog in [`InputMode::Text`].
@@ -137,7 +142,7 @@ impl InputDialog {
             int_step: 1,
             double_min: f64::MIN,
             double_max: f64::MAX,
-            _double_step: 1.0,
+            double_step: 1.0,
             double_decimals: 1,
             text_caret: 0,
             text_input_seen: false,
@@ -148,6 +153,8 @@ impl InputDialog {
             double_value_changed: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
+            focus_changed: Signal1::new(),
+            focus: None,
         }
     }
     /// Creates a text-input dialog with its title, label and initial text
@@ -359,6 +366,78 @@ impl InputDialog {
         self.base.request_redraw();
         self.double_value_changed.emit(self.double_value);
     }
+
+    /// The inclusive integer range the value is clamped into.
+    pub fn int_range(&self) -> (i64, i64) {
+        (self.int_min, self.int_max)
+    }
+
+    /// Replaces the inclusive integer range and clamps the current value into it.
+    ///
+    /// The bounds are ordered as they are stored, so a descending pair behaves like its
+    /// ascending twin instead of tripping `i64::clamp`'s `min <= max` precondition.
+    pub fn set_int_range(&mut self, min: i64, max: i64) {
+        self.int_min = min.min(max);
+        self.int_max = min.max(max);
+        self.set_int_value(self.int_value);
+        self.base.request_redraw();
+    }
+
+    /// Replaces the whole-number increment used by the arrow keys.
+    pub fn set_int_step(&mut self, step: i64) {
+        if self.int_step == step {
+            return;
+        }
+        self.int_step = step;
+        self.base.request_redraw();
+    }
+
+    /// The inclusive floating-point range the value is clamped into.
+    pub fn double_range(&self) -> (f64, f64) {
+        (self.double_min, self.double_max)
+    }
+
+    /// Replaces the inclusive floating-point range and clamps the current value into it.
+    ///
+    /// A `NaN` bound would make every comparison false, so the pair is normalised: a `NaN`
+    /// lower bound becomes the type's minimum, a `NaN` upper bound its maximum. The result
+    /// still orders the two, so the stored range is usable whatever the caller supplied.
+    pub fn set_double_range(&mut self, min: f64, max: f64) {
+        let min = if min.is_nan() { f64::MIN } else { min };
+        let max = if max.is_nan() { f64::MAX } else { max };
+        self.double_min = min.min(max);
+        self.double_max = min.max(max);
+        self.set_double_value(self.double_value);
+        self.base.request_redraw();
+    }
+
+    /// The increment the arrow keys apply in [`InputMode::Double`].
+    pub fn double_step(&self) -> f64 {
+        self.double_step
+    }
+
+    /// Replaces the floating-point increment used by the arrow keys.
+    pub fn set_double_step(&mut self, step: f64) {
+        if !step.is_finite() || self.double_step == step {
+            return;
+        }
+        self.double_step = step;
+        self.base.request_redraw();
+    }
+
+    /// The number of fraction digits painted in [`InputMode::Double`].
+    pub fn double_decimals(&self) -> u8 {
+        self.double_decimals
+    }
+
+    /// Sets the painted fraction-digit count. It affects only the rendering, never the value.
+    pub fn set_double_decimals(&mut self, decimals: u8) {
+        if self.double_decimals == decimals {
+            return;
+        }
+        self.double_decimals = decimals;
+        self.base.request_redraw();
+    }
     /// Whether the item-mode drop-down is open.
     pub fn is_dropdown_open(&self) -> bool {
         self.dropdown_open
@@ -460,7 +539,7 @@ impl InputDialog {
                 self.set_int_value(self.int_value.saturating_add(step));
             }
             InputMode::Double => {
-                self.set_double_value(self.double_value + self._double_step * f64::from(direction));
+                self.set_double_value(self.double_value + self.double_step * f64::from(direction));
             }
             _ => {}
         }
@@ -563,6 +642,11 @@ impl Widget for InputDialog {
             )),
             "accepted" => Some(EventSignalRef::unit("accepted", &self.accepted)),
             "rejected" => Some(EventSignalRef::unit("rejected", &self.rejected)),
+            "focus_changed" => {
+                Some(EventSignalRef::mapped("focus_changed", &self.focus_changed, |v| {
+                    CapabilityValue::UInt(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -702,6 +786,7 @@ impl EventHandler for InputDialog {
                     return;
                 }
                 if let Some(index) = self.button_at(*pos) {
+                    self.focus = Some(index + 1);
                     if index == 0 {
                         self.accept();
                     } else {
@@ -710,6 +795,7 @@ impl EventHandler for InputDialog {
                     return;
                 }
                 if self.input_band().contains_point(*pos) {
+                    self.focus = Some(0);
                     if self.mode == InputMode::Item {
                         self.dropdown_open = !self.dropdown_open;
                         self.base.request_redraw();
@@ -738,11 +824,16 @@ impl EventHandler for InputDialog {
             Event::KeyPress { key, .. } => {
                 let length = self.text_value.chars().count();
                 match *key {
+                    key_codes::TAB => self.move_focus(),
                     key_codes::ENTER => {
                         if self.mode == InputMode::Item {
                             self.dropdown_open = false;
                         }
-                        self.accept();
+                        if self.focus == Some(2) {
+                            self.reject();
+                        } else {
+                            self.accept();
+                        }
                     }
                     key_codes::ESCAPE => {
                         if self.dropdown_open {
@@ -902,6 +993,21 @@ impl InputDialog {
     fn button_at(&self, pos: Point) -> Option<usize> {
         self.action_buttons().iter().position(|button| button.contains_point(pos))
     }
+
+    /// The focus-target count: the field plus the two action buttons.
+    fn focus_count(&self) -> usize {
+        1 + Self::action_labels().len()
+    }
+
+    /// Moves the focus ring and announces the move.
+    fn move_focus(&mut self) {
+        let next = super::move_focus(self.focus, self.focus_count(), true);
+        if next != self.focus {
+            self.focus = next;
+            self.focus_changed.emit(self.id());
+            self.base.request_redraw();
+        }
+    }
 }
 
 impl Draw for InputDialog {
@@ -1045,6 +1151,9 @@ impl Draw for InputDialog {
         let input_band = ControlMetrics::top_band(field_band, field_band.height.min(26));
         context.fill_rect(input_band, field);
         context.draw_rect(input_band, border);
+        if self.focus == Some(0) {
+            context.draw_rounded_rect_stroke(input_band, 2, accent, 2);
+        }
         let display_text = match self.mode {
             InputMode::Text => self.text_value.clone(),
             InputMode::Integer => self.int_value.to_string(),
@@ -1135,6 +1244,13 @@ impl Draw for InputDialog {
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
         context.draw_text_line_cow(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
+        if let Some(focused) = self
+            .focus
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| row.buttons.get(index))
+        {
+            context.draw_rounded_rect_stroke(*focused, 2, accent, 2);
+        }
     }
 }
 
@@ -1302,5 +1418,42 @@ mod tests {
         assert_eq!(dialog.current_item(), 1);
         assert!(!dialog.is_dropdown_open());
         assert_eq!(dialog.current_item_text(), Some("Two"));
+    }
+
+    #[test]
+    fn the_numeric_range_step_and_decimals_are_configurable() {
+        let mut dialog = InputDialog::new(Rect::new(0, 0, 320, 180));
+        dialog.set_int_range(100, 0);
+        assert_eq!(dialog.int_range(), (0, 100), "a descending pair is ordered as stored");
+        dialog.set_int_value(500);
+        assert_eq!(dialog.int_value(), 100, "the value clamps into the configured range");
+        dialog.set_int_step(7);
+        assert_eq!(dialog.int_step(), 7);
+        dialog.set_mode(InputMode::Integer);
+        dialog.handle_event(&Event::key_press(key_codes::UP, 0));
+        assert_eq!(dialog.int_value(), 100, "the step still respects the range");
+
+        dialog.set_mode(InputMode::Double);
+        dialog.set_double_range(-1.0, 1.0);
+        assert_eq!(dialog.double_range(), (-1.0, 1.0));
+        dialog.set_double_value(5.0);
+        assert_eq!(dialog.double_value(), 1.0);
+        dialog.set_double_step(0.25);
+        dialog.handle_event(&Event::key_press(key_codes::DOWN, 0));
+        assert_eq!(dialog.double_value(), 0.75, "the configured step drives the arrow keys");
+        dialog.set_double_decimals(3);
+        assert_eq!(dialog.double_decimals(), 3);
+    }
+
+    #[test]
+    fn tab_moves_the_focus_ring_and_announces_it() {
+        let mut dialog = InputDialog::new(Rect::new(0, 0, 320, 180));
+        let seen = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&seen);
+        dialog.focus_changed.connect(move |_| {
+            *sink.lock().expect("lock") += 1;
+        });
+        dialog.handle_event(&Event::key_press(key_codes::TAB, 0));
+        assert_eq!(*seen.lock().expect("lock"), 1);
     }
 }

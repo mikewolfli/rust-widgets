@@ -68,8 +68,9 @@ pub use artifact::{
 };
 pub use generator::{
     availability, constructor_type_name, generate, is_style_only_property, is_wire_key,
-    shared_wire_rule_count, Availability, GeneratedSource, GenerationGap, GenerationReport,
-    GenerationRequest, TargetProfile, DEFAULT_CHILD_CAPACITY, MINI_CHILD_CAPACITY,
+    shared_wire_rule_count, Availability, GeneratedSource, GenerationGap, GenerationGapReason,
+    GenerationReport, GenerationRequest, TargetProfile, DEFAULT_CHILD_CAPACITY,
+    MINI_CHILD_CAPACITY,
 };
 
 #[cfg(all(test, declarative_view))]

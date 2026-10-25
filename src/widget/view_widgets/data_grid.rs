@@ -3,6 +3,7 @@
 
 //! Data grid widget backed by incremental data source protocol.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -21,6 +22,8 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
+use super::data_source::{DataRole, IncrementalTableDataSource};
+
 /// The margin a data grid leaves between its own frame and its cells: 2 px on every edge.
 ///
 /// Named once so the first cell and the frozen-column divider are both measured from the
@@ -34,11 +37,125 @@ const GRID_INSET: u32 = 2;
 /// one header below the frame rather than pinned to the top edge.
 const GRID_HEADER_HEIGHT: u32 = 22;
 
-use super::data_source::IncrementalTableDataSource;
+/// What a selection gesture selects in a [`DataGrid`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DataGridSelectionBehavior {
+    /// Individual cells (the historical behaviour).
+    #[default]
+    Cells,
+    /// Whole rows, whichever cell was clicked.
+    Rows,
+    /// Whole columns, whichever cell was clicked.
+    Columns,
+}
+
+fn data_grid_selection_mode_to_str(
+    mode: crate::widget::view_widgets::list_view::SelectionMode,
+) -> &'static str {
+    use crate::widget::view_widgets::list_view::SelectionMode;
+    match mode {
+        SelectionMode::Single => "single",
+        SelectionMode::Multi => "multi",
+        SelectionMode::Extended => "extended",
+        SelectionMode::None => "none",
+    }
+}
+
+/// The published spelling of a column sizing mode.
+fn column_width_mode_to_str(mode: ColumnWidthMode) -> &'static str {
+    match mode {
+        ColumnWidthMode::Fixed => "fixed",
+        ColumnWidthMode::Stretch => "stretch",
+        ColumnWidthMode::Interactive => "interactive",
+    }
+}
+
+/// Parses the published column sizing token.
+fn expect_column_width_mode(
+    value: CapabilityValue,
+) -> Result<ColumnWidthMode, CapabilityAccessError> {
+    match crate::widget::capability::coercion::expect_string(value)?.to_ascii_lowercase().as_str() {
+        "fixed" => Ok(ColumnWidthMode::Fixed),
+        "stretch" => Ok(ColumnWidthMode::Stretch),
+        "interactive" => Ok(ColumnWidthMode::Interactive),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
+fn expect_data_grid_selection_mode(
+    value: CapabilityValue,
+) -> Result<crate::widget::view_widgets::list_view::SelectionMode, CapabilityAccessError> {
+    use crate::widget::view_widgets::list_view::SelectionMode;
+    match value {
+        CapabilityValue::String(token) => match token.as_str() {
+            "single" => Ok(SelectionMode::Single),
+            "multi" => Ok(SelectionMode::Multi),
+            "extended" => Ok(SelectionMode::Extended),
+            "none" => Ok(SelectionMode::None),
+            _ => Err(CapabilityAccessError::TypeMismatch),
+        },
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
+fn selection_behavior_to_str(behavior: DataGridSelectionBehavior) -> &'static str {
+    match behavior {
+        DataGridSelectionBehavior::Cells => "cells",
+        DataGridSelectionBehavior::Rows => "rows",
+        DataGridSelectionBehavior::Columns => "columns",
+    }
+}
+
+fn expect_selection_behavior(
+    value: CapabilityValue,
+) -> Result<DataGridSelectionBehavior, CapabilityAccessError> {
+    match value {
+        CapabilityValue::String(token) => match token.as_str() {
+            "cells" => Ok(DataGridSelectionBehavior::Cells),
+            "rows" => Ok(DataGridSelectionBehavior::Rows),
+            "columns" => Ok(DataGridSelectionBehavior::Columns),
+            _ => Err(CapabilityAccessError::TypeMismatch),
+        },
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
+/// A sort key normalised once per projected row.
+fn normalise_sort_key(text: &str) -> (String, Option<f64>) {
+    let trimmed = text.trim();
+    (trimmed.to_lowercase(), trimmed.parse::<f64>().ok())
+}
+
+/// Compares normalised keys, preferring a numeric order when both sides are numbers.
+///
+/// A pure `String` comparison put `"10"` before `"2"`; a numeric column therefore painted in an
+/// order no user would recognise. Parsing both sides is what makes the default comparison
+/// role-aware enough for the common textual-number case, while a role explicitly supplied through
+/// [`DataGrid::set_sort_role`] can expose a dedicated sort representation.
+fn compare_sort_keys(
+    left: &(String, Option<f64>),
+    right: &(String, Option<f64>),
+) -> core::cmp::Ordering {
+    if let (Some(left), Some(right)) = (left.1, right.1) {
+        if let Some(order) = left.partial_cmp(&right) {
+            return order;
+        }
+    }
+    left.0.cmp(&right.0)
+}
+
 use super::filter_expr::{FilterCondition, FilterExpr};
 
 /// Rows after filtering and sorting, holding one optional cell per source column.
 type ProjectedRows = Vec<Vec<Option<String>>>;
+
+/// The sliced window most recently handed out from the full-model projection.
+///
+/// Keyed by the projection allocation and the window rectangle: a repeated paint returns the
+/// same `Rc` rather than copying the visible slice again. The pointer comparison also makes a
+/// stale window unreachable when the projection is rebuilt.
+type FullWindowCache =
+    Option<(Rc<ProjectedRows>, (usize, usize, usize, usize), Rc<Vec<Vec<Option<String>>>>)>;
 
 /// Sort descriptor for a data grid column.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,6 +226,44 @@ pub struct DataGrid {
     /// Set through [`Self::cell_at`], so a selection can only ever name a cell that was
     /// actually painted.
     selection: Option<(usize, usize)>,
+    /// How many units a press may add to the selection.
+    selection_mode: crate::widget::view_widgets::list_view::SelectionMode,
+    /// What a selection gesture selects (cells, rows or columns).
+    selection_behavior: DataGridSelectionBehavior,
+    /// The selected units, stored as cells: `(row, 0)` for a row, `(0, column)` for a column and
+    /// the exact cell for cell selection. Keeping one set means the three behaviours share the
+    /// paint and query paths.
+    selected_cells: BTreeSet<(usize, usize)>,
+    /// The cell a range selection extends from.
+    selection_anchor: Option<(usize, usize)>,
+    /// The cell keyboard navigation currently points at.
+    current_cell: Option<(usize, usize)>,
+    /// A `select_all` that is represented by a flag instead of a per-cell set.
+    all_selected: bool,
+    /// Roles used for a column's sort key, when it differs from the display text.
+    sort_roles: std::collections::HashMap<usize, DataRole>,
+    /// Whether the header paints a sort arrow.
+    sort_indicator_visible: bool,
+    /// Explicit per-column widths used by [`ColumnWidthMode::Interactive`].
+    column_widths: std::collections::HashMap<usize, u32>,
+    /// The column currently being dragged wider or narrower.
+    resizing_column: Option<usize>,
+    /// The pointer x where the current resize drag began.
+    resize_start_x: i32,
+    /// The width the column had when the current resize drag began.
+    resize_start_width: u32,
+    /// Labels supplied through [`DataGrid::set_header_labels`].
+    header_labels: Vec<String>,
+    /// Emitted when the selection changes; query [`DataGrid::selected_cells`] for the units.
+    selection_changed: Signal1<()>,
+    /// Emitted with the cell keyboard navigation moved to.
+    current_changed: Signal1<(usize, usize)>,
+    /// Emitted when a cell is pressed.
+    cell_clicked: Signal1<(usize, usize)>,
+    /// Emitted when a cell is double-clicked.
+    cell_double_clicked: Signal1<(usize, usize)>,
+    /// Emitted after a user resize with `(column, width)`.
+    column_resized: Signal1<(usize, u32)>,
     /// The projected `(row, column)` under the pointer, or `None` when it is elsewhere.
     ///
     /// Set through the **same** [`Self::cell_at`] the press uses, so the cell a hover points at is
@@ -121,6 +276,8 @@ pub struct DataGrid {
     full_model_projection: bool,
     /// Cache for the full-model projection, keyed by the source generation/revision.
     full_projection_cache: Option<(u64, Rc<ProjectedRows>)>,
+    /// The sliced window most recently handed out from `full_projection_cache`.
+    full_window_cache: FullWindowCache,
     /// How column widths are decided.
     column_width_mode: ColumnWidthMode,
     /// Whether odd rows get the alternating wash.
@@ -199,10 +356,29 @@ impl DataGrid {
             data_generation: Arc::new(AtomicU64::new(0)),
             data_is_observable: false,
             selection: None,
+            selection_mode: crate::widget::view_widgets::list_view::SelectionMode::Single,
+            selection_behavior: DataGridSelectionBehavior::Cells,
+            selected_cells: BTreeSet::new(),
+            selection_anchor: None,
+            current_cell: None,
+            all_selected: false,
+            sort_roles: std::collections::HashMap::new(),
+            sort_indicator_visible: true,
+            column_widths: std::collections::HashMap::new(),
+            resizing_column: None,
+            resize_start_x: 0,
+            resize_start_width: 0,
+            header_labels: Vec::new(),
+            selection_changed: Signal1::new(),
+            current_changed: Signal1::new(),
+            cell_clicked: Signal1::new(),
+            cell_double_clicked: Signal1::new(),
+            column_resized: Signal1::new(),
             hovered_cell: None,
             visible_window_changed: Signal1::new(),
-            full_model_projection: false,
+            full_model_projection: true,
             full_projection_cache: None,
+            full_window_cache: None,
             column_width_mode: ColumnWidthMode::Fixed,
             alternating_rows: false,
             edit_triggers: EditTriggers::NONE,
@@ -238,6 +414,9 @@ impl DataGrid {
         self.scroll_row = 0;
         self.scroll_column = 0;
         self.clear_cache();
+        self.full_projection_cache = None;
+        self.clear_selection_units();
+        self.current_cell = None;
         self.normalize_projection_state();
         self.emit_visible_window_changed();
         self.base.request_layout();
@@ -254,6 +433,9 @@ impl DataGrid {
         self.scroll_column = 0;
         self.frozen_columns = 0;
         self.clear_cache();
+        self.full_projection_cache = None;
+        self.clear_selection_units();
+        self.current_cell = None;
         self.emit_visible_window_changed();
         self.base.request_layout();
         self.base.request_redraw();
@@ -282,6 +464,336 @@ impl DataGrid {
     /// The projected `(row, column)` of the current selection, if any.
     pub fn selection(&self) -> Option<(usize, usize)> {
         self.selection
+    }
+
+    /// The selection's cardinality mode.
+    pub fn selection_mode(&self) -> crate::widget::view_widgets::list_view::SelectionMode {
+        self.selection_mode
+    }
+
+    /// Sets how many units a press may add to the selection.
+    pub fn set_selection_mode(
+        &mut self,
+        mode: crate::widget::view_widgets::list_view::SelectionMode,
+    ) {
+        if self.selection_mode == mode {
+            return;
+        }
+        self.selection_mode = mode;
+        if mode == crate::widget::view_widgets::list_view::SelectionMode::None {
+            self.clear_selection();
+            return;
+        }
+        if mode == crate::widget::view_widgets::list_view::SelectionMode::Single
+            && (self.selected_cells.len() > 1 || self.all_selected)
+        {
+            self.all_selected = false;
+            let keep = self.selection.or_else(|| self.selected_cells.iter().next().copied());
+            self.selected_cells.clear();
+            if let Some((row, column)) = keep {
+                self.push_selection_unit(row, column);
+                self.selection = Some((row, column));
+            }
+            self.selection_changed.emit(());
+        }
+        self.base.request_redraw();
+    }
+
+    /// What a selection gesture selects.
+    pub fn selection_behavior(&self) -> DataGridSelectionBehavior {
+        self.selection_behavior
+    }
+
+    /// Sets what a selection gesture selects, clearing the old units.
+    pub fn set_selection_behavior(&mut self, behavior: DataGridSelectionBehavior) {
+        if self.selection_behavior == behavior {
+            return;
+        }
+        self.selection_behavior = behavior;
+        self.clear_selection_units();
+        self.base.request_redraw();
+    }
+
+    /// The current navigation cell, if any.
+    pub fn current_cell(&self) -> Option<(usize, usize)> {
+        self.current_cell
+    }
+
+    /// Moves keyboard navigation to `(row, column)`, selecting it in single mode.
+    pub fn set_current_cell(&mut self, row: usize, column: usize) -> bool {
+        if row >= self.row_count() || column >= self.column_count() {
+            return false;
+        }
+        self.current_cell = Some((row, column));
+        self.current_changed.emit((row, column));
+        if self.selection_mode == crate::widget::view_widgets::list_view::SelectionMode::Single {
+            self.replace_selection(row, column);
+        }
+        self.scroll_to_cell(row, column);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Moves the current cell, optionally extending the selection from its anchor.
+    ///
+    /// Keyboard navigation uses this so the arrow keys move a real current cell instead of only
+    /// scrolling. The cell is scrolled into view with the minimum movement, which keeps the
+    /// pointer/keyboard viewport behaviour the grid already had.
+    pub fn move_current_cell(&mut self, row: usize, column: usize, extend: bool) -> bool {
+        if row >= self.row_count() || column >= self.column_count() {
+            return false;
+        }
+        if self.selection_mode == crate::widget::view_widgets::list_view::SelectionMode::None {
+            self.current_cell = Some((row, column));
+            self.current_changed.emit((row, column));
+            self.scroll_to_cell(row, column);
+            self.base.request_redraw();
+            return true;
+        }
+        let anchor =
+            self.selection_anchor.or(self.selection).or(self.current_cell).unwrap_or((row, column));
+        self.current_cell = Some((row, column));
+        if extend {
+            self.all_selected = false;
+            self.push_selection_range(anchor, (row, column));
+            self.selection = Some((row, column));
+            self.selection_changed.emit(());
+        } else {
+            self.replace_selection(row, column);
+        }
+        self.current_changed.emit((row, column));
+        self.scroll_to_cell(row, column);
+        self.base.request_redraw();
+        true
+    }
+
+    /// The signal emitted when the selection changes.
+    ///
+    /// Exposed as accessors rather than `pub` fields: the capability table owns the published
+    /// event names, and these names are not in it, so they stay Rust-level events. Query
+    /// [`Self::selected_cells`] or [`Self::selected_indexes`] for the new units.
+    pub fn selection_changed_signal(&self) -> &Signal1<()> {
+        &self.selection_changed
+    }
+
+    /// The signal emitted with the current navigation cell.
+    pub fn current_changed_signal(&self) -> &Signal1<(usize, usize)> {
+        &self.current_changed
+    }
+
+    /// The signal emitted with a pressed cell.
+    pub fn cell_clicked_signal(&self) -> &Signal1<(usize, usize)> {
+        &self.cell_clicked
+    }
+
+    /// The signal emitted with a double-clicked cell.
+    pub fn cell_double_clicked_signal(&self) -> &Signal1<(usize, usize)> {
+        &self.cell_double_clicked
+    }
+
+    /// The signal emitted after a user resize with `(column, width)`.
+    pub fn column_resized_signal(&self) -> &Signal1<(usize, u32)> {
+        &self.column_resized
+    }
+
+    /// The selected cells, expanded from the current behaviour.
+    ///
+    /// In row behaviour every column of a selected row is listed and in column behaviour every row
+    /// of a selected column; the mode decides the unit, so one accessor serves all three. A
+    /// `select_all` is expanded here as well, which is why a caller that only needs the units should
+    /// prefer [`Self::selected_indexes`].
+    pub fn selected_cells(&self) -> Vec<(usize, usize)> {
+        if self.all_selected {
+            let columns = self.column_count();
+            return (0..self.row_count())
+                .flat_map(|row| (0..columns).map(move |column| (row, column)))
+                .collect();
+        }
+        match self.selection_behavior {
+            DataGridSelectionBehavior::Cells => self.selected_cells.iter().copied().collect(),
+            DataGridSelectionBehavior::Rows => {
+                let columns = self.column_count();
+                self.selected_cells
+                    .iter()
+                    .flat_map(|(row, _)| (0..columns).map(move |column| (*row, column)))
+                    .collect()
+            }
+            DataGridSelectionBehavior::Columns => {
+                let rows = self.row_count();
+                self.selected_cells
+                    .iter()
+                    .flat_map(|(_, column)| (0..rows).map(move |row| (row, *column)))
+                    .collect()
+            }
+        }
+    }
+
+    /// The distinct rows (`Cells`/`Rows`) or columns (`Columns`) in the selection.
+    pub fn selected_indexes(&self) -> Vec<usize> {
+        if self.all_selected {
+            return match self.selection_behavior {
+                DataGridSelectionBehavior::Columns => (0..self.column_count()).collect(),
+                _ => (0..self.row_count()).collect(),
+            };
+        }
+        match self.selection_behavior {
+            DataGridSelectionBehavior::Columns => {
+                let mut columns: Vec<usize> =
+                    self.selected_cells.iter().map(|(_, column)| *column).collect();
+                columns.dedup();
+                columns
+            }
+            _ => {
+                let mut rows: Vec<usize> =
+                    self.selected_cells.iter().map(|(row, _)| *row).collect();
+                rows.dedup();
+                rows
+            }
+        }
+    }
+
+    /// Selects every unit of the current behaviour.
+    pub fn select_all(&mut self) {
+        if self.row_count() == 0 || self.column_count() == 0 {
+            return;
+        }
+        self.all_selected = true;
+        self.selected_cells.clear();
+        self.selection = Some((0, 0));
+        self.current_cell.get_or_insert((0, 0));
+        self.selection_changed.emit(());
+        self.base.request_redraw();
+    }
+
+    /// Clears the current selection.
+    pub fn clear_selection(&mut self) {
+        if self.selection.is_none() && self.selected_cells.is_empty() && !self.all_selected {
+            return;
+        }
+        self.clear_selection_units();
+        self.selection_changed.emit(());
+        self.base.request_redraw();
+    }
+
+    fn clear_selection_units(&mut self) {
+        self.selection = None;
+        self.selected_cells.clear();
+        self.all_selected = false;
+        self.selection_anchor = None;
+    }
+
+    /// Whether `(row, column)` belongs to the painted selection.
+    fn selection_contains(&self, row: usize, column: usize) -> bool {
+        if self.all_selected {
+            return true;
+        }
+        match self.selection_behavior {
+            DataGridSelectionBehavior::Cells => self.selected_cells.contains(&(row, column)),
+            DataGridSelectionBehavior::Rows => {
+                self.selected_cells.iter().any(|(selected, _)| *selected == row)
+            }
+            DataGridSelectionBehavior::Columns => {
+                self.selected_cells.iter().any(|(_, selected)| *selected == column)
+            }
+        }
+    }
+
+    /// Adds the behaviour's unit for `(row, column)`.
+    fn push_selection_unit(&mut self, row: usize, column: usize) {
+        let unit = match self.selection_behavior {
+            DataGridSelectionBehavior::Cells => (row, column),
+            DataGridSelectionBehavior::Rows => (row, 0),
+            DataGridSelectionBehavior::Columns => (0, column),
+        };
+        self.selected_cells.insert(unit);
+    }
+
+    /// Adds every unit between two cells.
+    fn push_selection_range(&mut self, from: (usize, usize), to: (usize, usize)) {
+        match self.selection_behavior {
+            DataGridSelectionBehavior::Cells => {
+                for row in from.0.min(to.0)..=from.0.max(to.0) {
+                    for column in from.1.min(to.1)..=from.1.max(to.1) {
+                        self.selected_cells.insert((row, column));
+                    }
+                }
+            }
+            DataGridSelectionBehavior::Rows => {
+                for row in from.0.min(to.0)..=from.0.max(to.0) {
+                    self.selected_cells.insert((row, 0));
+                }
+            }
+            DataGridSelectionBehavior::Columns => {
+                for column in from.1.min(to.1)..=from.1.max(to.1) {
+                    self.selected_cells.insert((0, column));
+                }
+            }
+        }
+    }
+
+    /// Replaces the selection with `(row, column)`'s unit.
+    fn replace_selection(&mut self, row: usize, column: usize) {
+        self.selected_cells.clear();
+        self.all_selected = false;
+        self.selection = Some((row, column));
+        self.selection_anchor = Some((row, column));
+        self.push_selection_unit(row, column);
+        self.selection_changed.emit(());
+    }
+
+    /// Applies a press to the selection, honouring ctrl/shift in extended mode.
+    fn apply_selection_click(&mut self, row: usize, column: usize, modifiers: u32) {
+        use crate::shortcut::Modifiers;
+        if self.selection_mode == crate::widget::view_widgets::list_view::SelectionMode::None {
+            return;
+        }
+        let modifiers = Modifiers::from_event_bits(modifiers);
+        let extended =
+            self.selection_mode == crate::widget::view_widgets::list_view::SelectionMode::Extended;
+        let shift = extended && modifiers.contains(Modifiers::SHIFT);
+        let toggle = extended
+            && (modifiers.contains(Modifiers::CTRL) || modifiers.contains(Modifiers::META));
+
+        if shift {
+            let anchor = self.selection_anchor.unwrap_or((row, column));
+            if !self.all_selected {
+                // Keep the anchor's unit and add the range, which is what shift means.
+                self.push_selection_range(anchor, (row, column));
+            }
+            self.selection = Some((row, column));
+            self.selection_changed.emit(());
+        } else if toggle {
+            self.all_selected = false;
+            let unit = match self.selection_behavior {
+                DataGridSelectionBehavior::Cells => (row, column),
+                DataGridSelectionBehavior::Rows => (row, 0),
+                DataGridSelectionBehavior::Columns => (0, column),
+            };
+            if !self.selected_cells.remove(&unit) {
+                self.selected_cells.insert(unit);
+            }
+            self.selection = Some((row, column));
+            self.selection_anchor = Some((row, column));
+            self.selection_changed.emit(());
+        } else {
+            self.replace_selection(row, column);
+        }
+    }
+
+    /// Scrolls the minimum amount that brings `(row, column)` into view.
+    fn scroll_to_cell(&mut self, row: usize, column: usize) {
+        let rows = self.visible_row_capacity().max(1);
+        if row < self.scroll_row {
+            self.set_scroll_row(row);
+        } else if row >= self.scroll_row.saturating_add(rows) {
+            self.set_scroll_row(row.saturating_add(1).saturating_sub(rows));
+        }
+        let columns = self.visible_column_capacity().max(1);
+        if column < self.scroll_column {
+            self.set_scroll_column(column);
+        } else if column >= self.scroll_column.saturating_add(columns) {
+            self.set_scroll_column(column.saturating_add(1).saturating_sub(columns));
+        }
     }
 
     /// Returns current horizontal scroll column.
@@ -376,10 +888,12 @@ impl DataGrid {
 
     /// Enables full-model filtering and sorting.
     ///
-    /// Off by default: the grid has always filtered and sorted only the fetched window, and
-    /// turning this on fetches every row once and projects that, so a sort means the same
-    /// thing regardless of the scroll position. The flag is opt-in because the full fetch is
-    /// proportional to the source size.
+    /// On by default. A window-scoped sort only ordered the rows that happened to be fetched, so
+    /// scrolling silently re-sorted the model — the same spec produced a different first row at a
+    /// different scroll offset. Projecting the whole model first makes a sort mean "the model's
+    /// order". The full fetch is proportional to the source size, so it is still switchable off for
+    /// a source that cannot afford it; a window-scoped projection then never pretends to sort the
+    /// model.
     pub fn set_full_model_projection(&mut self, enabled: bool) {
         if self.full_model_projection == enabled {
             return;
@@ -393,6 +907,16 @@ impl DataGrid {
     /// How columns are sized.
     pub fn column_width_mode(&self) -> ColumnWidthMode {
         self.column_width_mode
+    }
+
+    /// How columns are sized (`column_width_mode`'s grid-family alias).
+    pub fn section_resize_mode(&self) -> ColumnWidthMode {
+        self.column_width_mode
+    }
+
+    /// Sets the column sizing mode (`set_column_width_mode`'s grid-family alias).
+    pub fn set_section_resize_mode(&mut self, mode: ColumnWidthMode) {
+        self.set_column_width_mode(mode);
     }
 
     /// Sets the column sizing mode.
@@ -446,7 +970,10 @@ impl DataGrid {
         self.base.request_redraw();
     }
 
-    /// The width a column is painted with under the current mode.
+    /// The width a column falls back to under the current mode.
+    ///
+    /// Per-column overrides live in [`Self::column_width_at`]; this is the nominal width used for
+    /// capacity estimates and for columns that have no override.
     fn effective_column_width(&self) -> u32 {
         match self.column_width_mode {
             ColumnWidthMode::Fixed | ColumnWidthMode::Interactive => self.column_width,
@@ -468,6 +995,186 @@ impl DataGrid {
     /// Returns active sort specs.
     pub fn sort_specs(&self) -> &[SortSpec] {
         &self.sort_specs
+    }
+
+    /// The role `column` is sorted with, when one was set.
+    pub fn sort_role(&self, column: usize) -> Option<DataRole> {
+        self.sort_roles.get(&column).copied()
+    }
+
+    /// Sets the role a column's sort keys are read with.
+    ///
+    /// The display text is the default source of a sort key. A model that stores a timestamp or a
+    /// number in another role can expose it to the sorter without changing what the cell paints.
+    pub fn set_sort_role(&mut self, column: usize, role: DataRole) {
+        if self.sort_roles.insert(column, role) == Some(role) {
+            return;
+        }
+        self.full_projection_cache = None;
+        self.clear_cache();
+        self.base.request_redraw();
+    }
+
+    /// Removes a column's sort-role override, returning to the display text.
+    pub fn clear_sort_role(&mut self, column: usize) {
+        if self.sort_roles.remove(&column).is_some() {
+            self.full_projection_cache = None;
+            self.clear_cache();
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether the header paints a sort arrow.
+    pub fn sort_indicator_visible(&self) -> bool {
+        self.sort_indicator_visible
+    }
+
+    /// Enables or disables the header's sort arrow.
+    pub fn set_sort_indicator_visible(&mut self, visible: bool) {
+        if self.sort_indicator_visible == visible {
+            return;
+        }
+        self.sort_indicator_visible = visible;
+        self.base.request_redraw();
+    }
+
+    /// The width painted for `column` under the current mode.
+    ///
+    /// The historical single `column_width` remains [`Self::column_width`]; this is its per-column
+    /// counterpart. `Fixed` deliberately ignores the overrides, `Stretch` divides the cells box and
+    /// `Interactive` honours an explicit width before falling back to the fixed one.
+    pub fn column_width_at(&self, column: usize) -> u32 {
+        match self.column_width_mode {
+            ColumnWidthMode::Fixed => self.column_width,
+            ColumnWidthMode::Interactive => {
+                self.column_widths.get(&column).copied().unwrap_or(self.column_width)
+            }
+            ColumnWidthMode::Stretch => {
+                (self.cells_box().width / self.column_count().max(1) as u32).max(1)
+            }
+        }
+    }
+
+    /// Sets one column's width and switches to interactive sizing.
+    ///
+    /// The mode change is part of the request: an explicit per-column width that `Fixed` ignored
+    /// would be a setter with no effect. Returns `false` for a column the source does not have.
+    pub fn set_column_width_at(&mut self, column: usize, width: u32) -> bool {
+        if !self.store_column_width(column, width) {
+            return false;
+        }
+        self.column_resized.emit((column, self.column_width_at(column)));
+        true
+    }
+
+    /// Stores a per-column width without emitting the user-resize signal.
+    fn store_column_width(&mut self, column: usize, width: u32) -> bool {
+        if column >= self.column_count() {
+            return false;
+        }
+        let width = width.max(1);
+        self.column_width_mode = ColumnWidthMode::Interactive;
+        if self.column_widths.insert(column, width) == Some(width) {
+            return true;
+        }
+        self.clear_cache();
+        self.emit_visible_window_changed();
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Sizes `column` to its widest painted value plus a readable inset.
+    ///
+    /// The widest cell is measured with the same font the painter uses, so the result is the width
+    /// at which the value stops being elided. A source whose rows are expensive to read can still
+    /// use [`Self::set_column_width_at`] with its own answer.
+    pub fn resize_column_to_contents(&mut self, column: usize) -> bool {
+        let Some(source) = self.data_source.clone() else {
+            return false;
+        };
+        if column >= source.column_count() {
+            return false;
+        }
+        let font = effective_font(self.style());
+        let mut widest = 0u32;
+        let mut text = String::new();
+        for row in 0..source.row_count() {
+            text.clear();
+            if source.fill_cell(row, column, &mut text) {
+                widest = widest.max(crate::widget::metrics::estimate_text_width(&text, font, 1.0));
+            }
+        }
+        self.set_column_width_at(column, widest.saturating_add(16).max(24))
+    }
+
+    /// Whether a header resize handle lies at `point`.
+    fn resize_handle_at(&self, point: Point) -> Option<usize> {
+        let band = self.header_band();
+        if !band.contains_point(point) {
+            return None;
+        }
+        let cells = self.cells_box();
+        for column in 0..self.column_count() {
+            let x = cells.x + self.column_view_x(column);
+            let right = x + self.column_width_at(column) as i32;
+            if right <= band.x {
+                continue;
+            }
+            if x >= band.x + band.width as i32 {
+                break;
+            }
+            if (point.x - right).abs() <= 4 {
+                return Some(column);
+            }
+        }
+        None
+    }
+
+    /// The x of `column`'s left edge relative to the cells box's left edge.
+    fn column_view_x(&self, column: usize) -> i32 {
+        let frozen = self.frozen_columns.min(self.column_count());
+        let frozen_width = self.column_prefix_width(frozen);
+        if column < frozen {
+            self.column_prefix_width(column)
+        } else {
+            // The scrolling band starts after the pinned prefix, not at the leading edge: a
+            // scrolling column must never paint over the frozen one it sits behind.
+            let start = self.scroll_column.max(frozen);
+            frozen_width + (self.column_prefix_width(column) - self.column_prefix_width(start))
+        }
+    }
+
+    /// The summed width of columns `0..upto`.
+    fn column_prefix_width(&self, upto: usize) -> i32 {
+        // Deliberately not clamped to `column_count()`: `cell_rect` is a pure function of its
+        // indices, and a grid with no source yet still has to answer where column 2 would be.
+        (0..upto).map(|column| self.column_width_at(column) as i32).sum()
+    }
+
+    /// The column at `dx` pixels into the cells box.
+    fn column_at_dx(&self, dx: i32) -> Option<usize> {
+        if dx < 0 {
+            return None;
+        }
+        let frozen = self.frozen_columns.min(self.column_count());
+        let frozen_width = self.column_prefix_width(frozen);
+        let (mut column, mut x) = if dx < frozen_width {
+            (0, 0)
+        } else {
+            // The band begins at the frozen prefix; its first column is the further of the
+            // scroll position and the frozen count.
+            (self.scroll_column.max(frozen), frozen_width)
+        };
+        while column < self.column_count() {
+            let width = self.column_width_at(column) as i32;
+            if dx < x + width {
+                return Some(column);
+            }
+            x += width;
+            column += 1;
+        }
+        None
     }
 
     /// Replaces the filter list with a flat conjunction of `contains` conditions.
@@ -631,7 +1338,7 @@ impl DataGrid {
                 return projected;
             }
             if let Some(cells) = cached_cells {
-                let projected = Rc::new(self.apply_filter_sort((*cells).clone()));
+                let projected = Rc::new(self.apply_filter_sort((*cells).clone(), row_start));
                 if let Some(cache) = self.window_cache.as_mut() {
                     cache.projected = Some(Rc::clone(&projected));
                 }
@@ -657,7 +1364,7 @@ impl DataGrid {
         if self.filter_expr.is_noop() && self.sort_specs.is_empty() {
             cells
         } else {
-            let projected = Rc::new(self.apply_filter_sort((*cells).clone()));
+            let projected = Rc::new(self.apply_filter_sort((*cells).clone(), row_start));
             if let Some(cache) = self.window_cache.as_mut() {
                 cache.projected = Some(Rc::clone(&projected));
             }
@@ -678,21 +1385,33 @@ impl DataGrid {
         let revision = source.revision();
         let cache_key =
             if revision > 0 { revision } else { self.data_generation.load(Ordering::Relaxed) };
-        if self.data_is_observable {
-            if let Some((key, projected)) = self.full_projection_cache.as_ref() {
-                if *key == cache_key {
-                    return Rc::new(Self::slice_window(projected, self.visible_window()));
+        let projected = if self.data_is_observable {
+            match self.full_projection_cache.as_ref() {
+                Some((key, projected)) if *key == cache_key => Rc::clone(projected),
+                _ => {
+                    let rows = source.row_count();
+                    let columns = source.column_count();
+                    let cells = source.fetch_window(0, rows, 0, columns);
+                    let projected = Rc::new(self.apply_filter_sort(cells, 0));
+                    self.full_projection_cache = Some((cache_key, Rc::clone(&projected)));
+                    projected
                 }
             }
+        } else {
+            let rows = source.row_count();
+            let columns = source.column_count();
+            let cells = source.fetch_window(0, rows, 0, columns);
+            Rc::new(self.apply_filter_sort(cells, 0))
+        };
+        let window = self.visible_window();
+        if let Some((cached_projection, cached_window, cells)) = self.full_window_cache.as_ref() {
+            if Rc::ptr_eq(cached_projection, &projected) && *cached_window == window {
+                return Rc::clone(cells);
+            }
         }
-        let rows = source.row_count();
-        let columns = source.column_count();
-        let cells = source.fetch_window(0, rows, 0, columns);
-        let projected = Rc::new(self.apply_filter_sort(cells));
-        if self.data_is_observable {
-            self.full_projection_cache = Some((cache_key, Rc::clone(&projected)));
-        }
-        Rc::new(Self::slice_window(&projected, self.visible_window()))
+        let window_cells = Rc::new(Self::slice_window(&projected, window));
+        self.full_window_cache = Some((Rc::clone(&projected), window, Rc::clone(&window_cells)));
+        window_cells
     }
 
     fn slice_window(
@@ -706,36 +1425,77 @@ impl DataGrid {
             .collect()
     }
 
-    fn apply_filter_sort(&self, mut cells: Vec<Vec<Option<String>>>) -> Vec<Vec<Option<String>>> {
+    /// Filters and sorts projected rows, preserving each row's source identity.
+    ///
+    /// `row_origin` is the source row the first element of `cells` came from. It is what makes a
+    /// role-aware sort key possible after a window fetch: the display text alone cannot tell the
+    /// sorter that "10" is greater than "2", but asking the source for the configured role at the
+    /// original row can. The rows stay paired with their source index through the filter pass, so a
+    /// rejected row cannot shift the keys used by the survivors.
+    fn apply_filter_sort(
+        &self,
+        cells: Vec<Vec<Option<String>>>,
+        row_origin: usize,
+    ) -> Vec<Vec<Option<String>>> {
+        let row_span = cells.len();
+        let mut rows: Vec<(usize, Vec<Option<String>>)> = cells
+            .into_iter()
+            .enumerate()
+            .map(|(offset, row)| (row_origin.saturating_add(offset), row))
+            .collect();
         // `is_noop` lets the whole `retain` pass be skipped when the filter cannot
         // reject anything, rather than walking every cell to conclude the same thing.
         if !self.filter_expr.is_noop() {
-            cells.retain(|row| self.filter_expr.accepts(row));
+            rows.retain(|(_, row)| self.filter_expr.accepts(row));
         }
 
         if !self.sort_specs.is_empty() {
-            cells.sort_by(|a, b| {
-                for spec in &self.sort_specs {
-                    let left = a
+            let source = self.data_source.as_deref();
+            // One key per spec per surviving row, computed once. A comparator that re-read the
+            // source (and re-parsed the text) for every pair did `O(n log n)` source reads and
+            // allocations for one sort.
+            let mut key_sets: Vec<Vec<Option<(String, Option<f64>)>>> =
+                Vec::with_capacity(self.sort_specs.len());
+            for spec in &self.sort_specs {
+                let role = self.sort_roles.get(&spec.column).copied();
+                let mut keys: Vec<Option<(String, Option<f64>)>> = vec![None; row_span];
+                for (source_row, row) in &rows {
+                    let role_value = match (role, source) {
+                        (Some(role), Some(source)) => {
+                            source.data_role(*source_row, spec.column, role)
+                        }
+                        _ => None,
+                    };
+                    let display = row
                         .get(spec.column)
                         .and_then(|cell| cell.as_ref())
-                        .map(String::as_str)
-                        .unwrap_or("");
-                    let right = b
-                        .get(spec.column)
-                        .and_then(|cell| cell.as_ref())
-                        .map(String::as_str)
-                        .unwrap_or("");
-                    let order = left.cmp(right);
-                    if order != std::cmp::Ordering::Equal {
-                        return if spec.descending { order.reverse() } else { order };
+                        .cloned()
+                        .unwrap_or_default();
+                    if let Some(slot) = keys.get_mut(source_row.saturating_sub(row_origin)) {
+                        *slot = Some(normalise_sort_key(&role_value.unwrap_or(display)));
                     }
                 }
-                std::cmp::Ordering::Equal
+                key_sets.push(keys);
+            }
+
+            let empty = (String::new(), None);
+            rows.sort_by(|(left_row, _), (right_row, _)| {
+                let left = *left_row - row_origin;
+                let right = *right_row - row_origin;
+                for (index, spec) in self.sort_specs.iter().enumerate() {
+                    let left_key = key_sets[index].get(left).and_then(|key| key.as_ref());
+                    let right_key = key_sets[index].get(right).and_then(|key| key.as_ref());
+                    let ordering =
+                        compare_sort_keys(left_key.unwrap_or(&empty), right_key.unwrap_or(&empty));
+                    if ordering != core::cmp::Ordering::Equal {
+                        return if spec.descending { ordering.reverse() } else { ordering };
+                    }
+                }
+                left_row.cmp(right_row)
             });
         }
 
-        cells
+        rows.into_iter().map(|(_, row)| row).collect()
     }
 
     fn visible_row_capacity(&self) -> usize {
@@ -773,19 +1533,13 @@ impl DataGrid {
         // `scroll_column`. Before this the row was used raw, so the first window row always painted
         // at the top of the grid regardless of scroll (D09-VIEW-01).
         let row = row.saturating_sub(self.scroll_row);
-        // A frozen column is pinned to the leading edge by its **own** index. Applying
-        // `scroll_column` to it as well made the frozen prefix scroll away with the rest of the
-        // grid, which is why the only remaining evidence of it was the divider line.
-        let column = if column < self.frozen_columns {
-            column
-        } else {
-            column.saturating_sub(self.scroll_column)
-        };
-        let width = self.effective_column_width();
+        // A frozen column is pinned to the leading edge by its **own** index. The scrolling band
+        // starts after the frozen prefix, and each column travels by the sum of the widths before
+        // it — not by `index * width`, which is only true while every column is the same size.
         Rect::new(
-            cells.x + column as i32 * width as i32,
+            cells.x + self.column_view_x(column),
             cells.y + row as i32 * self.row_height as i32,
-            width,
+            self.column_width_at(column),
             self.row_height,
         )
     }
@@ -832,21 +1586,12 @@ impl DataGrid {
         if !cells.contains_point(point) {
             return None;
         }
-        // Integer division truncates toward zero, so a point left of the first column would
-        // floor to `0` and name a cell that is not there. Compute the distance in signed
-        // arithmetic and reject a negative distance instead.
         let dx = point.x - cells.x;
         let dy = point.y - cells.y;
         if dx < 0 || dy < 0 {
             return None;
         }
-        let width = self.effective_column_width().max(1) as i32;
-        let frozen_width = self.frozen_columns as i32 * width;
-        let column = if dx < frozen_width {
-            dx as usize / width as usize
-        } else {
-            self.scroll_column + dx as usize / width as usize
-        };
+        let column = self.column_at_dx(dx)?;
         let row = self.scroll_row + dy as usize / self.row_height.max(1) as usize;
         if column >= self.column_count() || row >= self.row_count() {
             return None;
@@ -879,9 +1624,7 @@ impl DataGrid {
         if dx < 0 {
             return None;
         }
-        let width = self.effective_column_width().max(1) as i32;
-        let column = self.scroll_column + dx as usize / width as usize;
-        (column < self.column_count()).then_some(column)
+        self.column_at_dx(dx).filter(|column| *column < self.column_count())
     }
 
     fn normalize_projection_state(&mut self) {
@@ -1033,6 +1776,20 @@ impl WidgetProperties for DataGrid {
             }
             "sort_specs" => Ok(CapabilityValue::String(sort_specs_to_string(self.sort_specs()))),
             "filters" => Ok(CapabilityValue::String(column_filters_to_string(&self.filters()))),
+            "selection_mode" => Ok(CapabilityValue::String(
+                data_grid_selection_mode_to_str(self.selection_mode()).to_string(),
+            )),
+            "selection_behavior" => Ok(CapabilityValue::String(
+                selection_behavior_to_str(self.selection_behavior()).to_string(),
+            )),
+            "sort_indicator_visible" => Ok(CapabilityValue::Bool(self.sort_indicator_visible())),
+            "section_resize_mode" => Ok(CapabilityValue::String(
+                column_width_mode_to_str(self.section_resize_mode()).to_string(),
+            )),
+            "current_cell" => match self.current_cell() {
+                Some((row, column)) => Ok(CapabilityValue::String(format!("{row},{column}"))),
+                None => Ok(CapabilityValue::Null),
+            },
             _ => base_property_get(self, name),
         }
     }
@@ -1067,6 +1824,25 @@ impl WidgetProperties for DataGrid {
                 self.set_filters(expect_column_filters(value)?);
                 Ok(())
             }
+            "selection_mode" => {
+                self.set_selection_mode(expect_data_grid_selection_mode(value)?);
+                Ok(())
+            }
+            "selection_behavior" => {
+                self.set_selection_behavior(expect_selection_behavior(value)?);
+                Ok(())
+            }
+            "sort_indicator_visible" => {
+                self.set_sort_indicator_visible(crate::widget::capability::coercion::expect_bool(
+                    value,
+                )?);
+                Ok(())
+            }
+            "section_resize_mode" => {
+                self.set_section_resize_mode(expect_column_width_mode(value)?);
+                Ok(())
+            }
+            "current_cell" => Err(CapabilityAccessError::ReadOnlyProperty),
             // Derived and structural state: presented but not settable, matching
             // `DATA_GRID_PROPERTIES`' `writable: false` entries.
             "has_data_source" | "row_count" | "column_count" | "sort_spec_count"
@@ -1089,6 +1865,11 @@ impl WidgetProperties for DataGrid {
             "filter_count",
             "sort_specs",
             "filters",
+            "selection_mode",
+            "selection_behavior",
+            "sort_indicator_visible",
+            "section_resize_mode",
+            "current_cell",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1166,6 +1947,7 @@ impl Draw for DataGrid {
         // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
         // the frozen-column indicator follows the appearance rather than staying a literal blue.
         let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
+        let selected_bg = surface.blend(&accent, 0.22);
 
         context.face_with_gradient(
             rect,
@@ -1183,39 +1965,68 @@ impl Draw for DataGrid {
         }
 
         // The column-title strip: the grid has always reserved it, and this is where it is
-        // finally used. Names come from the source's own `column_name`, so two grids over
-        // different sources are distinguishable at the header row.
+        // finally used. Names come from `set_header_labels` first, then the source's own
+        // `column_name`, so two grids over different sources are distinguishable at the header row.
         let cells = self.cells_box();
         let header_font = effective_font(self.style());
         let header_y = cells.y - GRID_HEADER_HEIGHT as i32;
         if let Some(source) = self.data_source.as_ref() {
-            let width = self.effective_column_width().max(1) as i32;
-            let first = self.scroll_column;
-            let visible = (cells.width / width.max(1) as u32) as usize + 2;
-            for column in first..first.saturating_add(visible).min(self.column_count()) {
-                let x = if column < self.frozen_columns {
-                    cells.x + column as i32 * width
-                } else {
-                    cells.x + (column - first) as i32 * width
-                };
-                let band = Rect::new(x, header_y, width as u32, GRID_HEADER_HEIGHT);
-                if band.x >= cells.x + cells.width as i32 {
+            let cells_right = cells.x + cells.width as i32;
+            for column in self.scroll_column..self.column_count() {
+                let x = cells.x + self.column_view_x(column);
+                if x >= cells_right {
                     break;
                 }
-                let name = match source.column_name(column) {
-                    Some(name) => name,
-                    // A source that does not name its columns keeps the strip blank, which is
-                    // the honest answer and the historical pixels.
-                    None => continue,
-                };
-                let name = crate::widget::text_utils::elide_end(&name, 24);
-                context.draw_text_fitted_cow(
-                    context.text_line(band, header_font),
-                    &name,
-                    header_font,
-                    ink,
-                    HorizontalAlignment::Left,
-                );
+                let width = self.column_width_at(column).max(1);
+                let band = Rect::new(x, header_y, width, GRID_HEADER_HEIGHT);
+                context.fill_rect(band, surface.blend(&ink, 0.06));
+                let name = self
+                    .header_labels
+                    .get(column)
+                    .filter(|label| !label.is_empty())
+                    .cloned()
+                    .or_else(|| source.column_name(column));
+                if let Some(name) = name {
+                    let name = crate::widget::text_utils::elide_end(&name, 24);
+                    // Leave room for the sort arrow before fitting the label.
+                    let arrow = if self.sort_indicator_visible
+                        && self.sort_specs.iter().any(|spec| spec.column == column)
+                    {
+                        12
+                    } else {
+                        0
+                    };
+                    let text_band = Rect::new(
+                        band.x + 2,
+                        band.y,
+                        band.width.saturating_sub(4 + arrow),
+                        band.height,
+                    );
+                    context.draw_text_fitted_cow(
+                        context.text_line(text_band, header_font),
+                        &name,
+                        header_font,
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
+                if self.sort_indicator_visible {
+                    if let Some(spec) = self.sort_specs.iter().find(|spec| spec.column == column) {
+                        let icon_side = band.height.min(10);
+                        let icon_rect = Rect::new(
+                            band.x + band.width as i32 - icon_side as i32 - 3,
+                            band.y + (band.height as i32 - icon_side as i32) / 2,
+                            icon_side,
+                            icon_side,
+                        );
+                        let icon_name = if spec.descending {
+                            crate::widget::IconName::ArrowDown
+                        } else {
+                            crate::widget::IconName::ArrowUp
+                        };
+                        crate::widget::draw_icon_at(context, icon_rect, ink, icon_name);
+                    }
+                }
             }
         }
 
@@ -1265,6 +2076,9 @@ impl Draw for DataGrid {
                 if cell_rect.x >= cells_right {
                     break;
                 }
+                if self.selection_contains(row_origin + row_idx, global_column) {
+                    context.fill_rect(cell_rect, selected_bg);
+                }
                 self.paint_cell(context, cell_rect, cell.as_ref(), cell_border, ink);
             }
         }
@@ -1291,6 +2105,9 @@ impl Draw for DataGrid {
                     // `draw_rect` is a stroke, so the scrolling cell's ink underneath must be
                     // covered with the surface before this cell's own border and value go down.
                     context.fill_rect(cell_rect, surface);
+                    if self.selection_contains(global_row, column) {
+                        context.fill_rect(cell_rect, selected_bg);
+                    }
                     let value = row.get(local).and_then(|cell| cell.as_ref());
                     self.paint_cell(context, cell_rect, value, cell_border, ink);
                 }
@@ -1310,12 +2127,12 @@ impl Draw for DataGrid {
         // already selected. Both come from `cell_rect`, the same derivation `cell_at` reads, so a
         // highlighted cell is always a cell that can be hit.
         if let Some((row, column)) = self.hovered_cell {
-            if Some((row, column)) != self.selection {
+            if !self.selection_contains(row, column) {
                 let box_rect = self.cell_rect(row, column);
                 context.draw_rect_stroke(box_rect, accent.with_alpha(120), 1);
             }
         }
-        if let Some((row, column)) = self.selection {
+        if let Some((row, column)) = self.current_cell.or(self.selection) {
             let box_rect = self.cell_rect(row, column);
             context.draw_rect_stroke(box_rect, accent, 2);
         }
@@ -1324,8 +2141,7 @@ impl Draw for DataGrid {
         // `cell_rect` gives a frozen column's last trailing pixel, so the rule and the pinned
         // cells cannot disagree about where the band ends.
         if self.frozen_columns > 0 {
-            let split_x =
-                cells.x + (self.frozen_columns as i32) * self.effective_column_width() as i32;
+            let split_x = cells.x + self.column_prefix_width(self.frozen_columns);
             if split_x > cells.x {
                 context.draw_line(
                     Point::new(split_x, cells.y),
@@ -1390,12 +2206,18 @@ impl crate::event::EventHandler for DataGrid {
             }
         }
 
-        if let Event::MousePress { pos, button, .. } = event {
+        if let Event::MousePress { pos, button, modifiers } = event {
             if *button == 3 {
                 self.context_menu_requested.emit(*pos);
                 return;
             }
             if *button != 1 {
+                return;
+            }
+            if let Some(column) = self.resize_handle_at(*pos) {
+                self.resizing_column = Some(column);
+                self.resize_start_x = pos.x;
+                self.resize_start_width = self.column_width_at(column);
                 return;
             }
             if let Some(column) = self.header_column_at(*pos) {
@@ -1425,65 +2247,98 @@ impl crate::event::EventHandler for DataGrid {
             // actually painted. A press in the column-title strip or in a partial trailing
             // column resolves to nothing.
             let hit = self.cell_at(*pos);
-            if hit != self.selection {
-                self.selection = hit;
-                self.base.request_redraw();
+            self.current_cell = hit;
+            match hit {
+                Some((row, column)) => {
+                    self.cell_clicked.emit((row, column));
+                    self.apply_selection_click(row, column, *modifiers);
+                    self.current_changed.emit((row, column));
+                }
+                None => {
+                    if self.selection.is_some() || !self.selected_cells.is_empty() {
+                        self.clear_selection();
+                    }
+                }
             }
+            self.base.request_redraw();
         }
 
         match event {
             Event::MouseDoubleClick { pos, button: 1 } => {
-                if self.edit_triggers.contains(EditTriggers::DOUBLE_CLICKED) {
-                    if let Some((row, column)) = self.cell_at(*pos) {
-                        self.selection = Some((row, column));
+                if let Some((row, column)) = self.cell_at(*pos) {
+                    self.cell_double_clicked.emit((row, column));
+                    self.apply_selection_click(row, column, 0);
+                    self.current_cell = Some((row, column));
+                    self.current_changed.emit((row, column));
+                    if self.edit_triggers.contains(EditTriggers::DOUBLE_CLICKED) {
                         self.edit_requested.emit((row, column));
-                        self.base.request_redraw();
                     }
+                    self.base.request_redraw();
                 }
             }
             Event::ContextMenu { pos } => self.context_menu_requested.emit(*pos),
-            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => {
+            Event::KeyPress { key, modifiers } if self.base.focus_reason().is_some() => {
                 let page = self.visible_row_capacity().max(1);
                 let last_row = self.row_count().saturating_sub(1);
                 let last_column = self.column_count().saturating_sub(1);
+                if self.row_count() == 0 || self.column_count() == 0 {
+                    return;
+                }
+                let (mut row, mut column) = self
+                    .current_cell
+                    .or(self.selection)
+                    .unwrap_or((self.scroll_row, self.scroll_column));
+                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let shift = modifiers.contains(crate::shortcut::Modifiers::SHIFT)
+                    && self.selection_mode
+                        == crate::widget::view_widgets::list_view::SelectionMode::Extended;
                 match *key {
-                    crate::event::key_codes::UP => {
-                        self.set_scroll_row(self.scroll_row.saturating_sub(1))
+                    crate::event::key_codes::UP => row = row.saturating_sub(1),
+                    crate::event::key_codes::DOWN => row = row.saturating_add(1).min(last_row),
+                    crate::event::key_codes::LEFT => column = column.saturating_sub(1),
+                    crate::event::key_codes::RIGHT => {
+                        column = column.saturating_add(1).min(last_column)
                     }
-                    crate::event::key_codes::DOWN => {
-                        self.set_scroll_row(self.scroll_row.saturating_add(1).min(last_row))
-                    }
-                    crate::event::key_codes::LEFT => {
-                        self.set_scroll_column(self.scroll_column.saturating_sub(1))
-                    }
-                    crate::event::key_codes::RIGHT => self
-                        .set_scroll_column(self.scroll_column.saturating_add(1).min(last_column)),
-                    crate::event::key_codes::PAGE_UP => {
-                        self.set_scroll_row(self.scroll_row.saturating_sub(page))
-                    }
+                    crate::event::key_codes::PAGE_UP => row = row.saturating_sub(page),
                     crate::event::key_codes::PAGE_DOWN => {
-                        self.set_scroll_row(self.scroll_row.saturating_add(page).min(last_row))
+                        row = row.saturating_add(page).min(last_row)
                     }
-                    crate::event::key_codes::HOME => self.set_scroll_row(0),
-                    crate::event::key_codes::END => self.set_scroll_row(last_row),
+                    crate::event::key_codes::HOME => column = 0,
+                    crate::event::key_codes::END => column = last_column,
                     crate::event::key_codes::ENTER
                         if self.edit_triggers.contains(EditTriggers::EDIT_KEY) =>
                     {
-                        if let Some(cell) = self.selection {
+                        if let Some(cell) = self.current_cell.or(self.selection) {
                             self.edit_requested.emit(cell);
                         }
+                        return;
                     }
-                    _ => {}
+                    _ => return,
                 }
+                self.move_current_cell(row, column, shift);
             }
             // Cell hover, from the same `cell_at` the press reads: the cell that is outlined is the
             // cell a click would select. A pointer that leaves the cells (into the title strip, past
             // the last column, or off the control) clears it rather than latching the last cell it
             // crossed.
             Event::MouseMove { pos } => {
+                if let Some(column) = self.resizing_column {
+                    let delta = pos.x - self.resize_start_x;
+                    let width = (self.resize_start_width as i32 + delta).max(1) as u32;
+                    if self.store_column_width(column, width) {
+                        self.base.request_redraw();
+                    }
+                    return;
+                }
                 let hovered = self.cell_at(*pos);
                 if hovered != self.hovered_cell {
                     self.hovered_cell = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseRelease { button: 1, .. } => {
+                if let Some(column) = self.resizing_column.take() {
+                    self.column_resized.emit((column, self.column_width_at(column)));
                     self.base.request_redraw();
                 }
             }
@@ -1658,7 +2513,10 @@ mod tests {
         grid.set_scroll_column(2);
         // The first painted column is now projected column 2, so the same point names it.
         assert_eq!(grid.cell_at(probe), Some((0, 2)));
-        assert_eq!(grid.cell_rect(0, 2), grid.cell_rect(0, 0));
+        // The first visible scrolling column occupies the band's leading edge; the columns
+        // hidden to its left are off-screen rather than stacked on top of it.
+        assert_eq!(grid.cell_rect(0, 2).x, first.x);
+        assert!(grid.cell_rect(0, 0).x < first.x, "scrolled-away columns stay off-screen");
 
         // The projected column just right of the probe is one further along, so the mapping
         // really is continuous across the column boundary rather than pinned to a single cell.
@@ -1682,7 +2540,7 @@ mod tests {
     /// its right still travel the scroll.
     #[test]
     fn frozen_columns_ignore_horizontal_scroll() {
-        let mut grid = DataGrid::new(Rect::new(0, 0, 400, 300));
+        let mut grid = DataGrid::new(Rect::new(0, 0, 900, 300));
         grid.set_data_source(Arc::new(StaticSource {
             rows: 4,
             cols: 8,
@@ -1711,7 +2569,11 @@ mod tests {
 
         // To the right of the band the original scroll mapping is unchanged.
         let scrolling = grid.cell_rect(2, 7);
-        assert_eq!(scrolling.x, cells.x + 2 * grid.column_width as i32);
+        assert_eq!(
+            scrolling.x,
+            cells.x + 2 * grid.column_width as i32 + 2 * grid.column_width as i32,
+            "the frozen prefix occupies its own band before the scrolled columns"
+        );
         let scrolling_centre = Point::new(
             scrolling.x + scrolling.width as i32 / 2,
             scrolling.y + scrolling.height as i32 / 2,
@@ -2311,9 +3173,9 @@ mod tests {
 
         grid.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         grid.handle_event(&Event::KeyPress { key: crate::event::key_codes::DOWN, modifiers: 0 });
-        assert_eq!(grid.scroll_row(), 1, "Down scrolls one row");
-        grid.handle_event(&Event::KeyPress { key: crate::event::key_codes::END, modifiers: 0 });
-        assert_eq!(grid.scroll_row(), 2, "End reaches the last row");
+        assert_eq!(grid.current_cell(), Some((1, 0)), "Down moves the current cell one row");
+        grid.handle_event(&Event::KeyPress { key: crate::event::key_codes::DOWN, modifiers: 0 });
+        assert_eq!(grid.current_cell(), Some((2, 0)), "Down reaches the last row");
         let _ = grid.fetch_visible_cells();
     }
 }

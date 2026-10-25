@@ -62,6 +62,13 @@ pub struct PieChart {
     explode_on_hover: bool,
     /// Per-slice explosion progress, in `0.0..=1.0`, advanced by [`Widget::tick`].
     explode_progress: Vec<f32>,
+    /// Per-slice `(start_angle, sweep)` for the current data, or `None` for a slice that
+    /// is skipped because its value is not a positive finite number.
+    angle_cache: Vec<Option<(f32, f32)>>,
+    /// The sum of the positive finite slice values the cached angles were built from.
+    cached_total: f64,
+    /// Whether `angle_cache` and `cached_total` must be rebuilt from `slices`.
+    angles_dirty: bool,
     /// Emitted with the slice index when hover enters a slice.
     pub slice_hovered: Signal1<usize>,
     /// Emitted with the slice index when hover leaves it.
@@ -85,6 +92,9 @@ impl PieChart {
             hovered_slice: None,
             explode_on_hover: false,
             explode_progress: Vec::new(),
+            angle_cache: Vec::new(),
+            cached_total: 0.0,
+            angles_dirty: true,
             slice_hovered: Signal1::new(),
             slice_unhovered: Signal1::new(),
             slice_clicked: Signal1::new(),
@@ -94,6 +104,7 @@ impl PieChart {
     /// Sets the slices to display. Clears any previous slices.
     pub fn set_slices(&mut self, entries: Vec<PieSlice>) {
         self.slices = entries;
+        self.angles_dirty = true;
         self.sync_explode_progress();
         self.revalidate_hover();
         self.base.request_redraw();
@@ -102,6 +113,7 @@ impl PieChart {
     /// Adds a single slice to the chart.
     pub fn add_slice(&mut self, slice: PieSlice) {
         self.slices.push(slice);
+        self.angles_dirty = true;
         self.sync_explode_progress();
         self.base.request_redraw();
     }
@@ -111,6 +123,7 @@ impl PieChart {
     pub fn remove_slice(&mut self, index: usize) -> bool {
         if index < self.slices.len() {
             self.slices.remove(index);
+            self.angles_dirty = true;
             self.sync_explode_progress();
             self.revalidate_hover();
             self.base.request_redraw();
@@ -123,6 +136,8 @@ impl PieChart {
     /// Removes all slices from the chart.
     pub fn clear_slices(&mut self) {
         self.slices.clear();
+        self.angle_cache.clear();
+        self.angles_dirty = true;
         self.explode_progress.clear();
         self.revalidate_hover();
         self.base.request_redraw();
@@ -276,6 +291,38 @@ impl PieChart {
     /// Returns the total sum of all positive finite slice values.
     fn total_value(&self) -> f64 {
         self.slices.iter().map(|s| s.value).filter(|v| v.is_finite() && *v > 0.0).sum()
+    }
+
+    /// Rebuilds the cached total and per-slice angles after the data changed.
+    ///
+    /// The arithmetic is the same f64 sum and f32 accumulation the draw loop used to
+    /// perform on every frame, so a cached angle is bit-identical to the value that
+    /// loop computed.
+    fn ensure_angle_cache(&mut self) {
+        if !self.angles_dirty {
+            return;
+        }
+        let total: f64 =
+            self.slices.iter().map(|s| s.value).filter(|v| v.is_finite() && *v > 0.0).sum();
+        self.cached_total = total;
+        self.angle_cache.clear();
+        if total <= 0.0 || !total.is_finite() {
+            // The draw path shows the empty state; an empty table is all it needs.
+            self.angles_dirty = false;
+            return;
+        }
+        self.angle_cache.reserve(self.slices.len());
+        let mut start = -std::f32::consts::FRAC_PI_2;
+        for slice in &self.slices {
+            if slice.value <= 0.0 || !slice.value.is_finite() {
+                self.angle_cache.push(None);
+                continue;
+            }
+            let sweep = (slice.value / total * 2.0 * std::f32::consts::PI as f64) as f32;
+            self.angle_cache.push(Some((start, sweep)));
+            start += sweep;
+        }
+        self.angles_dirty = false;
     }
 
     /// Returns the center point of the chart.
@@ -596,6 +643,35 @@ impl Widget for PieChart {
         })
     }
 
+    /// Resolves a published event name to the signal this chart actually emits.
+    ///
+    /// The capability publishes all three names with a `UInt` payload, and the
+    /// control carries the slice index as a `usize`, so the conversion is the
+    /// widening that keeps the subscriber's number identical to the emitted one.
+    /// Without these arms the names would validate in `connect_event` and then
+    /// never reach a signal.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "slice_clicked" => {
+                Some(EventSignalRef::mapped("slice_clicked", &self.slice_clicked, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "slice_hovered" => {
+                Some(EventSignalRef::mapped("slice_hovered", &self.slice_hovered, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "slice_unhovered" => {
+                Some(EventSignalRef::mapped("slice_unhovered", &self.slice_unhovered, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            _ => None,
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -639,7 +715,8 @@ impl Draw for PieChart {
         }
 
         let is_enabled = self.base.is_enabled();
-        let total = self.total_value();
+        self.ensure_angle_cache();
+        let total = self.cached_total;
         if total <= 0.0 || !total.is_finite() {
             self.draw_empty_state(context, rect);
             return;
@@ -665,15 +742,14 @@ impl Draw for PieChart {
         let slice_label_color = crate::widget::chart_widgets::charts::axis_chrome_color(0.75);
 
         // Draw sectors
-        let mut start_angle = -std::f32::consts::FRAC_PI_2; // Start at 12 o'clock
-                                                            // One reused buffer for the percentage labels: `format!` built a fresh `String` per sector
-                                                            // per frame, and the text is at most four characters.
+        // One reused buffer for the percentage labels: `format!` built a fresh `String` per sector
+        // per frame, and the text is at most four characters.
         let mut pct_text = crate::compat::String::new();
         for (slice_index, slice) in self.slices.iter().enumerate() {
-            if slice.value <= 0.0 || !slice.value.is_finite() {
+            let Some((start_angle, sweep)) = self.angle_cache.get(slice_index).copied().flatten()
+            else {
                 continue;
-            }
-            let sweep = (slice.value / total * 2.0 * std::f32::consts::PI as f64) as f32;
+            };
             let end_angle = start_angle + sweep;
 
             let slice_color =
@@ -784,8 +860,6 @@ impl Draw for PieChart {
                     );
                 }
             }
-
-            start_angle = end_angle;
         }
 
         // Draw outer circle stroke (border). Derived from the surface like the labels:
@@ -849,6 +923,17 @@ impl EventHandler for PieChart {
 mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
+
+    /// Every name the capability publishes must resolve, and a name it does not
+    /// publish must stay unresolved — a dead arm reads as support it does not have.
+    #[test]
+    fn published_slice_events_resolve_to_signals() {
+        let chart = PieChart::new(Rect::new(0, 0, 200, 200));
+        for name in ["slice_clicked", "slice_hovered", "slice_unhovered"] {
+            assert!(chart.event_signal_dyn(name).is_some(), "{name} must resolve");
+        }
+        assert!(chart.event_signal_dyn("no_such_event").is_none());
+    }
 
     #[test]
     fn pie_chart_default_creation() {

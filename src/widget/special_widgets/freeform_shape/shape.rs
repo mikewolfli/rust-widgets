@@ -7,12 +7,16 @@ use super::types::{BubbleTailDirection, PathSegment, ShapePath};
 use crate::core::{Color, Point, Rect};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use alloc::boxed::Box;
+use alloc::rc::Rc;
+use core::cell::RefCell;
 
 /// One of the eight resize handles an editable shape draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +37,11 @@ pub enum ShapeHandle {
     BottomLeft,
     /// Left edge midpoint.
     Left,
+    /// A polygon vertex, identified by its index in [`ShapePath::Polygon`].
+    ///
+    /// A polygon is edited by moving its own anchors rather than by resizing a
+    /// bounding box, so its handles are vertices and not the eight box handles.
+    Vertex(usize),
 }
 
 /// A non-rectangular, clickable shape.
@@ -77,8 +86,24 @@ pub struct FreeformShapeWidget {
     drag_handle: Option<(ShapeHandle, Point, Rect)>,
     /// The shape's stacking hint for a container that honours it.
     z_index: i32,
+    /// Whether a press inside the outline drags the whole shape.
+    movable: bool,
+    /// An in-progress body drag: the pointer at the press and the geometry then.
+    body_drag: Option<(Point, Rect)>,
+    /// The vertex position at the press, so dragging is not cumulative.
+    drag_vertex_start: Option<Point>,
+    /// Geometry history; a whole drag is one undo step.
+    history: UndoStack,
+    /// The value the geometry commands write; mirrors the widget's geometry.
+    history_geometry: Rc<RefCell<Rect>>,
     /// Emitted with the new geometry after a handle drag.
     pub geometry_changed: Signal1<Rect>,
+    /// Emitted with the new top-left position while the shape body is dragged.
+    pub moved: Signal1<Point>,
+    /// Emitted when a polygon vertex is added, removed or moved.
+    pub vertex_changed: Signal1<(usize, Point)>,
+    /// Emitted with `(undo steps, redo steps)` after every history change.
+    pub history_changed: Signal1<(usize, usize)>,
     /// Emitted when the shape is clicked, i.e. pressed and released while the
     /// pointer is still inside the outline.
     pub clicked: GenericSignal,
@@ -113,7 +138,15 @@ impl FreeformShapeWidget {
             snap_step: 0,
             drag_handle: None,
             z_index: 0,
+            movable: true,
+            body_drag: None,
+            drag_vertex_start: None,
+            history: UndoStack::new(),
+            history_geometry: Rc::new(RefCell::new(geometry)),
             geometry_changed: Signal1::new(),
+            moved: Signal1::new(),
+            vertex_changed: Signal1::new(),
+            history_changed: Signal1::new(),
             clicked: GenericSignal::new(),
             hovered_changed: Signal1::new(),
             pressed_changed: Signal1::new(),
@@ -222,6 +255,112 @@ impl FreeformShapeWidget {
         self.z_index = z_index;
     }
 
+    /// Returns whether a press inside the outline drags the whole shape.
+    pub fn is_movable(&self) -> bool {
+        self.movable
+    }
+
+    /// Enables or disables dragging the shape body.
+    pub fn set_movable(&mut self, movable: bool) {
+        if self.movable == movable {
+            return;
+        }
+        self.movable = movable;
+        if !movable {
+            self.body_drag = None;
+        }
+    }
+
+    /// Returns whether there is a geometry change to undo.
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    /// Returns whether there is an undone geometry change to redo.
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
+    /// Reverts the last committed geometry change.
+    pub fn undo(&mut self) -> bool {
+        if self.history.undo().is_err() {
+            return false;
+        }
+        let geometry = *self.history_geometry.borrow();
+        self.drag_handle = None;
+        self.drag_vertex_start = None;
+        self.body_drag = None;
+        self.base.set_geometry(geometry);
+        self.geometry_changed.emit(geometry);
+        self.emit_history();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Re-applies the geometry change most recently removed by [`Self::undo`].
+    pub fn redo(&mut self) -> bool {
+        if self.history.redo().is_err() {
+            return false;
+        }
+        let geometry = *self.history_geometry.borrow();
+        self.drag_handle = None;
+        self.drag_vertex_start = None;
+        self.body_drag = None;
+        self.base.set_geometry(geometry);
+        self.geometry_changed.emit(geometry);
+        self.emit_history();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Records an already-applied geometry change as one undo step.
+    fn record_geometry(&mut self, before: Rect, after: Rect) {
+        if before == after {
+            return;
+        }
+        *self.history_geometry.borrow_mut() = after;
+        self.history.push(Box::new(ValueCommand::new(
+            Rc::clone(&self.history_geometry),
+            before,
+            after,
+            "Move or resize shape",
+            "geometry",
+        )));
+        self.emit_history();
+    }
+
+    /// Publishes the current history depth.
+    fn emit_history(&self) {
+        self.history_changed.emit((self.history.undo_count(), self.history.redo_count()));
+    }
+
+    /// Inserts a polygon vertex at `index`, clamped to the vertex count.
+    ///
+    /// Returns `false` when the path is not a polygon.
+    pub fn add_vertex(&mut self, index: usize, point: Point) -> bool {
+        let point = self.snapped(point);
+        let ShapePath::Polygon(vertices) = &mut self.path else { return false };
+        let index = index.min(vertices.len());
+        vertices.insert(index, point);
+        self.vertex_changed.emit((index, point));
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes the polygon vertex at `index`, returning whether it was removed.
+    ///
+    /// A polygon is kept at three vertices so it remains a closed area.
+    pub fn remove_vertex(&mut self, index: usize) -> bool {
+        let ShapePath::Polygon(vertices) = &mut self.path else { return false };
+        if vertices.len() <= 3 || index >= vertices.len() {
+            return false;
+        }
+        let removed = vertices.remove(index);
+        self.vertex_changed.emit((index, removed));
+        self.base.request_redraw();
+        true
+    }
+
     /// Replaces one vertex of a polygon path.
     ///
     /// Returns `false` when the path is not a polygon or the index is out of range. Anchor
@@ -235,6 +374,7 @@ impl FreeformShapeWidget {
                     return false;
                 }
                 vertices[index] = point;
+                self.vertex_changed.emit((index, point));
                 self.base.request_redraw();
                 true
             }
@@ -254,11 +394,26 @@ impl FreeformShapeWidget {
         )
     }
 
-    /// The eight resize handles' rectangles, in window coordinates.
+    /// The editable handles' rectangles, in window coordinates.
+    ///
+    /// A polygon exposes one handle per vertex, because its own anchors are what a
+    /// user adjusts; every other path shape exposes the eight box handles.
     pub fn handle_rects(&self) -> Vec<(ShapeHandle, Rect)> {
         let rect = self.base.geometry();
         const SIDE: u32 = 8;
         let half = SIDE as i32 / 2;
+        if let ShapePath::Polygon(vertices) = &self.path {
+            return vertices
+                .iter()
+                .enumerate()
+                .map(|(index, vertex)| {
+                    (
+                        ShapeHandle::Vertex(index),
+                        Rect::new(rect.x + vertex.x - half, rect.y + vertex.y - half, SIDE, SIDE),
+                    )
+                })
+                .collect();
+        }
         let positions = [
             (ShapeHandle::TopLeft, rect.x, rect.y),
             (ShapeHandle::Top, rect.x + rect.width as i32 / 2, rect.y),
@@ -291,6 +446,15 @@ impl FreeformShapeWidget {
         let Some((handle, origin, start)) = self.drag_handle else {
             return;
         };
+        if let ShapeHandle::Vertex(index) = handle {
+            let Some(vertex_start) = self.drag_vertex_start else { return };
+            let target = self.snapped(Point::new(
+                vertex_start.x + (pos.x - origin.x),
+                vertex_start.y + (pos.y - origin.y),
+            ));
+            self.set_polygon_vertex(index, target);
+            return;
+        }
         let pos = self.snapped(pos);
         let dx = pos.x - origin.x;
         let dy = pos.y - origin.y;
@@ -319,6 +483,8 @@ impl FreeformShapeWidget {
                 bottom += dy;
             }
             ShapeHandle::Left => left += dx,
+            // Handled above: a vertex drag never reaches the rectangle math.
+            ShapeHandle::Vertex(_) => return,
         }
         // A handle drag cannot invert the rectangle: the edges stay ordered, so a caller
         // always receives a valid `Rect`.
@@ -950,6 +1116,25 @@ impl Widget for FreeformShapeWidget {
                     ))
                 }))
             }
+            "moved" => Some(EventSignalRef::mapped("moved", &self.moved, |v| {
+                CapabilityValue::String(format!("{},{}", v.x, v.y))
+            })),
+            "vertex_changed" => {
+                Some(EventSignalRef::mapped("vertex_changed", &self.vertex_changed, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::String(format!("{},{}", v.1.x, v.1.y)),
+                    ]))
+                }))
+            }
+            "history_changed" => {
+                Some(EventSignalRef::mapped("history_changed", &self.history_changed, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }
@@ -983,6 +1168,7 @@ impl WidgetProperties for FreeformShapeWidget {
                 None => Ok(CapabilityValue::Null),
             },
             "stroke_width" => Ok(CapabilityValue::UInt(self.stroke_width() as u64)),
+            "movable" => Ok(CapabilityValue::Bool(self.is_movable())),
             _ => base_property_get(self, name),
         }
     }
@@ -1014,6 +1200,10 @@ impl WidgetProperties for FreeformShapeWidget {
                 self.set_stroke_width(expect_u32(value)?);
                 Ok(())
             }
+            "movable" => {
+                self.set_movable(crate::widget::capability::coercion::expect_bool(value)?);
+                Ok(())
+            }
             "path_kind" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
@@ -1025,6 +1215,7 @@ impl WidgetProperties for FreeformShapeWidget {
             "fill_rgba",
             "stroke_rgba",
             "stroke_width",
+            "movable",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1151,6 +1342,18 @@ impl crate::event::EventHandler for FreeformShapeWidget {
                     self.drag_to(*pos);
                     return;
                 }
+                if let Some((origin, start)) = self.body_drag {
+                    let target = self.snapped(Point::new(
+                        start.x + (pos.x - origin.x),
+                        start.y + (pos.y - origin.y),
+                    ));
+                    let moved = Rect::new(target.x, target.y, start.width, start.height);
+                    self.base.set_geometry(moved);
+                    self.moved.emit(Point::new(moved.x, moved.y));
+                    self.geometry_changed.emit(moved);
+                    self.base.request_redraw();
+                    return;
+                }
                 let was_hovered = self.hovered_item;
                 self.hovered_item = self.contains(*pos);
                 if was_hovered != self.hovered_item {
@@ -1158,23 +1361,63 @@ impl crate::event::EventHandler for FreeformShapeWidget {
                     self.base.request_redraw();
                 }
             }
-            crate::event::Event::MouseEnter { .. } => {
-                self.hovered_item = true;
-                self.hovered_changed.emit(true);
-                self.base.request_redraw();
+            crate::event::Event::MouseEnter { pos } => {
+                // Enter carries the position, so the outline test is the same one a
+                // move makes. Unconditionally reporting hover made a pointer in the
+                // transparent corner of a star claim to be on the shape.
+                let hovered = self.contains(*pos);
+                if hovered != self.hovered_item {
+                    self.hovered_item = hovered;
+                    self.hovered_changed.emit(hovered);
+                    self.base.request_redraw();
+                }
             }
-            crate::event::Event::MousePress { pos, button: 1, .. } if self.editable => {
+            crate::event::Event::KeyPress { key, modifiers } => {
+                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) {
+                    match crate::shortcut::Key::from_key_code(*key) {
+                        Some(crate::shortcut::Key::Z)
+                            if modifiers.contains(crate::shortcut::Modifiers::SHIFT) =>
+                        {
+                            self.redo();
+                        }
+                        Some(crate::shortcut::Key::Z) => {
+                            self.undo();
+                        }
+                        Some(crate::shortcut::Key::Y) => {
+                            self.redo();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            crate::event::Event::MousePress { pos, button: 1, .. }
+                if self.editable && self.handle_at(*pos).is_some() =>
+            {
                 if let Some(handle) = self.handle_at(*pos) {
+                    self.drag_vertex_start = match handle {
+                        ShapeHandle::Vertex(index) => match &self.path {
+                            ShapePath::Polygon(vertices) => vertices.get(index).copied(),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
                     self.drag_handle = Some((handle, *pos, self.base.geometry()));
                     self.base.request_redraw();
                 }
             }
             crate::event::Event::MouseRelease { button: 1, .. } if self.drag_handle.is_some() => {
-                self.drag_handle = None;
+                if let Some((_, _, start)) = self.drag_handle.take() {
+                    let after = self.base.geometry();
+                    self.record_geometry(start, after);
+                }
+                self.drag_vertex_start = None;
                 self.base.request_redraw();
             }
             crate::event::Event::MouseLeave { .. } => {
                 self.drag_handle = None;
+                self.drag_vertex_start = None;
+                self.body_drag = None;
                 self.hovered_item = false;
                 self.pressed_item = false;
                 self.hovered_changed.emit(false);
@@ -1187,9 +1430,16 @@ impl crate::event::EventHandler for FreeformShapeWidget {
                 self.pressed_item = true;
                 self.pressed_changed.emit(true);
                 self.base.set_mouse_pressed(true);
+                if self.movable {
+                    self.body_drag = Some((*pos, self.base.geometry()));
+                }
                 self.base.request_redraw();
             }
             crate::event::Event::MouseRelease { pos, button } if *button == 1 => {
+                if let Some((_, start)) = self.body_drag.take() {
+                    let after = self.base.geometry();
+                    self.record_geometry(start, after);
+                }
                 let was_pressed = self.pressed_item;
                 self.pressed_item = false;
                 self.base.set_mouse_pressed(false);

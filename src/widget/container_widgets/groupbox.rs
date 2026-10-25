@@ -24,7 +24,7 @@
 //! reserve and the placement are one answer.
 
 use crate::compat::{Rc, RefCell, String, ToString};
-use crate::core::{Alignment, Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Alignment, Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -189,6 +189,12 @@ impl GroupBox {
             return;
         }
         self.checkable = checkable;
+        if !checkable {
+            // Turning the gate off leaves the content enabled: the box no longer offers a way to
+            // reach the unchecked state, so leaving the subtree disabled would strand it there.
+            self.checked = true;
+            self.apply_content_enabled();
+        }
         self.base.request_redraw();
     }
     /// Returns whether group box is checked.
@@ -199,17 +205,45 @@ impl GroupBox {
     ///
     /// Requests a redraw because the indicator's tick is what `checked` selects. The early return
     /// keeps a repeated write free; the emit still happens only on a real edge.
+    ///
+    /// # Why a non-checkable box refuses the write
+    ///
+    /// `checked` is only meaningful where an indicator exists. Writing it on a box that is not
+    /// checkable changed a flag nothing painted and nothing could read back through the UI, and it
+    /// emitted `toggled` for a state the user has no way to reach — a signal that lied about what
+    /// happened. The write is therefore refused, and [`Self::toggle`] therefore does nothing on a
+    /// plain (non-checkable) box too.
+    ///
+    /// # The content link
+    ///
+    /// A checkable group's content is enabled exactly when the box is checked, matching the
+    /// reference control: unchecking a group disables everything inside it, re-checking restores
+    /// it. The rule is applied to the mounted subtree here rather than left to the host, because a
+    /// disabled group that still delivered clicks to its fields is the one thing the checkbox is
+    /// for. Re-checking re-enables the whole subtree — a control that its owner had disabled on its
+    /// own keeps the last write it was given, which is this one.
     pub fn set_checked(&mut self, checked: bool) {
+        if !self.checkable {
+            return;
+        }
         if self.checked == checked {
             return;
         }
         self.checked = checked;
+        self.apply_content_enabled();
         self.base.request_redraw();
         self.toggled.emit(checked);
     }
     /// Toggles checked state.
     pub fn toggle(&mut self) {
         self.set_checked(!self.checked);
+    }
+
+    /// Pushes [`Self::checked`] onto every mounted content control.
+    fn apply_content_enabled(&self) {
+        for child in self.base.children.iter().copied() {
+            apply_subtree_enabled(child, self.checked, 0);
+        }
     }
 
     /// Sets the shared widget registry for child forwarding.
@@ -476,6 +510,84 @@ impl GroupBox {
                 .max(0) as u32,
         )
     }
+
+    /// The content control that owns `pos`, searched back to front.
+    ///
+    /// # Why the walk is reversed
+    ///
+    /// [`Draw`] paints the children in list order, so the last child is the one on top; a press
+    /// must therefore be offered to it first. That is the same order a plain z-stack would use,
+    /// and it is why the last of two overlapping fields receives the click.
+    ///
+    /// A child that reports no rectangle at all (an id-only registry entry the host places itself)
+    /// cannot answer a positional question. Such a child is remembered and used only when no child
+    /// could be located, which keeps the historical "forward into the content area" behaviour for
+    /// registries that hold no geometry — the forward target is still a real child, just not a
+    /// located one.
+    fn hit_test_child(&self, pos: Point) -> Option<ObjectId> {
+        let mut unlocated = None;
+        for child in self.base.children.iter().rev().copied() {
+            match child_rect(child) {
+                Some(rect) => {
+                    if rect.contains(pos) {
+                        return Some(child);
+                    }
+                }
+                None => {
+                    if unlocated.is_none() {
+                        unlocated = Some(child);
+                    }
+                }
+            }
+        }
+        unlocated
+    }
+}
+
+/// The rectangle `child` occupies, preferring the live widget and falling back to the control
+/// backend's record.
+///
+/// A mounted control owns its own geometry (`BaseWidget`), and that is what the tree painter draws
+/// it at. The backend's record is the fallback for a control that is addressed by id only, which is
+/// the shape a designer registry has while its widget lives elsewhere. The mini profile holds no
+/// widget objects and has no backend geometry, so it answers `None` and the group box forwards into
+/// the content area as a single-child container.
+fn child_rect(child: ObjectId) -> Option<Rect> {
+    #[cfg(not(alloc_frugal))]
+    {
+        if let Some(rect) = crate::widget::runtime::with_widget(child, |widget| widget.geometry()) {
+            return Some(rect);
+        }
+        crate::widget_geometry(child).map(|(x, y, width, height)| Rect::new(x, y, width, height))
+    }
+    #[cfg(alloc_frugal)]
+    {
+        let _ = child;
+        None
+    }
+}
+
+/// Sets `enabled` on `id` and every mounted descendant.
+///
+/// The walk is bounded rather than trusting the data: a widget tree is a tree, but 32 levels is
+/// already far past any real nesting and a bound turns a malformed graph into "stops walking"
+/// instead of a hang. The mini profile has no widget registry to descend, so only the control the
+/// group box names directly is reached there.
+fn apply_subtree_enabled(id: ObjectId, enabled: bool, depth: u32) {
+    #[cfg(not(alloc_frugal))]
+    {
+        if depth > 32 {
+            return;
+        }
+        crate::set_widget_enabled(id, enabled);
+        let children = crate::widget::runtime::with_widget(id, |widget| widget.children().to_vec())
+            .unwrap_or_default();
+        for child in children {
+            apply_subtree_enabled(child, enabled, depth + 1);
+        }
+    }
+    #[cfg(alloc_frugal)]
+    let _ = (id, enabled, depth);
 }
 // Implement Widget trait
 impl Widget for GroupBox {
@@ -626,18 +738,37 @@ impl EventHandler for GroupBox {
                 }
             }
         }
+        // An unchecked checkable group is disabled content: the press that just re-checked it must
+        // not also reach a field the user could not have meant to click.
+        if self.checkable && !self.checked {
+            return;
+        }
         let content = self.content_rect();
         if let Some(ref reg) = self.registry {
-            let target = match event {
+            match event {
+                // Positional events go to the control that owns the point. The old code sent every
+                // one of them to `children.first()`, so in a box with several children the second
+                // and later ones never received a press even though `draw` painted them.
                 Event::MousePress { pos, .. }
                 | Event::MouseRelease { pos, .. }
-                | Event::MouseMove { pos } => {
-                    content.contains(*pos).then(|| self.base.children.first().copied()).flatten()
+                | Event::MouseMove { pos }
+                | Event::MouseDoubleClick { pos, .. }
+                | Event::ContextMenu { pos } => {
+                    if content.contains(*pos) {
+                        if let Some(child_id) = self.hit_test_child(*pos) {
+                            let _ = reg.borrow_mut().forward_event(child_id, event);
+                        }
+                    }
                 }
-                _ => self.base.children.first().copied(),
-            };
-            if let Some(child_id) = target {
-                let _ = reg.borrow_mut().forward_event(child_id, event);
+                // A coordinate-free event (keys, a wheel, focus, …) cannot name one child, so it is
+                // broadcast to every content control. A group box is documented as a multi-child
+                // container, so "the first child receives all keyboard input" would be an arbitrary
+                // choice made silently.
+                _ => {
+                    for child_id in self.base.children.iter().copied() {
+                        let _ = reg.borrow_mut().forward_event(child_id, event);
+                    }
+                }
             }
         }
     }

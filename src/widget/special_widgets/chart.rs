@@ -14,6 +14,7 @@ use crate::widget::metrics::{effective_font, role_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::borrow::Cow;
+use std::fmt::Write as _;
 /// The chart styles [`ChartWidget`] can switch between at runtime.
 ///
 /// # Scope, and why this is not the same enum as the other `ChartType`s
@@ -155,6 +156,21 @@ pub struct ChartWidget {
     show_tooltip: bool,
     /// Names shown in the legend; shorter or longer than the series list is tolerated.
     series_names: Vec<String>,
+    /// Reused polyline buffer for the line and area renderers.
+    ///
+    /// Both styles rebuilt a `Vec<Point>` per series per frame. The point set is a pure function
+    /// of the data and the plot geometry, so the previous frame's allocation is refilled instead.
+    plot_points: Vec<Point>,
+    /// Reused closed-polygon buffer for the area fill.
+    polygon_points: Vec<Point>,
+    /// Bumped whenever `series` is replaced, so derived geometry can be keyed on it.
+    data_generation: u64,
+    /// Cached pie wedges aligned with the slice index, keyed by the panel and the data generation.
+    ///
+    /// The painter consumes an owned point list, so a per-frame buffer cannot simply be reused;
+    /// the wedges are kept as commands and replayed by reference instead. They depend only on the
+    /// data and the panel rectangle, which is what the key records.
+    pie_wedges: Option<(Rect, u64, Vec<Option<crate::render::RenderCommand>>)>,
     /// A horizontal zoom window over the category axis, or `None` for the full axis.
     zoom_x: Option<(f64, f64)>,
     /// Emitted when a data point is clicked.
@@ -169,6 +185,10 @@ pub struct ChartWidget {
     /// (`bar_unhovered` on `candlestick_chart`); `ChartWidget` published only the enter half,
     /// so a hover highlight could be turned on and never off.
     pub data_point_unhovered: Signal1<usize>,
+    /// Emitted with the new normalized zoom window, or `None` when the full axis is restored.
+    pub zoom_changed: Signal1<Option<(f64, f64)>>,
+    /// Emitted with the visible `[start, end)` category range after every zoom change.
+    pub viewport_changed: Signal1<(usize, usize)>,
 }
 impl ChartWidget {
     /// Creates a new chart widget.
@@ -184,10 +204,16 @@ impl ChartWidget {
             show_legend: false,
             show_tooltip: false,
             series_names: Vec::new(),
+            plot_points: Vec::new(),
+            polygon_points: Vec::new(),
+            data_generation: 0,
+            pie_wedges: None,
             zoom_x: None,
             data_point_clicked: Signal1::new(),
             data_point_hovered: Signal1::new(),
             data_point_unhovered: Signal1::new(),
+            zoom_changed: Signal1::new(),
+            viewport_changed: Signal1::new(),
         }
     }
 
@@ -244,6 +270,7 @@ impl ChartWidget {
     /// Sets the chart data as a single series.
     pub fn set_data(&mut self, data: Vec<f64>) {
         self.series = if data.is_empty() { Vec::new() } else { vec![data] };
+        self.data_generation = self.data_generation.wrapping_add(1);
         self.restart_reveal();
         self.revalidate_hover();
         self.base.request_redraw();
@@ -256,6 +283,7 @@ impl ChartWidget {
     /// `set_data`.
     pub fn set_series(&mut self, series: Vec<Vec<f64>>) {
         self.series = series;
+        self.data_generation = self.data_generation.wrapping_add(1);
         self.restart_reveal();
         self.revalidate_hover();
         self.base.request_redraw();
@@ -315,18 +343,48 @@ impl ChartWidget {
     }
 
     /// Sets a zoom window over the category axis.
+    ///
+    /// The window is expressed in **category indices** (`0.0..=data.len()`), matching what
+    /// the wheel gesture writes, and is clamped to the data's extent. Every `x`-sequenced
+    /// renderer draws only the visible range, so the property is a real viewport rather than
+    /// a stored value nothing reads.
     pub fn set_zoom_range(&mut self, range: Option<(f64, f64)>) {
-        let range = range.map(|(low, high)| if low <= high { (low, high) } else { (high, low) });
+        let total = point_count_for(self.chart_type, self.data().len()) as f64;
+        let range = range.map(|(low, high)| {
+            let (low, high) = if low <= high { (low, high) } else { (high, low) };
+            (low.clamp(0.0, total.max(1.0)), high.clamp(0.0, total.max(1.0)))
+        });
+        // A degenerate window is the full axis; keeping it would draw nothing.
+        let range = range.filter(|(low, high)| high - low > f64::EPSILON);
         if self.zoom_x == range {
             return;
         }
         self.zoom_x = range;
+        let (start, end) = self.zoom_bounds();
+        self.zoom_changed.emit(range);
+        self.viewport_changed.emit((start, end));
         self.base.request_redraw();
     }
 
     /// Restores the full category axis.
     pub fn reset_zoom(&mut self) {
         self.set_zoom_range(None);
+    }
+
+    /// The visible `[start, end)` category range.
+    fn zoom_bounds(&self) -> (usize, usize) {
+        let total = point_count_for(self.chart_type, self.data().len());
+        if total == 0 {
+            return (0, 0);
+        }
+        match self.zoom_x {
+            Some((low, high)) => {
+                let start = low.floor().clamp(0.0, (total - 1) as f64) as usize;
+                let end = high.ceil().clamp((start + 1) as f64, total as f64) as usize;
+                (start, end)
+            }
+            None => (0, total),
+        }
     }
 
     /// Drops a hover index that the new data no longer has a point for.
@@ -355,11 +413,13 @@ impl ChartWidget {
         if !rect.contains_point(pos) || rect.width == 0 {
             return None;
         }
+        let (start, end) = self.zoom_bounds();
+        let visible = end.saturating_sub(start).max(1);
         let local_x = (pos.x - rect.x).max(0) as u32;
         let width = rect.width.max(1);
-        let mut idx = ((local_x as u64) * (point_count as u64) / (width as u64)) as usize;
-        if idx >= point_count {
-            idx = point_count - 1;
+        let mut idx = start + ((local_x as u64) * (visible as u64) / (width as u64)) as usize;
+        if idx >= end {
+            idx = end.saturating_sub(1);
         }
         Some(idx)
     }
@@ -395,13 +455,7 @@ impl ChartWidget {
     /// grows up the axis) -- a mark that started from zero on an axis spanning `-50..50` would grow
     /// *downward* through the axis and cross every other mark on the way.
     fn grown_from_baseline(&self, value: f64, baseline: f64) -> f64 {
-        let progress = self.reveal.value() as f64;
-        if progress >= 1.0 {
-            // The identity path: a settled chart is untouched to the last bit, so the resting
-            // snapshot and every value assertion are exactly what they were before this existed.
-            return value;
-        }
-        baseline + (value - baseline) * progress
+        grow_value(value, baseline, self.reveal.value() as f64)
     }
 
     /// The `(x, y)` extremes across every series, for the styles that share one
@@ -422,6 +476,18 @@ impl ChartWidget {
             return None;
         }
         Some((min, max))
+    }
+}
+
+/// Maps `value` from `baseline` (at progress 0) to itself (at progress 1).
+///
+/// The identity path is exact: a settled chart is untouched to the last bit, so the resting
+/// snapshot and every value assertion are exactly what they were before the reveal existed.
+fn grow_value(value: f64, baseline: f64, progress: f64) -> f64 {
+    if progress >= 1.0 {
+        value
+    } else {
+        baseline + (value - baseline) * progress
     }
 }
 
@@ -493,6 +559,23 @@ impl Widget for ChartWidget {
                 &self.data_point_unhovered,
                 |v| CapabilityValue::UInt(*v as u64),
             )),
+            "zoom_changed" => {
+                Some(EventSignalRef::mapped("zoom_changed", &self.zoom_changed, |v| match v {
+                    Some((low, high)) => CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::Float(*low),
+                        CapabilityValue::Float(*high),
+                    ])),
+                    None => CapabilityValue::Null,
+                }))
+            }
+            "viewport_changed" => {
+                Some(EventSignalRef::mapped("viewport_changed", &self.viewport_changed, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }
@@ -604,7 +687,7 @@ impl Draw for ChartWidget {
             // rather than "this is a rectangle". Drawing the frame it will use once data
             // arrives is what makes the two states read as the same control, and it is what
             // every charting toolkit does: the axes belong to the chart, not to a series.
-            self.draw_value_axis(context, &plot, ink, surface);
+            self.draw_value_axis(context, &plot, ink, surface, (0.0, 1.0));
             let font = role_font(style, 12.0);
             let line = context.text_line(rect, &font);
             context.draw_text_fitted_cow(
@@ -622,24 +705,30 @@ impl Draw for ChartWidget {
             // drawn beside the first rather than being ignored. The single-series
             // callers pass `0` and stop.
             ChartType::Bar => {
-                self.draw_value_axis(context, &plot, ink, surface);
+                // The range is scanned once per frame and shared by the axis and every series;
+                // each renderer used to walk all series to derive it again.
+                let range = self.plot_range();
+                self.draw_value_axis(context, &plot, ink, surface, range);
                 for index in 0..self.series.len() {
-                    self.draw_bar_chart(context, rect, index);
+                    self.draw_bar_chart(context, rect, index, range);
                 }
             }
             ChartType::Line => {
+                let range = self.plot_range();
                 for index in 0..self.series.len() {
-                    self.draw_line_chart(context, rect, index);
+                    self.draw_line_chart(context, rect, index, range);
                 }
             }
             ChartType::Area => {
+                let range = self.plot_range();
                 for index in 0..self.series.len() {
-                    self.draw_area_chart(context, rect, index);
+                    self.draw_area_chart(context, rect, index, range);
                 }
             }
             ChartType::Scatter => {
+                let range = self.plot_range();
                 for index in 0..self.series.len() {
-                    self.draw_scatter_chart(context, rect, index);
+                    self.draw_scatter_chart(context, rect, index, range);
                 }
             }
             ChartType::Pie => self.draw_pie_chart(context, rect),
@@ -648,6 +737,10 @@ impl Draw for ChartWidget {
             ChartType::Candlestick => self.draw_candlestick_chart(context, rect),
             ChartType::BoxPlot => self.draw_box_plot_chart(context, rect),
         }
+
+        // The renderers above may borrow the chart mutably (the line/area styles refill a shared
+        // vertex buffer), so the style is re-resolved here rather than held across the match.
+        let style = self.base.style();
 
         // ── Legend ──
         //
@@ -658,13 +751,19 @@ impl Draw for ChartWidget {
             let font = effective_font(style);
             let line_height = context.measure_text("M", font).height.max(1) as i32 + 4;
             let mut y = rect.y + 8;
+            // A reused buffer for the generated "Series N" name: a declared name is borrowed
+            // rather than cloned, and the fallback no longer builds a `String` per row per frame.
+            let mut fallback = String::new();
             for index in 0..self.series.len() {
-                let name = self
-                    .series_names
-                    .get(index)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Series {}", index + 1));
-                let text_width = context.measure_text(&name, font).width as i32;
+                let name = match self.series_names.get(index) {
+                    Some(name) => name.as_str(),
+                    None => {
+                        fallback.clear();
+                        let _ = write!(fallback, "Series {}", index + 1);
+                        fallback.as_str()
+                    }
+                };
+                let text_width = context.measure_text(name, font).width as i32;
                 let swatch_x = rect.x + rect.width as i32 - text_width - 26;
                 if swatch_x < rect.x {
                     break;
@@ -672,7 +771,7 @@ impl Draw for ChartWidget {
                 context.fill_rect(Rect::new(swatch_x, y + 2, 10, 10), Self::series_color(index));
                 context.draw_text(
                     Point::new(swatch_x + 14, y),
-                    &name,
+                    name,
                     font,
                     ink,
                     HorizontalAlignment::Left,
@@ -1035,9 +1134,9 @@ impl ChartWidget {
         area: &PlotArea,
         ink: Color,
         surface: Color,
+        (min, max): (f64, f64),
     ) {
         const TICKS: i32 = 4;
-        let (min, max) = self.plot_range();
         let axis_ink = ink.legible_on(surface, 4.5).with_alpha(190);
         let grid_ink = surface.blend(&axis_ink, 0.18);
         let font = role_font(self.style(), 10.0);
@@ -1092,20 +1191,28 @@ impl ChartWidget {
     /// When the widget holds several series they are drawn side by side within
     /// each point's slot, which is the grouped-bar reading; with one series the
     /// slot arithmetic reduces to the full slot width.
-    fn draw_bar_chart(&self, context: &mut RenderContext, rect: Rect, series_index: usize) {
+    fn draw_bar_chart(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        series_index: usize,
+        (min, max): (f64, f64),
+    ) {
         let data = match self.series.get(series_index) {
             Some(data) if !data.is_empty() => data,
             _ => return,
         };
         let area = PlotArea::of(rect, self.category_label_line_height(context));
-        let (min, max) = self.plot_range();
+        let (start, end) = self.zoom_bounds();
+        let visible_count = end.saturating_sub(start).max(1);
         let series_total = self.series.len().max(1);
-        let slot = (area.right - area.left).max(1) / data.len() as i32;
+        let slot = (area.right - area.left).max(1) / visible_count as i32;
         let bar_width = (slot / series_total as i32).max(1);
         let gap = if series_total > 1 { 1 } else { 2 };
 
-        for (i, &val) in data.iter().enumerate() {
-            let slot_x = area.left + (i as i32) * slot;
+        for (offset, &val) in data[start..end].iter().enumerate() {
+            let i = start + offset;
+            let slot_x = area.left + (offset as i32) * slot;
             let x = slot_x + (series_index as i32) * bar_width;
             // The bar grows from the **baseline** toward its value, which is the one
             // interpolation a value chart can express: the axis does not move, only the mark
@@ -1143,31 +1250,45 @@ impl ChartWidget {
     }
 
     /// Draws a polyline for series `series_index`.
-    fn draw_line_chart(&self, context: &mut RenderContext, rect: Rect, series_index: usize) {
-        let data = match self.series.get(series_index) {
-            Some(data) if data.len() >= 2 => data,
+    fn draw_line_chart(
+        &mut self,
+        context: &mut RenderContext,
+        rect: Rect,
+        series_index: usize,
+        (min, max): (f64, f64),
+    ) {
+        let point_count = match self.series.get(series_index) {
+            Some(data) if data.len() >= 2 => data.len(),
             _ => return,
         };
         let area = PlotArea::of(rect, self.category_label_line_height(context));
-        let (min, max) = self.plot_range();
         let color = Self::series_color(series_index);
-        let points: Vec<Point> = data
-            .iter()
-            .enumerate()
-            .map(|(i, &val)| Point {
-                x: area.x_for(i, data.len(), 0),
-                // Same reveal as the bars: every vertex climbs from the **axis minimum**, so a line
-                // grows out of the baseline instead of sliding in from wherever the series happened
-                // to start. A series that starts away from `min` would otherwise drop a flat segment
-                // onto the axis on the first frame and lift it off again.
-                y: area.y_for(self.grown_from_baseline(val, min), min, max),
-            })
-            .collect();
+        let progress = self.reveal.value() as f64;
+        let (start, end) = self.zoom_bounds();
+        let visible_count = end.saturating_sub(start).max(1);
+        {
+            // The data borrow and the buffer borrow are disjoint fields, so the polyline is
+            // refilled in place rather than collected into a fresh `Vec`.
+            let Some(data) = self.series.get(series_index) else {
+                return;
+            };
+            let points = &mut self.plot_points;
+            points.clear();
+            points.extend(data[start..end].iter().enumerate().map(|(offset, &val)| Point {
+                x: area.x_for(offset, visible_count, 0),
+                // Same reveal as the bars: every vertex climbs from the **axis minimum**, so a
+                // line grows out of the baseline instead of sliding in from wherever the series
+                // happened to start.
+                y: area.y_for(grow_value(val, min, progress), min, max),
+            }));
+        }
+        let _ = point_count;
 
-        for pair in points.windows(2) {
+        for pair in self.plot_points.windows(2) {
             context.draw_line_stroke(pair[0], pair[1], color, 2);
         }
-        for (i, point) in points.iter().enumerate() {
+        for (offset, point) in self.plot_points.iter().enumerate() {
+            let i = start + offset;
             context.fill_circle(*point, 3, color);
             if series_index == 0 {
                 if let Some(label) = self.labels.get(i) {
@@ -1192,45 +1313,64 @@ impl ChartWidget {
     /// exposed it — so the style existed and could not be asked for. It shares the
     /// line chart's data model and hit-test exactly, which is the condition rule
     /// #80 sets for extending rather than adding.
-    fn draw_area_chart(&self, context: &mut RenderContext, rect: Rect, series_index: usize) {
-        let data = match self.series.get(series_index) {
-            Some(data) if data.len() >= 2 => data,
+    fn draw_area_chart(
+        &mut self,
+        context: &mut RenderContext,
+        rect: Rect,
+        series_index: usize,
+        (min, max): (f64, f64),
+    ) {
+        let point_count = match self.series.get(series_index) {
+            Some(data) if data.len() >= 2 => data.len(),
             _ => return,
         };
         let area = PlotArea::of(rect, self.category_label_line_height(context));
-        let (min, max) = self.plot_range();
         let color = Self::series_color(series_index);
-        let points: Vec<Point> = data
-            .iter()
-            .enumerate()
-            .map(|(i, &val)| Point {
-                x: area.x_for(i, data.len(), 0),
+        let progress = self.reveal.value() as f64;
+        let (start, end) = self.zoom_bounds();
+        let visible_count = end.saturating_sub(start).max(1);
+        {
+            let Some(data) = self.series.get(series_index) else {
+                return;
+            };
+            let points = &mut self.plot_points;
+            points.clear();
+            points.extend(data[start..end].iter().enumerate().map(|(offset, &val)| Point {
+                x: area.x_for(offset, visible_count, 0),
                 // Same reveal as the line: the fill tracks the polyline, so the two share the
                 // mapping rather than each computing its own height.
-                y: area.y_for(self.grown_from_baseline(val, min), min, max),
-            })
-            .collect();
+                y: area.y_for(grow_value(val, min, progress), min, max),
+            }));
+        }
+        let _ = point_count;
 
         // Fill as one closed polygon: the area under a piecewise-linear curve is a polygon, so
-        // one filled path replaces a one-pixel column per x. The old loop allocated no geometry
-        // but issued one fill command per pixel — up to the plot's full width, every frame.
-        let mut polygon = points.clone();
+        // one filled path replaces a one-pixel column per x. The polygon is built in the reused
+        // buffer instead of cloning the vertex list first.
         let baseline_y = area.baseline_y;
-        for point in points.iter().rev() {
-            polygon.push(Point::new(point.x, baseline_y));
+        {
+            let (plot, polygon) = (&self.plot_points, &mut self.polygon_points);
+            polygon.clear();
+            polygon.extend_from_slice(plot);
+            polygon.extend(plot.iter().rev().map(|point| Point::new(point.x, baseline_y)));
         }
-        context.execute_command(crate::render::RenderCommand::DrawPath {
-            points: polygon,
+        let mut command = crate::render::RenderCommand::DrawPath {
+            points: core::mem::take(&mut self.polygon_points),
             closed: true,
             color,
             filled: true,
             width: 0,
-        });
-        for pair in points.windows(2) {
+        };
+        context.execute_command_ref(&command);
+        if let crate::render::RenderCommand::DrawPath { points, .. } = &mut command {
+            self.polygon_points = core::mem::take(points);
+        }
+        for pair in self.plot_points.windows(2) {
             context.draw_line_stroke(pair[0], pair[1], color, 2);
         }
         if series_index == 0 {
-            for (i, point) in points.iter().enumerate() {
+            for (offset, point) in self.plot_points.iter().enumerate() {
+                let i = start + offset;
                 if let Some(label) = self.labels.get(i) {
                     draw_truncated_label(
                         context,
@@ -1278,10 +1418,13 @@ impl ChartWidget {
             return;
         }
 
-        let slot = (area.right - area.left).max(1) / data.len() as i32;
+        let (start, end) = self.zoom_bounds();
+        let visible_count = end.saturating_sub(start).max(1);
+        let slot = (area.right - area.left).max(1) / visible_count as i32;
         let bar_width = slot.saturating_sub(2).max(1);
-        for (i, &(from, to)) in totals.iter().enumerate() {
-            let x = area.left + (i as i32) * slot;
+        for (offset, &(from, to)) in totals[start..end].iter().enumerate() {
+            let i = start + offset;
+            let x = area.left + (offset as i32) * slot;
             let y_from = area.baseline_y - (((from - min) / span) * area.height_range()) as i32;
             let y_to = area.baseline_y - (((to - min) / span) * area.height_range()) as i32;
             let top = y_from.min(y_to);
@@ -1292,11 +1435,11 @@ impl ChartWidget {
             context.fill_rect(Rect { x, y: top, width: bar_width as u32, height }, color);
             // A connector from this bar's top to the next bar's start, so the
             // running total is traceable across the chart.
-            if i + 1 < totals.len() {
+            if i + 1 < end {
                 let connector_y = y_to;
                 context.draw_line_stroke(
                     Point { x: x + bar_width, y: connector_y },
-                    Point { x: area.left + ((i + 1) as i32) * slot, y: connector_y },
+                    Point { x: area.left + ((offset + 1) as i32) * slot, y: connector_y },
                     crate::core::Color::rgb(150, 150, 150),
                     1,
                 );
@@ -1328,14 +1471,17 @@ impl ChartWidget {
             return;
         }
         let area = PlotArea::of(rect, self.category_label_line_height(context));
+        let (start, end) = self.zoom_bounds();
+        let visible_count = end.saturating_sub(start).max(1);
         let available_height = area.baseline_y.saturating_sub(area.top_y).max(1);
-        let stage_height = (available_height / data.len() as i32).max(1);
+        let stage_height = (available_height / visible_count as i32).max(1);
         let available_width = (area.right - area.left).max(1);
 
-        for (i, &value) in data.iter().enumerate() {
+        for (offset, &value) in data[start..end].iter().enumerate() {
+            let i = start + offset;
             let ratio = (value / max).clamp(0.0, 1.0);
             let width = ((ratio * available_width as f64).round() as i32).max(1);
-            let y = area.top_y + (i as i32) * stage_height;
+            let y = area.top_y + (offset as i32) * stage_height;
             // Centred, so the narrowing reads as a funnel rather than a left-aligned
             // bar chart.
             let x = area.left + (available_width - width) / 2;
@@ -1395,12 +1541,22 @@ impl ChartWidget {
             return;
         }
 
-        let slot = (area.right - area.left).max(1) / bar_count as i32;
+        let (start, end) = self.zoom_bounds();
+        let visible_count = end.saturating_sub(start).max(1);
+        let slot = (area.right - area.left).max(1) / visible_count as i32;
         let body_width = slot.saturating_sub(2).max(3);
         let wick_x_offset = body_width / 2;
-        for (i, bar) in data.as_chunks::<VALUES_PER_BAR>().0.iter().take(bar_count).enumerate() {
+        for (offset, bar) in data
+            .as_chunks::<VALUES_PER_BAR>()
+            .0
+            .iter()
+            .take(bar_count)
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .enumerate()
+        {
             let (open, high, low, close) = (bar[0], bar[1], bar[2], bar[3]);
-            let x = area.left + (i as i32) * slot;
+            let x = area.left + (offset as i32) * slot;
             let y_open = area.y_for(open, min, max);
             let y_close = area.y_for(close, min, max);
             let y_high = area.y_for(high, min, max);
@@ -1429,9 +1585,10 @@ impl ChartWidget {
             );
         }
         // One label per bar, placed under every fourth value's slot.
-        for i in 0..bar_count {
+        for offset in 0..end.saturating_sub(start) {
+            let i = start + offset;
             if let Some(label) = self.labels.get(i) {
-                let x = area.left + (i as i32) * slot + slot / 2;
+                let x = area.left + (offset as i32) * slot + slot / 2;
                 draw_truncated_label(
                     context,
                     x,
@@ -1478,13 +1635,24 @@ impl ChartWidget {
             return;
         }
 
-        let slot = (area.right - area.left).max(1) / box_count as i32;
+        let (start, end) = self.zoom_bounds();
+        let visible_count = end.saturating_sub(start).max(1);
+        let slot = (area.right - area.left).max(1) / visible_count as i32;
         let box_width = slot.saturating_sub(4).max(4);
         let center_offset = box_width / 2;
         let color = Self::series_color(0);
-        for (i, group) in data.as_chunks::<VALUES_PER_BOX>().0.iter().take(box_count).enumerate() {
+        for (offset, group) in data
+            .as_chunks::<VALUES_PER_BOX>()
+            .0
+            .iter()
+            .take(box_count)
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .enumerate()
+        {
+            let i = start + offset;
             let (low, q1, median, q3, high) = (group[0], group[1], group[2], group[3], group[4]);
-            let x = area.left + (i as i32) * slot + 2;
+            let x = area.left + (offset as i32) * slot + 2;
             let cx = x + center_offset;
             let y_low = area.y_for(low, min, max);
             let y_high = area.y_for(high, min, max);
@@ -1525,9 +1693,9 @@ impl ChartWidget {
         }
     }
 
-    fn draw_pie_chart(&self, context: &mut RenderContext, rect: Rect) {
-        let data = match self.series.first() {
-            Some(data) if !data.is_empty() => data,
+    fn draw_pie_chart(&mut self, context: &mut RenderContext, rect: Rect) {
+        let data_len = match self.series.first() {
+            Some(data) if !data.is_empty() => data.len(),
             _ => return,
         };
         // Pie labels sit on the chart panel, so their ink comes from the same derivation as
@@ -1539,16 +1707,73 @@ impl ChartWidget {
         // (and `NaN` is not `> 0.0`, so it was excluded from the sum but *not* from the per-slice
         // loop below, where `val / total` on a `NaN` produced a NaN angle and a degenerate wedge).
         // Filtering `is_finite()` here and at the loop keeps the two consistent.
-        let total: f64 = data.iter().copied().filter(|v| v.is_finite() && *v > 0.0).sum();
+        let total: f64 = self
+            .series
+            .first()
+            .map_or(0.0, |data| data.iter().copied().filter(|v| v.is_finite() && *v > 0.0).sum());
         if !total.is_finite() || total <= 0.0 {
             return;
         }
         let cx = rect.x + rect.width as i32 / 2;
         let cy = rect.y + rect.height as i32 / 2;
         let radius = (rect.width.min(rect.height) as i32 / 2).saturating_sub(10).max(10);
+
+        // The wedge geometry is a pure function of the data and the panel rectangle. The painter
+        // consumes an owned point list, so the wedges are cached as commands and replayed by
+        // reference; only a data change or a resize rebuilds them.
+        let fresh = matches!(
+            &self.pie_wedges,
+            Some((cached_rect, generation, commands))
+                if *cached_rect == rect
+                    && *generation == self.data_generation
+                    && commands.len() == data_len
+        );
+        if !fresh {
+            let mut commands: Vec<Option<crate::render::RenderCommand>> =
+                Vec::with_capacity(data_len);
+            let mut start_angle = -std::f64::consts::FRAC_PI_2;
+            if let Some(data) = self.series.first() {
+                for (i, &val) in data.iter().enumerate() {
+                    // A non-finite or non-positive wedge has no angle; skipping it keeps the
+                    // angle sum equal to the sum of the positive values the total was taken over.
+                    if !val.is_finite() || val <= 0.0 {
+                        commands.push(None);
+                        continue;
+                    }
+                    let slice_angle = 2.0 * std::f64::consts::PI * (val / total);
+                    // A filled wedge: one closed path per sector instead of a fan of radial
+                    // strokes. The stroke version left a pie that looked like spokes; a polygon
+                    // is the shape the form actually draws.
+                    let segments =
+                        ((radius as f64 * slice_angle * 0.5).ceil() as i32).clamp(3, 180);
+                    let mut wedge = Vec::with_capacity(segments as usize + 2);
+                    wedge.push(Point { x: cx, y: cy });
+                    for step in 0..=segments {
+                        let t = start_angle + slice_angle * (step as f64 / segments as f64);
+                        wedge.push(Point {
+                            x: cx + (radius as f64 * t.cos()) as i32,
+                            y: cy + (radius as f64 * t.sin()) as i32,
+                        });
+                    }
+                    commands.push(Some(crate::render::RenderCommand::DrawPath {
+                        points: wedge,
+                        closed: true,
+                        color: Self::series_color(i),
+                        filled: true,
+                        width: 0,
+                    }));
+                    start_angle += slice_angle;
+                }
+            }
+            self.pie_wedges = Some((rect, self.data_generation, commands));
+        }
+
         let mut start_angle = -std::f64::consts::FRAC_PI_2;
         // One buffer for every label: `format!` built a fresh `String` per slice per frame.
         let mut text = crate::compat::String::new();
+        let Some(data) = self.series.first() else {
+            return;
+        };
         for (i, &val) in data.iter().enumerate() {
             // A non-finite or non-positive wedge has no angle; skipping it keeps the
             // angle sum equal to the sum of the positive values the total was taken over.
@@ -1558,27 +1783,11 @@ impl ChartWidget {
             let slice_angle = 2.0 * std::f64::consts::PI * (val / total);
             let mid_angle = start_angle + slice_angle / 2.0;
             let end_angle = start_angle + slice_angle;
-            let color = Self::series_color(i);
-            // A filled wedge: one closed path per sector instead of a fan of radial strokes.
-            // The stroke version left a pie that looked like spokes; a polygon is the shape the
-            // form actually draws.
-            let segments = ((radius as f64 * slice_angle * 0.5).ceil() as i32).clamp(3, 180);
-            let mut wedge = Vec::with_capacity(segments as usize + 2);
-            wedge.push(Point { x: cx, y: cy });
-            for step in 0..=segments {
-                let t = start_angle + slice_angle * (step as f64 / segments as f64);
-                wedge.push(Point {
-                    x: cx + (radius as f64 * t.cos()) as i32,
-                    y: cy + (radius as f64 * t.sin()) as i32,
-                });
+            if let Some(Some(wedge)) =
+                self.pie_wedges.as_ref().and_then(|(_, _, commands)| commands.get(i))
+            {
+                context.execute_command_ref(wedge);
             }
-            context.execute_command(crate::render::RenderCommand::DrawPath {
-                points: wedge,
-                closed: true,
-                color,
-                filled: true,
-                width: 0,
-            });
             if let Some(label) = self.labels.get(i) {
                 let label_radius = radius.saturating_add(14) as f64;
                 let lx = cx + (label_radius * mid_angle.cos()) as i32;
@@ -1615,19 +1824,27 @@ impl ChartWidget {
     }
 
     /// Draws unconnected markers for series `series_index`.
-    fn draw_scatter_chart(&self, context: &mut RenderContext, rect: Rect, series_index: usize) {
+    fn draw_scatter_chart(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        series_index: usize,
+        (min, max): (f64, f64),
+    ) {
         let data = match self.series.get(series_index) {
             Some(data) if !data.is_empty() => data,
             _ => return,
         };
         let area = PlotArea::of(rect, self.category_label_line_height(context));
-        let (min, max) = self.plot_range();
         let color = Self::series_color(series_index);
-        let slot = (area.right - area.left).max(1) / data.len() as i32;
-        for (i, &val) in data.iter().enumerate() {
+        let (start, end) = self.zoom_bounds();
+        let visible_count = end.saturating_sub(start).max(1);
+        let slot = (area.right - area.left).max(1) / visible_count as i32;
+        for (offset, &val) in data[start..end].iter().enumerate() {
+            let i = start + offset;
             // Scatter uses the slot centre, since unconnected markers have no
             // line to sit on.
-            let x = area.left + (i as i32) * slot + slot / 2;
+            let x = area.left + (offset as i32) * slot + slot / 2;
             let y = area.y_for(val, min, max);
             context.fill_circle(Point { x, y }, 3, color);
             if series_index == 0 {
@@ -1693,7 +1910,7 @@ impl EventHandler for ChartWidget {
             Event::Wheel { delta, .. } => {
                 // Zoom the category axis around the pointer's bucket. A plot with one point has
                 // no axis to zoom.
-                let points = self.data().len() as f64;
+                let points = point_count_for(self.chart_type, self.data().len()) as f64;
                 if points < 2.0 || delta.y == 0 {
                     return;
                 }
@@ -1780,6 +1997,26 @@ mod tests {
     }
 
     // ── Multi-series data model (C-1) ───────────────────────────────────────
+
+    /// `zoom_x` is a real viewport: hit testing and the published signals follow it.
+    #[test]
+    fn the_zoom_window_is_consumed_by_hit_testing() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 100));
+        chart.set_data((0..10).map(|value| value as f64).collect());
+        let viewports = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = Arc::clone(&viewports);
+        chart.viewport_changed.connect(move |range| sink.lock().unwrap().push(*range));
+
+        chart.set_zoom_range(Some((5.0, 10.0)));
+        assert_eq!(chart.zoom_range(), Some((5.0, 10.0)));
+        assert_eq!(*viewports.lock().unwrap(), vec![(5, 10)]);
+
+        assert_eq!(chart.data_index_at(Point::new(0, 50)), Some(5));
+        assert_eq!(chart.data_index_at(Point::new(199, 50)), Some(9));
+
+        chart.reset_zoom();
+        assert_eq!(*viewports.lock().unwrap(), vec![(5, 10), (0, 10)]);
+    }
 
     #[test]
     fn chart_set_data_populates_series_zero() {

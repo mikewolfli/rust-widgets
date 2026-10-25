@@ -42,6 +42,12 @@ pub(crate) struct GlyphDrawConfig<'a> {
     /// positions and the ink describing one face. A build with no shaper has no `fvar` reader, so
     /// the field is deliberately not consulted there (see [`blend_painted_glyph`]).
     pub weight: u16,
+    /// Whether the glyph should be drawn with a synthetic oblique slant.
+    ///
+    /// The rasteriser has no italic axis, so an italic request used to draw upright ink while the
+    /// measurement fingerprint still hashed `italic` (G-18). A shear keeps the request visible and
+    /// leaves advances untouched, which is the usual synthetic-oblique contract.
+    pub italic: bool,
 }
 
 /// The solid rectangles one glyph's bitmap produces inside its own box.
@@ -182,14 +188,29 @@ pub(crate) fn blend_painted_glyph(
         return false;
     }
     let (width, height) = (cell.width as i32, cell.height as i32);
+    // Synthetic oblique: slide each row horizontally around the cell's vertical centre. Top rows
+    // move right and bottom rows move left, so the slant stays inside the cell and the advance is
+    // unchanged (G-18).
+    let italic_shift = |py: i32| -> i32 {
+        if config.italic {
+            (((height as f32 * 0.5) - py as f32) * 0.2).round() as i32
+        } else {
+            0
+        }
+    };
     let mut any = false;
     for py in 0..height {
         let cy = y + py;
         if cy < 0 || cy >= config.canvas_height as i32 {
             continue;
         }
+        let shift = italic_shift(py);
         for px in 0..width {
-            let value = coverage[(py * width + px) as usize];
+            let source_px = px - shift;
+            if source_px < 0 || source_px >= width {
+                continue;
+            }
+            let value = coverage[(py * width + source_px) as usize];
             if value == 0 {
                 continue;
             }
@@ -290,8 +311,17 @@ fn blend_rgba_over_canvas(
         if cy < 0 || cy >= config.canvas_height as i32 {
             continue;
         }
+        let shift = if config.italic {
+            (((height as f32 * 0.5) - py as f32) * 0.2).round() as i32
+        } else {
+            0
+        };
         for px in 0..width {
-            let si = ((py * width + px) * 4) as usize;
+            let source_px = px - shift;
+            if source_px < 0 || source_px >= width {
+                continue;
+            }
+            let si = ((py * width + source_px) * 4) as usize;
             let Some(src) = pixels.get(si..si + 4) else {
                 continue;
             };

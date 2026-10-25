@@ -13,7 +13,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -55,7 +55,7 @@ pub enum DateColumnOrder {
     MonthDayYear,
 }
 
-/// Whether the picker edits a calendar date or a time of day.
+/// Whether the picker edits a calendar date, a time of day, both, or a countdown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CupertinoDatePickerMode {
     /// Three date columns.
@@ -63,6 +63,10 @@ pub enum CupertinoDatePickerMode {
     Date,
     /// Two time columns, hour and minute.
     Time,
+    /// The date and time wheels together on one drum.
+    DateTime,
+    /// Hour, minute and second columns for a countdown duration.
+    CountDownTimer,
 }
 
 /// A valid date range for year generation.
@@ -93,6 +97,12 @@ pub struct CupertinoDatePicker {
     selected_hour: u32,
     /// Selected minute, `0..=59`, used by [`CupertinoDatePickerMode::Time`].
     selected_minute: u32,
+    /// Selected second, `0..=59`, used by [`CupertinoDatePickerMode::CountDownTimer`].
+    selected_second: u32,
+    /// Whether the time wheels show a 24-hour clock (`true`) or a 12-hour clock with AM/PM.
+    use_24_hour: bool,
+    /// Minute step; `1` shows every minute, `5` shows 00/05/10/....
+    minute_interval: u32,
     /// An in-flight wheel drag: accumulated pixels since the last whole row.
     drag_accum: f32,
     /// The pointer y of the previous drag sample, for velocity estimation.
@@ -127,6 +137,9 @@ impl CupertinoDatePicker {
             column_order: DateColumnOrder::YearMonthDay,
             selected_hour: 12,
             selected_minute: 0,
+            selected_second: 0,
+            use_24_hour: true,
+            minute_interval: 1,
             drag_accum: 0.0,
             drag_last_y: None,
             drag_column: 0,
@@ -215,16 +228,115 @@ impl CupertinoDatePicker {
         (self.selected_hour, self.selected_minute)
     }
 
+    /// The selected countdown second.
+    pub fn selected_second(&self) -> u32 {
+        self.selected_second
+    }
+
+    /// Whether the time wheels use a 24-hour clock.
+    pub fn use_24_hour(&self) -> bool {
+        self.use_24_hour
+    }
+
+    /// Switches between a 24-hour and a 12-hour clock with an AM/PM column.
+    pub fn set_use_24_hour(&mut self, use_24_hour: bool) {
+        if self.use_24_hour == use_24_hour {
+            return;
+        }
+        self.use_24_hour = use_24_hour;
+        self.base.request_redraw();
+    }
+
+    /// The minute step shown by the minute wheel.
+    pub fn minute_interval(&self) -> u32 {
+        self.minute_interval
+    }
+
+    /// Sets the minute step. Clamped to `1..=30` and applied to the current selection.
+    pub fn set_minute_interval(&mut self, interval: u32) {
+        let interval = interval.clamp(1, 30);
+        if self.minute_interval == interval {
+            return;
+        }
+        self.minute_interval = interval;
+        self.selected_minute = (self.selected_minute / interval) * interval;
+        self.base.request_redraw();
+    }
+
+    /// The displayed minute values, stepped by [`Self::minute_interval`].
+    fn minute_values(&self) -> Vec<String> {
+        let interval = self.minute_interval.max(1) as usize;
+        (0..60).step_by(interval).map(|minute| format!("{minute:02}")).collect()
+    }
+
+    /// The hour wheel as `(selected offset, labels)`, honouring the 24/12-hour choice.
+    fn hour_values(&self) -> (i32, Vec<String>) {
+        if self.use_24_hour {
+            let hours = (0..24).map(|hour| format!("{hour:02}")).collect();
+            (self.selected_hour as i32, hours)
+        } else {
+            // 12-hour wheel: 12, 1, 2, ... 11. Midnight and noon both display as 12.
+            let mut hours = Vec::with_capacity(12);
+            hours.push("12".to_string());
+            hours.extend((1..12).map(|hour| hour.to_string()));
+            let selected =
+                if self.selected_hour % 12 == 0 { 0 } else { (self.selected_hour % 12) as i32 };
+            (selected, hours)
+        }
+    }
+
+    /// The AM/PM wheel.
+    fn ampm_values(&self) -> (i32, Vec<String>) {
+        let selected = if self.selected_hour < 12 { 0 } else { 1 };
+        (selected, vec!["AM".to_string(), "PM".to_string()])
+    }
+
+    /// The time columns in draw order: hour, minute, and AM/PM when the clock is 12-hour.
+    fn time_columns(&self) -> Vec<(i32, Vec<String>)> {
+        let minute_offset = (self.selected_minute / self.minute_interval.max(1)) as i32;
+        let mut columns = vec![self.hour_values(), (minute_offset, self.minute_values())];
+        if !self.use_24_hour {
+            columns.push(self.ampm_values());
+        }
+        columns
+    }
+
+    /// The number of wheel columns the current mode paints.
+    fn column_count(&self) -> usize {
+        match self.mode {
+            CupertinoDatePickerMode::Date | CupertinoDatePickerMode::CountDownTimer => 3,
+            CupertinoDatePickerMode::Time => {
+                if self.use_24_hour {
+                    2
+                } else {
+                    3
+                }
+            }
+            CupertinoDatePickerMode::DateTime => 3 + if self.use_24_hour { 2 } else { 3 },
+        }
+    }
+
     /// Sets the selected time, clamping each field into its own range.
     pub fn set_selected_time(&mut self, hour: u32, minute: u32) {
         let hour = hour.min(23);
-        let minute = minute.min(59);
+        let minute = (minute.min(59) / self.minute_interval) * self.minute_interval;
         if self.selected_hour == hour && self.selected_minute == minute {
             return;
         }
         self.selected_hour = hour;
         self.selected_minute = minute;
         self.time_changed.emit((hour, minute));
+        self.base.request_redraw();
+    }
+
+    /// Sets the countdown second, clamped to `0..=59`.
+    pub fn set_selected_second(&mut self, second: u32) {
+        let second = second.min(59);
+        if self.selected_second == second {
+            return;
+        }
+        self.selected_second = second;
+        self.time_changed.emit((self.selected_hour, self.selected_minute));
         self.base.request_redraw();
     }
 
@@ -246,16 +358,23 @@ impl CupertinoDatePicker {
     }
 
     /// Applies one step to `(hour, minute)`, wrapping within its own field.
-    fn step_time(hour: u32, minute: u32, column: usize, direction: i32) -> (u32, u32) {
+    fn step_time(
+        hour: u32,
+        minute: u32,
+        second: u32,
+        column: usize,
+        direction: i32,
+        interval: u32,
+    ) -> (u32, u32, u32) {
         match column {
-            0 => {
-                let next = (hour as i32 + direction).rem_euclid(24) as u32;
-                (next, minute)
+            0 => (((hour as i32 + direction).rem_euclid(24)) as u32, minute, second),
+            1 => {
+                let slots = (60 / interval).max(1) as i32;
+                let index = (minute / interval) as i32;
+                let next = (index + direction).rem_euclid(slots) * interval as i32;
+                (hour, next as u32, second)
             }
-            _ => {
-                let next = (minute as i32 + direction).rem_euclid(60) as u32;
-                (hour, next)
-            }
+            _ => (hour, minute, ((second as i32 + direction).rem_euclid(60)) as u32),
         }
     }
 
@@ -278,10 +397,11 @@ impl CupertinoDatePicker {
     /// Determines which column (0=year, 1=month, 2=day) contains the given x-coordinate.
     fn column_at(&self, x: i32) -> usize {
         let rect = self.geometry();
-        // A control narrower than three pixels has a `col_width` of `0`, and `rel_x / 0` panicked.
-        // Such a control cannot show three distinct columns anyway, so every x maps to the first
-        // column rather than dividing by zero.
-        let col_width = rect.width / 3;
+        let columns = self.column_count().max(1);
+        // A control narrower than `columns` pixels has a `col_width` of `0`, and `rel_x / 0`
+        // panicked. Such a control cannot show distinct columns anyway, so every x maps to the
+        // first column rather than dividing by zero.
+        let col_width = rect.width / columns as u32;
         if col_width == 0 {
             return 0;
         }
@@ -290,22 +410,39 @@ impl CupertinoDatePicker {
         }
         let rel_x = (x - rect.x) as u32;
         let col = rel_x / col_width;
-        (col as usize).min(2)
+        (col as usize).min(columns - 1)
     }
 
-    /// Maps a physical column position to the logical column it edits.
+    /// Maps a physical column position to the logical field it edits.
     ///
-    /// The locale order changes where a column is *drawn*, so the hit test must translate the
+    /// The locale order changes where a date column is *drawn*, so the hit test must translate the
     /// pointer's position back to the field before stepping it; otherwise a `DayMonthYear`
     /// picker would change the year when the user taps the day column.
+    ///
+    /// The ids are mode-specific: `0..=2` are the date fields in `YearMonthDay` order for the date
+    /// modes, `3`/`4` are hour/minute in a combined picker, `5` is its AM/PM column, and the
+    /// countdown mode uses `0`/`1`/`2` for hour/minute/second.
     fn logical_column(&self, physical: usize) -> usize {
-        if self.mode == CupertinoDatePickerMode::Time {
-            return physical.min(1);
-        }
-        match self.column_order {
-            DateColumnOrder::YearMonthDay => physical.min(2),
-            DateColumnOrder::DayMonthYear => [2, 1, 0][physical.min(2)],
-            DateColumnOrder::MonthDayYear => [1, 2, 0][physical.min(2)],
+        let date_column = |physical: usize| -> usize {
+            match self.column_order {
+                DateColumnOrder::YearMonthDay => physical.min(2),
+                DateColumnOrder::DayMonthYear => [2, 1, 0][physical.min(2)],
+                DateColumnOrder::MonthDayYear => [1, 2, 0][physical.min(2)],
+            }
+        };
+        match self.mode {
+            CupertinoDatePickerMode::Date => date_column(physical),
+            // 0 = hour, 1 = minute, 2 = AM/PM when the clock is 12-hour.
+            CupertinoDatePickerMode::Time => physical.min(if self.use_24_hour { 1 } else { 2 }),
+            CupertinoDatePickerMode::CountDownTimer => physical.min(2),
+            CupertinoDatePickerMode::DateTime => {
+                if physical < 3 {
+                    date_column(physical)
+                } else {
+                    // 3 = hour, 4 = minute, 5 = AM/PM.
+                    (3 + physical - 3).min(if self.use_24_hour { 4 } else { 5 })
+                }
+            }
         }
     }
 
@@ -397,6 +534,17 @@ impl WidgetProperties for CupertinoDatePicker {
                 let (year, month, day) = self.selected_date();
                 Ok(CapabilityValue::String(format!("{year:04}-{month:02}-{day:02}")))
             }
+            "mode" => Ok(CapabilityValue::String(
+                match self.mode() {
+                    CupertinoDatePickerMode::Date => "date",
+                    CupertinoDatePickerMode::Time => "time",
+                    CupertinoDatePickerMode::DateTime => "datetime",
+                    CupertinoDatePickerMode::CountDownTimer => "countdown",
+                }
+                .to_string(),
+            )),
+            "use_24_hour" => Ok(CapabilityValue::Bool(self.use_24_hour())),
+            "minute_interval" => Ok(CapabilityValue::UInt(self.minute_interval() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -409,12 +557,42 @@ impl WidgetProperties for CupertinoDatePicker {
                 self.set_selected_date(parsed.0, parsed.1, parsed.2);
                 Ok(())
             }
+            "mode" => {
+                let mode = match expect_string(value)?.to_ascii_lowercase().as_str() {
+                    "date" => CupertinoDatePickerMode::Date,
+                    "time" => CupertinoDatePickerMode::Time,
+                    "datetime" => CupertinoDatePickerMode::DateTime,
+                    "countdown" | "countdowntimer" => CupertinoDatePickerMode::CountDownTimer,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_mode(mode);
+                Ok(())
+            }
+            "use_24_hour" => {
+                let use_24_hour = match value {
+                    CapabilityValue::Bool(value) => value,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_use_24_hour(use_24_hour);
+                Ok(())
+            }
+            "minute_interval" => {
+                let interval = expect_usize(value)?.min(u32::MAX as usize) as u32;
+                self.set_minute_interval(interval);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["selected_date", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "selected_date",
+            "mode",
+            "use_24_hour",
+            "minute_interval",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -533,8 +711,8 @@ impl Draw for CupertinoDatePicker {
         // it is what the font must follow: deriving the font from the nominal 32 px row while
         // the band drew 24 px rows put a 15.8 px arrow inside a 24 px row and pushed the first
         // and last visible values off the wheel in the census cell.
-        let col_count = if self.mode == CupertinoDatePickerMode::Time { 2 } else { 3 };
-        let col_width = wheel_rect.width / col_count;
+        let col_count = self.column_count().max(1);
+        let col_width = wheel_rect.width / col_count as u32;
         let row_height = (wheel_rect.height / dimensions::PICKER_VISIBLE_ROWS).max(1);
         let font_size = (row_height as f32 * 0.38).clamp(9.0, 15.0);
         let font = role_font(style, font_size);
@@ -544,16 +722,7 @@ impl Draw for CupertinoDatePicker {
             (self.roll.value() * row_height as f32 * self.roll_direction as f32) as i32;
 
         let constraint = self.date_constraint();
-        let (columns, order): (Vec<(i32, Vec<String>)>, Vec<usize>) = if self.mode
-            == CupertinoDatePickerMode::Time
-        {
-            let hours: Vec<String> = (0..24).map(|hour| format!("{hour:02}")).collect();
-            let minutes: Vec<String> = (0..60).map(|minute| format!("{minute:02}")).collect();
-            (
-                vec![(self.selected_hour as i32, hours), (self.selected_minute as i32, minutes)],
-                vec![0, 1],
-            )
-        } else {
+        let date_columns = || -> (Vec<(i32, Vec<String>)>, Vec<usize>) {
             let years: Vec<String> = (0..dimensions::PICKER_VISIBLE_ROWS)
                 .map(|row| {
                     let offset = row as i32 - 2;
@@ -580,6 +749,34 @@ impl Draw for CupertinoDatePicker {
                 DateColumnOrder::MonthDayYear => vec![1, 2, 0],
             };
             (logical, order)
+        };
+        let (columns, order) = match self.mode {
+            CupertinoDatePickerMode::Date => date_columns(),
+            CupertinoDatePickerMode::CountDownTimer => {
+                let hours: Vec<String> = (0..24).map(|hour| format!("{hour:02}")).collect();
+                let minutes = self.minute_values();
+                let seconds: Vec<String> = (0..60).map(|second| format!("{second:02}")).collect();
+                (
+                    vec![
+                        (self.selected_hour as i32, hours),
+                        (self.selected_minute as i32, minutes),
+                        (self.selected_second as i32, seconds),
+                    ],
+                    vec![0, 1, 2],
+                )
+            }
+            CupertinoDatePickerMode::Time => {
+                let columns = self.time_columns();
+                let order = (0..columns.len()).collect();
+                (columns, order)
+            }
+            CupertinoDatePickerMode::DateTime => {
+                let (mut columns, mut order) = date_columns();
+                let offset = columns.len();
+                columns.extend(self.time_columns());
+                order.extend(offset..columns.len());
+                (columns, order)
+            }
         };
 
         for (position, &logical_index) in order.iter().enumerate() {
@@ -754,13 +951,60 @@ impl CupertinoDatePicker {
     /// Applies one selection step to `column`, where `forward` means a later value.
     fn apply_step(&mut self, column: usize, forward: bool) {
         let direction = if forward { 1 } else { -1 };
-        if self.mode == CupertinoDatePickerMode::Time {
-            let (hour, minute) =
-                Self::step_time(self.selected_hour, self.selected_minute, column, direction);
-            self.set_selected_time(hour, minute);
-            self.start_roll(direction);
-            return;
+        match self.mode {
+            CupertinoDatePickerMode::Date => self.apply_date_step(column, direction),
+            CupertinoDatePickerMode::CountDownTimer => {
+                let (hour, minute, second) = Self::step_time(
+                    self.selected_hour,
+                    self.selected_minute,
+                    self.selected_second,
+                    column.min(2),
+                    direction,
+                    self.minute_interval,
+                );
+                self.set_selected_time(hour, minute);
+                self.set_selected_second(second);
+                self.start_roll(direction);
+            }
+            CupertinoDatePickerMode::Time | CupertinoDatePickerMode::DateTime => {
+                let (date_column, time_column, ampm_column) = match self.mode {
+                    CupertinoDatePickerMode::DateTime => (Some((0, 1, 2)), 3, 5),
+                    _ => (None, 0, 2),
+                };
+                if let Some((year, _month, day)) = date_column {
+                    if column <= day {
+                        // Date fields keep their own stepping; an inverted locale order was already
+                        // resolved by `logical_column`.
+                        self.apply_date_step(column.max(year).min(day), direction);
+                        return;
+                    }
+                }
+                if column == ampm_column {
+                    // AM/PM is one bit: stepping it moves the hour by twelve.
+                    self.selected_hour = (self.selected_hour + 12) % 24;
+                    self.time_changed.emit((self.selected_hour, self.selected_minute));
+                    self.start_roll(direction);
+                    return;
+                }
+                let local_column = column.saturating_sub(time_column).min(1);
+                let (hour, minute, second) = Self::step_time(
+                    self.selected_hour,
+                    self.selected_minute,
+                    self.selected_second,
+                    local_column,
+                    direction,
+                    self.minute_interval,
+                );
+                self.set_selected_time(hour, minute);
+                self.set_selected_second(second);
+                self.start_roll(direction);
+            }
         }
+    }
+
+    /// Steps one calendar field by `direction` and starts the roll animation.
+    fn apply_date_step(&mut self, column: usize, direction: i32) {
+        let forward = direction > 0;
         match column {
             0 => {
                 let constraint = self.date_constraint();
@@ -1031,5 +1275,44 @@ mod tests {
         picker.handle_event(&Event::MouseMove { pos: Point::new(20, 130) });
         picker.handle_event(&Event::MouseRelease { pos: Point::new(20, 130), button: 1 });
         assert!(picker.selected_date() != start, "dragging past a row steps the wheel");
+    }
+
+    #[test]
+    fn date_time_and_countdown_modes_render_their_columns() {
+        let mut picker = CupertinoDatePicker::new(Rect::new(0, 0, 360, 200));
+        picker.set_mode(CupertinoDatePickerMode::DateTime);
+        assert_eq!(picker.column_count(), 5, "three date columns plus hour and minute");
+        let svg = render_to_svg(&mut picker);
+        assert!(svg.starts_with("<svg"));
+
+        picker.set_mode(CupertinoDatePickerMode::CountDownTimer);
+        assert_eq!(picker.column_count(), 3);
+        picker.set_selected_second(45);
+        assert_eq!(picker.selected_second(), 45);
+        let svg = render_to_svg(&mut picker);
+        assert!(svg.contains("45"), "the seconds wheel shows the selected second");
+    }
+
+    #[test]
+    fn a_twelve_hour_clock_adds_an_ampm_column_and_minute_steps_are_honoured() {
+        let mut picker = CupertinoDatePicker::new(Rect::new(0, 0, 300, 200));
+        picker.set_mode(CupertinoDatePickerMode::Time);
+        picker.set_selected_time(13, 7);
+        assert_eq!(picker.column_count(), 2, "24-hour mode has no AM/PM wheel");
+        picker.set_use_24_hour(false);
+        assert_eq!(picker.column_count(), 3, "12-hour mode adds the AM/PM wheel");
+        assert_eq!(picker.selected_time(), (13, 7), "display choice does not change the value");
+        let svg = render_to_svg(&mut picker);
+        assert!(svg.starts_with("<svg"));
+        let columns = picker.time_columns();
+        assert_eq!(columns.len(), 3, "hour, minute and AM/PM");
+        assert_eq!(columns[2].1, vec!["AM".to_string(), "PM".to_string()]);
+        assert_eq!(columns[2].0, 1, "13:07 is PM");
+
+        picker.set_minute_interval(15);
+        assert_eq!(picker.minute_interval(), 15);
+        assert_eq!(picker.selected_time().1, 0, "the selection snaps into the new step");
+        picker.set_selected_time(9, 59);
+        assert_eq!(picker.selected_time().1, 45, "setters snap to the minute step");
     }
 }

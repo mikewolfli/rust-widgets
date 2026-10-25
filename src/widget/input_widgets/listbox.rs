@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! List box widget.
-use crate::compat::{String, ToString, Vec};
+use crate::compat::{RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
 use crate::event::{Event, EventHandler, WheelScroll};
@@ -122,6 +122,30 @@ pub struct ListBox {
     type_ahead: String,
     /// Emitted when a rename gesture lands on a row. The host owns the editor.
     pub rename_requested: Signal1<usize>,
+    /// Emitted with the row whose label or presentation metadata changed.
+    ///
+    /// A host that mirrors this list in its own model could previously only learn that *some*
+    /// change had happened through `selection_changed` (which is about selection) or by
+    /// rebuilding the whole list. This names the row, so an item update is one notification
+    /// about one index.
+    pub item_changed: Signal1<usize>,
+    /// Bumped whenever `items` or `item_meta` changes.
+    ///
+    /// The row icons' advances are parallel to `item_meta`, so a reorder, an insertion or a
+    /// removal has to make every stored advance unreachable even when no icon text changed.
+    item_revision: u64,
+    /// Memoised advances of the row icons, parallel to `item_meta`.
+    icon_advance_cache: RefCell<Option<IconAdvanceCache>>,
+}
+
+/// Memoised per-row icon advances, parallel to `item_meta`.
+///
+/// `None` means "not measured yet"; a row without an icon never reads its slot.
+struct IconAdvanceCache {
+    revision: u64,
+    font: Font,
+    dpi_bits: u32,
+    advances: Vec<Option<i32>>,
 }
 
 /// Presentation metadata for one list row.
@@ -193,6 +217,24 @@ impl ListBoxItem {
     pub fn data(&self) -> Option<&str> {
         self.data.as_deref()
     }
+}
+
+/// How a [`ListBox::scroll_to_item`] call places the requested row.
+///
+/// The three "position at" modes are Qt's `ScrollHint` spellings: a caller that wants row 7
+/// pinned to the top and a caller that only wants it *visible* are asking different
+/// questions, and the old private `scroll(delta)` could express neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollToMode {
+    /// Scroll only as far as needed to bring the row inside the band.
+    #[default]
+    EnsureVisible,
+    /// Put the row at the top of the band.
+    PositionAtTop,
+    /// Centre the row in the band where the list allows it.
+    PositionAtCenter,
+    /// Put the row at the bottom of the band.
+    PositionAtBottom,
 }
 
 /// Which gestures may begin renaming a list row.
@@ -284,8 +326,60 @@ impl ListBox {
             edit_triggers: EditTriggers::NONE,
             type_ahead: String::new(),
             rename_requested: Signal1::new(),
+            item_changed: Signal1::new(),
+            item_revision: 0,
+            icon_advance_cache: RefCell::new(None),
         }
     }
+    /// Bumped whenever `items` or `item_meta` changes, so the icon-advance cache invalidates.
+    fn invalidate_item_caches(&mut self) {
+        self.item_revision = self.item_revision.wrapping_add(1);
+    }
+
+    /// The measured advance of a row's icon, memoised for the current items, font and scale.
+    fn icon_advance(&self, context: &RenderContext, index: usize, icon: &str, font: &Font) -> i32 {
+        let dpi_bits = context.dpi_scale().to_bits();
+        if let Ok(cache) = self.icon_advance_cache.try_borrow() {
+            if let Some(cache) = cache.as_ref() {
+                if cache.revision == self.item_revision
+                    && cache.font == *font
+                    && cache.dpi_bits == dpi_bits
+                {
+                    if let Some(Some(advance)) = cache.advances.get(index) {
+                        return *advance;
+                    }
+                }
+            }
+        }
+        let advance = context.measure_text(icon, font).width as i32;
+        if let Ok(mut cache) = self.icon_advance_cache.try_borrow_mut() {
+            let stale = cache.as_ref().is_none_or(|cache| {
+                cache.revision != self.item_revision
+                    || cache.font != *font
+                    || cache.dpi_bits != dpi_bits
+            });
+            if stale {
+                let mut advances = Vec::new();
+                advances.resize(self.item_meta.len(), None);
+                *cache = Some(IconAdvanceCache {
+                    revision: self.item_revision,
+                    font: font.clone(),
+                    dpi_bits,
+                    advances,
+                });
+            }
+            if let Some(cache) = cache.as_mut() {
+                if cache.advances.len() < self.item_meta.len() {
+                    cache.advances.resize(self.item_meta.len(), None);
+                }
+                if let Some(slot) = cache.advances.get_mut(index) {
+                    *slot = Some(advance);
+                }
+            }
+        }
+        advance
+    }
+
     /// Returns number of items.
     pub fn count(&self) -> usize {
         self.items.len()
@@ -300,20 +394,29 @@ impl ListBox {
     }
     /// Adds an item.
     pub fn add_item(&mut self, text: String) {
+        let index = self.items.len();
         self.items.push(text);
         self.item_meta.push(ListBoxItem::default());
+        self.invalidate_item_caches();
+        self.item_changed.emit(index);
     }
     /// Adds multiple items.
     pub fn add_items(&mut self, items: Vec<String>) {
+        let first = self.items.len();
         let added = items.len();
         self.items.extend(items);
         self.item_meta.resize(self.item_meta.len() + added, ListBoxItem::default());
+        self.invalidate_item_caches();
+        for index in first..first + added {
+            self.item_changed.emit(index);
+        }
     }
     /// Inserts an item at specified position.
     pub fn insert_item(&mut self, index: usize, text: String) {
         if index <= self.items.len() {
             self.items.insert(index, text);
             self.item_meta.insert(index.min(self.item_meta.len()), ListBoxItem::default());
+            self.invalidate_item_caches();
             // Adjust selected indices
             for selected in &mut self.selected_indices {
                 if index <= *selected {
@@ -333,6 +436,7 @@ impl ListBox {
                     *anchor += 1;
                 }
             }
+            self.item_changed.emit(index);
         }
     }
     /// Adds `index` to the selection, keeping `selected_indices` sorted. Returns whether it was new.
@@ -362,6 +466,7 @@ impl ListBox {
             if index < self.item_meta.len() {
                 self.item_meta.remove(index);
             }
+            self.invalidate_item_caches();
             // Remove from selected indices
             self.selected_indices.retain(|&i| i != index);
             // Adjust remaining indices
@@ -386,6 +491,7 @@ impl ListBox {
                 other => other,
             };
             self.selection_changed.emit();
+            self.item_changed.emit(index);
         }
     }
 
@@ -407,6 +513,7 @@ impl ListBox {
             let meta = self.item_meta.remove(from);
             self.item_meta.insert(to.min(self.item_meta.len()), meta);
         }
+        self.invalidate_item_caches();
         for index in &mut self.selected_indices {
             *index = index_after_move(*index, from, to);
         }
@@ -416,6 +523,10 @@ impl ListBox {
         self.current_row = self.current_row.map(|index| index_after_move(index, from, to));
         self.anchor = self.anchor.map(|index| index_after_move(index, from, to));
         self.selection_changed.emit();
+        // Both ends of the move name a row whose content changed; the rows in between moved
+        // too, but a move is one gesture and these are the two the caller asked about.
+        self.item_changed.emit(from);
+        self.item_changed.emit(to);
         self.base.request_redraw();
         true
     }
@@ -424,6 +535,7 @@ impl ListBox {
     pub fn clear(&mut self) {
         self.items.clear();
         self.item_meta.clear();
+        self.invalidate_item_caches();
         self.selected_indices.clear();
         self.current_row = None;
         self.anchor = None;
@@ -683,6 +795,8 @@ impl ListBox {
             return;
         }
         *slot = meta;
+        self.invalidate_item_caches();
+        self.item_changed.emit(index);
         self.base.request_redraw();
     }
 
@@ -693,6 +807,8 @@ impl ListBox {
                 return;
             }
             meta.icon = icon;
+            self.invalidate_item_caches();
+            self.item_changed.emit(index);
             self.base.request_redraw();
         }
     }
@@ -704,6 +820,7 @@ impl ListBox {
                 return;
             }
             meta.checked = checked;
+            self.item_changed.emit(index);
             self.base.request_redraw();
         }
     }
@@ -715,6 +832,7 @@ impl ListBox {
                 return;
             }
             meta.enabled = enabled;
+            self.item_changed.emit(index);
             self.base.request_redraw();
         }
     }
@@ -726,6 +844,7 @@ impl ListBox {
                 return;
             }
             meta.data = data;
+            self.item_changed.emit(index);
             self.base.request_redraw();
         }
     }
@@ -756,6 +875,7 @@ impl ListBox {
             return false;
         };
         meta.checked = Some(!checked);
+        self.item_changed.emit(index);
         self.base.request_redraw();
         true
     }
@@ -783,10 +903,16 @@ impl ListBox {
         if self.item_meta.len() < old_len {
             self.item_meta.resize(old_len, ListBoxItem::default());
         }
+        self.invalidate_item_caches();
         self.selected_indices.clear();
         self.current_row = None;
         self.anchor = None;
         self.selection_changed.emit();
+        // Every row's label moved, so every row is reported. A caller that keeps its own order
+        // rebuilds from this list rather than comparing two snapshots.
+        for index in 0..self.items.len() {
+            self.item_changed.emit(index);
+        }
         self.base.request_redraw();
     }
 
@@ -1003,6 +1129,76 @@ impl ListBox {
         }
         self.base.request_redraw();
     }
+
+    /// Index of the first row painted in the content band.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Number of whole rows the content band can show, floored at one.
+    fn viewport_rows(&self) -> usize {
+        let content = self.content_rect();
+        ((content.height as f32 / self.row_height()).floor() as usize).max(1)
+    }
+
+    /// The greatest first-row index that still fills the band.
+    ///
+    /// Distinct from [`Self::scroll`]'s `len - 1` bound on purpose: the wheel path lets the
+    /// last row reach the top because a notch is a small movement, while a *positioned*
+    /// scroll to the bottom has no reason to leave the band empty below the last row.
+    fn bottom_scroll_offset(&self) -> usize {
+        self.items.len().saturating_sub(self.viewport_rows())
+    }
+
+    /// Sets the first painted row, clamped so the band stays as full as it can.
+    fn set_scroll_offset(&mut self, offset: usize) -> bool {
+        let next = offset.min(self.bottom_scroll_offset());
+        if next == self.scroll_offset {
+            return false;
+        }
+        self.scroll_offset = next;
+        self.base.request_redraw();
+        true
+    }
+
+    /// Scrolls a row into view, or pins it, according to `mode`.
+    ///
+    /// A programmatic selection does not move the viewport by itself, so a host that calls
+    /// [`Self::select`] on row 200 of a long list left the user looking at row 0. This is the
+    /// public form of the navigation the keyboard and wheel paths already perform. An
+    /// out-of-range index is ignored, matching the other row mutators.
+    pub fn scroll_to_item(&mut self, index: usize, mode: ScrollToMode) {
+        if index >= self.items.len() {
+            return;
+        }
+        let rows = self.viewport_rows();
+        let target = match mode {
+            ScrollToMode::EnsureVisible => {
+                if index < self.scroll_offset {
+                    index
+                } else if index >= self.scroll_offset + rows {
+                    index + 1 - rows
+                } else {
+                    self.scroll_offset
+                }
+            }
+            ScrollToMode::PositionAtTop => index,
+            ScrollToMode::PositionAtCenter => index.saturating_sub(rows / 2),
+            ScrollToMode::PositionAtBottom => (index + 1).saturating_sub(rows),
+        };
+        self.set_scroll_offset(target);
+    }
+
+    /// Scrolls to the first row.
+    pub fn scroll_to_top(&mut self) {
+        self.set_scroll_offset(0);
+    }
+
+    /// Scrolls to the last full page, so the final row is visible.
+    pub fn scroll_to_bottom(&mut self) {
+        let target = self.bottom_scroll_offset();
+        self.set_scroll_offset(target);
+    }
 }
 // Implement Widget trait
 impl Widget for ListBox {
@@ -1065,6 +1261,11 @@ impl Widget for ListBox {
             "rename_requested" => {
                 Some(EventSignalRef::mapped("rename_requested", &self.rename_requested, |v| {
                     crate::widget::capability::CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "item_changed" => {
+                Some(EventSignalRef::mapped("item_changed", &self.item_changed, |v| {
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,
@@ -1509,7 +1710,10 @@ impl Draw for ListBox {
         // Read once so the loop body only compares integers.
         let current_row = self.current_row;
         let hovered_row = self.hovered_row;
-        for i in self.visible_range().0..self.visible_range().1 {
+        // One window read for the whole pass: the loop bound and the separator's last-row test
+        // both used to re-derive the same range.
+        let (visible_start, visible_end) = self.visible_range();
+        for i in visible_start..visible_end {
             let Some(row) = self.row_rect(i) else { continue };
             // Hover is painted *under* focus and selection: a row that is both hovered and chosen
             // keeps the stronger weight, so the persistent fact is not displaced by the pointer.
@@ -1568,7 +1772,7 @@ impl Draw for ListBox {
                     // The row's icon, when present, occupies the slot before the label.
                     if let Some(icon) = meta.and_then(|meta| meta.icon()) {
                         if !icon.is_empty() {
-                            let icon_width = context.measure_text(icon, &font).width as i32;
+                            let icon_width = self.icon_advance(context, i, icon, &font);
                             context.draw_text(
                                 Point::new(left, line.y),
                                 icon,
@@ -1614,7 +1818,7 @@ impl Draw for ListBox {
                 }
             }
             // A separator only belongs *between* rows, so it is skipped on the last visible one.
-            if i + 1 < self.visible_range().1 {
+            if i + 1 < visible_end {
                 let sep_y = row.y + row.height as i32;
                 context.draw_line(
                     Point::new(row.x, sep_y),

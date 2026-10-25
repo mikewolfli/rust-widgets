@@ -52,6 +52,9 @@ macro_rules! impl_properties_advanced {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("show_week_numbers", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("selection_mode", true, true, &["single", "multi", "range"]),
+            PropertySchema::new("selected_dates", PropertyValueKind::StringList, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -80,6 +83,7 @@ macro_rules! impl_properties_advanced {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated("time_format", true, true, &["12h", "24h"]),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -92,6 +96,8 @@ macro_rules! impl_properties_advanced {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("quick_access_items", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("quick_access_overflow_menu", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]

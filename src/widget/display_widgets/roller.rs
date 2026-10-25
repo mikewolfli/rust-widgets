@@ -43,8 +43,17 @@ pub struct Roller {
     /// A pointer press that may become a drag: the press's y coordinate and the selection
     /// it started from, in row terms.
     drag_origin: Option<(i32, usize)>,
+    /// Measured widths of `options` for the face and scale they were last measured under.
+    line_widths: Option<RollerWidthCache>,
     /// Signal emitted when selection changes.
     pub changed_signal: GenericSignal,
+}
+
+/// Cached option widths for one face and device scale.
+struct RollerWidthCache {
+    font: Font,
+    dpi_scale_bits: u32,
+    widths: Vec<u32>,
 }
 
 impl Roller {
@@ -71,6 +80,7 @@ impl Roller {
                 MotionCurve::Spring(SpringPreset::Settle),
             ),
             drag_origin: None,
+            line_widths: None,
             changed_signal: GenericSignal::new(),
         }
     }
@@ -83,6 +93,8 @@ impl Roller {
     /// Replaces the option list and clamps the selected index to the new range.
     pub fn set_options(&mut self, options: Vec<String>) {
         self.options = options;
+        // The cached widths describe the replaced list, so they cannot be reused.
+        self.line_widths = None;
         if !self.options.is_empty() {
             self.selected_index = self.selected_index.min(self.options.len() - 1);
         } else {
@@ -264,6 +276,24 @@ impl Roller {
     /// inside a row height scaled for 16 pt and clipped them.
     fn wheel_font(&self) -> Font {
         self.base.style().font.clone().unwrap_or_else(|| Font::simple("sans-serif", self.font_size))
+    }
+
+    /// Measures every option once per face, scale and list, so the draw pass does not
+    /// repeat the same `measure_text` for each visible row every frame.
+    fn refresh_line_widths(&mut self, context: &RenderContext, font: &Font) {
+        let dpi_scale_bits = context.dpi_scale().to_bits();
+        let unchanged = self.line_widths.as_ref().is_some_and(|cache| {
+            cache.dpi_scale_bits == dpi_scale_bits
+                && cache.font == *font
+                && cache.widths.len() == self.options.len()
+        });
+        if unchanged {
+            return;
+        }
+
+        let widths: Vec<u32> =
+            self.options.iter().map(|option| context.measure_text(option, font).width).collect();
+        self.line_widths = Some(RollerWidthCache { font: font.clone(), dpi_scale_bits, widths });
     }
 
     /// The total content height for all visible items.
@@ -550,10 +580,16 @@ impl Draw for Roller {
         // One source of truth for the drawn face (`wheel_font`): the inline choice here
         // could drift from the one `item_height` and `size_hint` measure with.
         let font = self.wheel_font();
+        // Measure the rows once for this face and list, then read the cached widths below.
+        self.refresh_line_widths(context, &font);
+        let line_widths = match self.line_widths.as_ref() {
+            Some(cache) if cache.widths.len() == self.options.len() => cache.widths.as_slice(),
+            _ => return,
+        };
         // `item_height` derives its row from the same font, so the wheel band cannot clip the
         // glyphs it draws (D09-STYLE-02).
 
-        // ── The wheel actually painted ──
+        // The wheel actually painted ──
         //
         // `rect` is the area the control was *given*; a wheel's own chrome is its rows,
         // `visible_count` of them at `ROLLER_ROW_HEIGHT` each. The band is the single
@@ -607,9 +643,8 @@ impl Draw for Roller {
                     context.fill_rect(highlight_rect, selected_bg);
                 }
 
-                // Draw the option text, measuring to center horizontally.
-                let metrics = context.measure_text(&self.options[idx], &font);
-                let text_x = center_x - (metrics.width as i32) / 2;
+                // Draw the option text, centred with the width cached for this face.
+                let text_x = center_x - (line_widths[idx] as i32) / 2;
                 // Vertically center the text in the row through the shared primitive: a
                 // glyph origin is the box's **top** edge, so `y - metrics.height / 2` put
                 // that edge on the row's middle line and drew every label half a line low.

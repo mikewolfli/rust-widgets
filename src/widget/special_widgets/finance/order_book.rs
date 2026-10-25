@@ -23,6 +23,7 @@
 //! make the two sides look like one series.
 
 use alloc::vec::Vec;
+use core::fmt::Write as _;
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
@@ -76,8 +77,21 @@ pub struct OrderBookWidget {
     bid_color: Color,
     ask_color: Color,
     hovered: Option<(BookSide, usize)>,
-    /// Rows whose quantity changed on the last book update, with their remaining flash alpha.
-    flashes: Vec<(BookSide, usize, u8)>,
+    /// Remaining flash alpha per level index, one entry per side. Zero means "no flash".
+    ///
+    /// An indexed collection rather than a list of `(side, index, alpha)` rows: `draw` asks
+    /// "does this row flash?" once per level, and searching a list made that a linear scan
+    /// per row. An index is O(1) and still carries the per-row alpha `tick` fades.
+    flash_bid: Vec<u8>,
+    flash_ask: Vec<u8>,
+    /// Running quantity total from the touch outward, one entry per displayed level of each side.
+    ///
+    /// Rebuilt when the book or the depth changes rather than once per frame; the ladder is
+    /// redrawn far more often than it is fed.
+    cumulative_bid: Vec<f64>,
+    cumulative_ask: Vec<f64>,
+    /// The largest cumulative total across both sides, used to scale cumulative bars.
+    cumulative_max: f64,
     /// Whether size bars show cumulative depth rather than the level's own quantity.
     cumulative_depth: bool,
     /// Which ladder is drawn above the spread rule.
@@ -101,7 +115,11 @@ impl OrderBookWidget {
             bid_color: Color::rgb(38, 166, 91),
             ask_color: Color::rgb(220, 68, 70),
             hovered: None,
-            flashes: Vec::new(),
+            flash_bid: Vec::new(),
+            flash_ask: Vec::new(),
+            cumulative_bid: Vec::new(),
+            cumulative_ask: Vec::new(),
+            cumulative_max: 0.0,
             cumulative_depth: false,
             side_order: BookSideOrder::default(),
             level_clicked: crate::signal::Signal1::new(),
@@ -123,20 +141,32 @@ impl OrderBookWidget {
     pub fn set_book(&mut self, book: OrderBook) {
         // Rows whose size changed flash, so an update is visible without the caller diffing
         // two books itself. The comparison is per side and index against the depth shown.
-        self.flashes.clear();
+        self.flash_bid.clear();
+        self.flash_ask.clear();
+        let depth = self.depth;
         for side in [BookSide::Bid, BookSide::Ask] {
-            let before = self.level_slice(side).to_vec();
+            let before = match side {
+                BookSide::Bid => self.book.bids(),
+                BookSide::Ask => self.book.asks(),
+            };
+            let before = &before[..before.len().min(depth)];
             let after = match side {
                 BookSide::Bid => book.bids(),
                 BookSide::Ask => book.asks(),
             };
+            let flashes = match side {
+                BookSide::Bid => &mut self.flash_bid,
+                BookSide::Ask => &mut self.flash_ask,
+            };
+            flashes.resize(before.len(), 0);
             for index in 0..after.len().min(before.len()) {
                 if (before[index].quantity - after[index].quantity).abs() > f64::EPSILON {
-                    self.flashes.push((side, index, 255));
+                    flashes[index] = 255;
                 }
             }
         }
         self.book = book;
+        self.rebuild_cumulative();
         if let Some((side, index)) = self.hovered {
             let count = match side {
                 BookSide::Bid => self.book.bids().len(),
@@ -188,7 +218,8 @@ impl OrderBookWidget {
 
     /// Returns whether any row is still flashing.
     pub fn is_flashing(&self) -> bool {
-        !self.flashes.is_empty()
+        self.flash_bid.iter().any(|alpha| *alpha > 0)
+            || self.flash_ask.iter().any(|alpha| *alpha > 0)
     }
 
     /// Sets how many levels per side to show.
@@ -201,6 +232,7 @@ impl OrderBookWidget {
             return;
         }
         self.depth = depth;
+        self.rebuild_cumulative();
         if let Some((_, index)) = self.hovered {
             if index >= depth {
                 self.hovered = None;
@@ -259,6 +291,36 @@ impl OrderBookWidget {
             BookSide::Ask => self.book.asks(),
         };
         &levels[..levels.len().min(self.depth)]
+    }
+
+    /// Recomputes the running depth totals the cumulative bars are scaled against.
+    ///
+    /// Called when the book or the visible depth changes. `draw` used to build a `BTreeMap`
+    /// over every level on every frame just to look totals up by index; the totals are a
+    /// prefix sum of the displayed levels, so two arrays hold them exactly.
+    fn rebuild_cumulative(&mut self) {
+        let depth = self.depth;
+        let bids = self.book.bids();
+        let asks = self.book.asks();
+        let bids = &bids[..bids.len().min(depth)];
+        let asks = &asks[..asks.len().min(depth)];
+        Self::fill_cumulative(&mut self.cumulative_bid, bids);
+        Self::fill_cumulative(&mut self.cumulative_ask, asks);
+        let peak = |totals: &[f64]| totals.iter().copied().fold(0.0f64, f64::max);
+        self.cumulative_max = peak(&self.cumulative_bid).max(peak(&self.cumulative_ask));
+    }
+
+    /// Prefix sums one side's displayed levels into `out`.
+    fn fill_cumulative(out: &mut Vec<f64>, levels: &[BookLevel]) {
+        out.clear();
+        out.reserve(levels.len());
+        let mut running = 0.0f64;
+        for level in levels {
+            if level.quantity.is_finite() && level.quantity > 0.0 {
+                running += level.quantity;
+            }
+            out.push(running);
+        }
     }
 
     /// The precision to draw prices at.
@@ -352,35 +414,62 @@ impl OrderBookWidget {
     }
 }
 
-/// Formats a price at a fixed number of decimals.
+/// Writes a price at a fixed number of decimals into `out`.
 ///
 /// Written out rather than using a dynamic-precision formatter, which the `alloc`-backed
 /// `format!` in this crate does not provide. Shared by the ladder's two columns so the
 /// price and the size cannot disagree about their alignment.
-fn format_price(value: f64, decimals: usize) -> alloc::string::String {
+fn write_price(value: f64, decimals: usize, out: &mut alloc::string::String) {
     if !value.is_finite() {
-        return alloc::string::String::from("—");
+        out.push('—');
+        return;
     }
     let factor = 10f64.powi(decimals as i32);
     let scaled = (value * factor).round() as i64;
-    let negative = scaled < 0;
-    let digits = scaled.unsigned_abs().to_string();
-    if decimals == 0 {
-        return if negative { alloc::format!("-{digits}") } else { digits };
+    if scaled < 0 {
+        out.push('-');
     }
-    let padded = if digits.len() <= decimals {
-        let mut padded = alloc::string::String::new();
-        for _ in 0..(decimals - digits.len()) {
-            padded.push('0');
+    let digits = scaled.unsigned_abs();
+    if decimals == 0 {
+        let _ = write!(out, "{digits}");
+        return;
+    }
+    let digits_len = price_digit_count(digits);
+    if digits_len <= decimals {
+        // Matches the padded form: "." followed by enough zeros to reach `decimals` places.
+        out.push('.');
+        for _ in 0..(decimals - digits_len) {
+            out.push('0');
         }
-        padded.push_str(&digits);
-        padded
+        let _ = write!(out, "{digits}");
     } else {
-        digits
-    };
-    let split = padded.len() - decimals;
-    let sign = if negative { "-" } else { "" };
-    alloc::format!("{sign}{}.{}", &padded[..split], &padded[split..])
+        let divisor = 10u64.pow(decimals as u32);
+        let whole = digits / divisor;
+        let fraction = digits % divisor;
+        let _ = write!(out, "{whole}.");
+        let fraction_digits = price_digit_count(fraction);
+        for _ in 0..(decimals - fraction_digits) {
+            out.push('0');
+        }
+        let _ = write!(out, "{fraction}");
+    }
+}
+
+/// The number of decimal digits in `value` (`0` has one).
+fn price_digit_count(mut value: u64) -> usize {
+    let mut digits = 1;
+    while value >= 10 {
+        value /= 10;
+        digits += 1;
+    }
+    digits
+}
+
+/// Formats a price at a fixed number of decimals, for callers that need an owned string.
+fn format_price(value: f64, decimals: usize) -> alloc::string::String {
+    let mut out = alloc::string::String::new();
+    write_price(value, decimals, &mut out);
+    out
 }
 
 impl Widget for OrderBookWidget {
@@ -399,21 +488,23 @@ impl Widget for OrderBookWidget {
 
     /// Fades the quantity-change flashes.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        if self.flashes.is_empty() {
+        if !self.is_flashing() {
             return false;
         }
         let decay = (delta_ms / 4).min(255) as u8;
-        for (_, _, alpha) in &mut self.flashes {
+        for alpha in &mut self.flash_bid {
             *alpha = alpha.saturating_sub(decay);
         }
-        self.flashes.retain(|(_, _, alpha)| *alpha > 0);
+        for alpha in &mut self.flash_ask {
+            *alpha = alpha.saturating_sub(decay);
+        }
         self.base.request_redraw();
         true
     }
 
     /// Whether a flash is still fading.
     fn is_animating(&self) -> bool {
-        !self.flashes.is_empty()
+        self.is_flashing()
     }
 
     impl_widget_property_hooks!();
@@ -569,22 +660,9 @@ impl Draw for OrderBookWidget {
         }
 
         let max_quantity = self.book.max_level_quantity();
-        // Cumulative depth per side: the running total from the touch outward, which is what
-        // the bar answers ("how much is available up to this price") when the mode is on.
-        let cumulative: alloc::collections::BTreeMap<(usize, usize), f64> = {
-            let mut map = alloc::collections::BTreeMap::new();
-            for (side_index, side) in [BookSide::Bid, BookSide::Ask].into_iter().enumerate() {
-                let mut running = 0.0f64;
-                for (index, level) in self.level_slice(side).iter().enumerate() {
-                    if level.quantity.is_finite() && level.quantity > 0.0 {
-                        running += level.quantity;
-                    }
-                    map.insert((side_index, index), running);
-                }
-            }
-            map
-        };
-        let cumulative_max = cumulative.values().copied().fold(0.0f64, f64::max);
+        // Cumulative depth per side is cached when the book or depth changes (see
+        // `rebuild_cumulative`), so a repaint only reads the two prefix-sum arrays. The bar
+        // answers "how much is available up to this price" when the mode is on.
         let row_height = self.row_height();
         let decimals = self.effective_decimals();
         // The size column occupies the middle band; prices sit outside it, so a long bar
@@ -599,6 +677,10 @@ impl Draw for OrderBookWidget {
         // One font for the ladder: `role_font` allocates its family `String`, and it was rebuilt
         // twice per level per frame.
         let level_font = role_font(self.style(), 11.0);
+        // Two buffers for the whole ladder: formatting a price and a quantity into them reuses
+        // the allocations instead of building two fresh `String`s for every level per frame.
+        let mut price_text = alloc::string::String::new();
+        let mut quantity_text = alloc::string::String::new();
         let mut row = 0;
         for (block, side) in [self.first_side(), self.second_side()].into_iter().enumerate() {
             let levels = self.level_slice(side);
@@ -619,29 +701,31 @@ impl Draw for OrderBookWidget {
                         hover_fill,
                     );
                 }
-                // A changed quantity flashes in its side's colour, fading as `tick` runs.
-                if let Some((_, _, alpha)) =
-                    self.flashes.iter().find(|(flash_side, flash_index, _)| {
-                        *flash_side == side && *flash_index == index
-                    })
-                {
+                // A changed quantity flashes in its side's colour, fading as `tick` runs. The
+                // alpha is indexed by level, so this is a lookup rather than a scan per row.
+                let flash_alpha = match side {
+                    BookSide::Bid => self.flash_bid.get(index).copied(),
+                    BookSide::Ask => self.flash_ask.get(index).copied(),
+                };
+                if let Some(alpha) = flash_alpha.filter(|alpha| *alpha > 0) {
                     let flash = if side == BookSide::Bid { self.bid_color } else { self.ask_color };
                     context.fill_rect(
                         Rect::new(geometry.x, y, geometry.width, row_height as u32),
-                        flash.with_alpha(*alpha),
+                        flash.with_alpha(alpha),
                     );
                 }
 
                 // The size bar, growing outward from the spine.
+                let cumulative = match side {
+                    BookSide::Bid => &self.cumulative_bid,
+                    BookSide::Ask => &self.cumulative_ask,
+                };
                 let size = if self.cumulative_depth {
-                    cumulative
-                        .get(&(usize::from(side == BookSide::Ask), index))
-                        .copied()
-                        .unwrap_or(level.quantity)
+                    cumulative.get(index).copied().unwrap_or(level.quantity)
                 } else {
                     level.quantity
                 };
-                let scale = if self.cumulative_depth { cumulative_max } else { max_quantity };
+                let scale = if self.cumulative_depth { self.cumulative_max } else { max_quantity };
                 if scale > 0.0 && size.is_finite() && size > 0.0 {
                     let length = ((size / scale) * bar_span as f64).round().max(1.0) as i32;
                     let (bar_x, bar_width) = match side {
@@ -654,12 +738,14 @@ impl Draw for OrderBookWidget {
                     );
                 }
 
-                let price_text = format_price(level.price, decimals);
-                let quantity_text = if level.quantity.is_finite() {
-                    alloc::format!("{:.0}", level.quantity)
+                price_text.clear();
+                write_price(level.price, decimals, &mut price_text);
+                quantity_text.clear();
+                if level.quantity.is_finite() {
+                    let _ = write!(quantity_text, "{:.0}", level.quantity);
                 } else {
-                    alloc::string::String::from("—")
-                };
+                    quantity_text.push('—');
+                }
 
                 // Price on the outer edge, quantity beside the bar, so the two columns
                 // align vertically across every row. Each is bounded to the gap it owns:

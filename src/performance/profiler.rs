@@ -44,8 +44,8 @@ impl Default for ProfileEntry {
 /// was started but never ended, and that abandoned interval is not recorded.
 /// Disabled instances make `begin`/`end`/`measure` no-ops.
 pub struct Profiler {
-    entries: HashMap<String, ProfileEntry>,
-    current: Option<(String, Instant)>,
+    entries: HashMap<&'static str, ProfileEntry>,
+    current: Option<(&'static str, Instant)>,
     enabled: bool,
 }
 impl Profiler {
@@ -68,11 +68,15 @@ impl Profiler {
     }
     /// Starts timing a section under `name`, replacing any section still open.
     /// No-op when the profiler is disabled.
-    pub fn begin(&mut self, name: &str) {
+    ///
+    /// `name` is `&'static str` because the profiler samples on the frame path: taking an owned
+    /// string copied the name on every `begin`, so the measurement facility was itself a source of
+    /// per-frame allocation (G-30). Section names are compile-time literals at every call site.
+    pub fn begin(&mut self, name: &'static str) {
         if !self.enabled {
             return;
         }
-        self.current = Some((name.to_string(), Instant::now()));
+        self.current = Some((name, Instant::now()));
     }
     /// Stops timing the open section and adds the elapsed wall-clock time to it.
     /// Does nothing if no section is open or the profiler is disabled.
@@ -89,7 +93,7 @@ impl Profiler {
     }
     /// Times a single call to `f` as section `name` and returns its result.
     /// The call is only recorded while the profiler is enabled; `f` itself always runs.
-    pub fn measure<F, R>(&mut self, name: &str, f: F) -> R
+    pub fn measure<F, R>(&mut self, name: &'static str, f: F) -> R
     where
         F: FnOnce() -> R,
     {
@@ -124,13 +128,16 @@ impl Profiler {
             .entries
             .iter()
             .filter(|(_, e)| e.duration >= threshold)
-            .map(|(name, e)| (name.as_str(), e.duration))
+            .map(|(name, e)| (*name, e.duration))
             .collect();
         hotspots.sort_by_key(|b| core::cmp::Reverse(b.1));
         hotspots
     }
     /// Borrows the raw section table, keyed by the name passed to `begin`.
-    pub fn get_all_stats(&self) -> &HashMap<String, ProfileEntry> {
+    ///
+    /// The key is `&'static str` because [`Profiler::begin`] takes one: the table stores the
+    /// caller's literal rather than a per-sample copy (G-30).
+    pub fn get_all_stats(&self) -> &HashMap<&'static str, ProfileEntry> {
         &self.entries
     }
     /// Drops all accumulated statistics and any section still open.
@@ -145,7 +152,7 @@ impl Profiler {
             .entries
             .iter()
             .map(|(name, entry)| ProfileReportEntry {
-                name: name.clone(),
+                name: (*name).to_string(),
                 total_duration: entry.duration,
                 call_count: entry.call_count,
                 average_duration: average_duration(entry.duration, entry.call_count)
@@ -368,7 +375,7 @@ impl PerformanceMonitor {
     /// Opens a section in both profilers; no-op while disabled. Because the
     /// frame profiler tracks one section at a time, this replaces any section
     /// that was opened but not closed.
-    pub fn begin_section(&mut self, name: &str) {
+    pub fn begin_section(&mut self, name: &'static str) {
         if self.enabled {
             self.frame_profiler.begin_section(name);
             self.profiler.begin(name);
@@ -383,7 +390,7 @@ impl PerformanceMonitor {
     }
     /// Times one call to `f` as a section and returns its result.
     /// `f` always runs, even while the monitor is disabled.
-    pub fn measure<F, R>(&mut self, name: &str, f: F) -> R
+    pub fn measure<F, R>(&mut self, name: &'static str, f: F) -> R
     where
         F: FnOnce() -> R,
     {
@@ -525,7 +532,7 @@ mod tests {
         let total = Duration::from_secs(4 * 1024); // 4096 s = 4_096_000_000_000 ns
         let calls: u64 = 1 << 32; // 2^32: the old `as u32` divisor was 0
         profiler.entries.insert(
-            "big".to_string(),
+            "big",
             ProfileEntry { start: Instant::now(), duration: total, call_count: calls },
         );
 

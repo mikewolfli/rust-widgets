@@ -423,3 +423,102 @@ fn freeform_shape_unit_custom_path_scales_with_the_widget() {
         );
     }
 }
+
+// ── ED-28 / ED-29 / ED-30 / ED-38 ──────────────────────────────────────────
+
+#[test]
+fn dragging_the_body_moves_the_shape_and_is_undoable() {
+    let mut shape = FreeformShapeWidget::new(Rect::new(0, 0, 100, 100), ShapePath::Heart);
+    let moves = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&moves);
+    shape.moved.connect(move |position| sink.lock().unwrap().push(*position));
+
+    shape.handle_event(&crate::event::Event::MousePress {
+        pos: Point::new(50, 50),
+        button: 1,
+        modifiers: 0,
+    });
+    shape.handle_event(&crate::event::Event::MouseMove { pos: Point::new(70, 80) });
+    assert_eq!(shape.geometry().x, 20);
+    assert_eq!(shape.geometry().y, 30);
+    shape.handle_event(&crate::event::Event::MouseRelease {
+        pos: Point::new(70, 80),
+        button: 1,
+    });
+
+    assert!(!moves.lock().unwrap().is_empty(), "a move must be reported");
+    assert!(shape.can_undo());
+    assert!(shape.undo());
+    assert_eq!(shape.geometry(), Rect::new(0, 0, 100, 100));
+    assert!(shape.redo());
+    assert_eq!(shape.geometry(), Rect::new(20, 30, 100, 100));
+}
+
+#[test]
+fn a_polygon_exposes_vertex_handles_and_supports_add_remove() {
+    let mut shape = FreeformShapeWidget::new(
+        Rect::new(0, 0, 100, 100),
+        ShapePath::Polygon(vec![Point::new(10, 10), Point::new(90, 10), Point::new(50, 90)]),
+    );
+    shape.set_editable(true);
+    let handles = shape.handle_rects();
+    assert_eq!(handles.len(), 3, "a polygon has one handle per vertex");
+    assert!(matches!(handles[0].0, super::shape::ShapeHandle::Vertex(0)));
+
+    assert!(shape.add_vertex(1, Point::new(50, 5)));
+    assert_eq!(shape.handle_rects().len(), 4);
+    assert!(shape.remove_vertex(1));
+    assert_eq!(shape.handle_rects().len(), 3);
+    assert!(!shape.remove_vertex(0), "a polygon never drops below three vertices");
+}
+
+#[test]
+fn dragging_a_vertex_updates_the_polygon() {
+    let mut shape = FreeformShapeWidget::new(
+        Rect::new(0, 0, 100, 100),
+        ShapePath::Polygon(vec![Point::new(10, 10), Point::new(90, 10), Point::new(50, 90)]),
+    );
+    shape.set_editable(true);
+    let changed = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&changed);
+    shape.vertex_changed.connect(move |event| sink.lock().unwrap().push(*event));
+
+    let handle = shape.handle_rects()[0].1;
+    let start = Point::new(handle.x + 4, handle.y + 4);
+    shape.handle_event(&crate::event::Event::MousePress {
+        pos: start,
+        button: 1,
+        modifiers: 0,
+    });
+    shape.handle_event(&crate::event::Event::MouseMove {
+        pos: Point::new(start.x + 20, start.y + 20),
+    });
+    shape.handle_event(&crate::event::Event::MouseRelease {
+        pos: Point::new(start.x + 20, start.y + 20),
+        button: 1,
+    });
+
+    let events = changed.lock().unwrap();
+    assert!(events.iter().any(|(index, _)| *index == 0));
+    match shape.path() {
+        ShapePath::Polygon(vertices) => assert_eq!(vertices[0], Point::new(30, 30)),
+        _ => panic!("the path is still a polygon"),
+    }
+}
+
+#[test]
+fn mouse_enter_does_not_claim_the_transparent_corner() {
+    let mut shape = FreeformShapeWidget::new(
+        Rect::new(0, 0, 100, 100),
+        ShapePath::Star { points: 5, inner_radius: 0.4 },
+    );
+    let states = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&states);
+    shape.hovered_changed.connect(move |hovered| sink.lock().unwrap().push(*hovered));
+
+    // The top-left corner of the bounding box is outside a five-point star.
+    shape.handle_event(&crate::event::Event::MouseEnter { pos: Point::new(0, 0) });
+    assert!(states.lock().unwrap().is_empty(), "no hover may be reported off-outline");
+    shape.handle_event(&crate::event::Event::MouseEnter { pos: Point::new(50, 50) });
+    assert_eq!(*states.lock().unwrap(), vec![true]);
+}

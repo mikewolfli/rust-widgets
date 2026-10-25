@@ -1096,6 +1096,12 @@ pub struct CodeEditorConfig {
     /// Allow `undo`/`redo` to run. When off, history is still recorded so a host
     /// can re-enable the commands without losing the session.
     pub undo_redo_enabled: bool,
+    /// Maximum number of undo steps retained per buffer.
+    ///
+    /// The previous behaviour used the stack's default of 100 with no way to
+    /// change it, so a host editing large files could neither deepen nor bound
+    /// the history it was paying for.
+    pub undo_stack_limit: usize,
     /// Draw a small marker in the gutter for bookmarked lines.
     pub show_bookmarks: bool,
     /// Animate the bracket-pair highlight (a short fade after it moves).
@@ -1140,6 +1146,7 @@ impl Default for CodeEditorConfig {
             placeholder_text: None,
             show_fold_summary: false,
             undo_redo_enabled: true,
+            undo_stack_limit: 100,
             show_bookmarks: true,
             animate_brackets: false,
             vector_gutter_marks: false,
@@ -1319,6 +1326,12 @@ impl CodeEditorConfig {
     /// Enables or disables the undo/redo commands.
     pub fn undo_redo_enabled(mut self, enabled: bool) -> Self {
         self.undo_redo_enabled = enabled;
+        self
+    }
+
+    /// Sets how many undo steps each buffer retains.
+    pub fn undo_stack_limit(mut self, limit: usize) -> Self {
+        self.undo_stack_limit = limit;
         self
     }
 

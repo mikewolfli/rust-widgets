@@ -121,6 +121,48 @@ impl Rating {
         self.max_rating
     }
 
+    /// Submits a hover-frame repaint bounded by the painted box plus the damage margin.
+    ///
+    /// A hover preview changes only the star row, so a mounted control submits the rectangle it
+    /// actually painted rather than asking for a whole-control redraw. An unmounted control
+    /// falls back to [`BaseWidget::request_redraw`], keeping the redraw signal contract for
+    /// host-owned controls; a frame in [`crate::widget::runtime::RepaintMode::Full`] keeps that
+    /// fallback too, exactly as `switch` does for its interaction frames.
+    fn request_frame_repaint(&self, bounds: Option<Rect>) {
+        let _ = bounds;
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                let narrow = crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full;
+                if narrow || bounds.is_none() {
+                    let damage = bounds
+                        .or_else(|| crate::widget::runtime::painted_box_with_damage_margin(id))
+                        .unwrap_or_else(|| self.damage_bounds());
+                    crate::widget::runtime::request_repaint_rect(id, damage);
+                    // The replaced `request_redraw` emitted this signal; keep it.
+                    self.base.redraw_requested.emit();
+                    return;
+                }
+            }
+        }
+        self.base.request_redraw();
+    }
+
+    /// This control's own rectangle grown by the shared damage margin.
+    #[cfg(not(alloc_frugal))]
+    fn damage_bounds(&self) -> Rect {
+        let rect = self.geometry();
+        let margin = crate::widget::metrics::DAMAGE_MARGIN;
+        let offset = margin as i32;
+        Rect::new(
+            rect.x.saturating_sub(offset),
+            rect.y.saturating_sub(offset),
+            rect.width.saturating_add(margin).saturating_add(margin),
+            rect.height.saturating_add(margin).saturating_add(margin),
+        )
+    }
+
     /// Sets the maximum rating value.
     /// The current rating is clamped to the new maximum.
     pub fn set_max_rating(&mut self, max_rating: u32) {
@@ -513,15 +555,19 @@ impl Draw for Rating {
                 height: star_side as u32,
             };
 
-            // The unselected star is always drawn first, so a partial star is a full outline with a
-            // filled portion inside it rather than a narrower star: a half-star is the same
-            // object as a whole one, seen half-rated.
-            crate::widget::draw_icon_at(context, icon_rect, empty_color, IconName::Star);
+            // A whole star needs no clip: the filled star exactly covers the outline. When the
+            // filled colour is fully opaque that also makes the outline layer redundant, so it
+            // is skipped; a translucent explicit colour still needs the outline underneath to
+            // keep the same pixels as before. A partial star always keeps the outline, because
+            // only the outline supplies the unrated remainder of the shape.
+            let whole_opaque = fill >= 1.0 && mark_color.a == 255;
+            if !whole_opaque {
+                crate::widget::draw_icon_at(context, icon_rect, empty_color, IconName::Star);
+            }
             if fill <= 0.0 {
                 continue;
             }
             if fill >= 1.0 {
-                // A whole star needs no clip: the filled star exactly covers the outline.
                 crate::widget::draw_icon_at(context, icon_rect, mark_color, IconName::Star);
                 continue;
             }
@@ -568,12 +614,13 @@ impl EventHandler for Rating {
                 let preview = self.star_index_at(*pos).map(|index| index + 1);
                 if self.hover_preview != preview {
                     self.hover_preview = preview;
-                    self.base.request_redraw();
+                    // Only the star row changed; the preview is a narrow, region-sized frame.
+                    self.request_frame_repaint(None);
                 }
             }
             Event::MouseLeave { .. } => {
                 if self.hover_preview.take().is_some() {
-                    self.base.request_redraw();
+                    self.request_frame_repaint(None);
                 }
             }
             Event::MouseRelease { pos, button } => {
@@ -607,7 +654,7 @@ impl EventHandler for Rating {
                     // no-op rather than an implicit "rate zero".
                     if let Some(count) = self.hover_preview.take() {
                         self.set_rating(count);
-                        self.base.request_redraw();
+                        self.request_frame_repaint(None);
                     }
                 }
                 _ => {}
@@ -802,12 +849,15 @@ mod tests {
         assert_eq!(clip_width, 12, "half of a 24 px cell: {svg}");
 
         // The `Star` outline is a two-contour compound shape, so each painted star is one `<path>`
-        // containing both contours. Three painted stars (two whole and the clipped half) use the
-        // filled colour, and five use the empty colour; every star keeps its outline.
+        // containing both contours. The two whole, opaque stars contribute one filled path each
+        // and no empty outline: an opaque fill covers every pixel the outline would have written,
+        // so painting the outline first was a redundant second pass. The clipped half star and
+        // the two unrated stars still need the outline (the half because it supplies the unrated
+        // remainder, the empty ones because that is all they paint).
         let filled = svg.matches("rgba(255,193,7,1.00)").count();
         let empty = svg.matches("rgba(63,63,63,1.00)").count();
         assert_eq!(filled, 3, "two whole stars and one clipped half: {svg}");
-        assert_eq!(empty, 5, "every star keeps its outline: {svg}");
+        assert_eq!(empty, 3, "the half star and the two unrated stars keep their outline: {svg}");
     }
 
     /// `star_size` is reachable from the contract, so the setter is no longer unreachable.

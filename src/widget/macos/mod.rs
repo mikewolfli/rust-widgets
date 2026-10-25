@@ -42,7 +42,7 @@ pub mod window_chrome;
 pub use segmented_control::MacSegmentedControl;
 pub use source_list::{MacSourceList, SourceListRow, SourceListSection};
 pub use stepper::MacStepper;
-pub use toolbar::{MacToolbar, MacToolbarItem};
+pub use toolbar::{MacToolbar, MacToolbarItem, ToolbarItemDisplayMode, ToolbarItemKind};
 pub use window_chrome::{MacWindowChrome, WindowChromeButton};
 
 mod shared;

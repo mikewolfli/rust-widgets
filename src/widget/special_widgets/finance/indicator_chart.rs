@@ -148,6 +148,8 @@ pub struct IndicatorChart {
     stochastic_periods: (usize, usize),
     show_reference_levels: bool,
     hovered_index: Option<usize>,
+    /// The bars shown, or `None` for every bar. Kept in step with the K-line pane by the host.
+    view: Option<(usize, usize)>,
     /// The values last computed, kept so a caller can read the numbers behind the picture
     /// without recomputing them — and so a tooltip and the drawn line cannot disagree.
     last_values: Vec<Vec<f64>>,
@@ -161,6 +163,8 @@ pub struct IndicatorChart {
     pub bar_clicked: crate::signal::Signal1<usize>,
     /// Emitted with the bar index as the pointer moves across bars.
     pub bar_hovered: crate::signal::Signal1<usize>,
+    /// Emitted with the visible `[start, end)` bar range after every view change.
+    pub view_changed: crate::signal::Signal1<(usize, usize)>,
 }
 
 impl IndicatorChart {
@@ -175,10 +179,12 @@ impl IndicatorChart {
             stochastic_periods: (3, 3),
             show_reference_levels: true,
             hovered_index: None,
+            view: None,
             last_values: Vec::new(),
             values_valid: false,
             bar_clicked: crate::signal::Signal1::new(),
             bar_hovered: crate::signal::Signal1::new(),
+            view_changed: crate::signal::Signal1::new(),
         }
     }
 
@@ -191,10 +197,50 @@ impl IndicatorChart {
     pub fn set_series(&mut self, series: PriceSeries) {
         self.series = series;
         self.values_valid = false;
+        self.view = self.clamped_view(self.view);
         if self.hovered_index.is_some_and(|index| index >= self.series.len()) {
             self.hovered_index = None;
         }
         self.base.request_redraw();
+    }
+
+    /// The visible bar range, or `None` when every bar is shown.
+    pub fn view_range(&self) -> Option<(usize, usize)> {
+        self.view
+    }
+
+    /// Restricts the pane to `range`, the same contract the K-line pane uses.
+    pub fn set_view_range(&mut self, range: Option<(usize, usize)>) {
+        let range = self.clamped_view(range);
+        if self.view == range {
+            return;
+        }
+        self.view = range;
+        let (start, end) = self.view_bounds();
+        self.view_changed.emit((start, end));
+        self.base.request_redraw();
+    }
+
+    /// Restores the full series view.
+    pub fn reset_view(&mut self) {
+        self.set_view_range(None);
+    }
+
+    fn clamped_view(&self, range: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        range.map(|(start, end)| {
+            let total = self.series.len();
+            let start = start.min(total.saturating_sub(1));
+            let end = end.clamp(start + 1, total.max(start + 1));
+            (start, end)
+        })
+    }
+
+    /// The visible `(start, end)` bar indices.
+    fn view_bounds(&self) -> (usize, usize) {
+        match self.view {
+            Some((start, end)) => (start.min(self.series.len()), end.min(self.series.len())),
+            None => (0, self.series.len()),
+        }
     }
 
     /// The active mode.
@@ -374,14 +420,15 @@ impl IndicatorChart {
     }
 
     /// The axis range for the active mode.
-    fn axis_range(&self, series: &[PaneSeries]) -> (f64, f64) {
+    fn axis_range(&self, series: &[PaneSeries], start: usize, end: usize) -> (f64, f64) {
         if let Some(fixed) = self.mode.fixed_range() {
             return fixed;
         }
         let mut low = f64::INFINITY;
         let mut high = f64::NEG_INFINITY;
         for pane in series {
-            let (series_low, series_high) = indicators::series_extent(&pane.values);
+            let visible = &pane.values[start.min(pane.values.len())..end.min(pane.values.len())];
+            let (series_low, series_high) = indicators::series_extent(visible);
             if series_low.is_finite() {
                 low = low.min(series_low);
             }
@@ -432,14 +479,17 @@ impl IndicatorChart {
         pane: &PaneSeries,
         index_axis: &IndexAxis,
         price_axis: &PriceAxis,
+        start: usize,
+        end: usize,
     ) {
         let mut previous: Option<(i32, i32)> = None;
-        for (index, value) in pane.values.iter().enumerate() {
-            if !value.is_finite() || index >= index_axis.count {
+        let visible = &pane.values[start.min(pane.values.len())..end.min(pane.values.len())];
+        for (offset, value) in visible.iter().enumerate() {
+            if !value.is_finite() || offset >= index_axis.count {
                 previous = None;
                 continue;
             }
-            let point = (index_axis.center_for(index), price_axis.y_for(*value));
+            let point = (index_axis.center_for(offset), price_axis.y_for(*value));
             if let Some(from) = previous {
                 context.draw_line_stroke(
                     Point { x: from.0, y: from.1 },
@@ -463,6 +513,8 @@ impl IndicatorChart {
         series: &[PaneSeries],
         index_axis: &IndexAxis,
         price_axis: &PriceAxis,
+        start: usize,
+        end: usize,
     ) {
         if self.mode != IndicatorMode::Macd {
             return;
@@ -472,15 +524,17 @@ impl IndicatorChart {
         };
         let zero_y = price_axis.y_for(0.0);
         let body_width = index_axis.body_width();
-        for (index, value) in histogram.values.iter().enumerate() {
-            if !value.is_finite() || index >= index_axis.count {
+        let visible =
+            &histogram.values[start.min(histogram.values.len())..end.min(histogram.values.len())];
+        for (offset, value) in visible.iter().enumerate() {
+            if !value.is_finite() || offset >= index_axis.count {
                 continue;
             }
             let y = price_axis.y_for(*value);
             let top = y.min(zero_y);
             let height = (y - zero_y).unsigned_abs().max(1);
             context.fill_rect(
-                Rect::new(index_axis.x_for(index), top, body_width as u32, height),
+                Rect::new(index_axis.x_for(offset), top, body_width as u32, height),
                 if *value >= 0.0 { Color::rgb(38, 166, 91) } else { Color::rgb(220, 68, 70) },
             );
         }
@@ -603,6 +657,14 @@ impl Widget for IndicatorChart {
             "bar_hovered" => Some(EventSignalRef::mapped("bar_hovered", &self.bar_hovered, |v| {
                 CapabilityValue::UInt(*v as u64)
             })),
+            "view_changed" => {
+                Some(EventSignalRef::mapped("view_changed", &self.view_changed, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }
@@ -614,8 +676,12 @@ impl crate::event::EventHandler for IndicatorChart {
         match event {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
                 let area = self.plot_area();
-                let index_axis = area.index_axis(self.series.len());
-                let next = index_axis.index_at(pos.x).filter(|index| *index < self.series.len());
+                let (start, end) = self.view_bounds();
+                let index_axis = area.index_axis(end.saturating_sub(start));
+                let next = index_axis
+                    .index_at(pos.x)
+                    .map(|index| start + index)
+                    .filter(|index| *index < end);
                 if next != self.hovered_index {
                     if let Some(index) = next {
                         self.bar_hovered.emit(index);
@@ -629,9 +695,12 @@ impl crate::event::EventHandler for IndicatorChart {
             }
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
                 let area = self.plot_area();
-                let index_axis = area.index_axis(self.series.len());
-                if let Some(index) =
-                    index_axis.index_at(pos.x).filter(|index| *index < self.series.len())
+                let (start, end) = self.view_bounds();
+                let index_axis = area.index_axis(end.saturating_sub(start));
+                if let Some(index) = index_axis
+                    .index_at(pos.x)
+                    .map(|index| start + index)
+                    .filter(|index| *index < end)
                 {
                     self.bar_clicked.emit(index);
                 }
@@ -665,9 +734,10 @@ impl Draw for IndicatorChart {
         } else {
             self.pane_series()
         };
-        let (low, high) = self.axis_range(&series);
+        let (start, end) = self.view_bounds();
+        let (low, high) = self.axis_range(&series, start, end);
         let price_axis = area.price_axis(low, high);
-        let index_axis = area.index_axis(self.series.len());
+        let index_axis = area.index_axis(end.saturating_sub(start));
 
         // The scale's gridlines, under everything: an oscillator is read against its bands
         // and against zero, so a reading with no gridlines to line up with is a guess.
@@ -683,7 +753,7 @@ impl Draw for IndicatorChart {
         }
 
         // The histogram first, so the lines are drawn over it.
-        self.draw_histogram(context, &series, &index_axis, &price_axis);
+        self.draw_histogram(context, &series, &index_axis, &price_axis, start, end);
 
         if self.show_reference_levels {
             for level in self.mode.reference_levels() {
@@ -695,13 +765,13 @@ impl Draw for IndicatorChart {
         // trace a column chart with a polyline and make both harder to read.
         let line_count = if self.mode == IndicatorMode::Macd { 2 } else { series.len() };
         for pane in series.iter().take(line_count) {
-            Self::draw_series(context, pane, &index_axis, &price_axis);
+            Self::draw_series(context, pane, &index_axis, &price_axis, start, end);
         }
 
         self.draw_labels(context, &area, &price_axis);
 
-        if let Some(index) = self.hovered_index.filter(|index| *index < self.series.len()) {
-            let x = index_axis.center_for(index);
+        if let Some(index) = self.hovered_index.filter(|index| *index >= start && *index < end) {
+            let x = index_axis.center_for(index - start);
             context.draw_line_stroke(
                 Point { x, y: area.rect.y },
                 Point { x, y: area.bottom() },
@@ -845,6 +915,30 @@ mod tests {
     }
 
     /// MACD is the default mode, as it is the most common secondary pane.
+    /// The indicator pane accepts the same view range the K-line pane publishes.
+    #[test]
+    fn a_view_range_restricts_the_indicator_and_reports_changes() {
+        let mut chart = IndicatorChart::new(Rect::new(0, 0, 240, 80));
+        let mut series = PriceSeries::new();
+        for value in [1.0, 2.0, 3.0, 4.0, 5.0] {
+            series.push(Bar::flat(value, 0.0));
+        }
+        chart.set_series(series);
+        chart.set_period(2);
+        chart.set_mode(IndicatorMode::Rsi);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        chart.view_changed.connect(move |range| sink.lock().unwrap().push(*range));
+
+        chart.set_view_range(Some((1, 4)));
+        assert_eq!(chart.view_range(), Some((1, 4)));
+        assert_eq!(*seen.lock().unwrap(), vec![(1, 4)]);
+        // Computing still returns full-length series; only the painted window is restricted.
+        assert_eq!(chart.compute()[0].len(), 5);
+        chart.reset_view();
+        assert_eq!(*seen.lock().unwrap(), vec![(1, 4), (0, 5)]);
+    }
+
     #[test]
     fn macd_is_the_default_mode() {
         let chart = IndicatorChart::new(Rect::new(0, 0, 480, 160));

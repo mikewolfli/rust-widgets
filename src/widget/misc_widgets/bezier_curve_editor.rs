@@ -121,6 +121,37 @@ impl BezierCurveEditor {
         }
     }
 
+    /// Resets the curve to the editor's default ease-in-out shape.
+    ///
+    /// Emits `curve_changed` once when the values actually change.
+    pub fn reset(&mut self) {
+        let old = (self.control_point1, self.control_point2);
+        self.control_point1 = (0.25, 0.1);
+        self.control_point2 = (0.75, 0.9);
+        if old != (self.control_point1, self.control_point2) {
+            self.emit_curve_changed();
+            self.base.request_redraw();
+        }
+    }
+
+    /// Replaces both control points at once.
+    ///
+    /// A cubic Bézier is defined by exactly two control points, so any other length is
+    /// refused with [`CapabilityAccessError::OutOfRange`] rather than silently truncated.
+    pub fn set_points(&mut self, points: &[(f32, f32)]) -> Result<(), CapabilityAccessError> {
+        if points.len() != 2 {
+            return Err(CapabilityAccessError::OutOfRange);
+        }
+        let old = (self.control_point1, self.control_point2);
+        self.control_point1 = (points[0].0.clamp(0.0, 1.0), points[0].1.clamp(0.0, 1.0));
+        self.control_point2 = (points[1].0.clamp(0.0, 1.0), points[1].1.clamp(0.0, 1.0));
+        if old != (self.control_point1, self.control_point2) {
+            self.emit_curve_changed();
+            self.base.request_redraw();
+        }
+        Ok(())
+    }
+
     /// Enables or disables mirrored control handles.
     ///
     /// Symmetry is opt-in: an editor for an asymmetric easing curve must be able to place
@@ -899,5 +930,19 @@ mod tests {
         assert_eq!(editor.hovered_handle, None);
         let cleared = crate::widget::svg::render_to_svg(&mut editor);
         assert_eq!(cleared, idle, "moving off every handle must restore the idle frame");
+    }
+
+    #[test]
+    fn reset_and_set_points_restore_named_curve_states() {
+        let mut editor = BezierCurveEditor::new(Rect::new(0, 0, 200, 200));
+        editor.set_control_point1(0.1, 0.2);
+        editor.reset();
+        assert_eq!(editor.control_point1(), (0.25, 0.1));
+        assert_eq!(editor.control_point2(), (0.75, 0.9));
+
+        editor.set_points(&[(0.2, 0.3), (0.8, 0.7)]).expect("two points are a cubic");
+        assert_eq!(editor.control_point1(), (0.2, 0.3));
+        assert_eq!(editor.control_point2(), (0.8, 0.7));
+        assert_eq!(editor.set_points(&[(0.5, 0.5)]), Err(CapabilityAccessError::OutOfRange));
     }
 }

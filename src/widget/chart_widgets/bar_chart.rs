@@ -166,12 +166,41 @@ pub struct BarChart {
     value_from_series: Vec<Vec<f64>>,
     /// The plot area from the last paint, reused for hit testing.
     last_plot_area: Option<Rect>,
+    /// Cached y-axis label width; `None` until the first measured paint.
+    #[cfg(feature = "chart")]
+    y_label_cache: Option<YAxisLabelCache>,
     /// Emitted with the category index under the pointer when hover enters a bar.
     pub bar_hovered: Signal1<usize>,
     /// Emitted with the category index when the pointer leaves a bar.
     pub bar_unhovered: Signal1<usize>,
     /// Emitted with the category index of a clicked bar.
     pub bar_clicked: Signal1<usize>,
+}
+
+/// Cached width of the widest y-axis tick label.
+///
+/// The measurement depends only on the tick values (which the y range fixes), the
+/// control width, the font, and the backend's DPI scale, so those form the key.
+#[cfg(feature = "chart")]
+struct YAxisLabelCache {
+    y_min_bits: u64,
+    y_max_bits: u64,
+    width: u32,
+    dpi_bits: u32,
+    font: Font,
+    widest: u32,
+}
+
+#[cfg(feature = "chart")]
+impl YAxisLabelCache {
+    /// Whether this cache still describes the requested measurement.
+    fn matches(&self, y_min: f64, y_max: f64, width: u32, dpi_scale: f32, font: &Font) -> bool {
+        self.y_min_bits == y_min.to_bits()
+            && self.y_max_bits == y_max.to_bits()
+            && self.width == width
+            && self.dpi_bits == dpi_scale.to_bits()
+            && &self.font == font
+    }
 }
 
 /// Font size of the value label drawn above each bar, in points.
@@ -187,6 +216,42 @@ const LABEL_GAP: i32 = 4;
 const LABEL_ROW_TOP: i32 = 12;
 
 impl BarChart {
+    /// Width of the widest y-axis tick label.
+    ///
+    /// Measures only when the y range, the control width, the font or the DPI scale
+    /// changes; every other paint reuses the width the previous one measured.
+    #[cfg(feature = "chart")]
+    fn widest_y_label(
+        &mut self,
+        context: &RenderContext,
+        y_min: f64,
+        y_max: f64,
+        width: u32,
+        font: Font,
+    ) -> f32 {
+        let dpi_scale = context.dpi_scale();
+        if let Some(cache) = self.y_label_cache.as_ref() {
+            if cache.matches(y_min, y_max, width, dpi_scale, &font) {
+                return cache.widest as f32;
+            }
+        }
+        let mut widest = 0u32;
+        for step in 0..=4 {
+            let value = y_min + (y_max - y_min) * f64::from(step) / 4.0;
+            let label = format!("{value:.1}");
+            widest = widest.max(context.measure_text(&label, &font).width);
+        }
+        self.y_label_cache = Some(YAxisLabelCache {
+            y_min_bits: y_min.to_bits(),
+            y_max_bits: y_max.to_bits(),
+            width,
+            dpi_bits: dpi_scale.to_bits(),
+            font,
+            widest,
+        });
+        widest as f32
+    }
+
     /// Creates a new BarChart widget with the given geometry.
     ///
     /// Defaults: blue bars, spacing 0.2 (20% of bar slot), values shown, grid enabled.
@@ -214,6 +279,8 @@ impl BarChart {
             value_from_bars: Vec::new(),
             value_from_series: Vec::new(),
             last_plot_area: None,
+            #[cfg(feature = "chart")]
+            y_label_cache: None,
             bar_hovered: Signal1::new(),
             bar_unhovered: Signal1::new(),
             bar_clicked: Signal1::new(),
@@ -801,6 +868,31 @@ impl Widget for BarChart {
             || (self.animate_value_changes && self.value_transition.is_moving())
     }
 
+    /// Resolves a published event name to the signal this chart actually emits.
+    ///
+    /// The capability publishes all three names with a `UInt` payload, and the
+    /// control carries the category index as a `usize`, so the conversion is the
+    /// widening that keeps the subscriber's number identical to the emitted one.
+    /// Without these arms the names would validate in `connect_event` and then
+    /// never reach a signal.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "bar_clicked" => Some(EventSignalRef::mapped("bar_clicked", &self.bar_clicked, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
+            "bar_hovered" => Some(EventSignalRef::mapped("bar_hovered", &self.bar_hovered, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
+            "bar_unhovered" => {
+                Some(EventSignalRef::mapped("bar_unhovered", &self.bar_unhovered, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            _ => None,
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -853,12 +945,7 @@ impl Draw for BarChart {
         let plot_area = {
             let widest_y_label = {
                 let font = role_font(self.base.style(), 10.0);
-                let mut widest = 0u32;
-                for step in 0..=4 {
-                    let value = y_min + (y_max - y_min) * f64::from(step) / 4.0;
-                    widest = widest.max(context.measure_text(&format!("{value:.1}"), &font).width);
-                }
-                widest as f32
+                self.widest_y_label(context, y_min, y_max, rect.width, font)
             };
             let legend_items = if self.show_legend { self.series.len() } else { 0 };
             let layout =
@@ -1327,6 +1414,17 @@ impl EventHandler for BarChart {
 mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
+
+    /// Every name the capability publishes must resolve, and a name it does not
+    /// publish must stay unresolved — a dead arm reads as support it does not have.
+    #[test]
+    fn published_bar_events_resolve_to_signals() {
+        let chart = BarChart::new(Rect::new(0, 0, 300, 200));
+        for name in ["bar_clicked", "bar_hovered", "bar_unhovered"] {
+            assert!(chart.event_signal_dyn(name).is_some(), "{name} must resolve");
+        }
+        assert!(chart.event_signal_dyn("no_such_event").is_none());
+    }
 
     #[test]
     fn bar_chart_default_creation() {

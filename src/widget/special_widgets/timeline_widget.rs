@@ -28,6 +28,42 @@ pub struct TimelineItem {
     pub end: i64,
 }
 
+/// How items are assigned to rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TimelineLaneMode {
+    /// One row per item, in list order.
+    #[default]
+    Row,
+    /// Overlapping items share a row: each item takes the first lane whose previous item has
+    /// already ended, so a dense timeline stays as short as its overlap requires.
+    LanePacked,
+}
+
+impl TimelineLaneMode {
+    /// The token this mode is published under.
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Row => "row",
+            Self::LanePacked => "lane_packed",
+        }
+    }
+
+    /// Parses a published token; `None` for an unknown spelling.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "row" => Some(Self::Row),
+            "lane_packed" => Some(Self::LanePacked),
+            _ => None,
+        }
+    }
+}
+
+/// Height of the time-label header, in pixels.
+const TIME_LABEL_HEIGHT: u32 = 16;
+
+/// How many intervals the time-label header is divided into.
+const TIME_LABEL_TICKS: u32 = 4;
+
 impl TimelineItem {
     /// Creates a timeline item.
     pub fn new(id: impl Into<String>, label: impl Into<String>, start: i64, end: i64) -> Self {
@@ -53,8 +89,16 @@ pub struct TimelineWidget {
     animate_entry: bool,
     /// The entry animation's progress.
     reveal: PropertyDriver,
+    /// Whether the time-label header is drawn above the rows.
+    show_time_labels: bool,
+    /// How items are assigned to rows.
+    lane_mode: TimelineLaneMode,
     /// Emitted when selected item changes. Payload is selected item id.
     pub item_selected: Signal1<String>,
+    /// Emitted when the visible time range changes. Payload is `(start, end)`.
+    pub viewport_changed: Signal1<(i64, i64)>,
+    /// Emitted when the item under the pointer changes; `None` when the pointer leaves.
+    pub item_hovered: Signal1<Option<String>>,
 }
 
 impl TimelineWidget {
@@ -72,7 +116,11 @@ impl TimelineWidget {
             now: None,
             animate_entry: false,
             reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
+            show_time_labels: false,
+            lane_mode: TimelineLaneMode::Row,
             item_selected: Signal1::new(),
+            viewport_changed: Signal1::new(),
+            item_hovered: Signal1::new(),
         }
     }
 
@@ -100,13 +148,102 @@ impl TimelineWidget {
 
     /// Scrolls the visible rows by `delta`.
     pub fn scroll_by(&mut self, delta: isize) {
-        let max = self.items.len().saturating_sub(self.visible_count());
+        let max = self.lane_count().saturating_sub(self.visible_count());
         let next = (self.scroll_offset as isize + delta).clamp(0, max as isize) as usize;
         if self.scroll_offset == next {
             return;
         }
         self.scroll_offset = next;
         self.base.request_redraw();
+    }
+
+    /// Whether the time-label header is drawn.
+    pub fn show_time_labels(&self) -> bool {
+        self.show_time_labels
+    }
+
+    /// Shows or hides the time-label header.
+    ///
+    /// The header is opt-in because it shifts every lane down by its own height: a timeline that
+    /// sits in a tight card keeps its pixel layout until it asks for the scale.
+    pub fn set_show_time_labels(&mut self, show: bool) {
+        if self.show_time_labels == show {
+            return;
+        }
+        self.show_time_labels = show;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns the row assignment mode.
+    pub fn lane_mode(&self) -> TimelineLaneMode {
+        self.lane_mode
+    }
+
+    /// Sets the row assignment mode.
+    pub fn set_lane_mode(&mut self, mode: TimelineLaneMode) {
+        if self.lane_mode == mode {
+            return;
+        }
+        self.lane_mode = mode;
+        // A different packing changes how many rows there are, so the scroll offset and the grid
+        // the pointer maps through must both be recomputed.
+        self.scroll_offset = self.scroll_offset.min(self.lane_count().saturating_sub(1));
+        self.hovered_index = None;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The rows of the current mode: each row is the item indices it holds.
+    ///
+    /// # Why lanes are derived rather than stored
+    ///
+    /// The packing is a pure function of the item list and the mode. Storing it would need
+    /// invalidation on every item edit, which is the class of bug a derivation cannot have; the list
+    /// is small enough that an O(items × lanes) pass is not the paint's cost.
+    fn lanes(&self) -> Vec<Vec<usize>> {
+        match self.lane_mode {
+            TimelineLaneMode::Row => (0..self.items.len()).map(|index| vec![index]).collect(),
+            TimelineLaneMode::LanePacked => {
+                let mut lanes: Vec<Vec<usize>> = Vec::new();
+                // The end of the last item placed in each lane: a new item overlaps the lane when
+                // it starts no later than that end.
+                let mut ends: Vec<i64> = Vec::new();
+                for (index, item) in self.items.iter().enumerate() {
+                    let mut placed = false;
+                    for (lane, end) in ends.iter_mut().enumerate() {
+                        if *end < item.start {
+                            *end = item.end;
+                            lanes[lane].push(index);
+                            placed = true;
+                            break;
+                        }
+                    }
+                    if !placed {
+                        ends.push(item.end);
+                        lanes.push(vec![index]);
+                    }
+                }
+                lanes
+            }
+        }
+    }
+
+    /// The number of rows the current mode lays out.
+    fn lane_count(&self) -> usize {
+        match self.lane_mode {
+            TimelineLaneMode::Row => self.items.len(),
+            TimelineLaneMode::LanePacked => self.lanes().len(),
+        }
+    }
+
+    /// The header height the time labels reserve.
+    fn axis_height(&self) -> u32 {
+        if self.show_time_labels {
+            TIME_LABEL_HEIGHT
+        } else {
+            0
+        }
     }
 
     /// Enables the bar entry animation.
@@ -176,6 +313,9 @@ impl TimelineWidget {
         }
         self.viewport_start = start;
         self.viewport_end = end;
+        // The range is what every bar is projected through, so a zoom changes the picture. It used
+        // to change silently, which left a host with no way to keep a linked axis in step.
+        self.viewport_changed.emit((start, end));
         self.base.request_redraw();
     }
 
@@ -225,27 +365,27 @@ impl TimelineWidget {
     }
 
     fn recompute_viewport(&mut self) {
-        if self.items.is_empty() {
-            self.viewport_start = 0;
-            self.viewport_end = 100;
-            return;
-        }
-
-        let mut min_start = i64::MAX;
-        let mut max_end = i64::MIN;
-        for item in &self.items {
-            min_start = min_start.min(item.start);
-            max_end = max_end.max(item.end);
-        }
-        if min_start >= max_end {
-            max_end = min_start + 1;
-        }
-        self.viewport_start = min_start;
-        self.viewport_end = max_end;
+        let (start, end) = if self.items.is_empty() {
+            (0, 100)
+        } else {
+            let mut min_start = i64::MAX;
+            let mut max_end = i64::MIN;
+            for item in &self.items {
+                min_start = min_start.min(item.start);
+                max_end = max_end.max(item.end);
+            }
+            if min_start >= max_end {
+                max_end = min_start + 1;
+            }
+            (min_start, max_end)
+        };
+        self.viewport_start = start;
+        self.viewport_end = end;
+        self.viewport_changed.emit((start, end));
     }
 
     fn visible_count(&self) -> usize {
-        let height = self.base.geometry().height as usize;
+        let height = self.base.geometry().height.saturating_sub(self.axis_height()) as usize;
         let row_h = self.row_height as usize;
         if row_h == 0 {
             return 0;
@@ -253,6 +393,7 @@ impl TimelineWidget {
         (height / row_h).max(1)
     }
 
+    /// The visual row under `pos`.
     fn row_at(&self, pos: Point) -> Option<usize> {
         let rect = self.geometry();
         if pos.x < rect.x
@@ -262,8 +403,46 @@ impl TimelineWidget {
         {
             return None;
         }
-        let index = ((pos.y - rect.y) / self.row_height as i32) as usize + self.scroll_offset;
-        (index < self.items.len().min(self.visible_count() + self.scroll_offset)).then_some(index)
+        // The header is above the rows, so a point in it addresses none of them.
+        let body_top = rect.y + self.axis_height() as i32;
+        if pos.y < body_top {
+            return None;
+        }
+        let row = ((pos.y - body_top) / self.row_height as i32) as usize;
+        let index = row + self.scroll_offset;
+        (index < self.lane_count().min(self.visible_count() + self.scroll_offset)).then_some(index)
+    }
+
+    /// The **item** under `pos`.
+    ///
+    /// In row mode that is the row's item. In lane mode a row holds several items, so the one whose
+    /// bar covers the pointer wins; a press in the lane's empty space addresses the first item of
+    /// the lane rather than nothing, which keeps a packed timeline selectable by row.
+    fn item_at(&self, pos: Point) -> Option<usize> {
+        let lane = self.row_at(pos)?;
+        let lanes = self.lanes();
+        let members = lanes.get(lane)?;
+        let (track_x, track_w) = self.track_geometry();
+        for index in members {
+            let item = self.items.get(*index)?;
+            let x0 = self.project_x(item.start, track_x, track_w);
+            let x1 = self.project_x(item.end, track_x, track_w).max(x0 + 2);
+            if pos.x >= x0 - 2 && pos.x <= x1 + 2 {
+                return Some(*index);
+            }
+        }
+        members.first().copied()
+    }
+
+    /// The time track's left edge and width.
+    fn track_geometry(&self) -> (i32, u32) {
+        let rect = self.geometry();
+        (
+            rect.x + dimensions::CHART_LABEL_GUTTER,
+            rect.width.saturating_sub(
+                dimensions::CHART_LABEL_GUTTER as u32 + dimensions::CHART_TRACK_MARGIN as u32,
+            ),
+        )
     }
 
     fn project_x(&self, value: i64, track_x: i32, track_w: u32) -> i32 {
@@ -328,6 +507,20 @@ impl Widget for TimelineWidget {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "viewport_changed" => {
+                Some(EventSignalRef::mapped("viewport_changed", &self.viewport_changed, |v| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::Int(v.0),
+                        CapabilityValue::Int(v.1),
+                    ])
+                }))
+            }
+            "item_hovered" => {
+                Some(EventSignalRef::mapped("item_hovered", &self.item_hovered, |v| match v {
+                    Some(id) => CapabilityValue::String(id.clone()),
+                    None => CapabilityValue::Null,
+                }))
+            }
             _ => None,
         }
     }
@@ -350,6 +543,8 @@ impl WidgetProperties for TimelineWidget {
             "viewport_start" => Ok(CapabilityValue::Int(self.viewport().0)),
             "viewport_end" => Ok(CapabilityValue::Int(self.viewport().1)),
             "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            "show_time_labels" => Ok(CapabilityValue::Bool(self.show_time_labels())),
+            "lane_mode" => Ok(CapabilityValue::String(self.lane_mode().token().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -383,6 +578,24 @@ impl WidgetProperties for TimelineWidget {
                 }
                 _ => Err(CapabilityAccessError::TypeMismatch),
             },
+            "show_time_labels" => {
+                let show = match value {
+                    CapabilityValue::Bool(show) => show,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_show_time_labels(show);
+                Ok(())
+            }
+            "lane_mode" => {
+                let token = match value {
+                    CapabilityValue::String(token) => token,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                let mode = TimelineLaneMode::from_token(&token)
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_lane_mode(mode);
+                Ok(())
+            }
             "item_count" | "selected_index" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
@@ -395,6 +608,8 @@ impl WidgetProperties for TimelineWidget {
             "viewport_start",
             "viewport_end",
             "row_height",
+            "show_time_labels",
+            "lane_mode",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -429,21 +644,25 @@ impl EventHandler for TimelineWidget {
         match event {
             Event::MouseMove { pos } => {
                 // Hover is painted (the hovered row takes `hovered_background`), so it must
-                // repaint — and only when the hovered row actually changes. Without this the
+                // repaint — and only when the hovered item actually changes. Without this the
                 // highlight lagged until an unrelated event repainted.
-                let hovered = self.row_at(*pos);
+                let hovered = self.item_at(*pos);
                 if hovered != self.hovered_index {
                     self.hovered_index = hovered;
+                    self.item_hovered.emit(
+                        hovered.and_then(|index| self.items.get(index)).map(|item| item.id.clone()),
+                    );
                     self.base.request_redraw();
                 }
             }
             Event::MouseLeave { .. } => {
                 if self.hovered_index.take().is_some() {
+                    self.item_hovered.emit(None);
                     self.base.request_redraw();
                 }
             }
             Event::MousePress { pos, button: 1, .. } => {
-                if let Some(index) = self.row_at(*pos) {
+                if let Some(index) = self.item_at(*pos) {
                     let _ = self.select_index(index);
                 }
             }
@@ -546,38 +765,84 @@ impl Draw for TimelineWidget {
         let track_w = rect.width.saturating_sub(
             dimensions::CHART_LABEL_GUTTER as u32 + dimensions::CHART_TRACK_MARGIN as u32,
         );
-        let max_rows =
-            self.visible_count().min(self.items.len().saturating_sub(self.scroll_offset));
         let growth = f64::from(self.reveal_progress());
 
+        // ── Time labels ──
+        //
+        // Opt-in because the header shifts the rows down. The bars had no scale at all before this,
+        // so a reader could compare their lengths but could not read a point in time off the axis.
+        if self.show_time_labels {
+            let header = Rect::new(rect.x, rect.y, rect.width, TIME_LABEL_HEIGHT);
+            context.draw_line(
+                Point::new(header.x, header.y + header.height as i32 - 1),
+                Point::new(header.x + header.width as i32, header.y + header.height as i32 - 1),
+                separator,
+            );
+            let span = self.viewport_end - self.viewport_start;
+            for tick in 0..=TIME_LABEL_TICKS {
+                let ratio = tick as f64 / f64::from(TIME_LABEL_TICKS);
+                let value = self.viewport_start + (span as f64 * ratio).round() as i64;
+                let x = track_x + (track_w as f64 * ratio) as i32;
+                let band = Rect::new((x - 24).max(rect.x), header.y, 48, header.height);
+                context.draw_text_line_cow(
+                    band,
+                    &value.to_string(),
+                    effective_font(style),
+                    text_color.blend(&background, 0.3),
+                    HorizontalAlignment::Center,
+                );
+            }
+        }
+
+        let lanes = self.lanes();
+        let max_rows = self.visible_count().min(lanes.len().saturating_sub(self.scroll_offset));
+        let body_top = rect.y + self.axis_height() as i32;
+
         for visible in 0..max_rows {
-            let index = self.scroll_offset + visible;
-            let y = rect.y + visible as i32 * self.row_height as i32;
+            let lane_index = self.scroll_offset + visible;
+            let Some(members) = lanes.get(lane_index) else {
+                break;
+            };
+            let y = body_top + visible as i32 * self.row_height as i32;
             let row_rect = Rect::new(rect.x, y, rect.width, self.row_height);
 
-            if self.selected_index == Some(index) {
+            let highlighted =
+                |index: Option<usize>| index.is_some_and(|index| members.contains(&index));
+            if highlighted(self.selected_index) {
                 context.fill_rect(row_rect, selected_background);
-            } else if self.hovered_index == Some(index) {
+            } else if highlighted(self.hovered_index) {
                 context.fill_rect(row_rect, hovered_background);
             }
 
-            if let Some(item) = self.items.get(index) {
-                // The label is fitted to the label column rather than spilling into the track:
-                // the old origin was the raw row midpoint, which put the glyph box's top edge
-                // on the middle line and let a long label run under its own bar. Fitting is
-                // only the horizontal half — `draw_text_fitted` leaves `y` at the band's top
-                // — so the row's own line box is taken first; otherwise replacing the midpoint
-                // with the raw `row_height` band would move the same error from "half a line
-                // low" to "pinned to the row's top edge". `draw_text_line` does both.
-                let label_band =
-                    Rect::new(rect.x, y, dimensions::CHART_LABEL_GUTTER as u32, self.row_height);
-                context.draw_text_line_cow(
-                    label_band,
-                    &item.label,
-                    effective_font(style),
-                    text_color,
-                    HorizontalAlignment::Left,
-                );
+            for index in members {
+                let Some(item) = self.items.get(*index) else {
+                    continue;
+                };
+                // Row mode has one item per row, so its label takes the gutter. A packed lane has
+                // several, whose gutter labels would overprint each other, so those labels move
+                // beside their own bars.
+                if self.lane_mode == TimelineLaneMode::Row {
+                    // The label is fitted to the label column rather than spilling into the track:
+                    // the old origin was the raw row midpoint, which put the glyph box's top edge
+                    // on the middle line and let a long label run under its own bar. Fitting is
+                    // only the horizontal half — `draw_text_fitted` leaves `y` at the band's top
+                    // — so the row's own line box is taken first; otherwise replacing the midpoint
+                    // with the raw `row_height` band would move the same error from "half a line
+                    // low" to "pinned to the row's top edge". `draw_text_line` does both.
+                    let label_band = Rect::new(
+                        rect.x,
+                        y,
+                        dimensions::CHART_LABEL_GUTTER as u32,
+                        self.row_height,
+                    );
+                    context.draw_text_line_cow(
+                        label_band,
+                        &item.label,
+                        effective_font(style),
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
 
                 let x0 = self.project_x(item.start, track_x, track_w);
                 let x1 = self.project_x(item.end, track_x, track_w).max(x0 + 2);
@@ -588,10 +853,34 @@ impl Draw for TimelineWidget {
                     x0 + ((x1 - x0) as f64 * growth).round() as i32
                 };
                 let bar_w = (x1 - x0).max(2) as u32;
-                context.fill_rect(
-                    Rect::new(x0, y + 6, bar_w, self.row_height.saturating_sub(12)),
-                    bar,
-                );
+                let bar_rect = Rect::new(x0, y + 6, bar_w, self.row_height.saturating_sub(12));
+                context.fill_rect(bar_rect, bar);
+
+                if self.lane_mode == TimelineLaneMode::LanePacked {
+                    let (label_x, label_w, label_color) = if bar_w >= 28 {
+                        let inset = 4i32;
+                        (x0 + inset, bar_w.saturating_sub(inset as u32 * 2), bar.contrast_color())
+                    } else {
+                        let right = x1 + 4;
+                        let width = (track_x + track_w as i32 - right).max(0) as u32;
+                        (right, width, text_color)
+                    };
+                    if label_w > 0 {
+                        let line_height = 14u32.min(self.row_height);
+                        context.draw_text_fitted_cow(
+                            Rect::new(
+                                label_x,
+                                y + ((self.row_height.saturating_sub(line_height)) / 2) as i32,
+                                label_w,
+                                line_height,
+                            ),
+                            &item.label,
+                            effective_font(style),
+                            label_color,
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                }
             }
 
             context.draw_line(
@@ -774,5 +1063,80 @@ mod tests {
         let mut timeline = TimelineWidget::new(Rect::new(0, 0, 800, 600));
         timeline.set_row_height(0);
         assert_eq!(timeline.row_height(), 1);
+    }
+
+    /// Two overlapping items need two lanes; two disjoint ones share a lane.
+    #[test]
+    fn lane_packing_compresses_non_overlapping_items() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 500, 200));
+        timeline.set_items(vec![
+            TimelineItem::new("a", "Design", 0, 10),
+            TimelineItem::new("b", "Build", 5, 15),
+            TimelineItem::new("c", "Verify", 20, 30),
+        ]);
+        // Row mode gives every item its own row.
+        assert_eq!(timeline.lanes().len(), 3);
+
+        timeline.set_lane_mode(TimelineLaneMode::LanePacked);
+        let lanes = timeline.lanes();
+        assert_eq!(lanes.len(), 2, "two overlaps need two lanes, not three rows");
+        // `a` and `b` overlap, so they differ; `c` starts after `a` ended, so it shares that lane.
+        assert!(lanes.iter().any(|lane| lane.contains(&0) && lane.contains(&2)));
+        assert!(!lanes.iter().any(|lane| lane.contains(&0) && lane.contains(&1)));
+
+        // The mode is published as a token, and an unknown token is refused.
+        assert_eq!(
+            timeline.get("lane_mode").unwrap(),
+            CapabilityValue::String("lane_packed".into())
+        );
+        assert!(timeline.set("lane_mode", CapabilityValue::String("diagonal".into())).is_err());
+    }
+
+    #[test]
+    fn time_labels_reserve_a_header_that_is_not_a_row() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 500, 200));
+        timeline.set_items(sample_items());
+        timeline.set_show_time_labels(true);
+        assert!(timeline.show_time_labels());
+
+        // A point in the header addresses no item; the first row starts below it.
+        assert_eq!(timeline.row_at(Point::new(200, 2)), None);
+        assert_eq!(timeline.row_at(Point::new(200, TIME_LABEL_HEIGHT as i32 + 2)), Some(0));
+    }
+
+    #[test]
+    fn viewport_changed_fires_on_zoom() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 500, 120));
+        timeline.set_items(sample_items());
+        let ranges = Arc::new(Mutex::new(Vec::<(i64, i64)>::new()));
+        let sink = ranges.clone();
+        timeline.viewport_changed.connect(move |range| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*range);
+            }
+        });
+        timeline.handle_event(&Event::wheel(0, -120, 0));
+        let got = ranges.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got.len(), 1);
+        assert!(got[0].1 - got[0].0 < 30, "the zoom must shrink the range: {:?}", got[0]);
+    }
+
+    #[test]
+    fn hovering_an_item_reports_its_id_and_clearing_reports_none() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 500, 120));
+        timeline.set_items(sample_items());
+        let hovered = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+        let sink = hovered.clone();
+        timeline.item_hovered.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+
+        timeline.handle_event(&Event::mouse_move(200, 2));
+        timeline.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+
+        let got = hovered.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got, vec![Some("a".to_string()), None]);
     }
 }

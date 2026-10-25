@@ -11,7 +11,7 @@ use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -23,6 +23,9 @@ const SEGMENT_LABEL_INSET: i32 = 16;
 
 /// Horizontal room reserved for a segment's leading icon, including its gap: 18.
 const SEGMENT_ICON_SLOT: i32 = 18;
+
+/// The narrowest a content-fitted segment may become.
+const DEFAULT_MIN_SEGMENT_WIDTH: u32 = 56;
 
 /// Single segment entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +78,17 @@ pub struct SegmentedControl {
     slide: PropertyDriver,
     /// The segment the current slide started from, so `slide`'s fraction has a left endpoint.
     slide_from: usize,
+    /// Whether segment widths follow their labels instead of splitting the track evenly.
+    size_to_fit: bool,
+    /// The narrowest a content-fitted segment may become.
+    min_segment_width: u32,
+    /// Whether several segments may be selected at once.
+    multi_select: bool,
+    /// Per-segment enabled flags, index-aligned with `items`. A missing entry is enabled.
+    disabled: Vec<bool>,
+    /// The selected indices in multi-select mode. Ignored in single-select mode, where
+    /// `selected_index` is the whole answer.
+    selected_set: Vec<usize>,
     /// Emitted when selected segment changes. Payload is selected id.
     pub selection_changed: Signal1<String>,
 }
@@ -91,6 +105,11 @@ impl SegmentedControl {
             // measures how far from `slide_from` (0) the pill has arrived, not how far it has left.
             slide: PropertyDriver::at(1.0, MotionSlot::Normal),
             slide_from: 0,
+            size_to_fit: false,
+            min_segment_width: DEFAULT_MIN_SEGMENT_WIDTH,
+            multi_select: false,
+            disabled: Vec::new(),
+            selected_set: Vec::new(),
             selection_changed: Signal1::new(),
         }
     }
@@ -98,6 +117,8 @@ impl SegmentedControl {
     /// Replaces all segment items.
     pub fn set_items(&mut self, items: Vec<SegmentItem>) {
         self.items = items;
+        self.disabled = vec![false; self.items.len()];
+        self.selected_set.clear();
         self.selected_index = if self.items.is_empty() { None } else { Some(0) };
         self.hovered_index = self.selected_index;
         // A new item set is a *reset*, not a selection change: the indicator starts on the first
@@ -106,6 +127,188 @@ impl SegmentedControl {
         self.slide_from = 0;
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Appends one segment, returning its index.
+    ///
+    /// `set_items` replaces the whole list, so adding a segment meant cloning every existing item
+    /// and resetting the selection — which a caller that grows its option set one entry at a time
+    /// could not avoid.
+    pub fn add_item(&mut self, item: SegmentItem) -> usize {
+        let index = self.items.len();
+        self.items.push(item);
+        self.disabled.push(false);
+        if self.selected_index.is_none() {
+            self.selected_index = Some(index);
+            self.slide_from = index;
+            self.slide.jump_to(1.0);
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
+        index
+    }
+
+    /// Removes the segment at `index`, returning it when it was present.
+    ///
+    /// The selection is repaired rather than dropped blindly: removing a segment above the selected
+    /// one shifts the selection down, removing the selected one selects the nearest remaining
+    /// segment, and removing the last segment leaves no selection.
+    pub fn remove_item(&mut self, index: usize) -> Option<SegmentItem> {
+        if index >= self.items.len() {
+            return None;
+        }
+        let removed = self.items.remove(index);
+        if index < self.disabled.len() {
+            self.disabled.remove(index);
+        }
+        self.selected_set.retain(|selected| *selected != index);
+        for selected in &mut self.selected_set {
+            if *selected > index {
+                *selected -= 1;
+            }
+        }
+        self.selected_index = match self.selected_index {
+            Some(selected) if selected == index => {
+                if self.items.is_empty() {
+                    None
+                } else {
+                    Some(index.min(self.items.len() - 1))
+                }
+            }
+            Some(selected) if selected > index => Some(selected - 1),
+            other => other,
+        };
+        self.slide_from = self.selected_index.unwrap_or(0);
+        self.slide.jump_to(1.0);
+        self.base.request_layout();
+        self.base.request_redraw();
+        Some(removed)
+    }
+
+    /// Enables or disables the segment at `index`, returning `false` when it does not exist.
+    pub fn set_item_enabled(&mut self, index: usize, enabled: bool) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        if self.disabled.len() <= index {
+            self.disabled.resize(index + 1, false);
+        }
+        self.disabled[index] = !enabled;
+        if !enabled && self.selected_index == Some(index) {
+            // A disabled segment cannot remain the control's value: the value would be one the
+            // user can neither see as chosen nor change away from by clicking it again.
+            let next = (0..self.items.len()).find(|candidate| self.item_enabled(*candidate));
+            self.selected_index = next;
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// Whether the segment at `index` accepts input.
+    pub fn item_enabled(&self, index: usize) -> bool {
+        index < self.items.len() && !self.disabled.get(index).copied().unwrap_or(false)
+    }
+
+    /// The selected segment indices.
+    pub fn selected_indices(&self) -> Vec<usize> {
+        if self.multi_select {
+            let mut selected = self.selected_set.clone();
+            selected.sort_unstable();
+            selected
+        } else {
+            self.selected_index().into_iter().collect()
+        }
+    }
+
+    /// Whether the segment at `index` is selected.
+    pub fn is_selected(&self, index: usize) -> bool {
+        if self.multi_select {
+            self.selected_set.contains(&index)
+        } else {
+            self.selected_index() == Some(index)
+        }
+    }
+
+    /// Whether widths follow the labels.
+    pub fn size_to_fit(&self) -> bool {
+        self.size_to_fit
+    }
+
+    /// Sets whether segment widths follow their labels instead of splitting the track evenly.
+    pub fn set_size_to_fit(&mut self, size_to_fit: bool) {
+        if self.size_to_fit == size_to_fit {
+            return;
+        }
+        self.size_to_fit = size_to_fit;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The narrowest a content-fitted segment may become.
+    pub fn min_segment_width(&self) -> u32 {
+        self.min_segment_width
+    }
+
+    /// Sets the narrowest a content-fitted segment may become (floored at 1).
+    pub fn set_min_segment_width(&mut self, width: u32) {
+        let width = width.max(1);
+        if self.min_segment_width == width {
+            return;
+        }
+        self.min_segment_width = width;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Whether several segments may be selected at once.
+    pub fn multi_select(&self) -> bool {
+        self.multi_select
+    }
+
+    /// Enables or disables multi-selection.
+    ///
+    /// Turning it on keeps the current single selection as the first member of the set; turning it
+    /// off collapses a multi-selection to its most recently clicked segment.
+    pub fn set_multi_select(&mut self, multi_select: bool) {
+        if self.multi_select == multi_select {
+            return;
+        }
+        self.multi_select = multi_select;
+        if multi_select {
+            self.selected_set = self.selected_index.into_iter().collect();
+        } else {
+            self.selected_set.clear();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Toggles the segment at `index` in multi-select mode.
+    ///
+    /// Returns the segment's new selected state; `false` when the index is not a segment, when it is
+    /// disabled, or when the control is in single-select mode (where there is nothing to toggle).
+    pub fn toggle_selected(&mut self, index: usize) -> bool {
+        if !self.multi_select || !self.item_enabled(index) {
+            return false;
+        }
+        let now_selected =
+            if let Some(position) = self.selected_set.iter().position(|i| *i == index) {
+                self.selected_set.remove(position);
+                false
+            } else {
+                self.selected_set.push(index);
+                self.selected_set.sort_unstable();
+                true
+            };
+        // The sliding pill belongs to single-select mode; in multi-select the selected segments are
+        // filled statically, so the anchor is kept current instead of animated.
+        self.selected_index = Some(index);
+        self.slide_from = index;
+        self.slide.jump_to(1.0);
+        if let Some(item) = self.items.get(index) {
+            self.selection_changed.emit(item.id.clone());
+        }
+        self.base.request_redraw();
+        now_selected
     }
 
     /// Returns all segment items.
@@ -126,11 +329,17 @@ impl SegmentedControl {
 
     /// Sets selected segment index.
     pub fn set_selected_index(&mut self, index: usize) -> bool {
-        if index >= self.items.len() {
+        if index >= self.items.len() || !self.item_enabled(index) {
             return false;
         }
         if self.selected_index == Some(index) {
             return true;
+        }
+        // A programmatic single selection collapses a multi-selection to the one requested: the
+        // call asks for *the* selected segment, and leaving the old group in place would make
+        // `selected_indices` disagree with the index this method just accepted.
+        if self.multi_select {
+            self.selected_set = vec![index];
         }
         // The re-aim has to preserve the pill's **fractional** position, not round it to a segment:
         // a user who clicks segment 2 while the pill is 40% of the way to segment 1 would otherwise
@@ -177,15 +386,80 @@ impl SegmentedControl {
     }
 
     /// Moves selection by signed delta.
+    ///
+    /// A disabled segment is stepped over: the selection moves to the next segment the user can
+    /// actually reach, and stays put when there is none.
     pub fn move_selection(&mut self, delta: isize) {
         if self.items.is_empty() {
             self.selected_index = None;
             return;
         }
-        let current = self.selected_index.unwrap_or(0) as isize;
-        let max = self.items.len().saturating_sub(1) as isize;
-        let next = (current + delta).clamp(0, max) as usize;
-        let _ = self.set_selected_index(next);
+        let start = self.selected_index.unwrap_or(0) as isize;
+        let last = self.items.len() as isize - 1;
+        let step = if delta < 0 { -1 } else { 1 };
+        let mut candidate = start + step;
+        while candidate >= 0 && candidate <= last {
+            if self.item_enabled(candidate as usize) {
+                let _ = self.set_selected_index(candidate as usize);
+                return;
+            }
+            candidate += step;
+        }
+    }
+
+    /// The width each segment's own content asks for.
+    fn desired_segment_widths(&self) -> Vec<u32> {
+        let font = effective_font(self.base.style());
+        self.items
+            .iter()
+            .map(|item| {
+                let text = estimate_text_width(&item.label, font, 1.0);
+                let icon = if item.icon.is_some() { SEGMENT_ICON_SLOT as u32 } else { 0 };
+                text.saturating_add((SEGMENT_LABEL_INSET as u32) * 2)
+                    .saturating_add(icon)
+                    .max(self.min_segment_width)
+            })
+            .collect()
+    }
+
+    /// The painted width of every segment within `band_width`.
+    fn segment_widths(&self, band_width: u32) -> Vec<u32> {
+        let count = self.items.len();
+        if count == 0 {
+            return Vec::new();
+        }
+        if !self.size_to_fit {
+            // The historical layout: equal shares, with the last segment absorbing the remainder so
+            // the bar has no 1 px seam at its right edge.
+            let width = (band_width / count as u32).max(1);
+            let mut widths = vec![width; count];
+            if let Some(last) = widths.last_mut() {
+                *last = band_width.saturating_sub(width * (count as u32 - 1)).max(1);
+            }
+            return widths;
+        }
+        let desired = self.desired_segment_widths();
+        let total: u32 = desired.iter().sum();
+        if total <= band_width {
+            // Content is smaller than the track: the extra room stays empty rather than being
+            // handed to a short label, which is the whole point of fitting to content.
+            return desired;
+        }
+        // Content overflows: shrink proportionally, never below one pixel, and let the last segment
+        // take the remainder.
+        let mut widths = Vec::with_capacity(count);
+        let mut consumed = 0u32;
+        for (index, width) in desired.iter().enumerate() {
+            if index + 1 == count {
+                widths.push(band_width.saturating_sub(consumed).max(1));
+            } else {
+                let scaled = ((u64::from(*width) * u64::from(band_width)) / u64::from(total.max(1)))
+                    .max(1) as u32;
+                consumed = consumed.saturating_add(scaled);
+                widths.push(scaled);
+            }
+        }
+        widths
     }
 
     fn segment_rect(&self, index: usize) -> Option<Rect> {
@@ -193,14 +467,10 @@ impl SegmentedControl {
             return None;
         }
         let band = self.track_band();
-        let width = (band.width as usize / self.items.len()).max(1) as u32;
-        let x = band.x + index as i32 * width as i32;
-        let mut actual_width = width;
-        if index + 1 == self.items.len() {
-            let consumed = width.saturating_mul(index as u32);
-            actual_width = band.width.saturating_sub(consumed);
-        }
-        Some(Rect::new(x, band.y, actual_width, band.height))
+        let widths = self.segment_widths(band.width);
+        let width = widths.get(index).copied()?;
+        let x = band.x + widths.iter().take(index).map(|w| *w as i32).sum::<i32>();
+        Some(Rect::new(x, band.y, width, band.height))
     }
 
     /// The bar the control actually paints: full width, `dimensions::SEGMENTED_CONTROL_HEIGHT`
@@ -215,7 +485,15 @@ impl SegmentedControl {
     /// band once here is what keeps the paint, the hit test and the reported size on one
     /// value.
     fn track_band(&self) -> Rect {
-        ControlMetrics::full_width_band(self.geometry(), dimensions::SEGMENTED_CONTROL_HEIGHT)
+        let full =
+            ControlMetrics::full_width_band(self.geometry(), dimensions::SEGMENTED_CONTROL_HEIGHT);
+        if !self.size_to_fit || self.items.is_empty() {
+            return full;
+        }
+        // A content-fitted control is as wide as its segments need, never wider than the room it
+        // was given — that is what makes a two-word segment narrow and a long one wide.
+        let total: u32 = self.desired_segment_widths().iter().sum();
+        Rect::new(full.x, full.y, total.min(full.width), full.height)
     }
 
     fn hit_index(&self, pos: Point) -> Option<usize> {
@@ -325,6 +603,9 @@ impl WidgetProperties for SegmentedControl {
                 Some(id) => Ok(CapabilityValue::String(id.to_string())),
                 None => Ok(CapabilityValue::Null),
             },
+            "size_to_fit" => Ok(CapabilityValue::Bool(self.size_to_fit())),
+            "min_segment_width" => Ok(CapabilityValue::UInt(self.min_segment_width() as u64)),
+            "multi_select" => Ok(CapabilityValue::Bool(self.multi_select())),
             _ => base_property_get(self, name),
         }
     }
@@ -342,12 +623,46 @@ impl WidgetProperties for SegmentedControl {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "size_to_fit" => {
+                let size_to_fit = match value {
+                    CapabilityValue::Bool(size_to_fit) => size_to_fit,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_size_to_fit(size_to_fit);
+                Ok(())
+            }
+            "min_segment_width" => {
+                let width = match value {
+                    CapabilityValue::UInt(width) => {
+                        u32::try_from(width).map_err(|_| CapabilityAccessError::TypeMismatch)?
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_min_segment_width(width);
+                Ok(())
+            }
+            "multi_select" => {
+                let multi_select = match value {
+                    CapabilityValue::Bool(multi_select) => multi_select,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_multi_select(multi_select);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["item_count", "selected_index", "selected_id", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "item_count",
+            "selected_index",
+            "selected_id",
+            "size_to_fit",
+            "min_segment_width",
+            "multi_select",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `segmented_control` publishes.
@@ -381,7 +696,7 @@ impl EventHandler for SegmentedControl {
                 // and only when the hovered segment actually changes, since `MouseMove` fires far
                 // more often than the highlight moves. Without this the highlight lagged until an
                 // unrelated event repainted.
-                let hovered = self.hit_index(*pos);
+                let hovered = self.hit_index(*pos).filter(|index| self.item_enabled(*index));
                 if hovered != self.hovered_index {
                     self.hovered_index = hovered;
                     self.base.request_redraw();
@@ -394,7 +709,14 @@ impl EventHandler for SegmentedControl {
             }
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.hit_index(*pos) {
-                    let _ = self.set_selected_index(index);
+                    if !self.item_enabled(index) {
+                        return;
+                    }
+                    if self.multi_select {
+                        let _ = self.toggle_selected(index);
+                    } else {
+                        let _ = self.set_selected_index(index);
+                    }
                 }
             }
             Event::KeyPress { key, modifiers } => {
@@ -404,21 +726,37 @@ impl EventHandler for SegmentedControl {
                     Some(crate::shortcut::Key::Left) => self.move_selection(-1),
                     Some(crate::shortcut::Key::Right) => self.move_selection(1),
                     Some(crate::shortcut::Key::Home) => {
-                        let _ = self.set_selected_index(0);
+                        if let Some(first) =
+                            (0..self.items.len()).find(|index| self.item_enabled(*index))
+                        {
+                            let _ = self.set_selected_index(first);
+                        }
                     }
                     Some(crate::shortcut::Key::End) if !self.items.is_empty() => {
-                        let _ = self.set_selected_index(self.items.len() - 1);
+                        if let Some(last) =
+                            (0..self.items.len()).rev().find(|index| self.item_enabled(*index))
+                        {
+                            let _ = self.set_selected_index(last);
+                        }
                     }
                     Some(crate::shortcut::Key::Up)
                         if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) =>
                     {
-                        let _ = self.set_selected_index(0);
+                        if let Some(first) =
+                            (0..self.items.len()).find(|index| self.item_enabled(*index))
+                        {
+                            let _ = self.set_selected_index(first);
+                        }
                     }
                     Some(crate::shortcut::Key::Down)
                         if modifiers.contains(crate::shortcut::Modifiers::PRIMARY)
                             && !self.items.is_empty() =>
                     {
-                        let _ = self.set_selected_index(self.items.len() - 1);
+                        if let Some(last) =
+                            (0..self.items.len()).rev().find(|index| self.item_enabled(*index))
+                        {
+                            let _ = self.set_selected_index(last);
+                        }
                     }
                     _ => {}
                 }
@@ -508,8 +846,13 @@ impl Draw for SegmentedControl {
 
             // A hovered segment is a weaker step than the selection, so the two read as one
             // affordance at two weights. The *selected* fill is drawn below as the sliding
-            // indicator rather than here, so a segment never paints its own selection.
-            if self.hovered_index == Some(index) && self.selected_index != Some(index) {
+            // indicator rather than here, so a segment never paints its own selection. A disabled
+            // segment never takes the hover weight: it cannot be pressed, so highlighting it would
+            // promise an action that does not exist.
+            if self.hovered_index == Some(index)
+                && !self.is_selected(index)
+                && self.item_enabled(index)
+            {
                 context.fill_rect(seg, hovered_bg);
             }
 
@@ -538,7 +881,19 @@ impl Draw for SegmentedControl {
         // for the pill — but the opaque fill covered it, and the selected segment rendered as a
         // blank blue slab. A selected control whose label disappears is not a colour problem; it
         // is a z-order problem, and the fix is one pass for fills and a second for text.
-        if let (Some(from), Some(to)) = (self.indicator_from(), self.indicator_to()) {
+        if self.multi_select {
+            // Multi-selection has no single destination for a sliding pill, so each selected
+            // segment is filled statically. The slide is single-select's way of saying "the value
+            // moved"; a set has no one place to move to.
+            for index in 0..self.items.len() {
+                if !self.is_selected(index) {
+                    continue;
+                }
+                if let Some(seg) = self.segment_rect(index) {
+                    context.fill_rect(seg, selected_bg);
+                }
+            }
+        } else if let (Some(from), Some(to)) = (self.indicator_from(), self.indicator_to()) {
             let t = self.slide.value();
             let lerp = |a: i32, b: i32| a + ((b - a) as f32 * t) as i32;
             let indicator = Rect::new(
@@ -559,8 +914,11 @@ impl Draw for SegmentedControl {
                 // The label contrasts with the fill it is painted on — the indicator for the
                 // selected segment, the bar for the rest — so it stays legible on either
                 // appearance instead of being a fixed dark slate on a dark bar.
-                let label_color = if self.selected_index == Some(index) {
+                let label_color = if self.is_selected(index) {
                     selected_bg.contrast_color()
+                } else if !self.item_enabled(index) {
+                    // A disabled segment reads as unavailable rather than as a different value.
+                    ink.blend(&bar, 0.55)
                 } else {
                     ink
                 };
@@ -1073,5 +1431,97 @@ mod tests {
             painted_inset > 4,
             "a label {painted_inset} px from its edge is hugging it, which is the defect"
         );
+    }
+
+    #[test]
+    fn add_and_remove_items_keep_the_selection_valid() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 300, 30));
+        assert_eq!(control.add_item(SegmentItem::new("a", "A")), 0);
+        assert_eq!(control.selected_id(), Some("a"), "the first added item is selected");
+        assert_eq!(control.add_item(SegmentItem::new("b", "B")), 1);
+        assert!(control.remove_item(5).is_none());
+
+        assert!(control.set_selected_index(1));
+        let removed = control.remove_item(0).expect("item a exists");
+        assert_eq!(removed.id, "a");
+        assert_eq!(control.selected_id(), Some("b"), "the selection follows its item down");
+
+        control.remove_item(0);
+        assert_eq!(control.selected_index(), None, "removing the last item clears selection");
+    }
+
+    #[test]
+    fn a_disabled_segment_cannot_be_selected() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 300, 30));
+        control.set_items(sample_items());
+        assert!(control.set_item_enabled(1, false));
+        assert!(!control.item_enabled(1));
+
+        // A programmatic selection refuses it, and a click on it changes nothing.
+        assert!(!control.set_selected_index(1));
+        let segment = control.segment_rect(1).expect("segment 1 exists");
+        let y = segment.y + segment.height as i32 / 2;
+        control.handle_event(&Event::mouse_press(segment.x + 2, y, 1));
+        assert_eq!(control.selected_index(), Some(0));
+
+        // Keyboard navigation steps over it to the next enabled segment.
+        control.handle_event(&Event::key_press(39, 0));
+        assert_eq!(control.selected_index(), Some(2));
+
+        // Disabling the selected segment moves the selection to a usable one.
+        control.set_selected_index(0);
+        assert!(control.set_item_enabled(0, false));
+        assert_eq!(control.selected_index(), Some(2));
+    }
+
+    #[test]
+    fn multi_select_toggles_and_tracks_a_set() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 300, 30));
+        control.set_items(sample_items());
+        control.set_multi_select(true);
+        assert!(control.multi_select());
+
+        // The initial single selection becomes the first member of the set.
+        assert_eq!(control.selected_indices(), vec![0]);
+        assert!(control.toggle_selected(2));
+        assert_eq!(control.selected_indices(), vec![0, 2]);
+        assert!(!control.toggle_selected(0));
+        assert_eq!(control.selected_indices(), vec![2]);
+
+        // A single-select API call collapses the group to the one requested.
+        assert!(control.set_selected_index(1));
+        assert_eq!(control.selected_indices(), vec![1]);
+
+        // Turning multi-select off leaves the current single selection as the value.
+        control.set_multi_select(false);
+        assert_eq!(control.selected_indices(), vec![1]);
+    }
+
+    #[test]
+    fn size_to_fit_gives_each_segment_its_label_width() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 400, 30));
+        control.set_items(vec![
+            SegmentItem::new("short", "A"),
+            SegmentItem::new("long", "A much longer caption"),
+        ]);
+        // Equal division: the short label wastes half the track.
+        let short = control.segment_rect(0).expect("segment 0").width;
+        let long = control.segment_rect(1).expect("segment 1").width;
+        assert_eq!(short, long);
+
+        control.set_size_to_fit(true);
+        assert!(control.size_to_fit());
+        let short = control.segment_rect(0).expect("segment 0").width;
+        let long = control.segment_rect(1).expect("segment 1").width;
+        assert!(
+            long > short,
+            "a long caption must get a wider segment: short {short}, long {long}"
+        );
+        assert!(short >= control.min_segment_width());
+
+        // The property is written through the same setter.
+        control.set("min_segment_width", CapabilityValue::UInt(90)).expect("writable");
+        assert_eq!(control.min_segment_width(), 90);
+        assert!(control.segment_rect(0).expect("segment 0").width >= 90);
     }
 }

@@ -4,15 +4,16 @@
 //! Toggle button widget.
 #[cfg(full_widgets)]
 use crate::compat::Vec;
-use crate::compat::{String, ToString};
-use crate::core::{HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::compat::{RefCell, String, ToString};
+use crate::core::{Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 #[cfg(full_widgets)]
 use crate::render::RenderCommand;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
 use crate::widget::base_widgets::button_group::{self, GroupKey};
-use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::base_widgets::AutoRepeat;
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -24,7 +25,6 @@ use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, Co
 use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Toggle button state enumeration.
-///
 /// # Why the two interaction states are derived rather than stored
 ///
 /// This enum used to have exactly the two *persistent* states (`Checked` / `Normal`) plus
@@ -57,6 +57,24 @@ pub enum ToggleButtonState {
     /// Not enabled; reported regardless of the checked flag.
     Disabled,
 }
+/// The inputs [`ToggleButton`]'s size hint derives its answer from.
+///
+/// The same keyed cache `Button` uses, for the same reason: `draw` asks for the hint on every
+/// frame, and a hover or interaction fade repaints many frames with unchanged inputs. Comparing
+/// the inputs cannot go stale the way a dirty flag could — the font comes from the active theme
+/// and the advances come from the icon and arrow properties.
+#[derive(Debug, Clone, PartialEq)]
+struct ToggleHintKey {
+    /// The caption's revision; see `ToggleButton::text_revision`.
+    text_revision: u32,
+    /// The font the label is measured with.
+    font: Font,
+    /// The leading icon's advance, zero when there is none.
+    icon_advance: u32,
+    /// The disclosure arrow's advance, zero when there is none.
+    arrow_advance: u32,
+}
+
 /// Toggle button: a two-state push button that latches on click.
 ///
 /// Also carries press tracking (`is_pressed`) so it can render a pressed
@@ -92,6 +110,15 @@ pub struct ToggleButton {
     /// Elapsed milliseconds of the current held press, when one is timing.
     #[cfg(full_widgets)]
     press_elapsed: Option<u32>,
+    /// The auto-repeat timing while this button is held.
+    ///
+    /// Off by default, so a tool button that never opts in still toggles once per click. Advanced
+    /// from [`ToggleButton::tick`] out of the same clock the interaction transition uses.
+    auto_repeat: AutoRepeat,
+    /// A monotonic counter bumped whenever the caption changes.
+    text_revision: u32,
+    /// The cached intrinsic size, with the inputs it was derived from.
+    hint_cache: RefCell<Option<(ToggleHintKey, Size)>>,
     /// Emitted when a row of the attached menu is activated.
     #[cfg(full_widgets)]
     pub item_triggered: Signal1<u64>,
@@ -156,6 +183,9 @@ impl ToggleButton {
             popup_delay_ms: 300,
             #[cfg(full_widgets)]
             press_elapsed: None,
+            auto_repeat: AutoRepeat::new(),
+            text_revision: 0,
+            hint_cache: RefCell::new(None),
             #[cfg(full_widgets)]
             item_triggered: Signal1::new(),
             signaled_pressed: false,
@@ -177,6 +207,8 @@ impl ToggleButton {
         let text = text.into();
         if self.text != text {
             self.text = text;
+            // Invalidates the cached hint through the key rather than by a separate flag.
+            self.text_revision = self.text_revision.wrapping_add(1);
             self.base.request_redraw();
         }
     }
@@ -195,7 +227,13 @@ impl ToggleButton {
     }
 
     /// The group this button belongs to, when auto-exclusive is on.
+    ///
+    /// A group a [`crate::widget::base_widgets::ButtonGroup`] handle adopted this button into wins
+    /// over both properties, because it is a direct instruction from the caller.
     fn exclusive_key(&self) -> Option<GroupKey> {
+        if let Some(key) = button_group::membership(self.id()) {
+            return Some(key);
+        }
         if !self.auto_exclusive {
             return None;
         }
@@ -271,6 +309,7 @@ impl ToggleButton {
             self.checked_changed.emit(checked);
             self.toggled.emit(checked);
             self.state_changed.emit(self.state());
+            button_group::notify_member_event(self.id(), button_group::MemberEvent::Toggled);
         }
     }
     /// Flips the checked flag through [`ToggleButton::set_checked`], so the
@@ -355,6 +394,7 @@ impl ToggleButton {
             return;
         }
         self.icon_source = source;
+        let _ = self.hint_cache.replace(None);
         self.base.request_redraw();
     }
 
@@ -371,6 +411,8 @@ impl ToggleButton {
             return;
         }
         self.arrow_type = arrow;
+        // The arrow's advance is part of the hint's content width.
+        let _ = self.hint_cache.replace(None);
         self.base.request_redraw();
     }
 
@@ -534,10 +576,15 @@ impl ToggleButton {
             return;
         }
         self.signaled_pressed = pressed;
+        // A new gesture starts its repeat delay from zero, even if no tick observed the gap
+        // between the old and the new press.
+        self.auto_repeat.reset();
         if pressed {
             self.pressed_signal.emit();
+            button_group::notify_member_event(self.id(), button_group::MemberEvent::Pressed);
         } else {
             self.released_signal.emit();
+            button_group::notify_member_event(self.id(), button_group::MemberEvent::Released);
         }
     }
     /// Returns the interaction state derived from the enabled, checked, hovered
@@ -582,6 +629,16 @@ impl ToggleButton {
         }
     }
 
+    /// Measures the intrinsic size from scratch; the slow path behind `size_hint`.
+    fn measure_hint(&self, font: &Font, icon_advance: u32, arrow_advance: u32) -> Size {
+        let label_width = estimate_text_width(self.text(), font, 1.0);
+        ControlMetrics::implicit_size(
+            Size::new(label_width + icon_advance + arrow_advance, dimensions::FONT_SIZE_BASE + 4),
+            EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
+            dimensions::BUTTON_MIN,
+        )
+    }
+
     /// How long a delayed popup press must be held.
     #[cfg(full_widgets)]
     pub fn popup_delay_ms(&self) -> u32 {
@@ -592,6 +649,66 @@ impl ToggleButton {
     #[cfg(full_widgets)]
     pub fn set_popup_delay_ms(&mut self, delay_ms: u32) {
         self.popup_delay_ms = delay_ms;
+    }
+
+    /// Whether holding this button repeats its press/release cycle.
+    pub fn is_auto_repeat(&self) -> bool {
+        self.auto_repeat.is_enabled()
+    }
+
+    /// Enables automatic repetition while the button is held.
+    ///
+    /// Off by default. When on, holding the button re-emits its `pressed`/`released` pair at
+    /// [`Self::auto_repeat_interval`] once the press has been held for
+    /// [`Self::auto_repeat_delay`]. The latch does not move on a repeat, so the button keeps its
+    /// held appearance while its listeners see each cycle.
+    pub fn set_auto_repeat(&mut self, enabled: bool) {
+        self.auto_repeat.set_enabled(enabled);
+    }
+
+    /// How long the button must be held before the first repeat, in milliseconds.
+    pub fn auto_repeat_delay(&self) -> u32 {
+        self.auto_repeat.delay_ms()
+    }
+
+    /// Sets the delay before the first repeat.
+    pub fn set_auto_repeat_delay(&mut self, delay_ms: u32) {
+        self.auto_repeat.set_delay_ms(delay_ms);
+    }
+
+    /// The gap between repeats while the button is held, in milliseconds.
+    pub fn auto_repeat_interval(&self) -> u32 {
+        self.auto_repeat.interval_ms()
+    }
+
+    /// Sets the gap between repeats.
+    pub fn set_auto_repeat_interval(&mut self, interval_ms: u32) {
+        self.auto_repeat.set_interval_ms(interval_ms);
+    }
+
+    /// Whether this button is held and configured to repeat.
+    ///
+    /// `set_pressed` is only ever armed by a press that landed on the control, so the base flag
+    /// is already the right "held" answer here.
+    fn auto_repeat_held(&self) -> bool {
+        self.auto_repeat.is_enabled() && self.base.is_enabled() && self.base.is_pressed()
+    }
+
+    /// Reports one auto-repeat cycle.
+    ///
+    /// A `released`/`pressed` pair, exactly as `Button::emit_auto_repeat` does: the latch never
+    /// moves, so the button stays painted pressed while its listeners see each repeat.
+    fn emit_auto_repeat(&mut self) {
+        self.released_signal.emit();
+        self.pressed_signal.emit();
+        button_group::notify_member_event(self.id(), button_group::MemberEvent::Released);
+        button_group::notify_member_event(self.id(), button_group::MemberEvent::Pressed);
+    }
+
+    /// Emits `clicked` and reports it to this button's group, if it has one.
+    fn emit_clicked(&mut self) {
+        self.base.clicked.emit();
+        button_group::notify_member_event(self.id(), button_group::MemberEvent::Clicked);
     }
 
     /// The progress the current interaction state calls for.
@@ -620,8 +737,14 @@ impl ToggleButton {
     /// and a test can shorten it to reach the end state deterministically.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
         self.interaction_progress.set_target(self.interaction_target_progress());
+        // Auto-repeat runs on this control's existing clock: no thread, no platform timer.
+        let held = self.auto_repeat_held();
+        let repeats = self.auto_repeat.tick(delta_ms, held);
+        for _ in 0..repeats {
+            self.emit_auto_repeat();
+        }
         #[cfg_attr(not(full_widgets), allow(unused_mut))]
-        let mut animating = self.interaction_progress.tick(delta_ms);
+        let mut animating = self.interaction_progress.tick(delta_ms) || held;
         // A delayed popup is a held press, not an animation, but it still owes the bus a frame:
         // without that the timer would only fire when some other control happened to tick.
         #[cfg(full_widgets)]
@@ -717,14 +840,26 @@ impl Widget for ToggleButton {
         // The comment was therefore describing an agreement the code did not have: a `Button` and a
         // `ToggleButton` with the same caption reported different widths, and the gap widened with
         // every non-ASCII character (a CJK caption measured three times its drawn width).
-        let label_width = estimate_text_width(self.text(), effective_font(self.style()), 1.0);
-        let icon_advance = self.icon_advance();
-        let arrow_advance = self.arrow_advance();
-        ControlMetrics::implicit_size(
-            Size::new(label_width + icon_advance + arrow_advance, dimensions::FONT_SIZE_BASE + 4),
-            EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
-            dimensions::BUTTON_MIN,
-        )
+        //
+        // The answer is cached against its inputs for the same reason `Button::implicit_size` is:
+        // `draw` asks for it on every frame, and a hover or interaction fade repaints many frames
+        // with nothing about this hint changed.
+        let font = effective_font(self.style());
+        let key = ToggleHintKey {
+            text_revision: self.text_revision,
+            font: font.clone(),
+            icon_advance: self.icon_advance(),
+            arrow_advance: self.arrow_advance(),
+        };
+        let cached = (*self.hint_cache.borrow()).clone();
+        if let Some((cached_key, size)) = cached {
+            if cached_key == key {
+                return size;
+            }
+        }
+        let size = self.measure_hint(font, key.icon_advance, key.arrow_advance);
+        *self.hint_cache.borrow_mut() = Some((key, size));
+        size
     }
 
     /// The latched state, reported so the theme's `toggle_button:checked` override is reachable.
@@ -777,6 +912,7 @@ impl Widget for ToggleButton {
             return true;
         }
         self.interaction_progress.value() != self.interaction_target_progress()
+            || self.auto_repeat_held()
     }
 
     impl_draw_bridge!();
@@ -847,6 +983,9 @@ impl WidgetProperties for ToggleButton {
             }
             "auto_exclusive" => Ok(CapabilityValue::Bool(self.is_auto_exclusive())),
             "auto_raise" => Ok(CapabilityValue::Bool(self.is_auto_raise())),
+            "auto_repeat" => Ok(CapabilityValue::Bool(self.is_auto_repeat())),
+            "auto_repeat_delay" => Ok(CapabilityValue::UInt(self.auto_repeat_delay() as u64)),
+            "auto_repeat_interval" => Ok(CapabilityValue::UInt(self.auto_repeat_interval() as u64)),
             "group_id" => match self.group_id() {
                 Some(id) => Ok(CapabilityValue::String(id.to_string())),
                 None => Ok(CapabilityValue::Null),
@@ -905,6 +1044,18 @@ impl WidgetProperties for ToggleButton {
             }
             "auto_raise" => {
                 self.set_auto_raise(expect_bool(value)?);
+                Ok(())
+            }
+            "auto_repeat" => {
+                self.set_auto_repeat(expect_bool(value)?);
+                Ok(())
+            }
+            "auto_repeat_delay" => {
+                self.set_auto_repeat_delay(expect_u32(value)?);
+                Ok(())
+            }
+            "auto_repeat_interval" => {
+                self.set_auto_repeat_interval(expect_u32(value)?);
                 Ok(())
             }
             "group_id" => {
@@ -984,6 +1135,9 @@ impl WidgetProperties for ToggleButton {
             "state",
             "auto_exclusive",
             "auto_raise",
+            "auto_repeat",
+            "auto_repeat_delay",
+            "auto_repeat_interval",
             "group_id",
             "icon_source",
             "arrow_type",
@@ -999,6 +1153,9 @@ impl WidgetProperties for ToggleButton {
             "state",
             "auto_exclusive",
             "auto_raise",
+            "auto_repeat",
+            "auto_repeat_delay",
+            "auto_repeat_interval",
             "group_id",
             "icon_source",
             BASE_PROPERTY_NAMES
@@ -1236,9 +1393,7 @@ impl Draw for ToggleButton {
 /// A dropped tool button leaves its exclusive group.
 impl Drop for ToggleButton {
     fn drop(&mut self) {
-        if let Some(key) = self.exclusive_key() {
-            button_group::unregister(&key, self.id());
-        }
+        button_group::leave_all(self.id());
     }
 }
 
@@ -1383,7 +1538,7 @@ impl crate::event::EventHandler for ToggleButton {
                     || *key == crate::event::key_codes::LINE_FEED =>
             {
                 self.toggle();
-                self.base.clicked.emit();
+                self.emit_clicked();
             }
             _ => { /* Other events are not relevant */ }
         }

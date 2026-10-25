@@ -592,7 +592,15 @@ fn draw_outline_in(
 fn draw_fallback_in(ctx: &mut RenderContext, rect: Rect, color: Color, token: &str) -> bool {
     use crate::widget::icon_fallback_data::ICON_FALLBACK;
 
-    let Some(fallback) = ICON_FALLBACK.iter().find(|entry| entry.name == token) else {
+    // The table is indexed by `IconName`'s declaration order, so a token that parses to a variant
+    // is one integer index away. The linear scan this replaces ran a string comparison per entry
+    // (69 of them) on every frame that drew a fallback icon (G-38). The scan remains as a
+    // defensive fallback for a table entry whose name is not reachable through `from_name`.
+    let fallback = IconName::from_name(token)
+        .and_then(|name| ICON_FALLBACK.get(name as usize))
+        .filter(|entry| entry.name == token)
+        .or_else(|| ICON_FALLBACK.iter().find(|entry| entry.name == token));
+    let Some(fallback) = fallback else {
         return false;
     };
     // The same square fit the outline path uses, so the two sources cannot land in different boxes.
@@ -652,9 +660,11 @@ pub struct IconData {
 
 /// How long one animation frame is shown before [`Icon`] advances, in milliseconds.
 ///
-/// The interval is fixed rather than read from the theme: frames are the caller's own pixels, and
-/// the caller chose their timing by choosing their frame count. A list of `n` frames therefore
-/// loops every `n * ICON_FRAME_INTERVAL_MS` milliseconds.
+/// This is the **default** cadence, not a hard-coded one: [`Icon::set_frame_interval_ms`] lets a
+/// caller whose frames were authored at a different rate say so. It is not read from the theme,
+/// because frames are the caller's own pixels and the caller chose their timing by choosing
+/// their frame count. A list of `n` frames therefore loops every `n * frame_interval_ms`
+/// milliseconds, which is `n * ICON_FRAME_INTERVAL_MS` until the setter is used.
 #[cfg(widgets_unstripped)]
 pub const ICON_FRAME_INTERVAL_MS: u32 = 100;
 
@@ -725,7 +735,8 @@ pub enum IconState {
 /// [`IconState`] adds a `Selected` tint on top of `Normal` and `Disabled`. [`Icon::set_scale_factor`]
 /// selects a higher-density registered source at `2.0` or above without resizing the glyph.
 /// [`Icon::set_frames`] replaces the drawn outline with an image sequence, advanced by
-/// [`Widget::tick`] every [`ICON_FRAME_INTERVAL_MS`] milliseconds. All three default to the
+/// [`Widget::tick`] every [`ICON_FRAME_INTERVAL_MS`] milliseconds unless
+/// [`Icon::set_frame_interval_ms`] selected a different cadence. All three default to the
 /// historical behaviour, so an icon that never calls them paints exactly as before.
 #[cfg(widgets_unstripped)]
 pub struct Icon {
@@ -748,6 +759,13 @@ pub struct Icon {
     /// Milliseconds accumulated towards the next frame advance.
     #[cfg(feature = "image")]
     frame_elapsed_ms: u32,
+    /// How long each animation frame is shown, in milliseconds.
+    ///
+    /// Defaults to [`ICON_FRAME_INTERVAL_MS`], the historical fixed cadence. A caller whose
+    /// frames were authored at a different rate can now say so instead of being forced onto
+    /// the crate's 100 ms grid; the value is clamped to at least one millisecond by the setter.
+    #[cfg(feature = "image")]
+    frame_interval_ms: u32,
     /// Scratch buffer for a state-tinted frame, reused across draws.
     #[cfg(feature = "image")]
     frame_tint: crate::compat::Vec<u8>,
@@ -775,6 +793,8 @@ impl Icon {
             frame_index: 0,
             #[cfg(feature = "image")]
             frame_elapsed_ms: 0,
+            #[cfg(feature = "image")]
+            frame_interval_ms: ICON_FRAME_INTERVAL_MS,
             #[cfg(feature = "image")]
             frame_tint: crate::compat::Vec::new(),
         }
@@ -947,14 +967,18 @@ impl Icon {
     ///
     /// A non-empty frame list makes the widget draw an image instead of its vector outline or
     /// generated fallback. [`Widget::tick`] advances one frame every
-    /// [`ICON_FRAME_INTERVAL_MS`] milliseconds and loops at the end. Passing an empty list
-    /// restores the normal outline drawing, which is the default.
+    /// [`ICON_FRAME_INTERVAL_MS`] milliseconds (or every [`Icon::frame_interval_ms`] when the
+    /// caller changed it) and loops at the end. Passing an empty list restores the normal
+    /// outline drawing, which is the default.
     ///
-    /// Frames are adopted wholesale: the setter compares dimensions and pixel bytes and returns
-    /// early only when the new list is identical to the current one.
+    /// Frames are adopted wholesale: the setter compares lengths, dimensions and the pixel
+    /// buffer's identity and returns early only when the new list is the same list. Buffer
+    /// identity is an O(frames) check, so re-supplying a large movie no longer walks every
+    /// pixel; a same-content list in a *fresh* allocation is adopted (its pixels are
+    /// unchanged) and therefore restarts the loop at frame zero.
     #[cfg(feature = "image")]
     pub fn set_frames(&mut self, frames: crate::compat::Vec<Image>) {
-        if frame_lists_equal(&self.frames, &frames) {
+        if frame_lists_identical(&self.frames, &frames) {
             return;
         }
         self.frames = frames;
@@ -967,6 +991,31 @@ impl Icon {
     #[cfg(feature = "image")]
     pub fn frames(&self) -> &[Image] {
         &self.frames
+    }
+
+    /// Returns how long one animation frame is shown, in milliseconds.
+    ///
+    /// This is [`ICON_FRAME_INTERVAL_MS`] unless a caller changed it through
+    /// [`Icon::set_frame_interval_ms`].
+    #[cfg(feature = "image")]
+    pub fn frame_interval_ms(&self) -> u32 {
+        self.frame_interval_ms
+    }
+
+    /// Sets how long one animation frame is shown, in milliseconds.
+    ///
+    /// The interval is clamped to at least one millisecond, because a zero-length frame would
+    /// make [`Icon::tick`]'s accumulator loop forever without consuming time. The default is
+    /// [`ICON_FRAME_INTERVAL_MS`], so a caller that never calls this keeps the historical
+    /// playback rate.
+    #[cfg(feature = "image")]
+    pub fn set_frame_interval_ms(&mut self, interval_ms: u32) {
+        let interval = interval_ms.max(1);
+        if self.frame_interval_ms == interval {
+            return;
+        }
+        self.frame_interval_ms = interval;
+        self.base.request_redraw();
     }
 
     /// The colour to draw with, after theme resolution and state tinting.
@@ -1190,30 +1239,50 @@ impl Icon {
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
+        // Built once: the placeholder face is a constant, and a constructor per draw
+        // allocated its family name for a glyph that never changes.
+        static UNKNOWN_FONT: crate::compat::OnceLock<crate::core::Font> =
+            crate::compat::OnceLock::new();
+        let font = UNKNOWN_FONT.get_or_init(|| crate::core::Font::simple("sans-serif", 12.0));
         ctx.draw_text(
             Point::new(cx + s / 4, cy + s * 3 / 4),
             "?",
-            &crate::core::Font::simple("sans-serif", 12.0),
+            font,
             c,
             HorizontalAlignment::Left,
         );
     }
 }
 
-/// Whether two frame lists carry identical dimensions and pixels.
+/// Whether two frame lists carry the same frames by identity.
 ///
 /// Used so [`Icon::set_frames`] can return early when the caller re-supplies the list it already
-/// owns, which is the same early-return rule every other setter follows. A pixel comparison is the
-/// only honest equality available for a decoded image; it runs once per setter call, never on the
-/// draw path.
+/// owns, which is the same early-return rule every other setter follows. Lengths and dimensions
+/// are compared directly, and each frame's pixel buffer is compared by pointer and length, so
+/// the check is O(frames) rather than O(pixels) — a large movie no longer costs a full pixel
+/// walk just to be told it is unchanged. A same-content list in a fresh allocation is not
+/// identity-equal and is adopted; its pixels are identical, so the visible result is too.
 #[cfg(all(widgets_unstripped, feature = "image"))]
-fn frame_lists_equal(left: &[Image], right: &[Image]) -> bool {
+fn frame_lists_identical(left: &[Image], right: &[Image]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right.iter()).all(|(a, b)| {
             a.width() == b.width()
                 && a.height() == b.height()
-                && a.inner.data.as_bytes() == b.inner.data.as_bytes()
+                && same_pixel_buffer(&a.inner.data, &b.inner.data)
         })
+}
+
+/// Whether two image payloads point at the same buffer with the same length.
+///
+/// The variant discriminant is part of the test, so an RGBA buffer and an RGB buffer that
+/// happen to share a byte length are never called equal.
+#[cfg(all(widgets_unstripped, feature = "image"))]
+fn same_pixel_buffer(left: &crate::image::ImageData, right: &crate::image::ImageData) -> bool {
+    if core::mem::discriminant(left) != core::mem::discriminant(right) {
+        return false;
+    }
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    left.len() == right.len() && left.as_ptr() == right.as_ptr()
 }
 
 #[cfg(widgets_unstripped)]
@@ -1242,20 +1311,22 @@ impl Widget for Icon {
 
     /// Advances a frame animation by `delta_ms`.
     ///
-    /// One frame is shown for [`ICON_FRAME_INTERVAL_MS`] milliseconds; the list loops at the end.
-    /// The return value is `true` while the list still owes frames (that is, while it has more than
-    /// one frame), matching the trait contract a frame loop relies on. A still icon returns `false`
-    /// and costs nothing on the animation bus.
+    /// One frame is shown for [`Icon::frame_interval_ms`] milliseconds, which defaults to
+    /// [`ICON_FRAME_INTERVAL_MS`]; the list loops at the end. The return value is `true` while
+    /// the list still owes frames (that is, while it has more than one frame), matching the
+    /// trait contract a frame loop relies on. A still icon returns `false` and costs nothing on
+    /// the animation bus.
     fn tick(&mut self, delta_ms: u32) -> bool {
         #[cfg(feature = "image")]
         {
             if self.frames.len() < 2 {
                 return false;
             }
+            let interval = self.frame_interval_ms.max(1);
             self.frame_elapsed_ms = self.frame_elapsed_ms.saturating_add(delta_ms);
             let mut advanced = false;
-            while self.frame_elapsed_ms >= ICON_FRAME_INTERVAL_MS {
-                self.frame_elapsed_ms -= ICON_FRAME_INTERVAL_MS;
+            while self.frame_elapsed_ms >= interval {
+                self.frame_elapsed_ms -= interval;
                 self.frame_index = (self.frame_index + 1) % self.frames.len();
                 advanced = true;
             }

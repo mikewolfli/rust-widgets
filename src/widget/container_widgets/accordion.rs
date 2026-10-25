@@ -13,11 +13,19 @@
 //!
 //! # Interaction
 //!
-//! A press on a header toggles its section and emits `section_toggled` with the section id.
-//! In single-expand mode, opening a section closes the one that was open; closing the open
-//! section is allowed and leaves all sections closed.
+//! A press on a header toggles its section and emits `section_toggled` with the section id and
+//! the new open state. In single-expand mode, opening a section closes the one that was open;
+//! closing the open section is allowed and leaves all sections closed.
+//!
+//! # Content
+//!
+//! A section's body is either a line of text or a real control. [`Accordion::set_section_widget`]
+//! mounts a control in the body band: it is linked as this control's child in both directions and
+//! given the band rectangle on every arrangement, so the tree painter draws it. A closed section's
+//! control is hidden rather than merely clipped — the hit test walks geometry and visibility, not
+//! the ancestor clip, so a clipped-but-visible control would still receive clicks.
 
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -25,7 +33,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashMap;
 
@@ -37,6 +45,10 @@ const BODY_HEIGHT: u32 = 48;
 const HEADER_PADDING: u32 = 10;
 /// The side of the chevron's own box.
 const CHEVRON_SIDE: u32 = 8;
+/// The side of a header icon tile, and the gap between it and the title.
+const HEADER_ICON_SIDE: u32 = 16;
+/// The gap between a header icon and the title that follows it.
+const HEADER_ICON_GAP: u32 = 4;
 
 /// One section of an [`Accordion`].
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +57,14 @@ pub struct AccordionSection {
     title: String,
     body: String,
     expanded: bool,
+    /// An icon drawn in the header ahead of the title, if one was assigned.
+    icon: Option<IconSource>,
+    /// A real control mounted in the section's body band, if any.
+    ///
+    /// `None` keeps the text body. When set, the control is a child of the accordion and is given
+    /// the body band on every arrangement; the body text is then not drawn, because the control is
+    /// what fills the band.
+    body_widget: Option<ObjectId>,
 }
 
 impl AccordionSection {
@@ -61,6 +81,16 @@ impl AccordionSection {
     /// The text drawn in the body while the section is open.
     pub fn body(&self) -> &str {
         &self.body
+    }
+
+    /// The icon drawn in the header, if one was assigned.
+    pub fn icon(&self) -> Option<IconSource> {
+        self.icon
+    }
+
+    /// The control mounted in the section body, if any.
+    pub fn body_widget(&self) -> Option<ObjectId> {
+        self.body_widget
     }
 
     /// Whether the section is open.
@@ -82,8 +112,12 @@ pub struct Accordion {
     animated: bool,
     /// Header index carrying the keyboard focus.
     focused_header: Option<usize>,
-    /// Emitted when a section opens or closes, with the section's own id as the payload.
-    pub section_toggled: Signal1<String>,
+    /// Emitted when a section opens or closes, with `(section_id, new_expanded_state)`.
+    ///
+    /// The state is carried rather than left for the subscriber to query: a subscriber that only
+    /// receives the id has to call back into the control to learn *what* happened, and the answer
+    /// it reads may already be the next toggle's.
+    pub section_toggled: Signal1<(String, bool)>,
 }
 
 impl Accordion {
@@ -117,7 +151,123 @@ impl Accordion {
             title: title.to_string(),
             body: body.to_string(),
             expanded: false,
+            icon: None,
+            body_widget: None,
         });
+        self.sync_body_widgets();
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Mounts `widget` (or clears it, with `None`) as the body control of section `id`.
+    ///
+    /// Returns `false` for an id no section owns. A replacement unlinks and hides the previous
+    /// control — a detached control keeps its own visibility flag, so leaving it shown would let it
+    /// paint over the body that replaced it.
+    pub fn set_section_widget(&mut self, id: &str, widget: Option<ObjectId>) -> bool {
+        let Some(section) = self.sections.iter_mut().find(|section| section.id == id) else {
+            return false;
+        };
+        let previous = section.body_widget;
+        if previous == widget {
+            return true;
+        }
+        if let Some(previous) = previous {
+            self.base.remove_child_linked(previous);
+            crate::set_widget_visible(previous, false);
+        }
+        if let Some(section) = self.sections.iter_mut().find(|section| section.id == id) {
+            section.body_widget = widget;
+        }
+        if let Some(widget_id) = widget {
+            self.base.add_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, true);
+        }
+        self.sync_body_widgets();
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The control mounted as the body of section `id`, if any.
+    pub fn section_widget(&self, id: &str) -> Option<ObjectId> {
+        self.sections
+            .iter()
+            .find(|section| section.id == id)
+            .and_then(|section| section.body_widget)
+    }
+
+    /// Replaces a section's title. Returns whether a section with that id exists.
+    ///
+    /// The section stack is laid out from the header height and the titles are measured by the
+    /// painter, so a change repaints and asks for a layout rather than only storing the string.
+    pub fn set_section_title(&mut self, id: &str, title: &str) -> bool {
+        let Some(section) = self.sections.iter_mut().find(|section| section.id == id) else {
+            return false;
+        };
+        if section.title == title {
+            return true;
+        }
+        section.title = title.to_string();
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Replaces a section's body text. Returns whether a section with that id exists.
+    ///
+    /// A section with a mounted body control keeps the text (it is the fallback a caller reads
+    /// back) but does not draw it: the control fills the band.
+    pub fn set_section_body(&mut self, id: &str, body: &str) -> bool {
+        let Some(section) = self.sections.iter_mut().find(|section| section.id == id) else {
+            return false;
+        };
+        if section.body == body {
+            return true;
+        }
+        section.body = body.to_string();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Replaces a section's header icon (`None` clears it). Returns whether the id exists.
+    pub fn set_section_icon(&mut self, id: &str, icon: Option<IconSource>) -> bool {
+        let Some(section) = self.sections.iter_mut().find(|section| section.id == id) else {
+            return false;
+        };
+        if section.icon == icon {
+            return true;
+        }
+        section.icon = icon;
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Moves the section at `from` to `to`, shifting the sections in between.
+    ///
+    /// Returns `false` when either index is out of range or the move is a no-op. The keyboard
+    /// focus follows the section it was on, and the body controls are re-placed, because the stack
+    /// order is what their bands are derived from.
+    pub fn move_section(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.sections.len() || to >= self.sections.len() || from == to {
+            return false;
+        }
+        let section = self.sections.remove(from);
+        self.sections.insert(to, section);
+        self.focused_header = self.focused_header.map(|focused| {
+            if focused == from {
+                to
+            } else if from < focused && focused <= to {
+                focused - 1
+            } else if to <= focused && focused < from {
+                focused + 1
+            } else {
+                focused
+            }
+        });
+        self.sync_body_widgets();
         self.base.request_layout();
         self.base.request_redraw();
         true
@@ -126,12 +276,22 @@ impl Accordion {
     /// Removes the section owning `id`. Returns whether a section was removed.
     pub fn remove_section(&mut self, id: &str) -> bool {
         let before = self.sections.len();
+        let removed_widget = self
+            .sections
+            .iter()
+            .find(|section| section.id == id)
+            .and_then(|section| section.body_widget);
         self.sections.retain(|section| section.id != id);
+        if let Some(widget_id) = removed_widget {
+            self.base.remove_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, false);
+        }
         self.body_heights.remove(id);
         self.open_progress.remove(id);
         let removed = self.sections.len() != before;
         if removed {
             self.focused_header = self.focused_header.filter(|index| *index < self.sections.len());
+            self.sync_body_widgets();
             self.base.request_layout();
             self.base.request_redraw();
         }
@@ -164,6 +324,9 @@ impl Accordion {
                 }
             }
         }
+        // Collapsing sections closes their bands, so the controls mounted in them have to be hidden
+        // with the bands they no longer have.
+        self.sync_body_widgets();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -204,7 +367,8 @@ impl Accordion {
         }
         self.base.request_layout();
         self.base.request_redraw();
-        self.section_toggled.emit(id.to_string());
+        self.sync_body_widgets();
+        self.section_toggled.emit((id.to_string(), expanded));
         true
     }
 
@@ -262,6 +426,7 @@ impl Accordion {
             return true;
         }
         self.body_heights.insert(id.to_string(), height);
+        self.sync_body_widgets();
         self.base.request_layout();
         self.base.request_redraw();
         true
@@ -280,8 +445,22 @@ impl Accordion {
     }
 
     /// Enables or disables open/close animation. Off by default.
+    ///
+    /// Turning it off clears any in-flight open fraction. `open_progress` is the map
+    /// [`Self::row_rects`] reads for the *drawn* band, so leaving an entry behind kept a section
+    /// frozen at a half-open height that nothing would ever finish: `tick` stops early when
+    /// `animated` is false, so the stale entry was unreachable and unrepairable.
     pub fn set_animated(&mut self, animated: bool) {
+        let changed = self.animated != animated;
         self.animated = animated;
+        if !animated {
+            self.open_progress.clear();
+        }
+        if changed {
+            self.sync_body_widgets();
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
     }
 
     /// Whether toggles animate.
@@ -327,6 +506,41 @@ impl Accordion {
         let id = section.id.clone();
         self.toggle(&id)
     }
+
+    /// Applies the current row stack to every mounted body control.
+    ///
+    /// # Why a body control is hidden rather than clipped
+    ///
+    /// Clipping is a painting rule. The hit test walks geometry and visibility, not the ancestor
+    /// clip, so a closed section whose control was merely clipped would still receive clicks
+    /// through the header above it. Hiding is the one state both paths read — the same rule
+    /// `CollapsiblePane` and `TabWidget` apply to their own contents.
+    ///
+    /// # Why it is not called from `draw`
+    ///
+    /// The rows change only when a section, a body height, the geometry or an animation tick
+    /// changes, and every one of those paths calls this. Repeating the platform writes on every
+    /// frame would be work proportional to the section count per repaint for no new information.
+    fn sync_body_widgets(&self) {
+        let mut bands: Vec<(usize, Rect)> = Vec::new();
+        for (index, row, is_header) in self.row_rects() {
+            if !is_header {
+                bands.push((index, row));
+            }
+        }
+        for (index, section) in self.sections.iter().enumerate() {
+            let Some(widget_id) = section.body_widget else {
+                continue;
+            };
+            match bands.iter().find(|(row_index, _)| *row_index == index) {
+                Some((_, rect)) => {
+                    crate::set_widget_visible(widget_id, true);
+                    crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+                }
+                None => crate::set_widget_visible(widget_id, false),
+            }
+        }
+    }
 }
 
 impl Widget for Accordion {
@@ -338,6 +552,15 @@ impl Widget for Accordion {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// Moves the stack and carries every mounted body control with it.
+    ///
+    /// The body bands are derived from the control's own rectangle, so a layout that moves the
+    /// accordion has to move the controls inside its sections.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.sync_body_widgets();
     }
 
     /// The stacked height of every section, headers and open bodies together.
@@ -398,6 +621,7 @@ impl Widget for Accordion {
         if !moving {
             self.open_progress.clear();
         }
+        self.sync_body_widgets();
         self.base.request_layout();
         self.base.request_redraw();
         moving
@@ -413,7 +637,13 @@ impl Widget for Accordion {
         match name {
             "section_toggled" => {
                 Some(EventSignalRef::mapped("section_toggled", &self.section_toggled, |value| {
-                    CapabilityValue::String(value.clone())
+                    // The payload is `(section_id, expanded)`. Carrying it as a tuple keeps both
+                    // parts readable with their own kinds instead of flattening the pair into a
+                    // `Debug` spelling a subscriber would have to parse.
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::String(value.0.clone()),
+                        CapabilityValue::Bool(value.1),
+                    ]))
                 }))
             }
             _ => None,
@@ -551,6 +781,33 @@ impl Draw for Accordion {
                     ),
                     row.height,
                 );
+                // A section icon reserves a leading tile and the title starts after it, so the
+                // caption and the glyph cannot overlap. The room charged is the same constant the
+                // band is narrowed by, so what is painted and what is reserved agree.
+                let title_band = match section.icon {
+                    None => title_band,
+                    Some(source) => {
+                        let side = HEADER_ICON_SIDE.min(title_band.height.max(1));
+                        let icon_rect = Rect::new(
+                            title_band.x,
+                            title_band.y + (title_band.height.saturating_sub(side) / 2) as i32,
+                            side,
+                            side,
+                        );
+                        if let Err(error) =
+                            crate::widget::paint_icon(ctx, source.into(), icon_rect, ink)
+                        {
+                            log::warn!("accordion section icon could not be painted: {error:?}");
+                        }
+                        let shift = (side + HEADER_ICON_GAP) as i32;
+                        Rect::new(
+                            title_band.x.saturating_add(shift),
+                            title_band.y,
+                            title_band.width.saturating_sub(shift as u32),
+                            title_band.height,
+                        )
+                    }
+                };
                 // An open section's title is emphasised; a closed one is ordinary ink.
                 let title_ink = if section.expanded { accent } else { ink };
                 ctx.draw_text_line(
@@ -562,6 +819,11 @@ impl Draw for Accordion {
                 );
             } else {
                 ctx.fill_rect(row, body_fill);
+                // A section with a mounted control paints only the band: the control is what fills
+                // it, and a caption drawn underneath would be covered by the child anyway.
+                if section.body_widget.is_some() {
+                    continue;
+                }
                 let body_band = Rect::new(
                     row.x.saturating_add(HEADER_PADDING as i32),
                     row.y,
@@ -682,12 +944,17 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         accordion.section_toggled.connect_ref({
             let seen = std::sync::Arc::clone(&seen);
-            move |id: &String| seen.lock().expect("lock").push(id.clone())
+            // The payload carries the section id *and* the new state, so a subscriber does not have
+            // to call back into the control to learn what the toggle did.
+            move |toggle: &(String, bool)| seen.lock().expect("lock").push(toggle.clone())
         });
         accordion.set_expanded("a", true);
         assert!(!accordion.set_expanded("a", true), "a no-op must report no change");
         accordion.set_expanded("a", false);
-        assert_eq!(seen.lock().expect("lock").as_slice(), ["a".to_string(), "a".to_string()]);
+        assert_eq!(
+            seen.lock().expect("lock").as_slice(),
+            [("a".to_string(), true), ("a".to_string(), false)]
+        );
     }
 
     #[test]

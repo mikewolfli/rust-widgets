@@ -25,7 +25,7 @@
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -79,10 +79,18 @@ pub struct SplashScreen {
     /// It rests at `1.0` because a splash screen is **shown the moment it is mounted** -- unlike a
     /// dialog, which is created hidden. A control born mid-fade would flash into existence.
     opacity: PropertyDriver,
+    /// Whether [`Self::finish`] also dismisses the screen.
+    auto_hide_on_finish: bool,
+    /// Whether the fade currently in flight should hide the control when it completes.
+    hide_when_faded: bool,
+    /// Whether a requested fade still owes its completion notification.
+    fade_pending: bool,
     /// Emitted when the screen is finished, with the title.
     pub finished: Signal1<String>,
     /// Emitted when the user skips, with the title.
     pub skipped: Signal1<String>,
+    /// Emitted once when a requested fade reaches zero opacity.
+    pub fade_out_finished: GenericSignal,
 }
 
 impl SplashScreen {
@@ -97,8 +105,12 @@ impl SplashScreen {
             // At rest fully present: a splash screen is shown the moment it is mounted, so it must
             // not animate itself into existence.
             opacity: PropertyDriver::at(1.0, MotionSlot::Normal),
+            auto_hide_on_finish: false,
+            hide_when_faded: false,
+            fade_pending: false,
             finished: Signal1::new(),
             skipped: Signal1::new(),
+            fade_out_finished: GenericSignal::new(),
         }
     }
 
@@ -173,6 +185,41 @@ impl SplashScreen {
     /// [`Self::fade_out`] as well -- see that method for why the two are separate.
     pub fn finish(&mut self) {
         self.finished.emit(self.title.clone());
+        // Auto-hide is the "load finished → fade → remove" pipeline as one decision: the host
+        // opted in by setting the flag, so `finish` starts the exit instead of leaving it to
+        // a second call that every host would have to remember.
+        if self.auto_hide_on_finish {
+            self.begin_dismiss();
+        }
+    }
+
+    /// Whether [`Self::finish`] automatically dismisses the screen.
+    pub fn auto_hide_on_finish(&self) -> bool {
+        self.auto_hide_on_finish
+    }
+
+    /// Enables or disables the automatic dismissal on [`Self::finish`].
+    pub fn set_auto_hide_on_finish(&mut self, enabled: bool) {
+        self.auto_hide_on_finish = enabled;
+    }
+
+    /// Finishes, fades out, and hides the screen when the fade completes.
+    ///
+    /// The assembled exit pipeline: a host that only wants the conventional splash behaviour
+    /// calls this one method instead of stitching `finish` + `fade_out` + a hide callback
+    /// together, and the completion is reported by [`Self::fade_out_finished`].
+    pub fn dismiss(&mut self) {
+        self.finish();
+        // `finish` already began the dismissal when auto-hide is on.
+        if !self.auto_hide_on_finish {
+            self.begin_dismiss();
+        }
+    }
+
+    /// Starts the fade and arranges for the control to hide when it reaches zero.
+    fn begin_dismiss(&mut self) {
+        self.hide_when_faded = true;
+        self.fade_out();
     }
 
     /// How far the screen has faded: `1.0` fully present, `0.0` gone.
@@ -196,6 +243,7 @@ impl SplashScreen {
     /// fade to progress -- the same requirement every animated control in the crate has.
     pub fn fade_out(&mut self) {
         self.opacity.set_target(0.0);
+        self.fade_pending = true;
         self.base.request_redraw();
     }
 
@@ -270,7 +318,19 @@ impl Widget for SplashScreen {
     /// A settled screen costs no frames: the driver reports false the step it reaches its target, so
     /// a splash that was never faded owes nothing and one that has finished fading stops.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        self.opacity.tick(delta_ms)
+        let moving = self.opacity.tick(delta_ms);
+        // The completion is reported on the step the fade settles, not by polling opacity:
+        // a caller watching `fade_out_finished` must be able to hide the control once rather
+        // than comparing floats every frame.
+        if self.fade_pending && !moving && self.opacity.value() <= 0.0 {
+            self.fade_pending = false;
+            if self.hide_when_faded {
+                self.hide_when_faded = false;
+                self.base.hide();
+            }
+            self.fade_out_finished.emit();
+        }
+        moving
     }
 
     fn is_animating(&self) -> bool {
@@ -299,6 +359,9 @@ impl Widget for SplashScreen {
             "skipped" => Some(EventSignalRef::mapped("skipped", &self.skipped, |v| {
                 CapabilityValue::String(v.clone())
             })),
+            "fade_out_finished" => {
+                Some(EventSignalRef::unit("fade_out_finished", &self.fade_out_finished))
+            }
             _ => None,
         }
     }
@@ -752,5 +815,40 @@ mod tests {
                 "{name} is declared but the contract refuses to read it"
             );
         }
+    }
+
+    #[test]
+    fn auto_hide_finishes_fades_and_removes_the_screen() {
+        let mut splash = screen(320, 240);
+        splash.set_auto_hide_on_finish(true);
+        assert!(splash.auto_hide_on_finish());
+        let done = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&done);
+        splash.fade_out_finished.connect(move || {
+            *sink.lock().expect("lock") += 1;
+        });
+        splash.finish();
+        assert!(splash.base.is_visible(), "the screen stays up while the fade runs");
+        while splash.tick(1000) {}
+        assert_eq!(*done.lock().expect("lock"), 1, "the fade reports its completion");
+        assert!(!splash.base.is_visible(), "auto-hide removes the screen after the fade");
+        // A second finish is an independent run and reports exactly one more completion.
+        splash.finish();
+        while splash.tick(1000) {}
+        assert_eq!(*done.lock().expect("lock"), 2);
+    }
+
+    #[test]
+    fn dismiss_is_the_whole_exit_in_one_call() {
+        let mut splash = screen(320, 240);
+        let finished = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&finished);
+        splash.finished.connect(move |_| {
+            *sink.lock().expect("lock") += 1;
+        });
+        splash.dismiss();
+        assert_eq!(*finished.lock().expect("lock"), 1, "dismiss also announces completion");
+        while splash.tick(1000) {}
+        assert!(!splash.base.is_visible(), "and removes the screen once the fade settles");
     }
 }

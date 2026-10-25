@@ -41,6 +41,15 @@ const DIALOG_REVEAL_MIN_SCALE: f32 = super::REVEAL_MIN_SCALE;
 /// The side of the square close button drawn on a closable dialog's title bar.
 const DIALOG_CLOSE_BUTTON: u32 = 16;
 
+/// A button a [`Dialog`] can paint in its title bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleBarButton {
+    /// The close mark; activating it rejects the dialog.
+    Close,
+    /// The context-help mark; activating it emits `help_requested`.
+    Help,
+}
+
 /// The drag in progress on the dialog's title bar.
 #[derive(Debug, Clone, Copy)]
 struct TitleDrag {
@@ -73,11 +82,11 @@ pub struct Dialog {
     accepted_state: bool,
     /// Whether the last finish was a rejection.
     rejected_state: bool,
-    /// Whether the title bar paints its close button.
+    /// The title-bar buttons this dialog paints, in set order.
     ///
-    /// Off by default so a dialog that never asked for the affordance keeps the exact chrome it
-    /// always had; [`Dialog::set_closable`] opts in.
-    closable: bool,
+    /// Empty by default so a dialog that never asked for the affordance keeps the exact chrome
+    /// it always had; [`Dialog::set_closable`] is the one-button spelling of the same set.
+    title_bar_buttons: Vec<TitleBarButton>,
     /// The title-bar drag in progress, if any.
     drag: Option<TitleDrag>,
     /// How far the dialog has revealed, `0.0` hidden and `1.0` fully shown.
@@ -100,6 +109,8 @@ pub struct Dialog {
     pub closed: GenericSignal,
     /// Emitted with the result code when [`Dialog::done`] finishes the dialog.
     pub finished: Signal1<i32>,
+    /// Emitted when the title bar's Help button is activated.
+    pub help_requested: GenericSignal,
 }
 
 impl Dialog {
@@ -118,7 +129,7 @@ impl Dialog {
             result: None,
             accepted_state: false,
             rejected_state: false,
-            closable: false,
+            title_bar_buttons: Vec::new(),
             drag: None,
             // At rest at the hidden end: a freshly built dialog is not shown, so it must not animate
             // itself away on its first frame.
@@ -128,6 +139,7 @@ impl Dialog {
             opened: GenericSignal::new(),
             closed: GenericSignal::new(),
             finished: Signal1::new(),
+            help_requested: GenericSignal::new(),
         }
     }
 
@@ -315,43 +327,84 @@ impl Dialog {
 
     /// Whether the title bar paints a close button.
     pub fn is_closable(&self) -> bool {
-        self.closable
+        self.title_bar_buttons.contains(&TitleBarButton::Close)
     }
 
-    /// Shows or hides the title-bar close button.
+    /// The title-bar buttons currently painted, in set order.
+    pub fn title_bar_buttons(&self) -> &[TitleBarButton] {
+        &self.title_bar_buttons
+    }
+
+    /// Replaces the title-bar button set.
+    ///
+    /// The set is de-duplicated while order is preserved, so a caller passing `[Help, Close]`
+    /// gets Help left of Close rather than two close marks. This is the one write path for the
+    /// chrome: [`Dialog::set_closable`] is a convenience for adding or removing `Close`, and it
+    /// reads this same vector, so the two cannot disagree.
+    pub fn set_title_bar_buttons(&mut self, buttons: &[TitleBarButton]) {
+        let mut next: Vec<TitleBarButton> = Vec::with_capacity(buttons.len());
+        for button in buttons {
+            if !next.contains(button) {
+                next.push(*button);
+            }
+        }
+        if self.title_bar_buttons == next {
+            return;
+        }
+        self.title_bar_buttons = next;
+        self.base.request_redraw();
+    }
+
+    /// Shows or hides the title-bar close button, leaving any Help button in place.
     ///
     /// Off by default, so the default chrome is unchanged. When on, a press on the button
     /// rejects the dialog.
     pub fn set_closable(&mut self, closable: bool) {
-        if self.closable == closable {
+        if self.is_closable() == closable {
             return;
         }
-        self.closable = closable;
-        self.base.request_redraw();
+        let mut buttons: Vec<TitleBarButton> = self
+            .title_bar_buttons
+            .iter()
+            .copied()
+            .filter(|button| *button != TitleBarButton::Close)
+            .collect();
+        if closable {
+            buttons.push(TitleBarButton::Close);
+        }
+        self.set_title_bar_buttons(&buttons);
     }
 
-    /// The close button's rectangle on the painted frame.
+    /// The title-bar buttons and their rectangles, in paint order (right to left).
     ///
-    /// Returns the empty rectangle when the dialog is not closable or has no title bar to put
-    /// the button on. Drawing and hit-testing both read this, so the mark and its target cannot
-    /// drift.
-    fn close_button_rect(&self) -> Option<Rect> {
-        if !self.closable || self.title.is_empty() {
-            return None;
+    /// Drawing and hit-testing both read this, so a mark and its target cannot drift.
+    fn title_bar_button_rects(&self) -> Vec<(TitleBarButton, Rect)> {
+        if self.title.is_empty() {
+            return Vec::new();
         }
         let frame = self.frame_rect();
         let bar = ControlMetrics::top_band(frame, DIALOG_TITLE_BAR_HEIGHT);
         if bar.height == 0 || bar.width < DIALOG_CLOSE_BUTTON {
-            return None;
+            return Vec::new();
         }
         let side = DIALOG_CLOSE_BUTTON.min(bar.height);
-        Some(Rect::new(
-            bar.x + bar.width as i32 - side as i32 - 4,
-            bar.y + ((bar.height - side) / 2) as i32,
-            side,
-            side,
-        ))
+        let mut right = bar.x + bar.width as i32 - side as i32 - 4;
+        let mut rects = Vec::with_capacity(self.title_bar_buttons.len());
+        // Reverse order so the first button in the set sits leftmost: `[Close, Help]` paints
+        // Help at the right edge and Close to its left, matching the order the caller wrote.
+        for button in self.title_bar_buttons.iter().rev() {
+            rects.push((
+                *button,
+                Rect::new(right, bar.y + ((bar.height - side) / 2) as i32, side, side),
+            ));
+            right -= side as i32 + 4;
+        }
+        rects
     }
+
+    /// The close button's rectangle is published through
+    /// [`Dialog::title_bar_button_rects`], which is the one geometry the paint and the hit
+    /// test read.
 
     /// The title-bar band that starts a move drag.
     fn drag_bar(&self) -> Option<Rect> {
@@ -486,6 +539,7 @@ impl Widget for Dialog {
             "finished" => Some(EventSignalRef::mapped("finished", &self.finished, |v| {
                 CapabilityValue::Int(i64::from(*v))
             })),
+            "help_requested" => Some(EventSignalRef::unit("help_requested", &self.help_requested)),
             _ => None,
         }
     }
@@ -576,9 +630,14 @@ impl EventHandler for Dialog {
         }
         match event {
             Event::MousePress { pos, button: 1, .. } => {
-                if self.close_button_rect().is_some_and(|rect| rect.contains_point(*pos)) {
-                    self.reject();
-                    return;
+                for (kind, rect) in self.title_bar_button_rects() {
+                    if rect.contains_point(*pos) {
+                        match kind {
+                            TitleBarButton::Close => self.reject(),
+                            TitleBarButton::Help => self.help_requested.emit(),
+                        }
+                        return;
+                    }
                 }
                 if self.drag_bar().is_some_and(|bar| bar.contains_point(*pos)) {
                     // The *painted* frame moves with the pointer, not the offered rectangle: the
@@ -748,13 +807,10 @@ impl Draw for Dialog {
         let title_font = effective_font(style);
         let band = ControlMetrics::band_inset(bar, 0);
         let title_line = context.text_line(band, title_font);
-        // A closable dialog leaves room on the right of the title for its button, so a long
-        // title elides before the mark instead of running underneath it.
-        let title_width = if self.closable {
-            rect.width.saturating_sub(16).saturating_sub(DIALOG_CLOSE_BUTTON + 8)
-        } else {
-            rect.width.saturating_sub(16)
-        };
+        // Title-bar buttons occupy the right end of the strip, so a long title elides before
+        // them instead of running underneath.
+        let reserved = self.title_bar_buttons.len() as u32 * (DIALOG_CLOSE_BUTTON + 4);
+        let title_width = rect.width.saturating_sub(16).saturating_sub(reserved);
         context.draw_text_fitted_cow(
             Rect::new(rect.x + 8, title_line.y, title_width, title_line.height.max(1)),
             &self.title,
@@ -762,13 +818,16 @@ impl Draw for Dialog {
             ink,
             HorizontalAlignment::Left,
         );
-        if let Some(close) = self.close_button_rect() {
+        for (kind, button) in self.title_bar_button_rects() {
             crate::widget::draw_icon_centered(
                 context,
-                close,
-                close.height,
+                button,
+                button.height,
                 ink,
-                crate::widget::IconName::Close,
+                match kind {
+                    TitleBarButton::Close => crate::widget::IconName::Close,
+                    TitleBarButton::Help => crate::widget::IconName::Help,
+                },
             );
         }
     }
@@ -919,7 +978,12 @@ mod tests {
         let mut d = Dialog::with_title("Close", Rect::new(0, 0, 300, 200));
         assert!(!d.is_closable(), "the button is opt-in, so the default chrome is unchanged");
         d.set_closable(true);
-        let close = d.close_button_rect().expect("a closable titled dialog paints a close button");
+        let close = d
+            .title_bar_button_rects()
+            .into_iter()
+            .find(|(button, _)| *button == TitleBarButton::Close)
+            .map(|(_, rect)| rect)
+            .expect("a closable titled dialog paints a close button");
         let rejected = Arc::new(AtomicUsize::new(0));
         let r = rejected.clone();
         d.rejected.connect(move || {
@@ -1203,5 +1267,35 @@ mod tests {
         );
 
         runtime::unregister(content_id);
+    }
+
+    #[test]
+    fn title_bar_buttons_are_configurable_and_help_is_reported() {
+        let mut d = dialog();
+        assert!(d.title_bar_buttons().is_empty(), "the default chrome stays unchanged");
+        d.set_title_bar_buttons(&[TitleBarButton::Close, TitleBarButton::Help]);
+        assert_eq!(d.title_bar_buttons(), [TitleBarButton::Close, TitleBarButton::Help]);
+        assert!(d.is_closable());
+        // Duplicates collapse instead of painting two identical marks.
+        d.set_title_bar_buttons(&[TitleBarButton::Help, TitleBarButton::Help]);
+        assert_eq!(d.title_bar_buttons(), [TitleBarButton::Help]);
+        assert!(!d.is_closable());
+
+        d.set_title_bar_buttons(&[TitleBarButton::Close, TitleBarButton::Help]);
+        d.show();
+        let help = d
+            .title_bar_button_rects()
+            .into_iter()
+            .find(|(button, _)| *button == TitleBarButton::Help)
+            .map(|(_, rect)| rect)
+            .expect("the help mark has a rectangle");
+        let asked = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&asked);
+        d.help_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        d.handle_event(&Event::mouse_press(help.x + 2, help.y + 2, 1));
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert!(d.is_visible(), "help must not close the dialog");
     }
 }

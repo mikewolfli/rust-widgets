@@ -4,7 +4,7 @@
 //! Button widget implementation.
 #[cfg(full_widgets)]
 use crate::compat::Vec;
-use crate::compat::{format, String, ToString};
+use crate::compat::{format, RefCell, String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 #[cfg(full_widgets)]
 use crate::event::key_codes;
@@ -16,6 +16,7 @@ use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
 use crate::widget::base_widgets::button_group::{self, GroupKey};
 use crate::widget::base_widgets::label::{draw_elided_line, TextElideMode};
+use crate::widget::base_widgets::AutoRepeat;
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -55,6 +56,29 @@ pub enum ButtonState {
     /// Not enabled; reported even if the pressed flag was set.
     Disabled,
 }
+
+/// The inputs [`Button::implicit_size`] derives its answer from.
+///
+/// # Why the key is the inputs, not a bare dirty flag
+///
+/// A dirty flag has to be cleared by every path that can change one of these facts. Two of them
+/// are not setters at all — the resolved font comes from the active theme and the text scale, and
+/// the profile comes from the theme — so a flag would be wrong the first time a theme changed and
+/// nobody remembered to clear it. Comparing the inputs cannot go stale: a different font, icon or
+/// profile simply misses the cache and the answer is measured again.
+#[derive(Debug, Clone, PartialEq)]
+struct ButtonHintKey {
+    /// The caption's revision; see [`Button::text_revision`].
+    text_revision: u32,
+    /// The font the label is measured and painted with.
+    font: Font,
+    /// Whether any icon source is present, which is what the hint reserves room for.
+    icon: bool,
+    /// The icon slot's size, which the hint adds as advance and height.
+    icon_size: u32,
+    /// The metrics profile whose button floor and padding decide the answer.
+    profile: ControlMetricsProfile,
+}
 /// Button widget for clickable actions.
 ///
 /// # Animated interaction
@@ -93,6 +117,23 @@ pub struct Button {
     flat: bool,
     /// How a label wider than the button is shortened.
     elide_mode: TextElideMode,
+    /// The auto-repeat timing while this button is held.
+    ///
+    /// Off by default, so a button that never opts in still activates exactly once per press.
+    /// Advanced from [`Button::tick`]; see [`AutoRepeat`] for the contract.
+    auto_repeat: AutoRepeat,
+    /// A monotonic counter bumped whenever the caption changes.
+    ///
+    /// [`Button::implicit_size`] caches its answer against this instead of against the string: a
+    /// same-value `set_text` leaves the cache intact, and a real change invalidates it without the
+    /// comparison being repeated on every draw.
+    text_revision: u32,
+    /// The cached intrinsic size, with the inputs it was derived from.
+    ///
+    /// `RefCell` rather than `Cell` because the key holds a [`Font`], which is not `Copy`. The
+    /// borrow is confined to one lookup and one store, and nothing called from
+    /// [`Button::implicit_size`] can reach this control, so a nested borrow cannot occur.
+    hint_cache: RefCell<Option<(ButtonHintKey, Size)>>,
     /// The attached drop-down menu's rows, when the `full_widgets` surface is built.
     ///
     /// A push button that owns a menu is the reference toolkit's `setMenu`: the menu is part of
@@ -193,6 +234,9 @@ impl Button {
             auto_exclusive: false,
             flat: false,
             elide_mode: TextElideMode::ElideRight,
+            auto_repeat: AutoRepeat::new(),
+            text_revision: 0,
+            hint_cache: RefCell::new(None),
             #[cfg(full_widgets)]
             menu_items: Vec::new(),
             #[cfg(full_widgets)]
@@ -264,10 +308,47 @@ impl Button {
     /// was added to that same hand-rolled sum. Both now come from the metric system, which is what
     /// `check_implicit_size_uses_metrics` guards.
     pub fn implicit_size(&self) -> Size {
+        let font = effective_font(self.style());
+        let key = self.hint_key(font);
+        // The cache is consulted by value: `Size` is `Copy` and the key is cheap to clone (its
+        // font is a shared name), so no borrow of the cell outlives the comparison. The explicit
+        // dereference clones the `Option`, not the `Ref` guard.
+        let cached = (*self.hint_cache.borrow()).clone();
+        if let Some((cached_key, size)) = cached {
+            if cached_key == key {
+                return size;
+            }
+        }
+        let size = self.measure_implicit_size(font);
+        *self.hint_cache.borrow_mut() = Some((key, size));
+        size
+    }
+
+    /// The inputs the cached hint was derived from.
+    fn hint_key(&self, font: &Font) -> ButtonHintKey {
+        ButtonHintKey {
+            text_revision: self.text_revision,
+            font: font.clone(),
+            icon: self.has_icon(),
+            icon_size: self.icon_size,
+            profile: active_profile(),
+        }
+    }
+
+    /// Drops the cached intrinsic size.
+    ///
+    /// The key already distinguishes every input, so this is not needed for correctness; it makes
+    /// the setters that own those inputs state their effect at the point they perform it, and it
+    /// releases the cached `Font` reference when a control stops using its icon.
+    fn invalidate_hint(&self) {
+        let _ = self.hint_cache.replace(None);
+    }
+
+    /// Measures the intrinsic size from scratch; the slow path behind [`Button::implicit_size`].
+    fn measure_implicit_size(&self, font: &Font) -> Size {
         // Measure with the effective font — the resolved theme/caller font, not the default — so
         // the intrinsic size matches the label the draw path paints with the same font
         // (D09-STYLE-02). A text scale or custom face now grows the hint with the ink.
-        let font = effective_font(self.style());
         let line_height = estimate_line_height(font, 1.0);
         let label_width = estimate_text_width(&self.text, font, 1.0);
         // The icon is the *leading* slot, so its box and the gap to the label are content. Written
@@ -457,7 +538,37 @@ impl Button {
         // The target is recomputed every tick from the control's own state, so a state change
         // that arrived without a `tick` in between is picked up rather than missed.
         self.interaction_progress.set_target(self.interaction_target_progress());
-        self.interaction_progress.tick(delta_ms)
+        // Auto-repeat shares this control's existing clock: a held button reports one repeat per
+        // elapsed interval, and no thread or platform timer is involved.
+        let held = self.auto_repeat_held();
+        let repeats = self.auto_repeat.tick(delta_ms, held);
+        for _ in 0..repeats {
+            self.emit_auto_repeat();
+        }
+        let animating = self.interaction_progress.tick(delta_ms);
+        animating || held
+    }
+
+    /// Whether this button is held and configured to repeat.
+    ///
+    /// Asks the *configuration* rather than `AutoRepeat::is_active`, because the timer has not
+    /// started before the first tick: an `is_animating` that answered `false` here would keep the
+    /// animation bus from ever starting the ticks the timer needs.
+    fn auto_repeat_held(&self) -> bool {
+        self.auto_repeat.is_enabled() && self.base.is_enabled() && self.base.is_pressed()
+    }
+
+    /// Reports one auto-repeat cycle.
+    ///
+    /// A repeat is a `released`/`pressed` pair on this button's own signals, which is the cycle a
+    /// held button emits in the reference toolkit: the latch never moves, so the button stays
+    /// painted pressed while its listeners see each repeat. The pair is also what the group
+    /// reports, so an observer of either level sees the same sequence.
+    fn emit_auto_repeat(&mut self) {
+        self.released_signal.emit();
+        self.pressed_signal.emit();
+        button_group::notify_member_event(self.id(), button_group::MemberEvent::Released);
+        button_group::notify_member_event(self.id(), button_group::MemberEvent::Pressed);
     }
 
     /// The progress the current interaction state calls for.
@@ -495,10 +606,15 @@ impl Button {
             return;
         }
         self.signaled_pressed = pressed;
+        // A new gesture starts its repeat delay from zero, even when the press arrived through the
+        // property layer rather than through `press()`.
+        self.auto_repeat.reset();
         if pressed {
             self.pressed_signal.emit();
+            button_group::notify_member_event(self.id(), button_group::MemberEvent::Pressed);
         } else {
             self.released_signal.emit();
+            button_group::notify_member_event(self.id(), button_group::MemberEvent::Released);
         }
         self.state_changed.emit(self.state());
         self.request_frame_repaint(None);
@@ -511,11 +627,15 @@ impl Button {
         if !self.base.is_enabled() {
             return;
         }
+        // A new gesture starts its auto-repeat delay from zero, even if the previous gesture's
+        // clock never got a tick that observed it as released.
+        self.auto_repeat.reset();
         self.base.set_grabbed(true);
         self.set_pressed(true);
     }
     /// Ends a gesture: drops the grab and clears the pressed flag.
     pub fn release(&mut self) {
+        self.auto_repeat.reset();
         self.base.set_grabbed(false);
         self.set_pressed(false);
     }
@@ -529,6 +649,7 @@ impl Button {
         if !self.base.is_grabbed() && !self.base.is_pressed() {
             return;
         }
+        self.auto_repeat.reset();
         self.base.set_grabbed(false);
         self.set_pressed(false);
         self.canceled.emit();
@@ -569,6 +690,10 @@ impl Button {
         let text = text.into();
         if self.text != text {
             self.text = text;
+            // The caption is an input to the intrinsic size; bumping the revision is what makes
+            // the cached answer invalid without an explicit `invalidate` call here.
+            self.text_revision = self.text_revision.wrapping_add(1);
+            self.invalidate_hint();
             self.base.request_redraw();
         }
     }
@@ -581,6 +706,7 @@ impl Button {
             self.shared_icon_pixels = None;
         }
         self.icon = Some(icon);
+        self.invalidate_hint();
         self.base.request_redraw();
     }
     /// Returns a reference to the button icon, if set.
@@ -602,6 +728,7 @@ impl Button {
         self.shared_icon_pixels = pixels;
         self.icon = None;
         self.icon_source = None;
+        self.invalidate_hint();
         self.base.request_redraw();
     }
 
@@ -625,6 +752,7 @@ impl Button {
         {
             self.shared_icon_pixels = None;
         }
+        self.invalidate_hint();
         self.base.request_redraw();
     }
 
@@ -683,6 +811,7 @@ impl Button {
             return;
         }
         self.icon_size = size;
+        self.invalidate_hint();
         self.base.request_redraw();
     }
 
@@ -782,6 +911,42 @@ impl Button {
         self.base.request_redraw();
     }
 
+    /// Whether holding this button repeats its press/release cycle.
+    pub fn is_auto_repeat(&self) -> bool {
+        self.auto_repeat.is_enabled()
+    }
+
+    /// Enables automatic repetition while the button is held.
+    ///
+    /// Off by default, so an existing button still activates once per press. When on, the button's
+    /// own `pressed`/`released` signals are re-emitted at [`Self::auto_repeat_interval`] once the
+    /// press has been held for [`Self::auto_repeat_delay`] — the reference toolkit's `autoRepeat`.
+    pub fn set_auto_repeat(&mut self, enabled: bool) {
+        if self.auto_repeat.set_enabled(enabled) {
+            self.base.request_redraw();
+        }
+    }
+
+    /// How long the button must be held before the first repeat, in milliseconds.
+    pub fn auto_repeat_delay(&self) -> u32 {
+        self.auto_repeat.delay_ms()
+    }
+
+    /// Sets the delay before the first repeat.
+    pub fn set_auto_repeat_delay(&mut self, delay_ms: u32) {
+        self.auto_repeat.set_delay_ms(delay_ms);
+    }
+
+    /// The gap between repeats while the button is held, in milliseconds.
+    pub fn auto_repeat_interval(&self) -> u32 {
+        self.auto_repeat.interval_ms()
+    }
+
+    /// Sets the gap between repeats.
+    pub fn set_auto_repeat_interval(&mut self, interval_ms: u32) {
+        self.auto_repeat.set_interval_ms(interval_ms);
+    }
+
     /// Whether a press on this button can start a cross-control drag.
     pub fn is_drag_enabled(&self) -> bool {
         self.drag_enabled
@@ -821,7 +986,14 @@ impl Button {
     }
 
     /// The group this button belongs to, when auto-exclusive.
+    ///
+    /// A group a [`crate::widget::base_widgets::ButtonGroup`] handle adopted this button into
+    /// always wins: it is a direct instruction from the caller, while `auto_exclusive` is a
+    /// property that can only describe a same-parent group.
     fn exclusive_key(&self) -> Option<GroupKey> {
+        if let Some(key) = button_group::membership(self.id()) {
+            return Some(key);
+        }
         if !self.auto_exclusive {
             return None;
         }
@@ -1009,7 +1181,17 @@ impl Button {
         if self.auto_exclusive {
             self.claim_group_selection();
         }
+        self.emit_clicked();
+    }
+
+    /// Emits `clicked` and reports the click to this button's group, if it has one.
+    ///
+    /// Every activation path goes through here rather than emitting the base signal directly, so
+    /// a pointer release, a key activation, a programmatic `click`, and a touch tap cannot
+    /// disagree about whether the group was told.
+    fn emit_clicked(&mut self) {
         self.base.clicked.emit();
+        button_group::notify_member_event(self.id(), button_group::MemberEvent::Clicked);
     }
 
     /// Whether `key`/`modifiers` is this button's declared shortcut.
@@ -1275,8 +1457,10 @@ impl Widget for Button {
         // change (a hover arriving) makes the control animating at once, before any `tick`
         // has run to recompute the target. Reading the stale field made `is_animating`
         // answer `false` for a button that had just been hovered, so the bus would never
-        // start its frames.
+        // start its frames. A held auto-repeating button owes frames for the same reason, and
+        // for the same reason it is asked of the configuration rather than of the timer.
         self.interaction_progress.value() != self.interaction_target_progress()
+            || self.auto_repeat_held()
     }
 
     impl_draw_bridge!();
@@ -1305,6 +1489,11 @@ impl WidgetProperties for Button {
             "auto_exclusive" => Ok(CapabilityValue::Bool(self.is_auto_exclusive())),
             "flat" => Ok(CapabilityValue::Bool(self.is_flat())),
             "elide" => Ok(CapabilityValue::String(self.elide_mode().as_str().to_string())),
+            // Auto-repeat is a behaviour of the press gesture, so the three knobs travel through
+            // the same property route as the gesture's other settings.
+            "auto_repeat" => Ok(CapabilityValue::Bool(self.is_auto_repeat())),
+            "auto_repeat_delay" => Ok(CapabilityValue::UInt(self.auto_repeat_delay() as u64)),
+            "auto_repeat_interval" => Ok(CapabilityValue::UInt(self.auto_repeat_interval() as u64)),
             "drag_enabled" => Ok(CapabilityValue::Bool(self.is_drag_enabled())),
             "accepts_drops" => Ok(CapabilityValue::Bool(self.accepts_drops())),
             #[cfg(full_widgets)]
@@ -1375,6 +1564,18 @@ impl WidgetProperties for Button {
                 self.set_elide_mode(mode);
                 Ok(())
             }
+            "auto_repeat" => {
+                self.set_auto_repeat(expect_bool(value)?);
+                Ok(())
+            }
+            "auto_repeat_delay" => {
+                self.set_auto_repeat_delay(expect_u32(value)?);
+                Ok(())
+            }
+            "auto_repeat_interval" => {
+                self.set_auto_repeat_interval(expect_u32(value)?);
+                Ok(())
+            }
             "drag_enabled" => {
                 self.set_drag_enabled(expect_bool(value)?);
                 Ok(())
@@ -1438,6 +1639,9 @@ impl WidgetProperties for Button {
             "elide",
             "drag_enabled",
             "accepts_drops",
+            "auto_repeat",
+            "auto_repeat_delay",
+            "auto_repeat_interval",
             "menu_open",
             "menu_item_count",
             BASE_PROPERTY_NAMES
@@ -1456,6 +1660,9 @@ impl WidgetProperties for Button {
             "elide",
             "drag_enabled",
             "accepts_drops",
+            "auto_repeat",
+            "auto_repeat_delay",
+            "auto_repeat_interval",
             BASE_PROPERTY_NAMES
         ];
     }
@@ -1472,7 +1679,7 @@ impl WidgetProperties for Button {
             "click" => {
                 self.press();
                 self.release();
-                self.base.clicked.emit();
+                self.emit_clicked();
                 Ok(())
             }
             _ => Err(CapabilityAccessError::UnknownCommand),
@@ -1609,7 +1816,7 @@ impl EventHandler for Button {
                 let inside = self.base.contains_point_with_touch_expansion(*pos);
                 self.release();
                 if inside {
-                    self.base.clicked.emit();
+                    self.emit_clicked();
                     #[cfg(full_widgets)]
                     if !self.menu_items.is_empty() {
                         self.open_menu();
@@ -1623,7 +1830,7 @@ impl EventHandler for Button {
                 let inside = self.base.contains_point_with_touch_expansion(*pos);
                 self.release();
                 if inside {
-                    self.base.clicked.emit();
+                    self.emit_clicked();
                     #[cfg(full_widgets)]
                     if !self.menu_items.is_empty() {
                         self.open_menu();
@@ -1646,7 +1853,7 @@ impl EventHandler for Button {
             Event::Tap { .. } if self.base.is_enabled() => {
                 // A tap carries no position: the platform already resolved it to this
                 // control, which is the same basis the hit test narrows.
-                self.base.clicked.emit();
+                self.emit_clicked();
                 self.state_changed.emit(self.state());
             }
             Event::FocusGained { reason } => {
@@ -1713,9 +1920,9 @@ impl EventHandler for Button {
 /// unregistered would keep a group alive after it is gone.
 impl Drop for Button {
     fn drop(&mut self) {
-        if let Some(key) = self.exclusive_key() {
-            button_group::unregister(&key, self.id());
-        }
+        // Detaches the control from every group it might belong to: the auto-exclusive group its
+        // properties name and the group a `ButtonGroup` handle adopted it into.
+        button_group::leave_all(self.id());
     }
 }
 

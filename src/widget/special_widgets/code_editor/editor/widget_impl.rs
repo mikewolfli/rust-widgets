@@ -58,6 +58,27 @@ impl Widget for CodeEditor {
 
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
+        // The palette was resolved once at build time, so switching between light
+        // and dark left every token, selection and gutter colour on the old
+        // appearance. Rebuild it here, where the appearance change actually
+        // arrives, and invalidate the row measurements shaped with the old one.
+        let palette = SyntaxPalette::for_active_appearance();
+        if palette != self.palette {
+            self.palette = palette;
+            self.layout_lexer_generation = self.layout_lexer_generation.wrapping_add(1);
+            self.row_layout_key.set((
+                u64::MAX,
+                u64::MAX,
+                0,
+                0,
+                0,
+                0,
+                LanguageId::PlainText,
+                u64::MAX,
+            ));
+            self.palette_changed.emit();
+            self.base.request_redraw();
+        }
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -175,6 +196,37 @@ impl Widget for CodeEditor {
                     CapabilityValue::Bool(*v)
                 }))
             }
+            "search_result" => {
+                Some(EventSignalRef::mapped("search_result", &self.search_result, |v| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                        CapabilityValue::UInt(v.2 as u64),
+                        CapabilityValue::UInt(v.3 as u64),
+                    ])
+                }))
+            }
+            "zoom_changed" => {
+                Some(EventSignalRef::mapped("zoom_changed", &self.zoom_changed, |v| {
+                    CapabilityValue::Float(*v as f64)
+                }))
+            }
+            "breakpoint_toggled" => {
+                Some(EventSignalRef::mapped("breakpoint_toggled", &self.breakpoint_toggled, |v| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::Bool(v.1),
+                    ])
+                }))
+            }
+            "marker_activated" => {
+                Some(EventSignalRef::mapped("marker_activated", &self.marker_activated, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "palette_changed" => {
+                Some(EventSignalRef::unit("palette_changed", &self.palette_changed))
+            }
             _ => None,
         }
     }
@@ -195,6 +247,10 @@ impl WidgetProperties for CodeEditor {
             "cursor_line" => Ok(CapabilityValue::UInt(self.cursor().0 as u64)),
             "cursor_column" => Ok(CapabilityValue::UInt(self.cursor().1 as u64)),
             "marker_count" => Ok(CapabilityValue::UInt(self.markers().len() as u64)),
+            "undo_stack_limit" => Ok(CapabilityValue::UInt(self.config.undo_stack_limit as u64)),
+            "undo_depth" => Ok(CapabilityValue::UInt(self.undo_depth() as u64)),
+            "goto_bar_visible" => Ok(CapabilityValue::Bool(self.goto_bar_visible())),
+            "breakpoint_gutter" => Ok(CapabilityValue::Bool(self.is_breakpoint_gutter())),
             _ => base_property_get(self, name),
         }
     }
@@ -207,8 +263,23 @@ impl WidgetProperties for CodeEditor {
             }
             // Position, size and diagnostic count are derived from the buffer and
             // the caret.
-            "line_count" | "cursor_line" | "cursor_column" | "marker_count" => {
+            "line_count" | "cursor_line" | "cursor_column" | "marker_count" | "undo_depth" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            "undo_stack_limit" => {
+                let limit = crate::widget::capability::coercion::expect_usize(value)?;
+                self.set_undo_limit(limit);
+                Ok(())
+            }
+            "goto_bar_visible" => {
+                let visible = crate::widget::capability::coercion::expect_bool(value)?;
+                self.set_goto_bar_visible(visible);
+                Ok(())
+            }
+            "breakpoint_gutter" => {
+                let visible = crate::widget::capability::coercion::expect_bool(value)?;
+                self.set_breakpoint_gutter(visible);
+                Ok(())
             }
             _ => base_property_set(self, name, value),
         }
@@ -225,6 +296,10 @@ impl WidgetProperties for CodeEditor {
             "cursor_line",
             "cursor_column",
             "marker_count",
+            "undo_stack_limit",
+            "undo_depth",
+            "goto_bar_visible",
+            "breakpoint_gutter",
             BASE_PROPERTY_NAMES
         ]
     }

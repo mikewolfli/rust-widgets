@@ -71,6 +71,12 @@ pub struct FontPreview {
     scroll_offset: i32,
     /// An in-progress pointer drag: the press position and the offset it started from.
     drag: Option<(Point, i32)>,
+    /// Faces built from the configured family, keyed by `f32::to_bits` of their size.
+    ///
+    /// `build_font` allocates the family name on every call, so a panel that repaints on
+    /// scroll rebuilt the same one or two faces per frame. The cache is cleared whenever
+    /// the family, the bold flag or the italic flag changes.
+    font_cache: Vec<(u32, Font)>,
 }
 
 impl FontPreview {
@@ -92,6 +98,7 @@ impl FontPreview {
             font_weights: Vec::new(),
             scroll_offset: 0,
             drag: None,
+            font_cache: Vec::new(),
         }
     }
 
@@ -101,6 +108,7 @@ impl FontPreview {
             return;
         }
         self.font_family = name.to_string();
+        self.font_cache.clear();
         self.base.request_redraw();
     }
 
@@ -144,6 +152,7 @@ impl FontPreview {
     pub fn set_bold(&mut self, bold: bool) {
         if self.bold != bold {
             self.bold = bold;
+            self.font_cache.clear();
             self.base.request_redraw();
         }
     }
@@ -157,6 +166,7 @@ impl FontPreview {
     pub fn set_italic(&mut self, italic: bool) {
         if self.italic != italic {
             self.italic = italic;
+            self.font_cache.clear();
             self.base.request_redraw();
         }
     }
@@ -322,6 +332,29 @@ impl FontPreview {
     /// Builds a font from current settings.
     fn build_font(&self, size: f32) -> Font {
         Font::new(&self.font_family, size, self.bold, self.italic)
+    }
+
+    /// Returns the configured face at `size`, reusing a construction from an earlier call.
+    ///
+    /// Cloning the cached value only bumps the family reference count; it does not allocate
+    /// the family name again. A derived weight is still applied by the caller with
+    /// `with_weight_value`, which is likewise a cheap clone.
+    fn cached_font(&mut self, size: f32) -> Font {
+        // Only the preview size and the two 14 pt specimen faces are ever requested, so this
+        // bound is never hit by normal drawing. It keeps a host that animates `font_size`
+        // from growing the cache one entry per frame.
+        const MAX_CACHED_SIZES: usize = 8;
+
+        let size_bits = size.to_bits();
+        if let Some((_, font)) = self.font_cache.iter().find(|(bits, _)| *bits == size_bits) {
+            return font.clone();
+        }
+        if self.font_cache.len() >= MAX_CACHED_SIZES {
+            self.font_cache.clear();
+        }
+        let font = self.build_font(size);
+        self.font_cache.push((size_bits, font.clone()));
+        font
     }
 
     /// The fixed info-line face. Built once through `OnceLock`: `Font` owns its family
@@ -511,7 +544,7 @@ impl Draw for FontPreview {
             // to show the family at `font_size`, and a font that silently rendered smaller
             // than the size the panel's own info line reports would be a worse lie than an
             // ellipsis. Fitting is therefore the correct fix here, not scaling.
-            let preview_font = self.build_font(self.font_size);
+            let preview_font = self.cached_font(self.font_size);
             context.draw_text_fitted_cow(
                 Rect::new(rect.x + margin as i32, y, text_w, preview_font.size() as u32),
                 &self.preview_text,
@@ -535,7 +568,7 @@ impl Draw for FontPreview {
         y += SEPARATOR_AFTER;
 
         // --- Sample texts ---
-        let sample_font = self.build_font(14.0);
+        let sample_font = self.cached_font(14.0);
         let bottom = rect.y + rect.height as i32;
         for text in &self.sample_texts {
             if !clipped && y + 20 > bottom {
@@ -554,6 +587,7 @@ impl Draw for FontPreview {
         }
 
         // --- Weight axis ---
+        let weight_base_font = self.cached_font(14.0);
         let weights = self.font_weights();
         if self.show_weights && weights.len() > 1 {
             let specimen = if self.preview_text.is_empty() {
@@ -565,7 +599,7 @@ impl Draw for FontPreview {
                 if !clipped && y + 20 > bottom {
                     break;
                 }
-                let font = self.build_font(14.0).with_weight_value(*weight);
+                let font = weight_base_font.clone().with_weight_value(*weight);
                 // Rendered in place: this loop runs once per weight per frame, and the
                 // label is a number plus the specimen the panel already holds.
                 let mut line = String::new();

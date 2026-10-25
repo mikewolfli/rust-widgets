@@ -198,8 +198,50 @@ impl SkeletonLoader {
         // Wrapped rather than clamped, so a long-running app cannot drift into a large value
         // and lose float precision on the phase.
         self.phase = (self.phase + delta_ms as f32 / self.pulse_period_ms() as f32).fract();
-        self.base.request_redraw();
+        self.request_frame_repaint(Some(self.damage_bounds()));
         true
+    }
+
+    /// Submits one animated frame as damage bounded by the painted box plus the margin.
+    ///
+    /// A control that is unmounted falls back to [`BaseWidget::request_redraw`], keeping the
+    /// redraw signal contract for host-owned controls. `bounds` is supplied by [`Self::tick`],
+    /// because the animation sweep calls `tick` while it holds the widget registry: passing the
+    /// rectangle keeps that path from asking the runtime to read the geometry back, which would
+    /// re-enter the held borrow. A tick frame therefore keeps the base signal in
+    /// [`crate::widget::runtime::RepaintMode::Full`], exactly as `arc` and `progress_circle` do.
+    fn request_frame_repaint(&self, bounds: Option<Rect>) {
+        let _ = bounds;
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                let narrow = crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full;
+                if narrow || bounds.is_none() {
+                    let damage = bounds
+                        .or_else(|| crate::widget::runtime::painted_box_with_damage_margin(id))
+                        .unwrap_or_else(|| self.damage_bounds());
+                    crate::widget::runtime::request_repaint_rect(id, damage);
+                    // The replaced `request_redraw` emitted this signal; keep it.
+                    self.base.redraw_requested.emit();
+                    return;
+                }
+            }
+        }
+        self.base.request_redraw();
+    }
+
+    /// This control's own rectangle grown by the shared damage margin.
+    fn damage_bounds(&self) -> Rect {
+        let rect = self.geometry();
+        let margin = crate::widget::metrics::DAMAGE_MARGIN;
+        let offset = margin as i32;
+        Rect::new(
+            rect.x.saturating_sub(offset),
+            rect.y.saturating_sub(offset),
+            rect.width.saturating_add(margin).saturating_add(margin),
+            rect.height.saturating_add(margin).saturating_add(margin),
+        )
     }
 
     /// The duration of one full pulse, priced by the theme.

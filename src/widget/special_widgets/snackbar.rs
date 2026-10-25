@@ -31,11 +31,49 @@ const SNACKBAR_ACTION_HEIGHT: u32 = 20;
 /// The thickness of a snackbar's progress rule: 3.
 const SNACKBAR_PROGRESS_HEIGHT: u32 = 3;
 
+/// The default cap on messages waiting behind the visible one.
+const SNACKBAR_MAX_QUEUED: usize = 4;
+
+/// Where the bar sits within the control's rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SnackbarAnchor {
+    /// At the top of the control.
+    Top,
+    /// Vertically centred, the historical default.
+    #[default]
+    Center,
+    /// At the bottom of the control.
+    Bottom,
+}
+
+impl SnackbarAnchor {
+    /// The property spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SnackbarAnchor::Top => "top",
+            SnackbarAnchor::Center => "center",
+            SnackbarAnchor::Bottom => "bottom",
+        }
+    }
+
+    /// Parses a property spelling.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "top" => SnackbarAnchor::Top,
+            "center" => SnackbarAnchor::Center,
+            "bottom" => SnackbarAnchor::Bottom,
+            _ => return None,
+        })
+    }
+}
+
 /// Snackbar with optional action and progress display.
 pub struct Snackbar {
     base: BaseWidget,
     message: String,
     action_label: Option<String>,
+    /// The stable identity reported when the action is triggered.
+    action_id: Option<String>,
     visible: bool,
     /// The bar's enter/exit reveal, so it rises from the bottom edge rather than blinking in.
     ///
@@ -56,8 +94,12 @@ pub struct Snackbar {
     indeterminate_phase: f32,
     /// Whether additional `show` calls queue behind the visible message.
     queueing: bool,
-    /// Messages waiting behind the visible one.
-    queue: Vec<(String, Option<String>)>,
+    /// The maximum number of messages held in the queue.
+    max_queued: usize,
+    /// Messages waiting behind the visible one: message, action label and action id.
+    queue: Vec<(String, Option<String>, Option<String>)>,
+    /// Where the bar sits in the control's rectangle.
+    anchor: SnackbarAnchor,
     /// Emitted when action is triggered.
     pub action_triggered: Signal1<String>,
     /// Emitted when snackbar is dismissed.
@@ -71,6 +113,7 @@ impl Snackbar {
             base: BaseWidget::new(WidgetKind::StatusBar, geometry, "Snackbar"),
             message: String::new(),
             action_label: None,
+            action_id: None,
             visible: false,
             reveal: PopupReveal::new(false),
             progress: None,
@@ -79,7 +122,9 @@ impl Snackbar {
             indeterminate: false,
             indeterminate_phase: 0.0,
             queueing: false,
+            max_queued: SNACKBAR_MAX_QUEUED,
             queue: Vec::new(),
+            anchor: SnackbarAnchor::default(),
             action_triggered: Signal1::new(),
             dismissed: Signal1::new(),
         }
@@ -97,36 +142,93 @@ impl Snackbar {
 
     /// Shows snackbar without action.
     pub fn show(&mut self, message: impl Into<String>) {
-        let message = message.into();
+        self.enqueue_or_show(message.into(), None, None);
+    }
+
+    /// Shows snackbar with action button.
+    ///
+    /// The action's id is its label, which keeps the historical single-string spelling and
+    /// makes a plain label a valid identity. Use [`Self::show_with_action_id`] when two actions
+    /// can share a label.
+    pub fn show_with_action(
+        &mut self,
+        message: impl Into<String>,
+        action_label: impl Into<String>,
+    ) {
+        let label = action_label.into();
+        self.enqueue_or_show(message.into(), Some(label.clone()), Some(label));
+    }
+
+    /// Shows snackbar with an action whose stable id differs from its label.
+    pub fn show_with_action_id(
+        &mut self,
+        message: impl Into<String>,
+        action_id: impl Into<String>,
+        action_label: impl Into<String>,
+    ) {
+        self.enqueue_or_show(message.into(), Some(action_label.into()), Some(action_id.into()));
+    }
+
+    fn enqueue_or_show(
+        &mut self,
+        message: String,
+        action_label: Option<String>,
+        action_id: Option<String>,
+    ) {
         if self.visible && self.queueing {
-            self.queue.push((message, None));
+            if self.max_queued == 0 {
+                // No room to wait: the message is dropped, and the drop is reported rather
+                // than hidden, so a host can count what it lost.
+                self.dismissed.emit(());
+                return;
+            }
+            while self.queue.len() >= self.max_queued {
+                self.queue.remove(0);
+                self.dismissed.emit(());
+            }
+            self.queue.push((message, action_label, action_id));
             return;
         }
         self.message = message;
-        self.action_label = None;
+        self.action_label = action_label;
+        self.action_id = action_id;
         self.visible = true;
         self.elapsed_ms = 0;
         self.reveal.set_open(true);
         self.base.request_redraw();
     }
 
-    /// Shows snackbar with action button.
-    pub fn show_with_action(
-        &mut self,
-        message: impl Into<String>,
-        action_label: impl Into<String>,
-    ) {
-        let message = message.into();
-        let action = action_label.into();
-        if self.visible && self.queueing {
-            self.queue.push((message, Some(action)));
+    /// The maximum number of queued messages.
+    pub fn max_queued(&self) -> usize {
+        self.max_queued
+    }
+
+    /// Caps the queue; when full, the oldest waiting message is dropped and `dismissed` is
+    /// emitted for it.
+    pub fn set_max_queued(&mut self, max_queued: usize) {
+        let max_queued = max_queued.min(64);
+        if self.max_queued == max_queued {
             return;
         }
-        self.message = message;
-        self.action_label = Some(action);
-        self.visible = true;
-        self.elapsed_ms = 0;
-        self.reveal.set_open(true);
+        self.max_queued = max_queued;
+        while self.queue.len() > self.max_queued {
+            self.queue.remove(0);
+            self.dismissed.emit(());
+        }
+        self.base.request_redraw();
+    }
+
+    /// Where the bar sits in the control's rectangle.
+    pub fn anchor(&self) -> SnackbarAnchor {
+        self.anchor
+    }
+
+    /// Sets where the bar sits in the control's rectangle.
+    pub fn set_anchor(&mut self, anchor: SnackbarAnchor) {
+        if self.anchor == anchor {
+            return;
+        }
+        self.anchor = anchor;
         self.base.request_redraw();
     }
 
@@ -192,10 +294,11 @@ impl Snackbar {
             // message re-opens from wherever the exit had got to rather than from the bottom.
             self.reveal.set_open(false);
             self.dismissed.emit(());
-            if let Some((message, action)) = self.queue.first().cloned() {
+            if let Some((message, action, action_id)) = self.queue.first().cloned() {
                 self.queue.remove(0);
                 self.message = message;
                 self.action_label = action;
+                self.action_id = action_id;
                 self.visible = true;
                 self.elapsed_ms = 0;
                 self.reveal.set_open(true);
@@ -223,11 +326,25 @@ impl Snackbar {
         if !self.visible {
             return false;
         }
-        let Some(label) = self.action_label.clone() else {
+        let Some(id) = self.action_id.clone() else {
             return false;
         };
-        self.action_triggered.emit(label);
+        self.action_triggered.emit(id);
         true
+    }
+
+    /// The bar's rectangle, placed by the anchor inside the control.
+    fn bar_rect(&self) -> Rect {
+        let rect = self.geometry();
+        match self.anchor {
+            SnackbarAnchor::Center => {
+                ControlMetrics::full_width_band(rect, dimensions::SNACKBAR_HEIGHT)
+            }
+            SnackbarAnchor::Bottom => {
+                ControlMetrics::bottom_band(rect, dimensions::SNACKBAR_HEIGHT)
+            }
+            SnackbarAnchor::Top => ControlMetrics::top_band(rect, dimensions::SNACKBAR_HEIGHT),
+        }
     }
 
     fn action_rect(&self) -> Option<Rect> {
@@ -235,7 +352,7 @@ impl Snackbar {
         // Derived from the same bar the message is painted in, so the button sits on the right
         // end of the snackbar rather than at a fixed offset from the control's bottom edge —
         // which placed it 34 px below the bar in a 120 px cell.
-        let bar = ControlMetrics::full_width_band(self.geometry(), dimensions::SNACKBAR_HEIGHT);
+        let bar = self.bar_rect();
         let height = SNACKBAR_ACTION_HEIGHT.min(bar.height);
         let width = SNACKBAR_ACTION_WIDTH.min(bar.width);
         Some(Rect::new(
@@ -348,6 +465,9 @@ impl WidgetProperties for Snackbar {
                 Some(label) => Ok(CapabilityValue::String(label.to_string())),
                 None => Ok(CapabilityValue::Null),
             },
+            "queued_count" => Ok(CapabilityValue::UInt(self.queued_count() as u64)),
+            "max_queued" => Ok(CapabilityValue::UInt(self.max_queued() as u64)),
+            "anchor" => Ok(CapabilityValue::String(self.anchor().as_str().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -361,12 +481,34 @@ impl WidgetProperties for Snackbar {
                 Ok(())
             }
             "action_label" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "queued_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "max_queued" => match value {
+                CapabilityValue::UInt(max) => {
+                    self.set_max_queued(usize::try_from(max).unwrap_or(usize::MAX));
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "anchor" => {
+                let anchor = expect_string(value)?;
+                let anchor =
+                    SnackbarAnchor::from_name(&anchor).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_anchor(anchor);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["message", "action_label", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "message",
+            "action_label",
+            "queued_count",
+            "max_queued",
+            "anchor",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `snackbar` publishes.
@@ -418,8 +560,6 @@ impl EventHandler for Snackbar {
 
 impl Draw for Snackbar {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
-
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
         // makes an appearance switch visible; previously every colour below was a
@@ -491,7 +631,7 @@ impl Draw for Snackbar {
         // own fill is not part of this control's chrome at all: a snackbar sits *over* the
         // page, it does not paint the page. The band is the single derivation the message, the
         // action button and the progress rule are all placed from.
-        let bar = ControlMetrics::full_width_band(rect, dimensions::SNACKBAR_HEIGHT);
+        let bar = self.bar_rect();
         // # Why the bar is painted while it is *either* shown or still leaving
         //
         // `visible` flips on the frame `dismiss` is called, but a `bool` cannot describe a bar
@@ -616,6 +756,56 @@ impl Draw for Snackbar {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// The queue is bounded; overflow drops the oldest waiting message and says so.
+    #[test]
+    fn the_queue_drops_the_oldest_message_when_full() {
+        let mut bar = Snackbar::new(Rect::new(0, 0, 420, 120));
+        bar.set_queueing(true);
+        bar.set_max_queued(2);
+        let dismissed = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&dismissed);
+        bar.dismissed.connect(move |_| *sink.lock().unwrap() += 1);
+
+        bar.show("first");
+        bar.show("second");
+        bar.show("third");
+        bar.show("fourth");
+        assert_eq!(bar.queued_count(), 2, "the queue stays at its cap");
+        assert_eq!(*dismissed.lock().unwrap(), 1, "each dropped message is reported");
+
+        // The two most recent waiters survive, in order.
+        bar.dismiss();
+        assert_eq!(bar.message(), "third");
+        bar.dismiss();
+        assert_eq!(bar.message(), "fourth");
+    }
+
+    /// The action payload is the stable id, which may differ from the visible label.
+    #[test]
+    fn the_action_payload_is_the_id_not_the_label() {
+        let mut bar = Snackbar::new(Rect::new(0, 0, 420, 120));
+        bar.show_with_action_id("Sync failed", "retry_sync", "Retry");
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        bar.action_triggered.connect(move |id| sink.lock().unwrap().push(id.to_string()));
+        let rect = bar.action_rect().expect("an action button");
+        bar.handle_event(&Event::mouse_press(rect.x + 2, rect.y + 2, 1));
+        assert_eq!(*seen.lock().unwrap(), vec!["retry_sync".to_string()]);
+    }
+
+    /// The anchor actually moves the painted band.
+    #[test]
+    fn the_anchor_moves_the_bar() {
+        let mut bar = Snackbar::new(Rect::new(0, 0, 320, 120));
+        bar.show("Moved");
+        let centered = bar.bar_rect();
+        bar.set_anchor(SnackbarAnchor::Top);
+        assert_eq!(bar.bar_rect().y, 0);
+        bar.set_anchor(SnackbarAnchor::Bottom);
+        assert_eq!(bar.bar_rect().y + bar.bar_rect().height as i32, 120);
+        assert_ne!(bar.bar_rect(), centered);
+    }
 
     #[test]
     fn show_and_dismiss_change_visibility() {

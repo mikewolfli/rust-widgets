@@ -199,7 +199,9 @@ impl CodeEditor {
             chrome.separator,
         );
 
-        let query_summary = if self.find.query.is_empty() {
+        let query_summary = if self.goto_mode {
+            "Go to line".to_string()
+        } else if self.find.query.is_empty() {
             "Find".to_string()
         } else {
             format!("{} / {}", self.find.display_index(), self.find.match_count())
@@ -220,7 +222,15 @@ impl CodeEditor {
         let query_x = rect.x + 8 + summary_advance as i32 + self.cell_width() as i32;
         context.draw_text(
             Point::new(query_x, top + 20),
-            if self.find.query.is_empty() { "(type to search)" } else { &self.find.query },
+            if self.find.query.is_empty() {
+                if self.goto_mode {
+                    "(line number)"
+                } else {
+                    "(type to search)"
+                }
+            } else {
+                &self.find.query
+            },
             self.chrome_font(),
             chrome.ink,
             HorizontalAlignment::Left,
@@ -299,7 +309,8 @@ impl CodeEditor {
         // Hoisted out of the row loop: both are constant for the whole gutter, and
         // `measure_text` still pays a cache-key fingerprint per call.
         let line_box = context.measure_text("M", self.chrome_font()).height as i32;
-        let numbers_right = rect.x + GUTTER_LEFT_PAD + self.line_number_slot();
+        let numbers_right =
+            rect.x + GUTTER_LEFT_PAD + self.breakpoint_slot() + self.line_number_slot();
         let fold_x = rect.x + self.fold_marker_offset();
         // Folds are read **once**, not per painted row: `fold_regions()` clones the
         // model's list, and asking it inside the loop was one clone per line per frame.
@@ -404,6 +415,15 @@ impl CodeEditor {
                             HorizontalAlignment::Left,
                         );
                     }
+                }
+                // Breakpoint mark: reserved column at the gutter's leading edge, so it
+                // never collides with the severity dot or the line number.
+                if self.breakpoint_gutter && self.is_breakpoint(line) {
+                    context.fill_circle_aa(
+                        Point::new(rect.x + GUTTER_LEFT_PAD + 5, y + row_height as i32 / 2),
+                        4,
+                        chrome.accent,
+                    );
                 }
                 // Severity dot, at the gutter's leading edge so it never collides
                 // with the digits. The top-most severity wins.

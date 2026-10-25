@@ -68,3 +68,20 @@ pub use quote_board::{QuoteBoard, QuoteColumn, QuoteSort};
 pub use types::{Bar, BookLevel, OrderBook, PriceLevelKind, PriceLine, PriceSeries, Quote};
 #[cfg(widgets_unstripped)]
 pub use volume_chart::{VolumeChart, VolumeColorMode};
+
+#[cfg(widgets_unstripped)]
+/// Copies the K-line pane's horizontal view into its stacked siblings.
+///
+/// The four panes are separate controls, so agreeing on a horizontal range is a host
+/// responsibility; this helper is that responsibility spelled once. The range is copied,
+/// not shared, because each pane owns its own `view_changed` stream and a host may still
+/// drive one pane independently.
+pub fn sync_view_range(
+    candle: &candlestick_chart::CandlestickChart,
+    volume: &mut volume_chart::VolumeChart,
+    indicator: &mut indicator_chart::IndicatorChart,
+) {
+    let range = candle.view_range();
+    volume.set_view_range(range);
+    indicator.set_view_range(range);
+}

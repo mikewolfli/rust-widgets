@@ -92,6 +92,8 @@ pub struct Tag {
     hovered: bool,
     /// Emitted when the close glyph is activated, with the tag's own text as the payload.
     pub closed: Signal1<String>,
+    /// Emitted with the new flag when the selection actually changes.
+    pub selected_changed: Signal1<bool>,
 }
 
 impl Tag {
@@ -105,6 +107,7 @@ impl Tag {
             closable: false,
             hovered: false,
             closed: Signal1::new(),
+            selected_changed: Signal1::new(),
         }
     }
 
@@ -154,6 +157,7 @@ impl Tag {
         self.selected = selected;
         crate::style::reapply_active_theme_state(self);
         self.base.request_redraw();
+        self.selected_changed.emit(selected);
     }
 
     /// Whether the close glyph is drawn and accepted.
@@ -270,6 +274,11 @@ impl Widget for Tag {
             "closed" => Some(EventSignalRef::mapped("closed", &self.closed, |value| {
                 CapabilityValue::String(value.clone())
             })),
+            "selected_changed" => {
+                Some(EventSignalRef::mapped("selected_changed", &self.selected_changed, |value| {
+                    CapabilityValue::Bool(*value)
+                }))
+            }
             _ => None,
         }
     }

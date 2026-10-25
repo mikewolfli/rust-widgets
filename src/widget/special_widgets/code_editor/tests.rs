@@ -17,6 +17,7 @@
 
 use super::*;
 use crate::core::{Point, Rect};
+use crate::event::EventHandler;
 use crate::widget::svg::render_to_svg;
 
 fn editor() -> CodeEditor {
@@ -925,4 +926,100 @@ fn a_multi_line_replace_places_the_caret_at_the_insertion_end() {
         .expect("the revision matches");
     assert_eq!(editor.text(), "one two\nthree");
     assert_eq!(editor.caret(), TextPosition::new(1, 5), "the caret ends after the inserted text");
+}
+
+// ── Editor family fixes (ED-23, ED-27, ED-34, ED-35, ED-26) ─────────────────
+
+#[test]
+fn the_undo_limit_is_configurable_and_reaches_the_stack() {
+    let mut editor = editor_with(CodeEditorConfig::new().undo_stack_limit(7));
+    assert_eq!(editor.config().undo_stack_limit, 7);
+    editor.set_text("one");
+    editor.set_cursor(0, 3, false);
+    editor.insert(" two");
+    assert!(editor.undo_depth() >= 1);
+
+    editor.set_undo_limit(2);
+    assert_eq!(editor.config().undo_stack_limit, 2);
+    assert!(editor.undo_depth() <= 2);
+}
+
+#[test]
+fn case_insensitive_search_matches_the_same_hits_including_non_ascii() {
+    let mut editor = editor();
+    editor.set_text("Alpha alpha ÄLPHA\nbeta");
+    editor.set_search_options(SearchOptions {
+        case_sensitive: false,
+        whole_word: false,
+        ..SearchOptions::default()
+    });
+    editor.set_search_query("alpha");
+    assert_eq!(editor.search_matches().len(), 2, "two ASCII spellings");
+    editor.set_search_query("älpha");
+    assert_eq!(editor.search_matches().len(), 1, "the non-ASCII spelling still matches");
+}
+
+#[test]
+fn search_result_reports_the_active_hit_and_its_position() {
+    let mut editor = editor();
+    editor.set_text("one two one\nthree one");
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&seen);
+    editor.search_result.connect_ref(move |hit| sink.lock().unwrap().push(*hit));
+
+    editor.set_search_query("one");
+    let hits = seen.lock().unwrap().clone();
+    assert_eq!(hits.last().copied(), Some((1, 3, 1, 1)));
+}
+
+#[test]
+fn goto_bar_commits_a_one_based_line_number() {
+    let mut editor = editor();
+    editor.set_text("one\ntwo\nthree");
+    editor.open_goto_bar();
+    assert!(editor.goto_bar_visible());
+    editor.find.query = "3".to_string();
+    assert!(editor.commit_goto());
+    assert_eq!(editor.cursor().0, 2, "line 3 is index 2");
+    assert!(!editor.goto_bar_visible());
+}
+
+#[test]
+fn zoom_methods_emit_a_signal_and_clamp() {
+    let mut editor = editor();
+    let sizes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&sizes);
+    editor.zoom_changed.connect_ref(move |size| sink.lock().unwrap().push(*size));
+
+    let initial = editor.config().font_size;
+    editor.zoom_in();
+    assert_eq!(editor.config().font_size, initial + 1.0);
+    editor.zoom_out();
+    assert_eq!(editor.config().font_size, initial);
+    editor.reset_zoom();
+    assert_eq!(editor.config().font_size, super::types::DEFAULT_FONT_SIZE);
+    assert!(!sizes.lock().unwrap().is_empty());
+}
+
+#[test]
+fn preedit_screen_origin_is_available_only_while_composing() {
+    let mut editor = editor();
+    editor.set_text("hello");
+    assert!(editor.preedit_screen_origin().is_none());
+    editor.handle_event(&crate::event::Event::ImePreedit { text: "世".to_string(), cursor: 3 });
+    assert!(editor.preedit_screen_origin().is_some());
+}
+
+#[test]
+fn toggling_a_breakpoint_reports_the_new_state() {
+    let mut editor = editor();
+    editor.set_text("one\ntwo\nthree");
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&events);
+    editor.breakpoint_toggled.connect_ref(move |event| sink.lock().unwrap().push(*event));
+
+    assert!(editor.toggle_breakpoint(1));
+    assert!(editor.is_breakpoint(1));
+    assert!(!editor.toggle_breakpoint(1));
+    assert_eq!(*events.lock().unwrap(), vec![(1, true), (1, false)]);
 }

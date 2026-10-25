@@ -13,6 +13,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -36,6 +37,14 @@ pub struct MaterialSnackbar {
     pub action_pressed: GenericSignal,
     /// Emitted when the snackbar is dismissed.
     pub dismissed: GenericSignal,
+    /// How long the snackbar stays on screen, in milliseconds; `0` means it stays until dismissed.
+    duration_ms: u64,
+    /// Milliseconds the current presentation has been visible.
+    elapsed_ms: u64,
+    /// Entrance/exit slide fraction, `0.0` off screen and `1.0` fully presented.
+    slide: PropertyDriver,
+    /// Whether an animated dismissal is in progress.
+    closing: bool,
 }
 
 impl MaterialSnackbar {
@@ -51,6 +60,10 @@ impl MaterialSnackbar {
             action_text: String::new(),
             action_pressed: GenericSignal::new(),
             dismissed: GenericSignal::new(),
+            duration_ms: 4_000,
+            elapsed_ms: 0,
+            slide: PropertyDriver::at(0.0, MotionSlot::Normal),
+            closing: false,
         }
     }
 
@@ -86,11 +99,16 @@ impl MaterialSnackbar {
     pub fn show(&mut self) {
         if !self.base.is_visible() {
             self.base.show();
+            self.elapsed_ms = 0;
+            self.closing = false;
+            // Slide in from below: start off screen and animate to the presented position.
+            self.slide.jump_to(0.0);
+            self.slide.set_target(1.0);
             self.base.request_redraw();
         }
     }
 
-    /// Dismisses the snackbar. Emits the `dismissed` signal.
+    /// Dismisses the snackbar immediately. Emits the `dismissed` signal.
     ///
     /// `dismissed` is deliberately not gated by `enabled`: it reports the snackbar leaving
     /// the screen (a timeout or a host decision), not a user action, and a host that
@@ -99,9 +117,42 @@ impl MaterialSnackbar {
     pub fn dismiss(&mut self) {
         if self.base.is_visible() {
             self.base.hide();
+            self.closing = false;
+            self.slide.jump_to(0.0);
             self.dismissed.emit();
             self.base.request_redraw();
         }
+    }
+
+    /// Starts an animated dismissal: the bar slides out, then hides and emits `dismissed`.
+    ///
+    /// [`Self::dismiss`] stays immediate because a host that tears the control down must not be
+    /// left with a visible bar waiting for a frame. This variant is for the user-visible exit.
+    pub fn dismiss_animated(&mut self) {
+        if self.base.is_visible() && !self.closing {
+            self.closing = true;
+            self.slide.set_target(0.0);
+            self.base.request_redraw();
+        }
+    }
+
+    /// How long the snackbar stays on screen in milliseconds; `0` means it never auto-dismisses.
+    pub fn duration_ms(&self) -> u64 {
+        self.duration_ms
+    }
+
+    /// Sets the auto-dismiss delay. Zero keeps the bar until the user or host dismisses it.
+    pub fn set_duration_ms(&mut self, duration_ms: u64) {
+        if self.duration_ms == duration_ms {
+            return;
+        }
+        self.duration_ms = duration_ms;
+        self.elapsed_ms = 0;
+    }
+
+    /// The entrance/exit slide fraction, `0.0` off screen and `1.0` presented.
+    pub fn slide_progress(&self) -> f32 {
+        self.slide.value()
     }
 
     /// Returns whether the snackbar is currently visible.
@@ -130,6 +181,37 @@ impl Widget for MaterialSnackbar {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Drives the auto-dismiss countdown and the slide animation.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        let mut changed = false;
+        if self.base.is_visible() && !self.closing && self.duration_ms > 0 {
+            self.elapsed_ms = self.elapsed_ms.saturating_add(u64::from(delta_ms));
+            if self.elapsed_ms >= self.duration_ms {
+                self.dismiss();
+                return true;
+            }
+            changed = true;
+        }
+        let moving = self.slide.tick(delta_ms);
+        changed |= moving;
+        if self.closing && !self.slide.is_moving() && self.slide.value() <= 0.001 {
+            self.base.hide();
+            self.closing = false;
+            self.dismissed.emit();
+            changed = true;
+        }
+        if changed {
+            self.base.request_redraw();
+        }
+        changed
+    }
+
+    /// A running countdown owes a timeout frame, and a slide in flight owes an animation frame.
+    fn is_animating(&self) -> bool {
+        self.slide.is_moving() || (self.base.is_visible() && !self.closing && self.duration_ms > 0)
+    }
+
     /// Resolves a published event name to the control's own signal.
     ///
     /// # Why this is explicit
@@ -161,6 +243,8 @@ impl WidgetProperties for MaterialSnackbar {
         match name {
             "message" => Ok(CapabilityValue::String(self.message().to_string())),
             "action_text" => Ok(CapabilityValue::String(self.action_text().to_string())),
+            "duration_ms" => Ok(CapabilityValue::UInt(self.duration_ms())),
+            "slide_progress" => Ok(CapabilityValue::Float(self.slide_progress() as f64)),
             _ => base_property_get(self, name),
         }
     }
@@ -175,12 +259,27 @@ impl WidgetProperties for MaterialSnackbar {
                 self.set_action_text(&expect_string(value)?);
                 Ok(())
             }
+            "duration_ms" => {
+                let duration = match value {
+                    CapabilityValue::UInt(ms) => ms,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_duration_ms(duration);
+                Ok(())
+            }
+            "slide_progress" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["message", "action_text", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "message",
+            "action_text",
+            "duration_ms",
+            "slide_progress",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `material_snackbar` publishes.
@@ -264,7 +363,11 @@ impl Draw for MaterialSnackbar {
             .unwrap_or_else(|| pill.blend(&secondary, 0.45));
 
         let bar_height = 48u32;
-        let bar_y = rect.y + rect.height as i32 - bar_height as i32 - 16;
+        // The entrance/exit slide moves the bar off its resting slot; at rest the fraction is 1.0 and
+        // the bar is exactly where it always was.
+        let slide = self.slide.value().clamp(0.0, 1.0);
+        let bar_y = rect.y + rect.height as i32 - bar_height as i32 - 16
+            + ((1.0 - slide) * (bar_height + 16) as f32) as i32;
 
         // ── Background pill ──
         //
@@ -381,6 +484,54 @@ fn context_proxy_measure_text(text: &str, font: &crate::core::Font) -> i32 {
     // Approximate width: average char width ~0.6 * font size
     let char_width = (font.size() * 0.6) as i32;
     (text.len() as i32 * char_width).max(0)
+}
+
+#[cfg(test)]
+mod snackbar_tests {
+    use super::*;
+
+    #[test]
+    fn a_snackbar_dismisses_after_its_duration() {
+        let mut snackbar = MaterialSnackbar::new(Rect::new(0, 0, 375, 160));
+        snackbar.set_message("Saved");
+        assert_eq!(snackbar.duration_ms(), 4_000);
+        snackbar.show();
+        assert!(snackbar.is_visible());
+        assert!(snackbar.is_animating(), "a visible snackbar owes its timeout frame");
+        assert!((snackbar.slide_progress() - 0.0).abs() < f32::EPSILON);
+
+        assert!(snackbar.tick(16), "the slide moved");
+        assert!(snackbar.slide_progress() > 0.0);
+
+        let dismissed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let d = dismissed.clone();
+        snackbar.dismissed.connect(move || {
+            d.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert!(snackbar.tick(5_000));
+        assert!(!snackbar.is_visible(), "the timeout hides the bar");
+        assert!(dismissed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn zero_duration_is_permanent_and_the_exit_slides_out() {
+        let mut snackbar = MaterialSnackbar::new(Rect::new(0, 0, 375, 160));
+        snackbar.set_duration_ms(0);
+        snackbar.show();
+        for _ in 0..100 {
+            snackbar.tick(100);
+        }
+        assert!(snackbar.is_visible(), "duration 0 must not auto-dismiss");
+        assert!((snackbar.slide_progress() - 1.0).abs() < 1e-3);
+
+        snackbar.dismiss_animated();
+        assert!(snackbar.is_visible(), "the exit starts while still on screen");
+        for _ in 0..100 {
+            snackbar.tick(16);
+        }
+        assert!(!snackbar.is_visible());
+        assert_eq!(snackbar.slide_progress(), 0.0);
+    }
 }
 
 // ── MaterialNavigationRail ─────────────────────────────────────────────────────

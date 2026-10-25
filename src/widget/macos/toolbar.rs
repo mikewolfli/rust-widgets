@@ -35,6 +35,30 @@ const MIN_SLOT_WIDTH: u32 = 56;
 /// The vertical inset of a slot from the strip's edge.
 const SLOT_VERTICAL_INSET: u32 = 4;
 
+/// How a toolbar slot presents its icon and caption.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolbarItemDisplayMode {
+    /// Caption only (the historical behaviour).
+    #[default]
+    TextOnly,
+    /// Icon only.
+    IconOnly,
+    /// Icon above the caption.
+    IconAndText,
+}
+
+/// What a toolbar slot is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolbarItemKind {
+    /// A clickable action slot.
+    #[default]
+    Item,
+    /// A vertical rule between groups; not clickable.
+    Separator,
+    /// A gap that absorbs the strip's spare width.
+    FlexibleSpace,
+}
+
 /// One toolbar slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MacToolbarItem {
@@ -44,12 +68,22 @@ pub struct MacToolbarItem {
     pub label: String,
     /// An optional icon name, kept for hosts that resolve glyphs themselves.
     pub icon: Option<String>,
+    /// How the icon and caption are presented.
+    pub display_mode: ToolbarItemDisplayMode,
+    /// Whether this slot is an action, a separator or a flexible space.
+    pub kind: ToolbarItemKind,
 }
 
 impl MacToolbarItem {
     /// A slot with an identifier and a caption.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into(), icon: None }
+        Self {
+            id: id.into(),
+            label: label.into(),
+            icon: None,
+            display_mode: ToolbarItemDisplayMode::TextOnly,
+            kind: ToolbarItemKind::Item,
+        }
     }
 
     /// The same slot with an icon name attached.
@@ -57,7 +91,26 @@ impl MacToolbarItem {
         self.icon = Some(icon.into());
         self
     }
+
+    /// The same slot with a display mode.
+    pub fn with_display_mode(mut self, mode: ToolbarItemDisplayMode) -> Self {
+        self.display_mode = mode;
+        self
+    }
+
+    /// A separator slot, which is never activated.
+    pub fn separator(id: impl Into<String>) -> Self {
+        Self { kind: ToolbarItemKind::Separator, ..Self::new(id, "") }
+    }
+
+    /// A flexible space, which absorbs the strip's spare width.
+    pub fn flexible_space(id: impl Into<String>) -> Self {
+        Self { kind: ToolbarItemKind::FlexibleSpace, ..Self::new(id, "") }
+    }
 }
+
+/// The width of a separator slot.
+const SEPARATOR_WIDTH: u32 = 9;
 
 /// A horizontal toolbar strip.
 ///
@@ -74,6 +127,12 @@ pub struct MacToolbar {
     pressed_index: Option<usize>,
     /// Emitted when a slot is activated, with the slot's index.
     pub item_activated: Signal1<usize>,
+    /// Emitted with the first folded item's index when the overflow control is activated.
+    pub overflow_activated: Signal1<usize>,
+    /// Emitted with the number of items folded away whenever that count changes.
+    pub overflow_changed: Signal1<usize>,
+    /// The overflow count last announced, so an unchanged layout stays quiet.
+    last_overflow_count: usize,
 }
 
 impl MacToolbar {
@@ -88,6 +147,9 @@ impl MacToolbar {
             hovered_index: None,
             pressed_index: None,
             item_activated: Signal1::new(),
+            overflow_activated: Signal1::new(),
+            overflow_changed: Signal1::new(),
+            last_overflow_count: 0,
         }
     }
 
@@ -102,6 +164,11 @@ impl MacToolbar {
         self.selected_index = self.selected_index.filter(|index| *index < self.items.len());
         self.base.request_layout();
         self.base.request_redraw();
+        let overflow = self.overflow_indices().len();
+        if overflow != self.last_overflow_count {
+            self.last_overflow_count = overflow;
+            self.overflow_changed.emit(overflow);
+        }
     }
 
     /// The slots, in display order.
@@ -195,20 +262,97 @@ impl MacToolbar {
 
     /// The rectangle of slot `index`, or `None` when it is absent or runs past the strip.
     fn item_rect(&self, index: usize) -> Option<Rect> {
-        if index >= self.items.len() {
+        let item = self.items.get(index)?;
+        if item.kind != ToolbarItemKind::Item {
             return None;
         }
         let strip = self.strip();
         let width = self.slot_width();
         let height = self.slot_height();
-        let x = strip.x + MAC_TOOLBAR_INSET + index as i32 * (width as i32 + SLOT_GAP);
-        let rect = Rect::new(x, strip.y + ((strip.height - height) / 2) as i32, width, height);
+        let rect = Rect::new(
+            self.slot_x(index),
+            strip.y + ((strip.height - height) / 2) as i32,
+            width,
+            height,
+        );
         // A slot that does not fit is neither painted nor clickable: a half-visible slot the
         // hit test still answers for would be worse than one the host has to lay out itself.
         if rect.x < strip.x || rect.right() > strip.right() {
             return None;
         }
         Some(rect)
+    }
+
+    /// The x of slot `index`, accounting for separators and flexible space.
+    fn slot_x(&self, index: usize) -> i32 {
+        let strip = self.strip();
+        let mut x = strip.x + MAC_TOOLBAR_INSET;
+        for position in 0..index {
+            x += self.slot_extent(position) as i32 + SLOT_GAP;
+        }
+        x
+    }
+
+    /// The width slot `index` occupies.
+    fn slot_extent(&self, index: usize) -> u32 {
+        match self.items.get(index).map(|item| item.kind) {
+            Some(ToolbarItemKind::Separator) => SEPARATOR_WIDTH,
+            Some(ToolbarItemKind::FlexibleSpace) => self.flexible_extent(),
+            _ => self.slot_width(),
+        }
+    }
+
+    /// The width each flexible space takes: the strip's spare width split between them.
+    fn flexible_extent(&self) -> u32 {
+        let flex_count =
+            self.items.iter().filter(|item| item.kind == ToolbarItemKind::FlexibleSpace).count()
+                as u32;
+        if flex_count == 0 {
+            return 0;
+        }
+        let strip = self.strip();
+        let fixed: i32 = self
+            .items
+            .iter()
+            .map(|item| match item.kind {
+                ToolbarItemKind::Separator => SEPARATOR_WIDTH as i32,
+                ToolbarItemKind::FlexibleSpace => 0,
+                ToolbarItemKind::Item => self.slot_width() as i32,
+            })
+            .sum::<i32>()
+            + SLOT_GAP * self.items.len().saturating_sub(1) as i32;
+        let spare = strip.width as i32 - 2 * MAC_TOOLBAR_INSET - fixed;
+        (spare.max(0) / flex_count as i32) as u32
+    }
+
+    /// The indices of action slots that do not fit in the strip.
+    pub fn overflow_indices(&self) -> Vec<usize> {
+        (0..self.items.len())
+            .filter(|index| {
+                self.items[*index].kind == ToolbarItemKind::Item && self.item_rect(*index).is_none()
+            })
+            .collect()
+    }
+
+    /// The rectangle of the overflow control, when at least one action slot is folded away.
+    pub fn overflow_rect(&self) -> Option<Rect> {
+        if self.overflow_indices().is_empty() {
+            return None;
+        }
+        let strip = self.strip();
+        let width = self.slot_width();
+        let height = self.slot_height();
+        Some(Rect::new(
+            strip.right() - MAC_TOOLBAR_INSET - width as i32,
+            strip.y + ((strip.height - height) / 2) as i32,
+            width,
+            height,
+        ))
+    }
+
+    /// The number of action slots folded into the overflow control.
+    pub fn overflow_count(&self) -> usize {
+        self.overflow_indices().len()
     }
 
     /// The slot under `pos`, if any.
@@ -219,7 +363,7 @@ impl MacToolbar {
 
     /// Activates slot `index`: selects it when selectable, then emits its activation.
     fn activate(&mut self, index: usize) {
-        if index >= self.items.len() {
+        if index >= self.items.len() || self.items[index].kind != ToolbarItemKind::Item {
             return;
         }
         if self.selectable {
@@ -263,6 +407,16 @@ impl Widget for MacToolbar {
                     CapabilityValue::UInt(*value as u64)
                 }))
             }
+            "overflow_activated" => Some(EventSignalRef::mapped(
+                "overflow_activated",
+                &self.overflow_activated,
+                |value| CapabilityValue::UInt(*value as u64),
+            )),
+            "overflow_changed" => {
+                Some(EventSignalRef::mapped("overflow_changed", &self.overflow_changed, |value| {
+                    CapabilityValue::UInt(*value as u64)
+                }))
+            }
             _ => None,
         }
     }
@@ -280,6 +434,7 @@ impl WidgetProperties for MacToolbar {
                 Some(index) => Ok(CapabilityValue::UInt(index as u64)),
                 None => Ok(CapabilityValue::Null),
             },
+            "overflow_count" => Ok(CapabilityValue::UInt(self.overflow_count() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -304,7 +459,9 @@ impl WidgetProperties for MacToolbar {
                     Ok(())
                 }
             },
-            "item_count" | "orientation" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "item_count" | "orientation" | "overflow_count" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -316,6 +473,7 @@ impl WidgetProperties for MacToolbar {
             "orientation",
             "selectable",
             "selected_index",
+            "overflow_count",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -342,6 +500,23 @@ impl Draw for MacToolbar {
         );
 
         for index in 0..self.items.len() {
+            let Some(item) = self.items.get(index) else {
+                continue;
+            };
+            match item.kind {
+                ToolbarItemKind::FlexibleSpace => continue,
+                ToolbarItemKind::Separator => {
+                    let strip_inner = self.strip();
+                    let x = self.slot_x(index) + SEPARATOR_WIDTH as i32 / 2;
+                    context.draw_line(
+                        Point::new(x, strip_inner.y + SLOT_VERTICAL_INSET as i32),
+                        Point::new(x, strip_inner.bottom() - SLOT_VERTICAL_INSET as i32 - 1),
+                        colors.separator,
+                    );
+                    continue;
+                }
+                ToolbarItemKind::Item => {}
+            }
             let Some(slot) = self.item_rect(index) else {
                 continue;
             };
@@ -355,21 +530,70 @@ impl Draw for MacToolbar {
             }
 
             let label_ink = if active { colors.accent.contrast_color() } else { ink };
-            let Some(item) = self.items.get(index) else {
-                continue;
-            };
             let available = slot.width.saturating_sub(2 * MAC_TOOLBAR_ITEM_PADDING as u32);
             if available == 0 {
                 continue;
             }
-            let mut measure = |text: &str| context.measure_text(text, &font).width;
+            let icon_side = (self.icon_size.round().max(1.0) as u32).min(slot.height);
+            let icon_rect =
+                Rect::new(slot.center().x - icon_side as i32 / 2, slot.y + 2, icon_side, icon_side);
+            let mut drew_icon = false;
+            if item.display_mode != ToolbarItemDisplayMode::TextOnly {
+                if let Some(name) = item.icon.as_deref() {
+                    drew_icon = crate::widget::draw_icon_named(context, icon_rect, label_ink, name);
+                }
+            }
+            if item.display_mode == ToolbarItemDisplayMode::IconOnly {
+                if !drew_icon {
+                    let mut measure = |text: &str| context.measure_text(text, &font).width;
+                    let shown: Cow<'_, str> = elide_to_width(&item.label, available, &mut measure);
+                    let line = context.text_line(slot, &font);
+                    context.draw_text(
+                        Point::new(slot.center().x, line.y),
+                        shown.as_ref(),
+                        &font,
+                        label_ink,
+                        HorizontalAlignment::Center,
+                    );
+                }
+                continue;
+            }
+            // Text-only, or the caption below an icon.
+            let label_font = if drew_icon { role_font(style, 10.0) } else { font.clone() };
+            let mut measure = |text: &str| context.measure_text(text, &label_font).width;
             let shown: Cow<'_, str> = elide_to_width(&item.label, available, &mut measure);
-            let line = context.text_line(slot, &font);
+            let line = if drew_icon {
+                let label_h = context.measure_text("M", &label_font).height;
+                Rect::new(
+                    slot.x,
+                    icon_rect.bottom() + 1,
+                    slot.width,
+                    label_h.min(slot.height.saturating_sub(icon_side + 3)),
+                )
+            } else {
+                context.text_line(slot, &font)
+            };
             context.draw_text(
                 Point::new(slot.center().x, line.y),
                 shown.as_ref(),
-                &font,
+                &label_font,
                 label_ink,
+                HorizontalAlignment::Center,
+            );
+        }
+
+        // ── Overflow control ──
+        // A slot that does not fit is folded into this trailing control instead of vanishing, so
+        // its command remains reachable.
+        if let Some(overflow) = self.overflow_rect() {
+            context.fill_rounded_rect(overflow, self.slot_radius(), colors.surface);
+            context.draw_rounded_rect_stroke(overflow, self.slot_radius(), colors.separator, 1);
+            let line = context.text_line(overflow, &font);
+            context.draw_text(
+                Point::new(overflow.center().x, line.y),
+                "...",
+                &font,
+                ink,
                 HorizontalAlignment::Center,
             );
         }
@@ -399,6 +623,15 @@ impl EventHandler for MacToolbar {
                 }
             }
             Event::MousePress { pos, button: 1, .. } => {
+                if let Some(overflow) = self.overflow_rect() {
+                    if overflow.contains_point(*pos) {
+                        if let Some(&first) = self.overflow_indices().first() {
+                            self.overflow_activated.emit(first);
+                            self.base.request_redraw();
+                        }
+                        return;
+                    }
+                }
                 if let Some(index) = self.item_at(*pos) {
                     self.pressed_index = Some(index);
                     self.activate(index);
@@ -553,5 +786,83 @@ mod tests {
         assert_eq!(toolbar.hovered_index, Some(0));
         toolbar.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
         assert_eq!(toolbar.hovered_index, None);
+    }
+
+    #[test]
+    fn overflow_slots_stay_reachable_through_the_overflow_control() {
+        let mut toolbar = MacToolbar::new(Rect::new(0, 0, 120, 38));
+        toolbar.set_items(vec![
+            MacToolbarItem::new("a", "A"),
+            MacToolbarItem::new("b", "B"),
+            MacToolbarItem::new("c", "C"),
+        ]);
+        assert!(toolbar.overflow_count() > 0, "a narrow strip folds slots");
+        let first = *toolbar.overflow_indices().first().expect("something is folded");
+        let overflow = toolbar.overflow_rect().expect("the overflow control is present");
+
+        let seen = Arc::new(Mutex::new(usize::MAX));
+        let s = Arc::clone(&seen);
+        toolbar.overflow_activated.connect(move |index: Arc<usize>| {
+            *s.lock().unwrap() = *index;
+        });
+        toolbar.handle_event(&Event::MousePress {
+            pos: overflow.center(),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(*seen.lock().unwrap(), first);
+    }
+
+    #[test]
+    fn separators_and_flexible_space_have_their_own_layout() {
+        let mut toolbar = MacToolbar::new(Rect::new(0, 0, 320, 38));
+        toolbar.set_items(vec![
+            MacToolbarItem::new("a", "A"),
+            MacToolbarItem::separator("sep"),
+            MacToolbarItem::flexible_space("flex"),
+            MacToolbarItem::new("b", "B"),
+        ]);
+        assert!(toolbar.item_rect(1).is_none(), "a separator is not an action slot");
+        assert!(toolbar.item_rect(2).is_none(), "a flexible space is not an action slot");
+        let first = toolbar.item_rect(0).expect("the first action fits");
+        let last = toolbar.item_rect(3).expect("the last action is pushed right by the flex");
+        assert!(
+            last.x > first.right() + SEPARATOR_WIDTH as i32,
+            "flexible space pushes later slots to the right: {last:?} vs {first:?}"
+        );
+    }
+
+    #[test]
+    fn display_modes_and_overflow_changes_are_observable() {
+        let mut toolbar = MacToolbar::new(Rect::new(0, 0, 120, 38));
+        let counts = Arc::new(Mutex::new(Vec::new()));
+        let c = Arc::clone(&counts);
+        toolbar.overflow_changed.connect(move |count: Arc<usize>| {
+            c.lock().unwrap().push(*count);
+        });
+        toolbar.set_items(vec![
+            MacToolbarItem::new("a", "A")
+                .with_icon("home")
+                .with_display_mode(ToolbarItemDisplayMode::IconAndText),
+            MacToolbarItem::new("b", "B"),
+            MacToolbarItem::new("c", "C"),
+        ]);
+        assert!(!counts.lock().unwrap().is_empty(), "the overflow count was announced");
+        let mut recorder = Recorder::new(120, 38);
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            toolbar.draw(&mut context);
+        }
+        recorder.end_frame();
+        let texts: Vec<&str> = recorder
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"..."), "the overflow control is painted: {texts:?}");
     }
 }

@@ -28,6 +28,9 @@ const SWATCHES_PER_ROW: u32 = dimensions::COLOR_HISTORY_PER_ROW;
 const SWATCH_SIZE: u32 = dimensions::COLOR_HISTORY_SWATCH;
 const SWATCH_PADDING: u32 = dimensions::COLOR_HISTORY_PADDING;
 
+/// The side of one checkerboard tile, in logical pixels.
+const CHECKER_TILE: u32 = 3;
+
 /// Backspace removes the current swatch.
 const KEY_BACKSPACE: u32 = 8;
 /// Delete removes the current swatch.
@@ -36,6 +39,18 @@ const KEY_DELETE: u32 = 46;
 const KEY_LEFT: u32 = 37;
 /// Right arrow moves the selection one swatch toward the end.
 const KEY_RIGHT: u32 = 39;
+
+/// A pre-rendered checkerboard for transparent swatches.
+///
+/// The transparency marker used to be painted tile by tile — roughly fifty `fill_rect`
+/// submissions per transparent swatch per frame. The grid is a function of two theme colours
+/// and one fixed swatch size, so it is rendered once into an RGBA bitmap and blitted as one
+/// image until either tone changes.
+struct CheckerboardCache {
+    even: Color,
+    odd: Color,
+    pixels: crate::compat::Vec<u8>,
+}
 
 /// A color history picker that displays recently used colors in a grid.
 pub struct ColorHistory {
@@ -48,18 +63,26 @@ pub struct ColorHistory {
     pub color_selected: Signal1<Color>,
     /// Emitted when the pointer hovers over a color swatch.
     pub color_hovered: Signal1<Color>,
+    /// Emitted with a color added to the history by [`ColorHistory::add_color`].
+    ///
+    /// Unlike [`Self::color_selected`] this is not a user gesture: it reports that the stored
+    /// history changed, so a host mirroring the list keeps the same entries.
+    pub color_added: Signal1<Color>,
     /// Emitted after the current swatch is removed by `Delete` or `Backspace`.
     ///
     /// The history owns its entries, so the key removes the swatch from this control
     /// immediately and this signal reports the index the entry occupied before removal.
     /// It is a notification, not a request: a host that mirrors the history can apply
-    /// the same removal to its copy.
+    /// the same removal to its copy. Every removal path — the key and
+    /// [`ColorHistory::remove_color`] — emits it from that one place.
     pub color_removed: Signal1<usize>,
     /// Emitted when a context-menu request targets a swatch, with its index.
     ///
     /// The host supplies the menu. This control only names the swatch the request
     /// applies to, so one menu implementation can serve several controls.
     pub context_menu_requested: Signal1<usize>,
+    /// The transparency grid, rendered once per pair of theme tones.
+    checkerboard: Option<CheckerboardCache>,
 }
 
 impl ColorHistory {
@@ -73,8 +96,10 @@ impl ColorHistory {
             hovered_index: None,
             color_selected: Signal1::new(),
             color_hovered: Signal1::new(),
+            color_added: Signal1::new(),
             color_removed: Signal1::new(),
             context_menu_requested: Signal1::new(),
+            checkerboard: None,
         }
     }
 
@@ -96,9 +121,13 @@ impl ColorHistory {
         }
         self.colors.push(color);
         self.base.request_redraw();
+        self.color_added.emit(color);
     }
 
     /// Removes a color at the given index. Returns `true` if successful.
+    ///
+    /// A successful removal emits [`Self::color_removed`] with the removed index, so the
+    /// programmatic and keyboard paths report the same notification from the same place.
     pub fn remove_color(&mut self, index: usize) -> bool {
         if index < self.colors.len() {
             self.colors.remove(index);
@@ -111,6 +140,7 @@ impl ColorHistory {
                 }
             }
             self.base.request_redraw();
+            self.color_removed.emit(index);
             return true;
         }
         false
@@ -204,7 +234,6 @@ impl ColorHistory {
         if !self.remove_color(index) {
             return;
         }
-        self.color_removed.emit(index);
         if self.colors.is_empty() {
             return;
         }
@@ -212,6 +241,32 @@ impl ColorHistory {
         self.selected_index = Some(next);
         self.color_selected.emit(self.colors[next]);
         self.base.request_redraw();
+    }
+
+    /// Rebuilds the transparency grid when either of its two tones changed.
+    ///
+    /// The bitmap is exactly one swatch: the grid never scales, because a swatch is a fixed
+    /// size (see [`SWATCH_SIZE`]). Its pixels carry the same RGBA the per-tile fills used, so
+    /// the blitted result is pixel-identical to the old loop.
+    fn ensure_checkerboard(&mut self, even: Color, odd: Color) {
+        let fresh =
+            self.checkerboard.as_ref().is_some_and(|cache| cache.even == even && cache.odd == odd);
+        if fresh {
+            return;
+        }
+        let mut pixels = crate::compat::vec![0u8; (SWATCH_SIZE * SWATCH_SIZE * 4) as usize];
+        for y in 0..SWATCH_SIZE {
+            for x in 0..SWATCH_SIZE {
+                let light = ((x / CHECKER_TILE) + (y / CHECKER_TILE)).is_multiple_of(2);
+                let color = if light { even } else { odd };
+                let offset = ((y * SWATCH_SIZE + x) * 4) as usize;
+                pixels[offset] = color.r;
+                pixels[offset + 1] = color.g;
+                pixels[offset + 2] = color.b;
+                pixels[offset + 3] = color.a;
+            }
+        }
+        self.checkerboard = Some(CheckerboardCache { even, odd, pixels });
     }
 
     /// Returns the index of the swatch at the given position, if any.
@@ -279,6 +334,9 @@ impl Widget for ColorHistory {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
             }
+            "color_added" => Some(EventSignalRef::mapped("color_added", &self.color_added, |v| {
+                CapabilityValue::String(format!("{v:?}"))
+            })),
             "color_removed" => {
                 Some(EventSignalRef::mapped("color_removed", &self.color_removed, |v| {
                     crate::widget::capability::CapabilityValue::UInt(*v as u64)
@@ -375,8 +433,6 @@ impl Draw for ColorHistory {
             Color::rgba(219, 68, 55, 255),
             Color::rgba(244, 180, 0, 255),
         ];
-        let swatches: &[Color] =
-            if self.colors.is_empty() { &PLACEHOLDER } else { self.colors.as_slice() };
 
         // Draw each color swatch in a grid
         //
@@ -397,6 +453,17 @@ impl Draw for ColorHistory {
         // is legible in either appearance without being a second palette.
         let checker_even = background.blend(&accent, 0.12);
         let checker_odd = background.blend(&accent, 0.24);
+        // One bitmap for every transparent swatch, rebuilt only when either tone moves (a theme
+        // switch). The cache is prepared before the swatch slice is borrowed, because "any
+        // transparent entry?" needs `&self` and the grid needs `&mut self`.
+        let checker = if self.colors.iter().any(|color| color.a < 255) {
+            self.ensure_checkerboard(checker_even, checker_odd);
+            self.checkerboard.as_ref().map(|cache| cache.pixels.as_slice())
+        } else {
+            None
+        };
+        let swatches: &[Color] =
+            if self.colors.is_empty() { &PLACEHOLDER } else { self.colors.as_slice() };
 
         for (i, color) in swatches.iter().enumerate() {
             let row = i as u32 / SWATCHES_PER_ROW;
@@ -408,20 +475,11 @@ impl Draw for ColorHistory {
 
             let swatch_rect = Rect::new(x, y, SWATCH_SIZE, SWATCH_SIZE);
 
-            // Checkerboard for transparent colors
+            // Checkerboard for transparent colors: one blit of the cached grid rather than one
+            // fill per tile.
             if color.a < 255 {
-                let checker_size: u32 = 3;
-                let even = checker_even;
-                let odd = checker_odd;
-                for cy in (y..y + SWATCH_SIZE as i32).step_by(checker_size as usize) {
-                    for cx in (x..x + SWATCH_SIZE as i32).step_by(checker_size as usize) {
-                        let tile_x = (cx - x) / checker_size as i32;
-                        let tile_y = (cy - y) / checker_size as i32;
-                        let tile_color = if (tile_x + tile_y) % 2 == 0 { even } else { odd };
-                        let tw = checker_size.min((x + SWATCH_SIZE as i32 - cx) as u32);
-                        let th = checker_size.min((y + SWATCH_SIZE as i32 - cy) as u32);
-                        context.fill_rect(Rect::new(cx, cy, tw, th), tile_color);
-                    }
+                if let Some(pixels) = checker {
+                    context.draw_image(x, y, SWATCH_SIZE, SWATCH_SIZE, pixels);
                 }
             }
 

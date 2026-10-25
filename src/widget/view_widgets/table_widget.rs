@@ -9,7 +9,7 @@ use crate::event::WheelScroll;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::widget::capability::access::selection_mode_to_str;
-use crate::widget::capability::coercion::expect_selection_mode;
+use crate::widget::capability::coercion::{expect_bool, expect_selection_mode, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -47,6 +47,14 @@ pub trait TableModel: Send + Sync {
     fn column_count(&self) -> usize;
     /// Data for row and column index, if present.
     fn data(&self, row: usize, column: usize) -> Option<String>;
+    /// The heading a column is painted with, if the model names its columns.
+    ///
+    /// The table reserved a header band but had no way to ask for a title, so the band was blank
+    /// for every model. Returning `None` keeps a model that does not name its columns unchanged.
+    fn column_name(&self, column: usize) -> Option<&str> {
+        let _ = column;
+        None
+    }
     /// Writes the cell at `row`/`column` into `out`, returning whether it exists.
     ///
     /// # Why this exists
@@ -158,8 +166,18 @@ pub struct TableWidget {
     pub edit_requested: Signal1<(usize, usize)>,
     /// Emitted when a row is double-clicked.
     pub row_activated: Signal1<usize>,
+    /// Emitted with the cell a double-click landed on.
+    cell_double_clicked: Signal1<(usize, usize)>,
+    /// Emitted when a header section is pressed.
+    section_clicked: Signal1<usize>,
     /// Emitted when the context menu is requested at a point.
     pub context_menu_requested: Signal1<crate::core::Point>,
+    /// Labels supplied through [`TableWidget::set_header_labels`].
+    header_labels: Vec<String>,
+    /// Whether the header band is painted and reserved.
+    header_visible: bool,
+    /// Whether a double click may request an edit.
+    editable: bool,
 }
 /// Gestures that start an in-place edit in a [`TableWidget`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -206,7 +224,12 @@ impl TableWidget {
             edit_triggers: TableEditTriggers::NONE,
             edit_requested: Signal1::new(),
             row_activated: Signal1::new(),
+            cell_double_clicked: Signal1::new(),
+            section_clicked: Signal1::new(),
             context_menu_requested: Signal1::new(),
+            header_labels: Vec::new(),
+            header_visible: true,
+            editable: true,
         }
     }
     /// Binds an external table model.
@@ -254,6 +277,9 @@ impl TableWidget {
     /// extracted to fix, which this control's sibling had kept.
     fn rows_band(&self) -> Rect {
         let content = ControlMetrics::band_inset(self.base.geometry(), TABLE_INSET);
+        if !self.header_visible {
+            return content;
+        }
         let header = ControlMetrics::top_band(content, HEADER_ROW_HEIGHT);
         Rect::new(
             content.x,
@@ -261,6 +287,83 @@ impl TableWidget {
             content.width,
             content.height.saturating_sub(header.height),
         )
+    }
+
+    /// Whether the header band is painted and reserved.
+    pub fn header_visible(&self) -> bool {
+        self.header_visible
+    }
+
+    /// Shows or hides the header band.
+    ///
+    /// Hiding it gives the rows the header's height back, rather than leaving an empty strip; the
+    /// paint loop, the hit test and an editor's geometry all read [`Self::rows_band`], so they move
+    /// together.
+    pub fn set_header_visible(&mut self, visible: bool) {
+        if self.header_visible == visible {
+            return;
+        }
+        self.header_visible = visible;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The header labels supplied by the host.
+    pub fn header_labels(&self) -> &[String] {
+        &self.header_labels
+    }
+
+    /// Replaces the header labels.
+    ///
+    /// A label here takes precedence over [`TableModel::column_name`], which lets a host relabel a
+    /// model's columns without owning the model. A missing index falls back to the model's name;
+    /// a model that names nothing keeps the strip's historical blank section.
+    pub fn set_header_labels(&mut self, labels: &[&str]) {
+        self.header_labels = labels.iter().map(|label| (*label).to_string()).collect();
+        self.base.request_redraw();
+    }
+
+    /// Whether a double-click may request an edit.
+    pub fn editable(&self) -> bool {
+        self.editable
+    }
+
+    /// Enables or disables double-click editing.
+    pub fn set_editable(&mut self, editable: bool) {
+        if self.editable == editable {
+            return;
+        }
+        self.editable = editable;
+    }
+
+    /// The column at screen x `x`, if it is inside the content box.
+    pub fn column_at(&self, x: i32) -> Option<usize> {
+        let content = ControlMetrics::band_inset(self.base.geometry(), TABLE_INSET);
+        if x < content.x || x >= content.x + content.width as i32 {
+            return None;
+        }
+        let mut left = content.x;
+        for column in 0..self.column_count() {
+            let width = self.resolved_column_width(column, content.width) as i32;
+            if x < left + width {
+                return Some(column);
+            }
+            left += width;
+        }
+        None
+    }
+
+    /// The header column at `point`, when the header is visible.
+    fn header_column_at(&self, point: crate::core::Point) -> Option<usize> {
+        if !self.header_visible {
+            return None;
+        }
+        let content = ControlMetrics::band_inset(self.base.geometry(), TABLE_INSET);
+        let header = ControlMetrics::top_band(content, HEADER_ROW_HEIGHT);
+        if !header.contains_point(point) {
+            return None;
+        }
+        self.column_at(point.x)
     }
 
     /// The height of content row `index`: its override, or the default.
@@ -556,6 +659,9 @@ impl TableWidget {
     /// Returns `None` when there is no delegate, no model, or the cell is out of range; those are
     /// three ways for the request to be meaningless rather than errors.
     pub fn begin_edit(&mut self, row: usize, column: usize) -> Option<Box<dyn Widget>> {
+        if !self.editable {
+            return None;
+        }
         let delegate = self.delegate.clone()?;
         let model = self.model.clone()?;
         if row >= model.row_count() || column >= model.column_count() {
@@ -618,6 +724,20 @@ impl TableWidget {
     /// Returns the bound item delegate, if present.
     pub fn delegate_ref(&self) -> Option<&Arc<dyn ItemDelegate>> {
         self.delegate.as_ref()
+    }
+
+    /// The signal emitted with the cell a double-click landed on.
+    ///
+    /// Exposed as an accessor rather than a `pub` field so it stays a Rust-level event: the
+    /// capability table owns the published event names, and a name it does not publish cannot be
+    /// wired through `connect_event`.
+    pub fn cell_double_clicked_signal(&self) -> &Signal1<(usize, usize)> {
+        &self.cell_double_clicked
+    }
+
+    /// The signal emitted when a header section is pressed.
+    pub fn section_clicked_signal(&self) -> &Signal1<usize> {
+        &self.section_clicked
     }
     fn normalize_projection_state(&mut self) {
         let row_count = self.row_count();
@@ -713,6 +833,41 @@ impl Widget for TableWidget {
     }
 }
 
+/// The published spelling of an edit-trigger set.
+///
+/// The bitset has four reachable states, so a closed vocabulary is enough; `all` is the
+/// combination rather than a fifth gesture.
+fn edit_triggers_to_str(triggers: TableEditTriggers) -> &'static str {
+    match triggers {
+        TableEditTriggers::NONE => "none",
+        TableEditTriggers::DOUBLE_CLICKED => "double_clicked",
+        TableEditTriggers::EDIT_KEY => "edit_key",
+        _ => "all",
+    }
+}
+
+/// Parses the published edit-trigger spelling, accepting the union spellings a designer writes.
+fn expect_edit_triggers(
+    value: CapabilityValue,
+) -> Result<TableEditTriggers, CapabilityAccessError> {
+    let text = expect_string(value)?;
+    let mut triggers = TableEditTriggers::NONE;
+    for token in text.split(['+', ',', '|', ' ']).filter(|token| !token.is_empty()) {
+        match token.to_ascii_lowercase().as_str() {
+            "none" => {}
+            "double_clicked" | "double-clicked" | "doubleclick" => {
+                triggers = triggers.or(TableEditTriggers::DOUBLE_CLICKED);
+            }
+            "edit_key" | "edit-key" | "enter" => {
+                triggers = triggers.or(TableEditTriggers::EDIT_KEY);
+            }
+            "all" => triggers = TableEditTriggers::ALL,
+            _ => return Err(CapabilityAccessError::TypeMismatch),
+        }
+    }
+    Ok(triggers)
+}
+
 /// `TableWidget`'s property contract.
 ///
 /// Read/write semantics are carried over unchanged from the centralised
@@ -733,6 +888,11 @@ impl WidgetProperties for TableWidget {
             "selection_mode" => Ok(CapabilityValue::String(
                 selection_mode_to_str(self.selection_mode()).to_string(),
             )),
+            "header_visible" => Ok(CapabilityValue::Bool(self.header_visible())),
+            "editable" => Ok(CapabilityValue::Bool(self.editable())),
+            "edit_triggers" => {
+                Ok(CapabilityValue::String(edit_triggers_to_str(self.edit_triggers()).to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -741,6 +901,18 @@ impl WidgetProperties for TableWidget {
         match name {
             "selection_mode" => {
                 self.set_selection_mode(expect_selection_mode(value)?);
+                Ok(())
+            }
+            "header_visible" => {
+                self.set_header_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "editable" => {
+                self.set_editable(expect_bool(value)?);
+                Ok(())
+            }
+            "edit_triggers" => {
+                self.set_edit_triggers(expect_edit_triggers(value)?);
                 Ok(())
             }
             "column_count" => Err(CapabilityAccessError::ReadOnlyProperty),
@@ -758,6 +930,9 @@ impl WidgetProperties for TableWidget {
             "row_count",
             "column_count",
             "selection_mode",
+            "header_visible",
+            "editable",
+            "edit_triggers",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -853,7 +1028,7 @@ impl Draw for TableWidget {
         context.draw_rect(rect, border);
         // Header row: the band the content rows begin below. It carries the surface's own
         // ink as a rule, so a table with a model reads as a table before its first row.
-        if content.height > header.height {
+        if self.header_visible && content.height > header.height {
             context.fill_rect(header, surface.blend(&ink, 0.06));
             context.draw_line(
                 crate::core::Point::new(header.x, header.y + header.height as i32),
@@ -863,6 +1038,33 @@ impl Draw for TableWidget {
                 ),
                 border,
             );
+            if let Some(model) = self.model.as_ref() {
+                let font = effective_font(style);
+                let mut left = content.x;
+                for column in 0..model.column_count() {
+                    if left >= content.x + content.width as i32 {
+                        break;
+                    }
+                    let width = self.resolved_column_width(column, content.width);
+                    let band = Rect::new(left, header.y, width, header.height);
+                    let label = self
+                        .header_labels
+                        .get(column)
+                        .map(String::as_str)
+                        .filter(|label| !label.is_empty())
+                        .or_else(|| model.column_name(column));
+                    if let Some(label) = label {
+                        context.draw_text_fitted_cow(
+                            context.text_line(band, font),
+                            label,
+                            font,
+                            ink,
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                    left += width as i32;
+                }
+            }
         }
         // The rows begin at the header's bottom edge, which is what keeps the first content
         // row off y=0 (the defect the inset exists to fix).
@@ -879,20 +1081,24 @@ impl Draw for TableWidget {
             // reusable buffer so a model that can lend its cells allocates nothing per frame.
             let font = effective_font(style);
             let mut cell_text = String::new();
-            // Both offsets are accumulated once for the whole paint instead of re-summed per
-            // row/column. With a single `set_row_height`/`set_column_width` override the
-            // accessors walked `0..index` for every call, making one frame O(R² + R·C²) map
-            // lookups; the accumulation below is exactly what those accessors compute, in one
-            // pass, and gives the same geometry.
+            // The column offsets are accumulated once for the whole paint instead of being
+            // re-summed per cell. With a single `set_column_width` override the accessor walked
+            // `0..index` for every call, making one frame O(R·C²) map lookups; the accumulation
+            // below is exactly what it computes, in one pass, and gives the same geometry.
+            //
+            // The row y is likewise accumulated: `row_offset(r)` summed `0..r` for every visible
+            // row, so one frame re-walked the prefix O(R²) times. `scroll_offset_px()` already is
+            // `row_offset(scroll_row)`, which cancels the first row's offset, so the band's own
+            // top is the starting point and each step adds the row it just painted.
             let band = self.rows_band();
-            let scroll = self.scroll_offset_px();
+            let mut y = band.y;
             for r in self.scroll_row..row_count {
                 let row_h = self.resolved_row_height(r) as i32;
-                let y = band.y + self.row_offset(r) as i32 - scroll as i32;
                 if y + row_h > band.y + band.height as i32 {
                     break;
                 }
                 if y < band.y {
+                    y += row_h;
                     continue;
                 }
                 let row_box = crate::core::Rect::new(band.x, y, band.width, row_h as u32);
@@ -956,6 +1162,7 @@ impl Draw for TableWidget {
                         grid_ink,
                     );
                 }
+                y += row_h;
             }
         }
     }
@@ -970,6 +1177,10 @@ impl crate::event::EventHandler for TableWidget {
         }
         match event {
             crate::event::Event::MousePress { pos, button, modifiers } if *button == 1 => {
+                if let Some(column) = self.header_column_at(*pos) {
+                    self.section_clicked.emit(column);
+                    return;
+                }
                 // The row is read from `row_at_point`, the same derivation the paint loop uses.
                 // The press arm used to compute its own `(pos.y - rect.y) / 20`, which measured from
                 // the control instead of from the content box below the header, so a click on the
@@ -998,9 +1209,16 @@ impl crate::event::EventHandler for TableWidget {
                 if let Some(index) = self.row_at_point(*pos) {
                     self.select_row(index);
                     self.row_activated.emit(index);
-                    if self.edit_triggers.contains(TableEditTriggers::DOUBLE_CLICKED) {
-                        let column = 0;
-                        self.edit_requested.emit((index, column));
+                    // The column is the one the pointer is actually over. This used to be the
+                    // literal `0`, so double-clicking any column edited the first one, which is a
+                    // different cell from the one the user pointed at.
+                    if let Some(column) = self.column_at(pos.x) {
+                        self.cell_double_clicked.emit((index, column));
+                        if self.editable
+                            && self.edit_triggers.contains(TableEditTriggers::DOUBLE_CLICKED)
+                        {
+                            self.edit_requested.emit((index, column));
+                        }
                     }
                 }
             }
@@ -1056,7 +1274,9 @@ impl crate::event::EventHandler for TableWidget {
                         if self.edit_triggers.contains(TableEditTriggers::EDIT_KEY) =>
                     {
                         if let Some(row) = self.focused_row {
-                            self.edit_requested.emit((row, 0));
+                            if self.editable {
+                                self.edit_requested.emit((row, 0));
+                            }
                         }
                     }
                     _ => {}

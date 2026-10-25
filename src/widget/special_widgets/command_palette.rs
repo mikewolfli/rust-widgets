@@ -72,6 +72,8 @@ pub struct CommandPalette {
     /// Command ids in most-recently-used order, boosting their match score.
     mru: Vec<String>,
     row_height: u32,
+    /// Whether the filtered list is grouped under category headings.
+    group_by_category: bool,
     /// Emitted when command is activated. Payload is command id.
     pub command_activated: Signal1<String>,
     /// Emitted when query changes. Payload is current query.
@@ -90,6 +92,7 @@ impl CommandPalette {
             scroll_offset: 0,
             mru: Vec::new(),
             row_height: 24,
+            group_by_category: false,
             command_activated: Signal1::new(),
             query_changed: Signal1::new(),
         }
@@ -156,6 +159,25 @@ impl CommandPalette {
         self.row_height
     }
 
+    /// Whether the result list is grouped under category headings.
+    pub fn group_by_category(&self) -> bool {
+        self.group_by_category
+    }
+
+    /// Groups the filtered result list under a heading per category.
+    ///
+    /// The heading is display chrome only: it does not enter the filtered index space, so
+    /// `highlighted_index`, the MRU ranking and activation keep addressing entries.
+    pub fn set_group_by_category(&mut self, grouped: bool) {
+        if self.group_by_category == grouped {
+            return;
+        }
+        self.group_by_category = grouped;
+        self.refresh_filter();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
     /// Returns command entry at filtered index.
     pub fn filtered_entry(&self, filtered_index: usize) -> Option<&CommandEntry> {
         let entry_index = *self.filtered_indices.get(filtered_index)?;
@@ -185,8 +207,7 @@ impl CommandPalette {
     /// How many result rows fit under the query header.
     fn visible_rows(&self) -> usize {
         let rect = self.geometry();
-        ((rect.height.saturating_sub(self.row_height + self.header_height()))
-            / self.row_height.max(1)) as usize
+        (rect.height.saturating_sub(self.header_height()) / self.row_height.max(1)) as usize
     }
 
     /// The header band's height.
@@ -234,7 +255,12 @@ impl CommandPalette {
         self.base.request_redraw();
     }
 
-    /// Activates highlighted command and emits command id.
+    /// Activates highlighted command, records it as used and emits its id.
+    ///
+    /// The record is what makes the most-recently-used ordering update through the
+    /// **default** keyboard and pointer paths. Previously only a host calling `record_use`
+    /// explicitly could feed the list, so the "recently used" feature never updated for a
+    /// user who drove the palette with the keyboard.
     pub fn activate_highlighted(&mut self) -> bool {
         let Some(filtered_index) = self.highlighted_index() else {
             return false;
@@ -242,7 +268,9 @@ impl CommandPalette {
         let Some(entry) = self.filtered_entry(filtered_index) else {
             return false;
         };
-        self.command_activated.emit(entry.id.clone());
+        let id = entry.id.clone();
+        self.record_use(id.clone());
+        self.command_activated.emit(id);
         true
     }
 
@@ -269,6 +297,16 @@ impl CommandPalette {
                     .unwrap_or(usize::MAX)
             };
             self.filtered_indices.sort_by_key(|index| rank(*index));
+        }
+        if self.group_by_category {
+            // Stable: within one category the score/MRU order is preserved, so grouping
+            // changes presentation only and never promotes a worse textual match.
+            self.filtered_indices.sort_by(|a, b| {
+                let category = |index: usize| {
+                    self.entries.get(index).map(|entry| entry.category.as_str()).unwrap_or("")
+                };
+                category(*a).cmp(category(*b))
+            });
         }
         self.scroll_offset = 0;
 
@@ -329,17 +367,67 @@ impl CommandPalette {
         }
     }
 
-    fn pick_at_position(&mut self, pos: Point) {
+    /// The display slot at `pos`, as the index it addresses in the filtered list.
+    ///
+    /// The hit test and the paint share one derivation: the query header occupies the first
+    /// band, and the scroll offset is applied before the division. The old form divided the
+    /// raw pointer offset by the row height, which made the first row unclickable and every
+    /// row below it off by the header's height — before scrolling — and off by the whole
+    /// scroll offset once the list was scrolled.
+    fn row_at(&self, pos: Point) -> Option<usize> {
         let rect = self.geometry();
         if pos.y < rect.y || pos.y >= rect.y + rect.height as i32 {
-            return;
+            return None;
         }
-        let row = ((pos.y - rect.y) / self.row_height as i32).max(0) as usize;
-        if row < self.filtered_indices.len() {
-            self.highlighted_index = Some(row);
+        let body_top = rect.y + self.header_height() as i32;
+        if pos.y < body_top {
+            return None;
+        }
+        let row = ((pos.y - body_top) / self.row_height.max(1) as i32) as usize;
+        let slot = self.display_slots().into_iter().nth(row)?;
+        if slot.header {
+            return None;
+        }
+        Some(slot.filtered_index)
+    }
+
+    fn pick_at_position(&mut self, pos: Point) {
+        if let Some(filtered_index) = self.row_at(pos) {
+            self.highlighted_index = Some(filtered_index);
             self.base.request_redraw();
         }
     }
+
+    /// One painted row: a category heading or a filtered command.
+    ///
+    /// `filtered_index` is always a valid position in `filtered_indices`; for a heading it
+    /// names the first entry of that category, which is what the paint reads the label from.
+    fn display_slots(&self) -> Vec<PaletteSlot> {
+        let mut slots = Vec::with_capacity(self.filtered_indices.len());
+        let mut last_category: Option<&str> = None;
+        for filtered_index in self.scroll_offset..self.filtered_indices.len() {
+            let Some(entry) = self.filtered_entry(filtered_index) else {
+                continue;
+            };
+            if self.group_by_category
+                && !entry.category.is_empty()
+                && last_category != Some(entry.category.as_str())
+            {
+                slots.push(PaletteSlot { header: true, filtered_index });
+                last_category = Some(entry.category.as_str());
+            }
+            slots.push(PaletteSlot { header: false, filtered_index });
+        }
+        slots
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PaletteSlot {
+    /// Whether this slot is a category heading rather than a command row.
+    header: bool,
+    /// The filtered-list position this slot paints.
+    filtered_index: usize,
 }
 
 impl Widget for CommandPalette {
@@ -404,6 +492,7 @@ impl WidgetProperties for CommandPalette {
                 None => Ok(CapabilityValue::Null),
             },
             "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            "group_by_category" => Ok(CapabilityValue::Bool(self.group_by_category())),
             _ => base_property_get(self, name),
         }
     }
@@ -426,6 +515,13 @@ impl WidgetProperties for CommandPalette {
                 }
                 _ => Err(CapabilityAccessError::TypeMismatch),
             },
+            "group_by_category" => match value {
+                CapabilityValue::Bool(grouped) => {
+                    self.set_group_by_category(grouped);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
             "entry_count" | "filtered_count" | "highlighted_index" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
@@ -440,6 +536,7 @@ impl WidgetProperties for CommandPalette {
             "filtered_count",
             "highlighted_index",
             "row_height",
+            "group_by_category",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -595,9 +692,26 @@ impl Draw for CommandPalette {
 
         let mut y = rect.y + self.row_height as i32;
         let limit = rect.y + rect.height as i32;
-        for filtered_index in self.scroll_offset..self.filtered_indices.len() {
+        let slots = self.display_slots();
+        for slot in slots {
             if y + self.row_height as i32 > limit {
                 break;
+            }
+            let filtered_index = slot.filtered_index;
+            if slot.header {
+                if let Some(entry) = self.filtered_entry(filtered_index) {
+                    let band =
+                        Rect::new(rect.x + 8, y, rect.width.saturating_sub(16), self.row_height);
+                    context.draw_text_fitted_cow(
+                        context.text_line(band, effective_font(style)),
+                        &entry.category,
+                        effective_font(style),
+                        text_color.blend(&background, 0.35),
+                        HorizontalAlignment::Left,
+                    );
+                }
+                y += self.row_height as i32;
+                continue;
             }
 
             if self.highlighted_index == Some(filtered_index) {
@@ -806,6 +920,68 @@ mod tests {
         // No match
         palette.set_query("CLOSE");
         assert_eq!(palette.filtered_count(), 0);
+    }
+
+    /// A pointer press lands on the row it is drawn on, header and scroll included.
+    ///
+    /// # The defect this pins
+    ///
+    /// `pick_at_position` divided `pos.y - rect.y` by the row height, so the query header's
+    /// band was counted as row 0: the first visible row could not be chosen, every row below
+    /// it was off by one, and once the list scrolled the whole mapping was off by the scroll
+    /// offset. The paint and the hit test now read one slot list.
+    #[test]
+    fn a_click_lands_on_the_row_it_is_painted_on() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 120));
+        palette.set_entries(
+            (0..6)
+                .map(|index| CommandEntry::new(format!("cmd{index}"), format!("Cmd {index}")))
+                .collect(),
+        );
+        assert_eq!(palette.row_height(), 24);
+
+        // The header occupies the first band; a press there is not a row.
+        palette.handle_event(&Event::mouse_press(10, 10, 1));
+        assert_eq!(palette.highlighted_index(), Some(0), "a header press leaves the highlight");
+
+        // The first body row starts after the header and must select filtered row 0.
+        palette.handle_event(&Event::mouse_press(10, 30, 1));
+        assert_eq!(palette.highlighted_index(), Some(0));
+
+        // Scroll two rows out and the same pointer position addresses the row now painted there.
+        palette.handle_event(&Event::wheel(0, 1, 0));
+        palette.handle_event(&Event::wheel(0, 1, 0));
+        assert_eq!(palette.scroll_offset(), 2);
+        palette.handle_event(&Event::mouse_press(10, 30, 1));
+        assert_eq!(palette.highlighted_index(), Some(2));
+    }
+
+    /// The default keyboard path feeds the most-recently-used list.
+    #[test]
+    fn activating_through_the_keyboard_records_the_command_as_used() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 160));
+        palette.set_entries(sample_entries());
+        assert!(palette.mru().is_empty());
+
+        palette.handle_event(&Event::key_press(40, 0));
+        palette.handle_event(&Event::key_press(13, 0));
+
+        assert_eq!(palette.mru().first().map(String::as_str), Some("file.save"));
+    }
+
+    /// Grouping inserts a heading per category without changing the entry index space.
+    #[test]
+    fn grouping_adds_a_heading_per_category() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 200));
+        palette.set_entries(sample_entries());
+        assert!(!palette.group_by_category());
+
+        palette.set_group_by_category(true);
+        let slots = palette.display_slots();
+        // Three entries in two categories: one heading per category plus the entries.
+        assert_eq!(slots.iter().filter(|slot| slot.header).count(), 2);
+        assert_eq!(slots.iter().filter(|slot| !slot.header).count(), 3);
+        assert_eq!(palette.filtered_count(), 3, "the entries are still addressable");
     }
 
     #[test]

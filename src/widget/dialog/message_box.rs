@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Message box dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -199,11 +199,23 @@ pub struct MessageBox {
     informative_text: String,
     /// A muted detail block below the informative line (`detailedText`).
     detailed_text: String,
+    /// Whether the detail block is expanded. Collapsed by default: the detail toggle is the
+    /// control that owns this value, and `detailedText` is the text it reveals.
+    detailed_text_expanded: bool,
     /// An optional check box above the action row: its label and its state.
     check_box_text: String,
     check_box_checked: bool,
     /// A caller-supplied picture that replaces the severity glyph.
     pixmap: Option<crate::image::Image>,
+    /// The resampled pixmap: the square side it was resampled to and its RGBA bytes.
+    ///
+    /// # Why the raster is cached here rather than recomputed in `draw`
+    ///
+    /// `pixmap_pixels` allocates `side * side * 4` bytes and walks every pixel. Doing that on
+    /// every frame made a static image cost the same as an animation. The key is the target
+    /// side alone: `set_pixmap` clears this cache, so a different source can never be served
+    /// from it.
+    pixmap_raster: Option<(u32, Vec<u8>)>,
     icon: MessageBoxIcon,
     buttons: Vec<StandardButton>,
     default_button: Option<StandardButton>,
@@ -245,6 +257,13 @@ pub struct MessageBox {
     /// Close, Abort, Retry, Ignore and Help. Note that YesAll and NoAll are
     /// therefore *both* rejections by this rule.
     pub rejected: GenericSignal,
+    /// Emitted when the detail block is expanded or collapsed, carrying the new state.
+    pub details_toggled: Signal1<bool>,
+    /// Emitted when Tab moves the focus ring; the payload is this box's own object id (the box
+    /// is one `ObjectId`; its self-drawn buttons are not separate objects).
+    pub focus_changed: Signal1<ObjectId>,
+    /// The action button the keyboard focus ring is on.
+    focus: Option<usize>,
 }
 impl MessageBox {
     /// Creates an empty message box with no title or text, no icon, a single OK
@@ -256,9 +275,11 @@ impl MessageBox {
             text: String::new(),
             informative_text: String::new(),
             detailed_text: String::new(),
+            detailed_text_expanded: false,
             check_box_text: String::new(),
             check_box_checked: false,
             pixmap: None,
+            pixmap_raster: None,
             icon: MessageBoxIcon::NoIcon,
             buttons: vec![StandardButton::Ok],
             default_button: Some(StandardButton::Ok),
@@ -273,6 +294,9 @@ impl MessageBox {
             button_clicked: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
+            details_toggled: Signal1::new(),
+            focus_changed: Signal1::new(),
+            focus: None,
         }
     }
     /// Creates a question prompt: [`MessageBoxIcon::Question`] with Yes and No
@@ -386,7 +410,31 @@ impl MessageBox {
             return;
         }
         self.detailed_text = text;
+        // An empty block has nothing to reveal, so an expanded flag left behind would be a
+        // state no visible control can clear.
+        if self.detailed_text.is_empty() && self.detailed_text_expanded {
+            self.detailed_text_expanded = false;
+            self.details_toggled.emit(false);
+        }
         self.base.request_redraw();
+    }
+
+    /// Whether the detail block is expanded.
+    pub fn is_detailed_text_expanded(&self) -> bool {
+        self.detailed_text_expanded
+    }
+
+    /// Expands or collapses the detail block, emitting `details_toggled` on a real change.
+    ///
+    /// A blank `detailed_text` has nothing to reveal, so the write is refused rather than
+    /// recording an expanded state no toggle can reach.
+    pub fn set_detailed_text_expanded(&mut self, expanded: bool) {
+        if self.detailed_text.is_empty() || self.detailed_text_expanded == expanded {
+            return;
+        }
+        self.detailed_text_expanded = expanded;
+        self.base.request_redraw();
+        self.details_toggled.emit(expanded);
     }
 
     /// The optional check box row's label, or `""` when no row is painted.
@@ -440,6 +488,7 @@ impl MessageBox {
             return;
         }
         self.pixmap = pixmap;
+        self.pixmap_raster = None;
         self.base.request_redraw();
     }
 
@@ -658,6 +707,16 @@ impl Widget for MessageBox {
             }
             "accepted" => Some(EventSignalRef::unit("accepted", &self.accepted)),
             "rejected" => Some(EventSignalRef::unit("rejected", &self.rejected)),
+            "details_toggled" => {
+                Some(EventSignalRef::mapped("details_toggled", &self.details_toggled, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "focus_changed" => {
+                Some(EventSignalRef::mapped("focus_changed", &self.focus_changed, |v| {
+                    CapabilityValue::UInt(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -834,10 +893,16 @@ impl EventHandler for MessageBox {
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.action_button_at(*pos) {
                     self.pressed = Some(index);
+                    self.focus = Some(index);
                     self.base.request_redraw();
                     if let Some(activated) = self.buttons.get(index).copied() {
                         self.click_button(activated);
                     }
+                    return;
+                }
+                // The detail toggle reveals or collapses the muted block above the actions.
+                if self.details_toggle_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.set_detailed_text_expanded(!self.detailed_text_expanded);
                     return;
                 }
                 // A press on the check box toggles it, which is the row's whole purpose.
@@ -854,9 +919,16 @@ impl EventHandler for MessageBox {
                 }
             }
             Event::KeyPress { key, .. } => {
-                if *key == key_codes::ENTER || *key == key_codes::LINE_FEED {
-                    // Enter → default button
-                    if let Some(btn) = self.default_button {
+                if *key == key_codes::TAB {
+                    self.move_focus();
+                } else if *key == key_codes::ENTER || *key == key_codes::LINE_FEED {
+                    // A focused button wins over the default; with no ring yet, Enter keeps
+                    // activating the configured default button.
+                    let button = self
+                        .focus
+                        .and_then(|index| self.buttons.get(index).copied())
+                        .or(self.default_button);
+                    if let Some(btn) = button {
                         self.click_button(btn);
                     }
                 } else if *key == key_codes::ESCAPE {
@@ -983,6 +1055,55 @@ impl MessageBox {
         let row_h = dimensions::DIALOG_BUTTON_HEIGHT.min(rect.height);
         let row_y = button_band.y.saturating_sub(row_h as i32).saturating_sub(4);
         Some(Rect::new(button_band.x, row_y, button_band.width, row_h))
+    }
+
+    /// The detail toggle's rectangle, when there is detail text to toggle.
+    ///
+    /// The toggle sits immediately above the check box row (or above the action row when no
+    /// check box is installed), so the two optional rows stack without overlapping.
+    fn details_toggle_rect(&self) -> Option<Rect> {
+        if self.detailed_text.is_empty() {
+            return None;
+        }
+        let backend_size =
+            Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
+        let mut backend = crate::render::SoftwarePaintBackend::new(backend_size, 1.0);
+        let context = RenderContext::new(&mut backend);
+        let rect = self.frame_rect(&context);
+        let body =
+            ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        let button_band = inset_action_band(
+            ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT),
+            body.y,
+        );
+        let row_h = dimensions::DIALOG_BUTTON_HEIGHT.min(rect.height);
+        let mut row_y = button_band.y.saturating_sub(row_h as i32).saturating_sub(4);
+        if !self.check_box_text.is_empty() {
+            row_y = row_y.saturating_sub(row_h as i32).saturating_sub(4);
+        }
+        if row_y < body.y {
+            return None;
+        }
+        Some(Rect::new(button_band.x, row_y, button_band.width, row_h))
+    }
+
+    /// The toggle's label: the resource label for its next state.
+    fn details_toggle_label(&self) -> String {
+        if self.detailed_text_expanded {
+            super::localized_label("dialog.message_box.hide_details", "Hide Details...")
+        } else {
+            super::localized_label("dialog.message_box.show_details", "Show Details...")
+        }
+    }
+
+    /// Moves the focus ring across the action buttons and announces the move.
+    fn move_focus(&mut self) {
+        let next = super::move_focus(self.focus, self.buttons.len(), true);
+        if next != self.focus {
+            self.focus = next;
+            self.focus_changed.emit(self.id());
+            self.base.request_redraw();
+        }
     }
 
     /// The index of the action button under `pos`, or `None`.
@@ -1193,13 +1314,27 @@ impl Draw for MessageBox {
         // A caller-supplied picture replaces the glyph entirely, so the two never compete for
         // the same square. The pixels are resampled to the square because the draw primitive
         // takes a destination rectangle and a buffer already at that size.
-        let pixmap_drawn = self.pixmap.as_ref().and_then(|pixmap| {
+        let pixmap_drawn = if self.pixmap.is_some() {
             let side = icon_side.max(16).min(body.width).min(body.height);
-            let pixels = pixmap_pixels(pixmap, side, side)?;
-            let rect = Rect::new(body.x + icon_left, body.y, side, side);
-            context.draw_image(rect.x, rect.y, rect.width, rect.height, &pixels);
-            Some(icon_left + side as i32 + 8)
-        });
+            if side > 0 {
+                if self.pixmap_raster.as_ref().map(|(cached, _)| *cached) != Some(side) {
+                    self.pixmap_raster = self
+                        .pixmap
+                        .as_ref()
+                        .and_then(|pixmap| pixmap_pixels(pixmap, side, side))
+                        .map(|pixels| (side, pixels));
+                }
+                self.pixmap_raster.as_ref().map(|(_, pixels)| {
+                    let rect = Rect::new(body.x + icon_left, body.y, side, side);
+                    context.draw_image(rect.x, rect.y, rect.width, rect.height, pixels);
+                    icon_left + side as i32 + 8
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let gutter = if let Some(gutter) = pixmap_drawn {
             gutter
         } else if let Some(name) = icon {
@@ -1264,10 +1399,11 @@ impl Draw for MessageBox {
         // painted only when it has ink, so a box that never sets them is byte-identical to the
         // one-row box this control always drew.
         let mut extra_y = message_band.y + body_line_h;
-        for (text, color) in [
-            (self.informative_text.as_str(), ink),
-            (self.detailed_text.as_str(), ink.with_alpha_f32(0.75)),
-        ] {
+        let detail_text =
+            if self.detailed_text_expanded { self.detailed_text.as_str() } else { "" };
+        for (text, color) in
+            [(self.informative_text.as_str(), ink), (detail_text, ink.with_alpha_f32(0.75))]
+        {
             if text.is_empty()
                 || extra_y + body_line_h > message_band.y + message_band.height as i32
             {
@@ -1323,6 +1459,20 @@ impl Draw for MessageBox {
             );
         }
 
+        // The detail toggle is a text button, not a filled pad: it is a disclosure
+        // affordance, not an action, and the muted label keeps that distinction visible.
+        if let Some(toggle) = self.details_toggle_rect() {
+            let toggle_band =
+                Rect::new(toggle.x + 2, toggle.y, toggle.width.saturating_sub(4), toggle.height);
+            context.draw_text_line(
+                toggle_band,
+                &self.details_toggle_label(),
+                body_font,
+                primary,
+                HorizontalAlignment::Left,
+            );
+        }
+
         // Buttons, right-aligned as a row.
         //
         // # Why this is not `rect.x + rect.width - count * (80 + 8)`
@@ -1363,7 +1513,9 @@ impl Draw for MessageBox {
             };
             let fg = if is_default { primary_ink } else { ink };
             context.fill_rect(*button_rect, bg);
+
             context.draw_rect(*button_rect, border);
+
             context.draw_text_line_cow(
                 *button_rect,
                 &button.translated_label(),
@@ -1371,6 +1523,10 @@ impl Draw for MessageBox {
                 fg,
                 HorizontalAlignment::Center,
             );
+
+            if self.focus == Some(index) {
+                context.draw_rounded_rect_stroke(*button_rect, 3, primary, 2);
+            }
         }
     }
 }
@@ -1382,7 +1538,11 @@ impl Draw for MessageBox {
 /// that knows both the source size and the square it painted, so it hands over a buffer that
 /// is already the destination size. Returns `None` for a non-RGBA or empty image, which is
 /// the honest "nothing to paint" answer.
-fn pixmap_pixels(image: &crate::image::Image, width: u32, height: u32) -> Option<Vec<u8>> {
+pub(crate) fn pixmap_pixels(
+    image: &crate::image::Image,
+    width: u32,
+    height: u32,
+) -> Option<Vec<u8>> {
     let source = image.rgba8_data()?;
     let source_width = image.width();
     let source_height = image.height();
@@ -2394,5 +2554,66 @@ mod tests {
         let picture = render_to_svg(&mut dialog);
         assert_ne!(glyph, picture, "the picture must be painted instead of the glyph");
         assert!(dialog.pixmap().is_some());
+        assert!(dialog.pixmap_raster.is_some(), "the first draw fills the resample cache");
+        let cached = dialog.pixmap_raster.as_ref().map(|(side, _)| *side);
+        render_to_svg(&mut dialog);
+        assert_eq!(
+            dialog.pixmap_raster.as_ref().map(|(side, _)| *side),
+            cached,
+            "a static picture must not be resampled every frame"
+        );
+    }
+
+    #[test]
+    fn detailed_text_is_collapsed_until_the_toggle_opens_it() {
+        let mut dialog = MessageBox::new(Rect::new(0, 0, 420, 220));
+        dialog.show();
+        while dialog.tick(1000) {}
+        dialog.set_detailed_text("technical detail");
+        let collapsed = render_to_svg(&mut dialog);
+        let collapsed_runs = collapsed.matches("data-text").count();
+
+        let toggled = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let sink = Arc::clone(&toggled);
+        dialog.details_toggled.connect(move |expanded| {
+            sink.lock().expect("lock").push(*expanded);
+        });
+        let rect = dialog.details_toggle_rect().expect("the toggle has a rectangle");
+        dialog.handle_event(&Event::MousePress {
+            pos: Point::new(rect.x + 2, rect.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(dialog.is_detailed_text_expanded());
+        assert_eq!(*toggled.lock().expect("lock"), vec![true]);
+        let expanded = render_to_svg(&mut dialog);
+        assert!(
+            expanded.matches("data-text").count() > collapsed_runs,
+            "the toggle reveals the detail block as an extra text run"
+        );
+    }
+
+    #[test]
+    fn tab_moves_the_focus_ring_and_enter_activates_the_focused_button() {
+        let mut dialog = MessageBox::new(Rect::new(0, 0, 360, 180));
+        dialog.set_buttons(vec![StandardButton::Ok, StandardButton::Cancel]);
+        dialog.set_default_button(StandardButton::Ok);
+        let seen = Arc::new(Mutex::new(Vec::<StandardButton>::new()));
+        let sink = Arc::clone(&seen);
+        dialog.button_clicked.connect(move |button| {
+            sink.lock().expect("lock").push(*button);
+        });
+        let focused = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&focused);
+        dialog.focus_changed.connect(move |_| {
+            *sink.lock().expect("lock") += 1;
+        });
+        dialog.handle_event(&Event::key_press(key_codes::TAB, 0));
+        assert_eq!(*focused.lock().expect("lock"), 1);
+        dialog.handle_event(&Event::key_press(key_codes::TAB, 0));
+        assert_eq!(*focused.lock().expect("lock"), 2);
+        // The ring is on Cancel now, so Enter activates it rather than the default.
+        dialog.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert_eq!(*seen.lock().expect("lock"), vec![StandardButton::Cancel]);
     }
 }

@@ -16,7 +16,7 @@ use crate::widget::IconSource;
 use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 /// MDI area widget.
 pub struct MdiArea {
@@ -30,6 +30,16 @@ pub struct MdiArea {
     /// including the automatic activation of the first sub-window on add and of
     /// a replacement sub-window after the active one is removed.
     pub subwindow_activated: Signal1<ObjectId>,
+    /// Emitted with `(child_id, new_title)` whenever a sub-window's title is changed through
+    /// [`MdiArea::set_sub_window_title`].
+    ///
+    /// # Why the change is announced by the container
+    ///
+    /// A sub-window is a record (an id, a rectangle and some flags), not a control: it owns no
+    /// signal and cannot repaint the area it sits in. Announcing a title change from the container
+    /// entry is what keeps the signal reachable — `MdiSubWindow::set_title` stays a value-level
+    /// setter, and this is the entry a host should use.
+    pub subwindow_title_changed: Signal1<(ObjectId, String)>,
     /// Child ids in the order they were activated, most recent last.
     ///
     /// Only [`ActivationOrder::HistoryOrder`] reads this, but every activation records it so a
@@ -45,8 +55,11 @@ pub struct MdiArea {
     /// A non-zero offset pans the work area without moving the stored geometries, which is
     /// what lets a host scroll a desktop larger than the visible area.
     scroll_offset: Point,
-    /// Optional shared registry for child widget forwarding.
+    /// Optional shared registry for child forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
+    /// Set by a sub-window title write; the next paint consumes it and schedules the frame that
+    /// makes the new title visible.
+    title_dirty: Rc<Cell<bool>>,
 }
 /// MDI sub-window.
 pub struct MdiSubWindow {
@@ -66,6 +79,14 @@ pub struct MdiSubWindow {
     movable: bool,
     resizable: bool,
     z_order: i32,
+    /// The owning area's title signal, installed when the record is attached.
+    ///
+    /// A sub-window is a record, not a control, so it has no signal of its own. Holding a clone of
+    /// the area's signal lets [`Self::set_title`] announce the same event as the container entry;
+    /// the two write paths then cannot disagree (C-09).
+    title_sink: Option<Signal1<(ObjectId, String)>>,
+    /// Set when a title write changed the text; the owning area turns it into a repaint.
+    title_dirty: Option<Rc<Cell<bool>>>,
 }
 /// How an MDI area arranges its sub-windows.
 ///
@@ -132,6 +153,8 @@ impl MdiSubWindow {
             movable: true,
             resizable: true,
             z_order: 0,
+            title_sink: None,
+            title_dirty: None,
         }
     }
     /// Returns widget.
@@ -150,9 +173,23 @@ impl MdiSubWindow {
     pub fn title(&self) -> &str {
         &self.title
     }
-    /// Sets title.
+    /// Replaces the title.
+    ///
+    /// A real change is announced through the owning area's `subwindow_title_changed` signal and
+    /// marks the area for repaint; a write of the same text is a no-op. The announcement lives here
+    /// as well as on the container setter so a host that reaches a record through
+    /// [`MdiArea::sub_window_mut`] cannot silently bypass the event (C-09).
     pub fn set_title(&mut self, title: String) {
+        if self.title == title {
+            return;
+        }
         self.title = title;
+        if let Some(sink) = &self.title_sink {
+            sink.emit((self.widget, self.title.clone()));
+        }
+        if let Some(dirty) = &self.title_dirty {
+            dirty.set(true);
+        }
     }
     #[cfg(feature = "image")]
     /// Returns icon.
@@ -265,11 +302,13 @@ impl MdiArea {
             background: Background::Plain,
             activation_order: ActivationOrder::StackingOrder,
             subwindow_activated: Signal1::new(),
+            subwindow_title_changed: Signal1::new(),
             activation_history: Vec::new(),
             resize_drag: None,
             maximized_restore: None,
             scroll_offset: Point::new(0, 0),
             registry: None,
+            title_dirty: Rc::new(Cell::new(false)),
         }
     }
     /// Sets the shared widget registry for child forwarding.
@@ -287,6 +326,8 @@ impl MdiArea {
     pub fn add_sub_window(&mut self, widget: ObjectId, geometry: Rect) -> usize {
         let mut subwindow = MdiSubWindow::new(widget, geometry);
         subwindow.z_order = self.subwindows.len() as i32;
+        subwindow.title_sink = Some(self.subwindow_title_changed.clone());
+        subwindow.title_dirty = Some(Rc::clone(&self.title_dirty));
         self.base.add_child_linked(widget);
         self.subwindows.push(subwindow);
         let index = self.subwindows.len().saturating_sub(1);
@@ -342,6 +383,56 @@ impl MdiArea {
     /// Returns number of sub-windows.
     pub fn sub_window_count(&self) -> usize {
         self.subwindows.len()
+    }
+
+    /// Closes the active sub-window, returning whether one was closed.
+    ///
+    /// # What "close" means here
+    ///
+    /// The area owns the *frame*, not the host's document: closing removes the sub-window from
+    /// this collection, unlinks its child (both directions) and hides it, exactly as
+    /// [`Self::remove_sub_window`] does. The activation the removal implies is announced through
+    /// [`Self::subwindow_activated`], so a host that mirrors the selection is told which window is
+    /// now in front.
+    pub fn close_active_sub_window(&mut self) -> bool {
+        let Some(active) = self.active_sub_window() else {
+            return false;
+        };
+        self.remove_sub_window(active);
+        true
+    }
+
+    /// Closes every sub-window, returning how many were closed.
+    ///
+    /// The ids are collected before anything is removed, so the walk is not mutating the list it
+    /// iterates and the activation repairs `remove_sub_window` performs still run once per
+    /// window.
+    pub fn close_all_sub_windows(&mut self) -> usize {
+        let ids: Vec<ObjectId> = self.subwindows.iter().map(|subwindow| subwindow.widget).collect();
+        let count = ids.len();
+        for widget in ids {
+            self.remove_sub_window(widget);
+        }
+        count
+    }
+
+    /// Replaces the title of the sub-window hosting `widget`.
+    ///
+    /// Returns `false` when no sub-window hosts `widget`, so a caller cannot mistake a dropped
+    /// write for a successful one. On a real change the area repaints and emits
+    /// [`Self::subwindow_title_changed`] with the new text — a title is painted in the title bar,
+    /// so a silently assigned field would be invisible until some unrelated repaint happened.
+    pub fn set_sub_window_title(&mut self, widget: ObjectId, title: String) -> bool {
+        let Some(subwindow) = self.subwindows.iter_mut().find(|sw| sw.widget == widget) else {
+            return false;
+        };
+        if subwindow.title == title {
+            return true;
+        }
+        subwindow.set_title(title);
+        self.title_dirty.set(false);
+        self.base.request_redraw();
+        true
     }
     /// Returns active sub-window.
     pub fn active_sub_window(&self) -> Option<ObjectId> {
@@ -905,6 +996,16 @@ impl Widget for MdiArea {
                 &self.subwindow_activated,
                 |v| CapabilityValue::UInt(*v),
             )),
+            "subwindow_title_changed" => Some(EventSignalRef::mapped(
+                "subwindow_title_changed",
+                &self.subwindow_title_changed,
+                |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0),
+                        CapabilityValue::String(v.1.clone()),
+                    ]))
+                },
+            )),
             _ => None,
         }
     }
@@ -1203,6 +1304,11 @@ fn draw_subwindow_icon(
 
 impl Draw for MdiArea {
     fn draw(&mut self, context: &mut RenderContext) {
+        // A title write performed through a sub-window record marks this flag instead of borrowing
+        // the area; consuming it here schedules the frame that shows the new text.
+        if self.title_dirty.replace(false) {
+            self.base.request_redraw();
+        }
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
         // this control, and only then a literal. Every colour below used to be a literal, and the
         // plain background in particular was `rgb(240,240,240)` — byte-identical to the light
@@ -1548,6 +1654,26 @@ mod tests {
     }
 
     // ── 1. Creation defaults ──────────────────────────────────────────────
+
+    #[test]
+    fn a_title_written_through_the_record_is_announced_and_marks_the_area_dirty() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        let index = area.add_sub_window(widget_id_1(), Rect::new(0, 0, 200, 150));
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        area.subwindow_title_changed.connect({
+            let seen = Arc::clone(&seen);
+            move |value: Arc<(ObjectId, String)>| seen.lock().unwrap().push(value.as_ref().clone())
+        });
+
+        area.sub_window_mut(index).unwrap().set_title("Report".to_string());
+        assert_eq!(area.sub_window(index).unwrap().title(), "Report");
+        assert_eq!(*seen.lock().unwrap(), vec![(widget_id_1(), "Report".to_string())]);
+        assert!(area.title_dirty.get(), "the area must schedule a repaint");
+
+        // Writing the same text is a no-op: no second event, no second dirty mark.
+        area.sub_window_mut(index).unwrap().set_title("Report".to_string());
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
 
     #[test]
     fn mdiarea_creation_defaults() {

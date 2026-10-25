@@ -14,8 +14,8 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::dnd::{DragPayload, DropEffect, DropTarget};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
-use crate::widget::capability::coercion::expect_string;
+use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_string_list};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -89,6 +89,39 @@ impl DropZoneState {
     }
 }
 
+/// How the drop zone emphasises an accepted drag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DropZoneHoverStyle {
+    /// Lift the whole well toward the ink (the historical behaviour).
+    #[default]
+    Highlight,
+    /// Keep the fill and strengthen only the outline.
+    Outline,
+    /// A subtle tint, for a zone that must not dominate the surface.
+    Tint,
+}
+
+impl DropZoneHoverStyle {
+    /// The token this style publishes.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Highlight => "highlight",
+            Self::Outline => "outline",
+            Self::Tint => "tint",
+        }
+    }
+
+    /// Parses [`Self::as_str`].
+    pub fn from_token(token: &str) -> Option<Self> {
+        match crate::widget::capability::coercion::normalize_key(token).as_str() {
+            "highlight" => Some(Self::Highlight),
+            "outline" => Some(Self::Outline),
+            "tint" => Some(Self::Tint),
+            _ => None,
+        }
+    }
+}
+
 /// A named accept region for drag-and-drop payloads.
 ///
 /// The zone accepts exactly one MIME type (its `accepted_type`); a payload of any
@@ -98,10 +131,28 @@ pub struct DropZone {
     base: BaseWidget,
     /// The MIME type this zone accepts, e.g. `"text/plain"` or `"card"`.
     accepted_type: String,
+    /// Additional accepted MIME types, beyond [`Self::accepted_type`].
+    accepted_types: Vec<String>,
+    /// Whether multiple dropped payloads accumulate instead of replacing one another.
+    multi_file: bool,
+    /// How an accepted drag is emphasised.
+    hover_style: DropZoneHoverStyle,
+    /// Whether the count of dropped files is painted as a badge.
+    show_count_badge: bool,
+    /// File names collected by the accepted drops.
+    dropped_files: Vec<String>,
     /// Which of the five drag feedback states the zone is currently in.
     ///
     /// See [`DropZoneState`] for why this is not a `hovered` bool.
     state: DropZoneState,
+    /// Emitted with the file-name list when a drag enters the zone.
+    pub zone_entered: Signal1<Vec<String>>,
+    /// Emitted when a drag leaves the zone without dropping.
+    pub zone_exited: Signal1<Vec<String>>,
+    /// Emitted, with the accepted file-name list, when a drop is committed.
+    pub dropped: Signal1<Vec<String>>,
+    /// Emitted when a payload is refused at commit time.
+    pub drop_rejected: GenericSignal,
     /// Emitted, with the accepted payload, when a drop is committed onto the zone.
     pub payload_dropped: Signal1<DragPayload>,
 }
@@ -112,7 +163,16 @@ impl DropZone {
         Self {
             base: BaseWidget::new(WidgetKind::DropZone, geometry, "DropZone"),
             accepted_type: accepted_type.into(),
+            accepted_types: Vec::new(),
+            multi_file: false,
+            hover_style: DropZoneHoverStyle::Highlight,
+            show_count_badge: false,
+            dropped_files: Vec::new(),
             state: DropZoneState::Idle,
+            zone_entered: Signal1::new(),
+            zone_exited: Signal1::new(),
+            dropped: Signal1::new(),
+            drop_rejected: GenericSignal::new(),
             payload_dropped: Signal1::new(),
         }
     }
@@ -189,7 +249,86 @@ impl DropZone {
 
     /// Returns whether `payload` is of a type this zone accepts.
     pub fn accepts(&self, payload: &DragPayload) -> bool {
-        payload.is_type(&self.accepted_type)
+        self.accepts_type(&payload.type_id)
+    }
+
+    /// Whether a MIME type is accepted by this zone.
+    pub fn accepts_type(&self, type_id: &str) -> bool {
+        type_id == self.accepted_type || self.accepted_types.iter().any(|item| item == type_id)
+    }
+
+    /// The additional accepted MIME types.
+    pub fn accepted_types(&self) -> &[String] {
+        &self.accepted_types
+    }
+
+    /// Replaces the additional accepted MIME types.
+    pub fn set_accepted_types(&mut self, types: Vec<String>) {
+        if self.accepted_types == types {
+            return;
+        }
+        self.accepted_types = types;
+        self.set_state(DropZoneState::Idle);
+    }
+
+    /// Whether multiple drops accumulate.
+    pub fn multi_file(&self) -> bool {
+        self.multi_file
+    }
+
+    /// Enables or disables accumulation across drops.
+    pub fn set_multi_file(&mut self, multi: bool) {
+        if self.multi_file == multi {
+            return;
+        }
+        self.multi_file = multi;
+        if !multi {
+            self.dropped_files.truncate(1);
+        }
+        self.base.request_redraw();
+    }
+
+    /// The hover emphasis style.
+    pub fn hover_style(&self) -> DropZoneHoverStyle {
+        self.hover_style
+    }
+
+    /// Sets the hover emphasis style.
+    pub fn set_hover_style(&mut self, style: DropZoneHoverStyle) {
+        if self.hover_style == style {
+            return;
+        }
+        self.hover_style = style;
+        self.base.request_redraw();
+    }
+
+    /// Whether the dropped-count badge is painted.
+    pub fn show_count_badge(&self) -> bool {
+        self.show_count_badge
+    }
+
+    /// Shows or hides the dropped-count badge.
+    pub fn set_show_count_badge(&mut self, show: bool) {
+        if self.show_count_badge == show {
+            return;
+        }
+        self.show_count_badge = show;
+        self.base.request_redraw();
+    }
+
+    /// The file names collected by accepted drops.
+    pub fn dropped_files(&self) -> &[String] {
+        &self.dropped_files
+    }
+
+    /// The file names a payload contributes.
+    fn payload_files(payload: &DragPayload) -> Vec<String> {
+        let name = if payload.label.is_empty() { &payload.item_id } else { &payload.label };
+        if name.is_empty() {
+            Vec::new()
+        } else {
+            vec![name.clone()]
+        }
     }
 }
 
@@ -199,10 +338,16 @@ impl DropTarget for DropZone {
     }
 
     fn on_drop(&mut self, payload: &DragPayload, _pos: Point) -> DropEffect {
-        // `can_accept` already gated the type; a zone cannot refuse at commit time
-        // because acceptance is purely a type match. The state becomes `Dropped` so the zone can show
-        // the commit — the old code cleared the highlight, so a successful drop and a cancelled drag
-        // left the zone looking identical.
+        if !self.can_accept(payload) {
+            self.drop_rejected.emit();
+            return DropEffect::None;
+        }
+        if self.multi_file {
+            self.dropped_files.extend(Self::payload_files(payload));
+        } else {
+            self.dropped_files = Self::payload_files(payload);
+        }
+        self.dropped.emit(self.dropped_files.clone());
         self.payload_dropped.emit(payload.clone());
         self.set_state(DropZoneState::Dropped);
         DropEffect::Copy
@@ -218,15 +363,19 @@ impl DropTarget for DropZone {
     /// lets the coordinator call it through `dyn DropTarget` without downcasting to the
     /// concrete control.
     fn report_hover(&mut self, payload: &DragPayload) {
-        self.set_state(if self.accepts(payload) {
-            DropZoneState::Accepted
-        } else {
-            DropZoneState::Rejected
-        });
+        let next =
+            if self.accepts(payload) { DropZoneState::Accepted } else { DropZoneState::Rejected };
+        if self.state == DropZoneState::Idle {
+            self.zone_entered.emit(Self::payload_files(payload));
+        }
+        self.set_state(next);
     }
 
     /// Clears the highlight when the drag leaves without dropping.
     fn report_leave(&mut self) {
+        if self.state != DropZoneState::Idle {
+            self.zone_exited.emit(Vec::new());
+        }
         self.clear_hover();
     }
 }
@@ -271,12 +420,23 @@ impl Widget for DropZone {
     /// optional property uses — so "no selection" is distinguishable from "selection 0".
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
+        let files = |values: &Vec<String>| {
+            CapabilityValue::Tuple(
+                values.iter().map(|value| CapabilityValue::String(value.clone())).collect(),
+            )
+        };
         match name {
             "payload_dropped" => {
                 Some(EventSignalRef::mapped("payload_dropped", &self.payload_dropped, |v| {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
             }
+            "zone_entered" => {
+                Some(EventSignalRef::mapped("zone_entered", &self.zone_entered, files))
+            }
+            "zone_exited" => Some(EventSignalRef::mapped("zone_exited", &self.zone_exited, files)),
+            "dropped" => Some(EventSignalRef::mapped("dropped", &self.dropped, files)),
+            "drop_rejected" => Some(EventSignalRef::unit("drop_rejected", &self.drop_rejected)),
             _ => None,
         }
     }
@@ -292,6 +452,16 @@ impl WidgetProperties for DropZone {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "accepted_type" => Ok(CapabilityValue::String(self.accepted_type().to_string())),
+            "accepted_types" => Ok(CapabilityValue::Tuple(
+                self.accepted_types
+                    .iter()
+                    .map(|item| CapabilityValue::String(item.clone()))
+                    .collect(),
+            )),
+            "multi_file" => Ok(CapabilityValue::Bool(self.multi_file)),
+            "hover_style" => Ok(CapabilityValue::String(self.hover_style.as_str().to_string())),
+            "show_count_badge" => Ok(CapabilityValue::Bool(self.show_count_badge)),
+            "dropped_count" => Ok(CapabilityValue::UInt(self.dropped_files.len() as u64)),
             "state" => Ok(CapabilityValue::String(self.state().as_str().to_string())),
             // Kept as a derived read so a consumer written against the old contract keeps working;
             // it is true only for `accepted`, which is what the old bool meant to mean.
@@ -306,6 +476,26 @@ impl WidgetProperties for DropZone {
                 self.set_accepted_type(expect_string(value)?);
                 Ok(())
             }
+            "accepted_types" => {
+                self.set_accepted_types(expect_string_list(value)?);
+                Ok(())
+            }
+            "multi_file" => {
+                self.set_multi_file(expect_bool(value)?);
+                Ok(())
+            }
+            "hover_style" => {
+                let token = expect_string(value)?;
+                let style = DropZoneHoverStyle::from_token(&token)
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_hover_style(style);
+                Ok(())
+            }
+            "show_count_badge" => {
+                self.set_show_count_badge(expect_bool(value)?);
+                Ok(())
+            }
+            "dropped_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             "state" => {
                 let token = expect_string(value)?;
                 let state =
@@ -321,7 +511,17 @@ impl WidgetProperties for DropZone {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["accepted_type", "state", "hovered", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "accepted_type",
+            "accepted_types",
+            "multi_file",
+            "hover_style",
+            "show_count_badge",
+            "dropped_count",
+            "state",
+            "hovered",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -403,7 +603,11 @@ impl Draw for DropZone {
         let fill = match self.state {
             DropZoneState::Idle => surface,
             DropZoneState::Hovering => surface.blend(&ink, 0.06),
-            DropZoneState::Accepted => surface.blend(&ink, 0.12),
+            DropZoneState::Accepted => match self.hover_style {
+                DropZoneHoverStyle::Highlight => surface.blend(&ink, 0.12),
+                DropZoneHoverStyle::Outline => surface,
+                DropZoneHoverStyle::Tint => surface.blend(&ink, 0.04),
+            },
             DropZoneState::Dropped => surface.blend(&ink, 0.20),
             DropZoneState::Rejected => surface.blend(&Color::BLACK, 0.10),
         };
@@ -421,7 +625,10 @@ impl Draw for DropZone {
         // draws the outline *dashed thinner* so it reads as "not here".
         let (border, stroke) = match self.state {
             DropZoneState::Idle | DropZoneState::Hovering => (outline, 1),
-            DropZoneState::Accepted => (ink, 2),
+            DropZoneState::Accepted => match self.hover_style {
+                DropZoneHoverStyle::Outline => (ink, 3),
+                DropZoneHoverStyle::Highlight | DropZoneHoverStyle::Tint => (ink, 2),
+            },
             DropZoneState::Dropped => (ink, 2),
             DropZoneState::Rejected => (outline.blend(&ink, 0.25), 1),
         };
@@ -465,13 +672,47 @@ impl Draw for DropZone {
         // accepted. The band is inset past the dashes so the text never sits on the outline.
         let font = crate::widget::metrics::effective_font(style);
         if rect.width > 40 && rect.height > 24 {
-            let hint = format!("Drop {} here", self.accepted_type);
+            let mut hint = String::new();
+            let _ = core::fmt::Write::write_fmt(
+                &mut hint,
+                format_args!("Drop {} here", self.accepted_type),
+            );
             let inner = Rect::new(rect.x + 10, rect.y, rect.width.saturating_sub(20), rect.height);
             context.draw_text_fitted_cow(
                 inner,
                 &hint,
                 font,
                 ink.blend(&fill, 0.30),
+                HorizontalAlignment::Center,
+            );
+        }
+
+        // The dropped-count badge: a small disc at the top-right whose number is the number of
+        // file names the zone is holding.
+        if self.show_count_badge && !self.dropped_files.is_empty() {
+            let radius = 9u32;
+            let center = Point::new(
+                rect.x + rect.width as i32 - radius as i32 - 2,
+                rect.y + radius as i32 + 2,
+            );
+            context.fill_circle(center, radius, ink);
+            let mut count = String::new();
+            let _ = core::fmt::Write::write_fmt(
+                &mut count,
+                format_args!("{}", self.dropped_files.len()),
+            );
+            let badge_font = crate::core::Font::bold("Arial", 9.0);
+            let band = Rect::new(
+                center.x - radius as i32,
+                center.y - radius as i32,
+                radius * 2,
+                radius * 2,
+            );
+            context.draw_text_fitted_cow(
+                band,
+                &count,
+                &badge_font,
+                ink.contrast_color(),
                 HorizontalAlignment::Center,
             );
         }
@@ -655,5 +896,56 @@ mod tests {
             "a refused payload never counted as a hover"
         );
         assert!(z.set("hovered", CapabilityValue::Bool(true)).is_err());
+    }
+
+    #[test]
+    fn zone_lifecycle_signals_and_accepted_types_are_forwarded() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut z = zone();
+        z.set_accepted_types(vec!["image/png".to_string()]);
+        assert!(z.accepts_type("image/png"));
+        z.set_multi_file(true);
+        z.set_show_count_badge(true);
+        z.set_hover_style(DropZoneHoverStyle::Outline);
+
+        let entered = Arc::new(AtomicUsize::new(0));
+        let exited = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let rejected = Arc::new(AtomicUsize::new(0));
+        let (e, x, d, r) = (
+            Arc::clone(&entered),
+            Arc::clone(&exited),
+            Arc::clone(&dropped),
+            Arc::clone(&rejected),
+        );
+        z.zone_entered.connect(move |_| {
+            e.fetch_add(1, Ordering::SeqCst);
+        });
+        z.zone_exited.connect(move |_| {
+            x.fetch_add(1, Ordering::SeqCst);
+        });
+        z.dropped.connect(move |_| {
+            d.fetch_add(1, Ordering::SeqCst);
+        });
+        z.drop_rejected.connect(move || {
+            r.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let good = DragPayload::new("image/png", "a.png");
+        z.report_hover(&good);
+        assert_eq!(entered.load(Ordering::SeqCst), 1);
+        z.on_drop(&good, Point::new(0, 0));
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(z.dropped_files(), &["a.png".to_string()]);
+        z.report_leave();
+        assert_eq!(exited.load(Ordering::SeqCst), 1);
+
+        let bad = DragPayload::new("application/x-nope", "b.txt");
+        z.on_drop(&bad, Point::new(0, 0));
+        assert_eq!(rejected.load(Ordering::SeqCst), 1);
+        assert!(z.event_signal_dyn("zone_entered").is_some());
+        assert!(z.event_signal_dyn("dropped").is_some());
     }
 }

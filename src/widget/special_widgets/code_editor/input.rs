@@ -37,6 +37,16 @@ impl CodeEditor {
         }
         if self.find.visible {
             let printable: String = text.chars().filter(|ch| !ch.is_control()).collect();
+            if self.goto_mode {
+                // The goto bar accepts line numbers only; a pasted letter must not
+                // silently become part of a number that never parses.
+                let digits: String = printable.chars().filter(|ch| ch.is_ascii_digit()).collect();
+                if !digits.is_empty() {
+                    self.find.query.push_str(&digits);
+                    self.base.request_redraw();
+                }
+                return;
+            }
             if !printable.is_empty() {
                 self.append_find_query(&printable);
             }
@@ -244,6 +254,8 @@ impl CodeEditor {
             }
             70 if ctrl => self.open_find(false),
             72 if ctrl => self.open_find(true),
+            // Go to line, reusing the find bar's input row.
+            71 if ctrl => self.open_goto_bar(),
             47 if ctrl => self.toggle_line_comment(),
             32 if ctrl => {
                 self.trigger_completion();
@@ -314,7 +326,11 @@ impl CodeEditor {
     fn handle_find_key(&mut self, key: u32, shift: bool) -> bool {
         match key {
             13 => {
-                self.find_next(shift);
+                if self.goto_mode {
+                    self.commit_goto();
+                } else {
+                    self.find_next(shift);
+                }
                 true
             }
             8 => {
@@ -326,8 +342,10 @@ impl CodeEditor {
                 true
             }
             9 => {
-                self.find.focus_replace = !self.find.focus_replace;
-                self.base.request_redraw();
+                if !self.goto_mode {
+                    self.find.focus_replace = !self.find.focus_replace;
+                    self.base.request_redraw();
+                }
                 true
             }
             _ => false,
@@ -406,9 +424,20 @@ impl CodeEditor {
         // gutter is the one place where a click can only mean "this line", and
         // dragging from it is how a range of whole lines is chosen.
         if let Some(line) = self.hit_gutter_line(pos) {
+            // Ctrl (or Command) on the gutter is the debugger gesture: it toggles a
+            // breakpoint instead of selecting the line.
+            if modifiers & (MODIFIER_CONTROL | MODIFIER_META) != 0 {
+                self.toggle_breakpoint(line);
+                return;
+            }
             self.mouse_selecting = false;
             self.gutter_dragging = true;
             self.gutter_anchor = Some(line);
+            // A marker-bearing line reports activation, so a host can open the
+            // diagnostic or breakpoint it just clicked.
+            if self.is_breakpoint(line) || self.markers.iter().any(|marker| marker.line == line) {
+                self.marker_activated.emit(line);
+            }
             self.select_line(line);
             return;
         }

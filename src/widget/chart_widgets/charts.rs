@@ -23,6 +23,12 @@ pub struct LineChart {
     x_tick_count: usize,
     y_tick_count: usize,
     show_grid: bool,
+    /// Data-space zoom window `(x, y, width, height)`, or `None` for the auto range.
+    zoom: Option<(f64, f64, f64, f64)>,
+    /// Pan applied to the zoom window, in data units.
+    scroll: (f64, f64),
+    /// Secondary axes attached to the plot edges.
+    axes: Vec<(Axis, AxisEdge)>,
 }
 /// Common cartesian layout for line/bar style charts.
 ///
@@ -108,6 +114,94 @@ fn axis_chrome_palette() -> (Color, Color, Color) {
         .map(|colors| (colors.background, colors.foreground))
         .unwrap_or((Color { r: 255, g: 255, b: 255, a: 255 }, Color { r: 0, g: 0, b: 0, a: 255 }));
     (surface.blend(&ink, 0.45), surface.blend(&ink, 0.70), surface.blend(&ink, 0.16))
+}
+
+/// Applies a data-space zoom window and pan to an auto-computed range.
+///
+/// The returned tuple is `(min_x, max_x, min_y, max_y)`. A window with a non-positive
+/// extent is ignored rather than producing a collapsed plot.
+fn apply_view(
+    auto: (f64, f64, f64, f64),
+    zoom: Option<(f64, f64, f64, f64)>,
+    scroll: (f64, f64),
+) -> (f64, f64, f64, f64) {
+    let Some((x, y, width, height)) = zoom else {
+        return auto;
+    };
+    if width <= 0.0 || height <= 0.0 || !x.is_finite() || !y.is_finite() {
+        return auto;
+    }
+    (x + scroll.0, x + width + scroll.0, y + scroll.1, y + height + scroll.1)
+}
+
+/// Draws every secondary axis attached to a plot edge.
+///
+/// Each axis carries either its own range or follows the chart's resolved range. Ticks are
+/// generated with the same five-step rule the primary axes use, so a secondary axis reads at
+/// the same density.
+fn draw_attached_axes(
+    context: &mut dyn ChartContext,
+    layout: &CartesianLayout,
+    axes: &[(Axis, AxisEdge)],
+    x_range: (f64, f64),
+    y_range: (f64, f64),
+) {
+    for (axis, edge) in axes {
+        let vertical = matches!(edge, AxisEdge::Left | AxisEdge::Right);
+        let (low, high) = if vertical {
+            (axis.minimum.unwrap_or(y_range.0), axis.maximum.unwrap_or(y_range.1))
+        } else {
+            (axis.minimum.unwrap_or(x_range.0), axis.maximum.unwrap_or(x_range.1))
+        };
+        let span = high - low;
+        if !span.is_finite() || span.abs() <= f64::EPSILON {
+            continue;
+        }
+        let color = axis_chrome_color(0.55);
+        for step in 0..=4 {
+            let value = low + span * f64::from(step) / 4.0;
+            let mut label = String::new();
+            let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{value:.1}"));
+            match edge {
+                AxisEdge::Left => {
+                    let y = layout.plot_y + layout.plot_h * (1.0 - step as f32 / 4.0);
+                    context.draw_text(
+                        &label,
+                        Point::from_f32(layout.plot_x - 52.0, y + 4.0),
+                        9.0,
+                        color,
+                    );
+                }
+                AxisEdge::Right => {
+                    let y = layout.plot_y + layout.plot_h * (1.0 - step as f32 / 4.0);
+                    context.draw_text(
+                        &label,
+                        Point::from_f32(layout.plot_x + layout.plot_w + 6.0, y + 4.0),
+                        9.0,
+                        color,
+                    );
+                }
+                AxisEdge::Top | AxisEdge::Bottom => {
+                    let x = layout.plot_x + layout.plot_w * (step as f32 / 4.0);
+                    let y = if matches!(edge, AxisEdge::Top) {
+                        layout.plot_y - 14.0
+                    } else {
+                        layout.plot_y + layout.plot_h + 18.0
+                    };
+                    context.draw_text(&label, Point::from_f32(x - 10.0, y), 9.0, color);
+                }
+            }
+        }
+        if !axis.label.is_empty() {
+            let (x, y) = match edge {
+                AxisEdge::Left => (layout.plot_x - 54.0, layout.plot_y - 14.0),
+                AxisEdge::Right => (layout.plot_x + layout.plot_w + 6.0, layout.plot_y - 14.0),
+                AxisEdge::Top => (layout.plot_x, layout.plot_y - 30.0),
+                AxisEdge::Bottom => (layout.plot_x, layout.plot_y + layout.plot_h + 34.0),
+            };
+            context.draw_text(&axis.label, Point::from_f32(x, y), 10.0, axis_chrome_color(0.45));
+        }
+    }
 }
 
 /// A single chrome colour stepped along the surface-to-ink axis, for callers that need
@@ -518,6 +612,9 @@ impl LineChart {
             x_tick_count: 5,
             y_tick_count: 5,
             show_grid: false,
+            zoom: None,
+            scroll: (0.0, 0.0),
+            axes: Vec::new(),
         }
     }
     /// Configure x-axis tick density for line chart rendering.
@@ -553,6 +650,33 @@ impl Chart for LineChart {
     fn set_y_axis_label(&mut self, label: String) {
         self.y_axis_label = label;
     }
+    fn zoom_in(&mut self, rect: Rect) -> bool {
+        if rect.width == 0 || rect.height == 0 {
+            return false;
+        }
+        self.zoom = Some((
+            f64::from(rect.x),
+            f64::from(rect.y),
+            f64::from(rect.width),
+            f64::from(rect.height),
+        ));
+        self.scroll = (0.0, 0.0);
+        true
+    }
+    fn zoom_reset(&mut self) {
+        self.zoom = None;
+        self.scroll = (0.0, 0.0);
+    }
+    fn scroll(&mut self, dx: f64, dy: f64) {
+        if dx.is_finite() && dy.is_finite() {
+            self.scroll.0 += dx;
+            self.scroll.1 += dy;
+        }
+    }
+    fn attach_axis(&mut self, axis: Axis, edge: AxisEdge) {
+        self.axes.retain(|(_, existing)| *existing != edge);
+        self.axes.push((axis, edge));
+    }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         context.draw_rect(rect, axis_chrome_color(0.0));
         context.draw_text(
@@ -584,8 +708,10 @@ impl Chart for LineChart {
         if min_x == f64::MAX || min_y == f64::MAX {
             return;
         }
-        let span_x = (max_x - min_x).max(1.0);
-        let span_y = (max_y - min_y).max(1.0);
+        let (min_x, max_x, min_y, max_y) =
+            apply_view((min_x, max_x, min_y, max_y), self.zoom, self.scroll);
+        let span_x = (max_x - min_x).max(f64::EPSILON);
+        let span_y = (max_y - min_y).max(f64::EPSILON);
         draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
         draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
         if !self.x_axis_label.is_empty() {
@@ -634,6 +760,7 @@ impl Chart for LineChart {
             self.series.iter().filter(|series| series.visible),
             visible_count,
         );
+        draw_attached_axes(context, &layout, &self.axes, (min_x, max_x), (min_y, max_y));
     }
 }
 /// Bar chart
@@ -645,6 +772,12 @@ pub struct BarChart {
     x_tick_count: usize,
     y_tick_count: usize,
     show_grid: bool,
+    /// Data-space zoom window `(x, y, width, height)`, or `None` for the auto range.
+    zoom: Option<(f64, f64, f64, f64)>,
+    /// Pan applied to the zoom window, in data units.
+    scroll: (f64, f64),
+    /// Secondary axes attached to the plot edges.
+    axes: Vec<(Axis, AxisEdge)>,
 }
 impl BarChart {
     /// Create a new bar chart
@@ -657,6 +790,9 @@ impl BarChart {
             x_tick_count: 5,
             y_tick_count: 5,
             show_grid: false,
+            zoom: None,
+            scroll: (0.0, 0.0),
+            axes: Vec::new(),
         }
     }
     /// Configure x-axis tick density for bar chart rendering.
@@ -691,6 +827,33 @@ impl Chart for BarChart {
     }
     fn set_y_axis_label(&mut self, label: String) {
         self.y_axis_label = label;
+    }
+    fn zoom_in(&mut self, rect: Rect) -> bool {
+        if rect.width == 0 || rect.height == 0 {
+            return false;
+        }
+        self.zoom = Some((
+            f64::from(rect.x),
+            f64::from(rect.y),
+            f64::from(rect.width),
+            f64::from(rect.height),
+        ));
+        self.scroll = (0.0, 0.0);
+        true
+    }
+    fn zoom_reset(&mut self) {
+        self.zoom = None;
+        self.scroll = (0.0, 0.0);
+    }
+    fn scroll(&mut self, dx: f64, dy: f64) {
+        if dx.is_finite() && dy.is_finite() {
+            self.scroll.0 += dx;
+            self.scroll.1 += dy;
+        }
+    }
+    fn attach_axis(&mut self, axis: Axis, edge: AxisEdge) {
+        self.axes.retain(|(_, existing)| *existing != edge);
+        self.axes.push((axis, edge));
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         context.draw_rect(rect, axis_chrome_color(0.0));
@@ -735,9 +898,11 @@ impl Chart for BarChart {
         if min_x == f64::MAX {
             return;
         }
-        let span_x = (max_x - min_x).max(1.0);
+        let (min_x, max_x, min_y, max_y) =
+            apply_view((min_x, max_x, 0.0, max_y), self.zoom, self.scroll);
+        let span_x = (max_x - min_x).max(f64::EPSILON);
         draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
-        draw_y_ticks(context, &layout, 0.0, max_y, self.y_tick_count, self.show_grid);
+        draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
         if !self.x_axis_label.is_empty() {
             context.draw_text(
                 &self.x_axis_label,
@@ -765,7 +930,8 @@ impl Chart for BarChart {
                 let base_x = layout.plot_x
                     + (((point.x - min_x) / span_x) as f32) * (layout.plot_w - bar_width);
                 let x = base_x + series_index as f32 * bar_width;
-                let bar_h = ((point.y / max_y) * layout.plot_h as f64) as u32;
+                let bar_h = (((point.y - min_y) / (max_y - min_y).max(f64::EPSILON))
+                    * layout.plot_h as f64) as u32;
                 let bar = Rect {
                     x: x as i32,
                     y: (layout.plot_y + layout.plot_h) as i32 - bar_h as i32,
@@ -781,6 +947,7 @@ impl Chart for BarChart {
             self.series.iter().filter(|series| series.visible),
             visible_count,
         );
+        draw_attached_axes(context, &layout, &self.axes, (min_x, max_x), (min_y, max_y));
     }
 }
 /// Pie chart
@@ -903,6 +1070,12 @@ pub struct ScatterChart {
     y_tick_count: usize,
     show_grid: bool,
     point_radius: f32,
+    /// Data-space zoom window `(x, y, width, height)`, or `None` for the auto range.
+    zoom: Option<(f64, f64, f64, f64)>,
+    /// Pan applied to the zoom window, in data units.
+    scroll: (f64, f64),
+    /// Secondary axes attached to the plot edges.
+    axes: Vec<(Axis, AxisEdge)>,
 }
 impl ScatterChart {
     /// Create a new scatter plot chart
@@ -916,6 +1089,9 @@ impl ScatterChart {
             y_tick_count: 5,
             show_grid: false,
             point_radius: 4.0,
+            zoom: None,
+            scroll: (0.0, 0.0),
+            axes: Vec::new(),
         }
     }
     /// Configure x-axis tick density
@@ -955,6 +1131,33 @@ impl Chart for ScatterChart {
     fn set_y_axis_label(&mut self, label: String) {
         self.y_axis_label = label;
     }
+    fn zoom_in(&mut self, rect: Rect) -> bool {
+        if rect.width == 0 || rect.height == 0 {
+            return false;
+        }
+        self.zoom = Some((
+            f64::from(rect.x),
+            f64::from(rect.y),
+            f64::from(rect.width),
+            f64::from(rect.height),
+        ));
+        self.scroll = (0.0, 0.0);
+        true
+    }
+    fn zoom_reset(&mut self) {
+        self.zoom = None;
+        self.scroll = (0.0, 0.0);
+    }
+    fn scroll(&mut self, dx: f64, dy: f64) {
+        if dx.is_finite() && dy.is_finite() {
+            self.scroll.0 += dx;
+            self.scroll.1 += dy;
+        }
+    }
+    fn attach_axis(&mut self, axis: Axis, edge: AxisEdge) {
+        self.axes.retain(|(_, existing)| *existing != edge);
+        self.axes.push((axis, edge));
+    }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         context.draw_rect(rect, axis_chrome_color(0.0));
         context.draw_text(
@@ -986,8 +1189,10 @@ impl Chart for ScatterChart {
         if min_x == f64::MAX || min_y == f64::MAX {
             return;
         }
-        let span_x = (max_x - min_x).max(1.0);
-        let span_y = (max_y - min_y).max(1.0);
+        let (min_x, max_x, min_y, max_y) =
+            apply_view((min_x, max_x, min_y, max_y), self.zoom, self.scroll);
+        let span_x = (max_x - min_x).max(f64::EPSILON);
+        let span_y = (max_y - min_y).max(f64::EPSILON);
         draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
         draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
         if !self.x_axis_label.is_empty() {
@@ -1027,6 +1232,7 @@ impl Chart for ScatterChart {
             self.series.iter().filter(|series| series.visible),
             visible_count,
         );
+        draw_attached_axes(context, &layout, &self.axes, (min_x, max_x), (min_y, max_y));
     }
 }
 /// Area chart
@@ -1039,6 +1245,12 @@ pub struct AreaChart {
     y_tick_count: usize,
     show_grid: bool,
     stacked: bool,
+    /// Data-space zoom window `(x, y, width, height)`, or `None` for the auto range.
+    zoom: Option<(f64, f64, f64, f64)>,
+    /// Pan applied to the zoom window, in data units.
+    scroll: (f64, f64),
+    /// Secondary axes attached to the plot edges.
+    axes: Vec<(Axis, AxisEdge)>,
 }
 impl AreaChart {
     /// Create a new area chart
@@ -1052,6 +1264,9 @@ impl AreaChart {
             y_tick_count: 5,
             show_grid: false,
             stacked: false,
+            zoom: None,
+            scroll: (0.0, 0.0),
+            axes: Vec::new(),
         }
     }
     /// Configure x-axis tick density
@@ -1090,6 +1305,33 @@ impl Chart for AreaChart {
     }
     fn set_y_axis_label(&mut self, label: String) {
         self.y_axis_label = label;
+    }
+    fn zoom_in(&mut self, rect: Rect) -> bool {
+        if rect.width == 0 || rect.height == 0 {
+            return false;
+        }
+        self.zoom = Some((
+            f64::from(rect.x),
+            f64::from(rect.y),
+            f64::from(rect.width),
+            f64::from(rect.height),
+        ));
+        self.scroll = (0.0, 0.0);
+        true
+    }
+    fn zoom_reset(&mut self) {
+        self.zoom = None;
+        self.scroll = (0.0, 0.0);
+    }
+    fn scroll(&mut self, dx: f64, dy: f64) {
+        if dx.is_finite() && dy.is_finite() {
+            self.scroll.0 += dx;
+            self.scroll.1 += dy;
+        }
+    }
+    fn attach_axis(&mut self, axis: Axis, edge: AxisEdge) {
+        self.axes.retain(|(_, existing)| *existing != edge);
+        self.axes.push((axis, edge));
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         context.draw_rect(rect, axis_chrome_color(0.0));
@@ -1155,8 +1397,10 @@ impl Chart for AreaChart {
         if min_x == f64::MAX || min_y == f64::MAX {
             return;
         }
-        let span_x = (max_x - min_x).max(1.0);
-        let span_y = (max_y - min_y).max(1.0);
+        let (min_x, max_x, min_y, max_y) =
+            apply_view((min_x, max_x, min_y, max_y), self.zoom, self.scroll);
+        let span_x = (max_x - min_x).max(f64::EPSILON);
+        let span_y = (max_y - min_y).max(f64::EPSILON);
         draw_x_ticks(context, &layout, min_x, max_x, self.x_tick_count, self.show_grid);
         draw_y_ticks(context, &layout, min_y, max_y, self.y_tick_count, self.show_grid);
         if !self.x_axis_label.is_empty() {
@@ -1231,5 +1475,6 @@ impl Chart for AreaChart {
             self.series.iter().filter(|series| series.visible),
             visible_count,
         );
+        draw_attached_axes(context, &layout, &self.axes, (min_x, max_x), (min_y, max_y));
     }
 }

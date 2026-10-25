@@ -54,6 +54,8 @@ pub const ATLAS_GC_FRAMES: u64 = 2;
 /// * `weight` is part of the key because a variable face is one face with a `wght` axis: the same
 ///   character at 400 and at 700 is different ink. A static face ignores it, so the key still
 ///   identifies exactly what was rasterised for every face this crate ships.
+/// * `italic` is part of the key because the rasteriser has no italic axis: the atlas applies a
+///   synthetic oblique, which produces different bytes from the upright glyph (G-18).
 ///
 /// `Ord` is derived as well as `Hash`/`Eq` because this crate's [`HashMap`](crate::compat::HashMap)
 /// alias becomes an ordered map on allocation-frugal builds.
@@ -67,12 +69,20 @@ pub struct GlyphKey {
     pub size_px: u8,
     /// The requested weight, in the conventional `100..=900` scale.
     pub weight: u16,
+    /// Whether the glyph is drawn with a synthetic oblique slant.
+    pub italic: bool,
 }
 
 impl GlyphKey {
     /// A key for `ch` at `size_px` pixels and `weight`, drawn from `face`.
     pub const fn new(face: &'static str, ch: char, size_px: u8, weight: u16) -> Self {
-        Self { face, ch, size_px, weight }
+        Self { face, ch, size_px, weight, italic: false }
+    }
+
+    /// The same key, drawn upright or with the synthetic oblique slant.
+    pub const fn with_italic(mut self, italic: bool) -> Self {
+        self.italic = italic;
+        self
     }
 
     /// The one device cell this key rasterises into.
@@ -238,6 +248,7 @@ fn rasterise(key: GlyphKey, epoch: u64) -> AtlasSlot {
     // inventing ink.
     if let Some(face) = face_for_family(key.face) {
         if let Some(bitmap) = rasterize_face_at_weight(face, key.ch, cell, key.weight) {
+            let bitmap = oblique_if_requested(bitmap, cell, key.italic);
             return AtlasSlot {
                 width: cell.width,
                 height: cell.height,
@@ -261,12 +272,36 @@ fn rasterise(key: GlyphKey, epoch: u64) -> AtlasSlot {
     AtlasSlot {
         width: cell.width,
         height: cell.height,
-        bitmap: Rc::from(out),
+        bitmap: Rc::from(oblique_if_requested(out, cell, key.italic)),
         source,
         ink,
         hits: 0,
         last_epoch: epoch,
     }
+}
+
+/// Applies the same synthetic oblique the paint path uses: each row slides horizontally around
+/// the cell's vertical centre, so the slant stays inside the cell (G-18).
+fn oblique_if_requested(bitmap: Vec<u8>, cell: Cell, italic: bool) -> Vec<u8> {
+    if !italic || cell.is_empty() || bitmap.len() < cell.area() {
+        return bitmap;
+    }
+    let width = cell.width as i32;
+    let height = cell.height as i32;
+    let mut slanted = crate::compat::vec![0u8; bitmap.len()];
+    for py in 0..height {
+        let shift = (((height as f32 * 0.5) - py as f32) * 0.2).round() as i32;
+        for px in 0..width {
+            let source_px = px - shift;
+            if source_px < 0 || source_px >= width {
+                continue;
+            }
+            let source = (py * width + source_px) as usize;
+            let destination = (py * width + px) as usize;
+            slanted[destination] = bitmap[source];
+        }
+    }
+    slanted
 }
 
 #[cfg(test)]
@@ -281,6 +316,27 @@ mod tests {
     /// outlines the stack does. A source that names a bitmap face does not resolve by name, so the
     /// atlas takes its documented fallback through the active stack — which is the same path and
     /// therefore the same bytes.
+    /// The italic key is a distinct cache entry and the oblique changes the bytes (G-18).
+    #[test]
+    fn italic_is_part_of_the_key_and_slants_the_bitmap() {
+        let upright = GlyphKey::new("face", 'A', 8, 400);
+        let italic = upright.with_italic(true);
+        assert_ne!(upright, italic, "italic must not alias the upright cache entry");
+
+        let cell = Cell::new(8, 8);
+        let mut source = vec![0u8; cell.area()];
+        // A single top-row pixel: the oblique moves top rows right, so its column changes.
+        source[1] = 255;
+        let slanted = oblique_if_requested(source.clone(), cell, true);
+        assert_eq!(slanted[1], 0, "the top row moved horizontally");
+        assert!(slanted.iter().any(|&byte| byte == 255), "the ink is still present");
+        assert_eq!(
+            oblique_if_requested(source.clone(), cell, false),
+            source,
+            "an upright request must not alter the bytes"
+        );
+    }
+
     fn key_for(ch: char, size_px: u8) -> GlyphKey {
         let cell = Cell::new(u32::from(size_px), u32::from(size_px));
         let mut scratch = vec![0u8; cell.area()];

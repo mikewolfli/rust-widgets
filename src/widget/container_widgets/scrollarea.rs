@@ -115,6 +115,13 @@ pub struct ScrollArea {
     vertical_scroll_bar_policy: ScrollBarPolicy,
     viewport: Rect,
     widget: Option<ObjectId>,
+    /// An optional child mounted in the corner where the two bars meet.
+    corner_widget: Option<ObjectId>,
+    /// Every mounted descendant that scrolls with the content, flattened once per mount so a
+    /// scroll step is a geometry write per node rather than a tree walk with an allocation at
+    /// every level.
+    #[cfg_attr(alloc_frugal, allow(dead_code))]
+    content_descendants: Vec<ObjectId>,
     /// The total size of the content (for AsNeeded scroll bar calculation).
     content_size: Size,
     /// Optional shared registry for child widget forwarding.
@@ -225,29 +232,6 @@ fn scroll_bar_policy_to_str(policy: ScrollBarPolicy) -> &'static str {
         ScrollBarPolicy::AsNeeded => "as_needed",
     }
 }
-/// Translates a mounted subtree by `(-dx, -dy)`, depth-bounded against a corrupted parent chain.
-///
-/// Geometry is **absolute** in this crate (see `widget::runtime::frame_origin`), so moving a
-/// container's rectangle does not move the controls inside it. A scroll translation therefore has
-/// to visit the whole subtree; translating only the root would leave the container's own content
-/// at its old screen position.
-#[cfg(not(alloc_frugal))]
-fn shift_subtree(id: ObjectId, dx: i32, dy: i32, depth: u32) {
-    // A widget tree is a tree; 64 is far past any real depth and still a bound rather than a
-    // recursion that trusts the data (the same discipline `top_level_window_of` uses).
-    if depth > 64 {
-        return;
-    }
-    if let Some((x, y, width, height)) = crate::widget_geometry(id) {
-        crate::set_widget_geometry(id, x - dx, y - dy, width, height);
-    }
-    let children = crate::widget::runtime::with_widget(id, |widget| widget.children().to_vec())
-        .unwrap_or_default();
-    for child in children {
-        shift_subtree(child, dx, dy, depth + 1);
-    }
-}
-
 impl ScrollArea {
     /// Creates a scroll area.
     pub fn new(geometry: Rect) -> Self {
@@ -259,6 +243,8 @@ impl ScrollArea {
             vertical_scroll_bar_policy: ScrollBarPolicy::AsNeeded,
             viewport: geometry,
             widget: None,
+            corner_widget: None,
+            content_descendants: Vec::new(),
             content_size: Size::new(0, 0),
             registry: None,
             scroll_position: (0, 0),
@@ -409,6 +395,16 @@ impl ScrollArea {
     /// list forever — a stale id that a walk would still visit. Clearing its parent link keeps the
     /// two sides consistent rather than leaving an orphan that claims a parent it no longer has.
     pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        // A child cannot be both the scrolling content and the corner. Promoting the current
+        // corner to content first removes its old child entry, so it is not linked twice.
+        if widget.is_some() && widget == self.corner_widget {
+            if let Some(corner) = self.corner_widget {
+                self.base.remove_child_linked(corner);
+                #[cfg(not(alloc_frugal))]
+                crate::set_widget_visible(corner, false);
+            }
+            self.corner_widget = None;
+        }
         if let Some(previous) = self.widget {
             if Some(previous) != widget {
                 self.base.remove_child_linked(previous);
@@ -423,6 +419,9 @@ impl ScrollArea {
             #[cfg(not(alloc_frugal))]
             crate::set_widget_visible(widget_id, true);
         }
+        // The scrolling set is the mounted tree, so it is rebuilt exactly when the content root
+        // changes rather than on every scroll step.
+        self.refresh_content_tree();
         // The child has never been placed: it keeps whatever rectangle it was constructed with
         // until the scroll area hands it the viewport.
         self.place_content();
@@ -431,6 +430,96 @@ impl ScrollArea {
     /// Returns widget.
     pub fn widget(&self) -> Option<ObjectId> {
         self.widget
+    }
+
+    /// The child mounted in the corner between the two scroll bars, if any.
+    pub fn corner_widget(&self) -> Option<ObjectId> {
+        self.corner_widget
+    }
+
+    /// Mounts (or clears, with `None`) a child in the corner where the two bars meet.
+    ///
+    /// The corner belongs to the control rather than to the scrolling content, so the child is
+    /// linked as a tree child but excluded from the scrolling descendant list. Its rectangle is
+    /// written whenever the chrome is re-derived; when either bar is not visible there is no
+    /// corner to own, so the widget is hidden.
+    pub fn set_corner_widget(&mut self, widget: Option<ObjectId>) {
+        // The scrolling content and the corner are two roles of one child list: one id cannot
+        // occupy both.
+        if widget.is_some() && widget == self.widget {
+            return;
+        }
+        if self.corner_widget == widget {
+            self.place_content();
+            return;
+        }
+        if let Some(previous) = self.corner_widget {
+            self.base.remove_child_linked(previous);
+            #[cfg(not(alloc_frugal))]
+            crate::set_widget_visible(previous, false);
+        }
+        self.corner_widget = widget;
+        if let Some(widget_id) = widget {
+            self.base.add_child_linked(widget_id);
+            #[cfg(not(alloc_frugal))]
+            crate::set_widget_visible(widget_id, true);
+        }
+        // A corner is not content: the flat descendant list must not translate it on scroll.
+        self.refresh_content_tree();
+        self.place_content();
+        self.base.request_redraw();
+    }
+
+    /// The rectangle the corner widget is given, when both bars are visible.
+    pub fn corner_widget_rect(&self) -> Option<Rect> {
+        self.assemble_chrome(self.base.geometry()).corner
+    }
+
+    /// Rebuilds the flat list of scrolling descendants from the mounted tree.
+    ///
+    /// Called when the content root or the corner changes, and available to a host that mounts
+    /// descendants directly into the content subtree after [`Self::set_widget`]. A host that
+    /// changes the tree must call it once for the change to be reflected by the next scroll.
+    pub fn refresh_content_tree(&mut self) {
+        self.content_descendants.clear();
+        // The mini profile holds no widget registry to descend, and it also does not translate
+        // children on scroll (`move_content_children` is compiled out), so the flat list stays
+        // empty there rather than being half-populated.
+        #[cfg(not(alloc_frugal))]
+        {
+            let mut stack: Vec<(ObjectId, u32)> = Vec::new();
+            for child in self.base.children().to_vec() {
+                if Some(child) == self.corner_widget {
+                    continue;
+                }
+                if Some(child) == self.widget {
+                    let descendants = crate::widget::runtime::with_widget(child, |widget| {
+                        widget.children().to_vec()
+                    })
+                    .unwrap_or_default();
+                    for descendant in descendants {
+                        stack.push((descendant, 1));
+                    }
+                } else {
+                    stack.push((child, 0));
+                }
+            }
+            while let Some((id, depth)) = stack.pop() {
+                // The old recursive walker used the same bound: a tree is a tree, and a corrupted
+                // parent chain must not turn a scroll into an unbounded walk.
+                if depth > 64 {
+                    continue;
+                }
+                self.content_descendants.push(id);
+                if let Some(children) =
+                    crate::widget::runtime::with_widget(id, |widget| widget.children().to_vec())
+                {
+                    for child in children {
+                        stack.push((child, depth + 1));
+                    }
+                }
+            }
+        }
     }
 
     /// Marks the band at the top of `group_top..group_bottom` as sticky.
@@ -532,22 +621,16 @@ impl ScrollArea {
     ///
     /// `self.widget` keeps its own placement derivation (`content_child_rect`, which already
     /// includes the scroll offset), so only its descendants are translated here. Every other
-    /// direct child is content the host mounted itself and is translated as a whole.
+    /// direct child is content the host mounted itself and is translated as a whole. The list
+    /// was flattened when the tree was mounted, so a step performs no allocations.
     #[cfg(not(alloc_frugal))]
     fn move_content_children(&self, dx: i32, dy: i32) {
         if dx == 0 && dy == 0 {
             return;
         }
-        for child in self.base.children().to_vec() {
-            if Some(child) == self.widget {
-                let descendants =
-                    crate::widget::runtime::with_widget(child, |widget| widget.children().to_vec())
-                        .unwrap_or_default();
-                for descendant in descendants {
-                    shift_subtree(descendant, dx, dy, 1);
-                }
-            } else {
-                shift_subtree(child, dx, dy, 0);
+        for &id in &self.content_descendants {
+            if let Some((x, y, width, height)) = crate::widget_geometry(id) {
+                crate::set_widget_geometry(id, x - dx, y - dy, width, height);
             }
         }
     }
@@ -587,13 +670,42 @@ impl ScrollArea {
         self.set_scroll_position(x, y);
     }
     /// Ensures widget is visible.
-    pub fn ensure_widget_visible(&mut self, widget_id: ObjectId) {
+    ///
+    /// The content root retains its historical behaviour (centre it). Any other mounted
+    /// descendant is read through its absolute geometry, mapped into content coordinates and
+    /// handed to [`Self::ensure_visible`]. Returns `false` when the id is not a mounted
+    /// descendant or its geometry is unavailable.
+    pub fn ensure_widget_visible(&mut self, widget_id: ObjectId) -> bool {
         // If the widget is the child widget, center the content viewport by
         // changing scroll_position rather than mutating viewport geometry.
         if Some(widget_id) == self.widget {
             let max_x = (self.content_size.width.saturating_sub(self.viewport.width)) as i32;
             let max_y = (self.content_size.height.saturating_sub(self.viewport.height)) as i32;
             self.set_scroll_position(max_x / 2, max_y / 2);
+            return true;
+        }
+        #[cfg(not(alloc_frugal))]
+        {
+            let Some((x, y, width, height)) = crate::widget_geometry(widget_id) else {
+                return false;
+            };
+            let chrome = self.assemble_chrome(self.base.geometry());
+            let frame = content_frame(
+                chrome.content,
+                self.content_size,
+                self.widget_resizable,
+                self.alignment,
+            );
+            // Absolute geometry -> content coordinates. The content origin sits at
+            // `frame - scroll_position`, so subtracting that origin adds the offset back.
+            let content_x = x.saturating_sub(frame.x).saturating_add(self.scroll_position.0);
+            let content_y = y.saturating_sub(frame.y).saturating_add(self.scroll_position.1);
+            self.ensure_visible(Rect::new(content_x, content_y, width, height));
+            true
+        }
+        #[cfg(alloc_frugal)]
+        {
+            false
         }
     }
 
@@ -679,18 +791,35 @@ impl ScrollArea {
     /// the placement observable without a draw — a caller that asks the child's geometry after
     /// a scroll gets the rectangle the next frame will use.
     fn place_content(&self) {
-        let Some(rect) = self.content_child_rect() else {
-            return;
-        };
-        // A sized profile has no mounted surfaces and no platform geometry entry, but the
-        // rectangle derivation is still the control's model, so it is computed and not
-        // discarded with a `cfg` on the helper (which would make the helper dead there).
-        #[cfg(not(alloc_frugal))]
-        if let Some(widget_id) = self.widget {
-            crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+        if let Some(rect) = self.content_child_rect() {
+            // A sized profile has no mounted surfaces and no platform geometry entry, but the
+            // rectangle derivation is still the control's model, so it is computed and not
+            // discarded with a `cfg` on the helper (which would make the helper dead there).
+            #[cfg(not(alloc_frugal))]
+            if let Some(widget_id) = self.widget {
+                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+            }
+            #[cfg(alloc_frugal)]
+            let _ = rect;
         }
-        #[cfg(alloc_frugal)]
-        let _ = rect;
+        // The corner is part of the same chrome derivation, so every state that re-places the
+        // content also hands the corner its rectangle.
+        self.place_corner_widget();
+    }
+
+    /// Places the corner widget in the square the two bars leave, or hides it when either bar
+    /// is absent.
+    fn place_corner_widget(&self) {
+        #[cfg(not(alloc_frugal))]
+        if let Some(corner) = self.corner_widget {
+            match self.corner_widget_rect() {
+                Some(rect) => {
+                    crate::set_widget_visible(corner, true);
+                    crate::set_widget_geometry(corner, rect.x, rect.y, rect.width, rect.height);
+                }
+                None => crate::set_widget_visible(corner, false),
+            }
+        }
     }
 
     /// Paints one pinned band.
@@ -789,7 +918,7 @@ impl ScrollArea {
         let v_scroll_visible = self.vertical_scroll_bar_visible();
         // A control with no bars needs no derivation: the content *is* the rectangle.
         if !h_scroll_visible && !v_scroll_visible {
-            return ChromeBands { content: rect, horizontal: None, vertical: None };
+            return ChromeBands { content: rect, horizontal: None, vertical: None, corner: None };
         }
         let h_band = if h_scroll_visible {
             Some(Rect::new(
@@ -817,7 +946,15 @@ impl ScrollArea {
             rect.width.saturating_sub(if v_scroll_visible { bar } else { 0 }),
             rect.height.saturating_sub(if h_scroll_visible { bar } else { 0 }),
         );
-        ChromeBands { content, horizontal: h_band, vertical: v_band }
+        // The corner is what the two bands leave. Stated once here, so a corner widget and the
+        // painted grip read the same square instead of each deriving it from the thickness.
+        let corner = match (h_band, v_band) {
+            (Some(horizontal), Some(vertical)) => {
+                Some(Rect::new(vertical.x, horizontal.y, bar.min(rect.width), bar.min(rect.height)))
+            }
+            _ => None,
+        };
+        ChromeBands { content, horizontal: h_band, vertical: v_band, corner }
     }
 }
 
@@ -894,6 +1031,8 @@ struct ChromeBands {
     horizontal: Option<Rect>,
     /// The vertical track, when one is owed.
     vertical: Option<Rect>,
+    /// The square the two tracks leave, when both are owed.
+    corner: Option<Rect>,
 }
 // Implement Widget trait
 impl Widget for ScrollArea {
@@ -1340,14 +1479,21 @@ impl Draw for ScrollArea {
                 thumb_color,
             );
         }
-        // Draw the corner between the two bars: whatever the two bands leave, derived from the same
-        // thickness rather than from a fourth literal.
-        if let (Some(h_band), Some(v_band)) = (chrome.horizontal, chrome.vertical) {
-            let bar = dimensions::SCROLLBAR_THICKNESS;
-            context.fill_rect(
-                Rect::new(v_band.x, h_band.y, bar.min(rect.width), bar.min(rect.height)),
-                track_color,
-            );
+        // The corner between the two bars. An explicit corner widget owns this square; otherwise
+        // the track-coloured grip is painted in it.
+        if let Some(corner_rect) = chrome.corner {
+            match (self.corner_widget, self.registry.as_ref()) {
+                (Some(corner), Some(registry)) => {
+                    // The corner sits outside the content box, which is what descendants are
+                    // clipped to. Drawing it through the registry here, after the clip is popped,
+                    // gives it the square the chrome reserved for it; the tree child entry
+                    // remains for discovery and hit tests.
+                    registry.borrow_mut().draw_widget(corner, context);
+                }
+                // No corner child, or no registry able to paint one: keep the visible grip so
+                // the chrome is never blank.
+                _ => context.fill_rect(corner_rect, track_color),
+            }
         }
     }
 }

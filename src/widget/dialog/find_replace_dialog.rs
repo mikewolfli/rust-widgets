@@ -8,7 +8,7 @@
 //! action buttons for find next, find previous, replace, replace all,
 //! and close. Emits typed signals when actions are triggered.
 
-use crate::core::{Color, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -122,6 +122,9 @@ pub struct FindReplaceDialog {
     // Internal state tracking
     /// Which text field has focus: 0 = find, 1 = replace
     focus_field: u8,
+    /// Emitted when Tab moves the focus between the find and replace fields; the payload is
+    /// this dialog's own object id (its two fields are not separate objects).
+    pub focus_changed: Signal1<ObjectId>,
     /// Caret position, in characters, for each field.
     caret: [usize; 2],
     /// Selection anchor, in characters, for each field. Equal to the caret when nothing is
@@ -151,6 +154,7 @@ impl FindReplaceDialog {
             replace_all_signal: Signal1::new(),
             close_signal: Signal1::new(),
             focus_field: 0,
+            focus_changed: Signal1::new(),
             caret: [0, 0],
             anchor: [0, 0],
             text_input_seen: false,
@@ -615,6 +619,11 @@ impl Widget for FindReplaceDialog {
             }
             "close" => {
                 Some(EventSignalRef::mapped("close", &self.close_signal, |_| CapabilityValue::Null))
+            }
+            "focus_changed" => {
+                Some(EventSignalRef::mapped("focus_changed", &self.focus_changed, |v| {
+                    CapabilityValue::UInt(*v)
+                }))
             }
             _ => None,
         }
@@ -1147,6 +1156,7 @@ impl EventHandler for FindReplaceDialog {
                         self.caret[index] = self.field_text(index).chars().count();
                         self.anchor[index] = self.caret[index];
                         self.base.request_redraw();
+                        self.focus_changed.emit(self.id());
                     }
                     37 | 39 | 36 | 35 => {
                         // Left / Right / Home / End
@@ -1623,5 +1633,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tab_switches_fields_and_announces_the_focus_change() {
+        use std::sync::{Arc, Mutex};
+
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 320, 140));
+        dialog.show();
+        assert_eq!(dialog.field_index(), 0);
+        let seen = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&seen);
+        dialog.focus_changed.connect(move |_| {
+            *sink.lock().expect("lock") += 1;
+        });
+        dialog.handle_event(&Event::key_press(9, 0));
+        assert_eq!(dialog.field_index(), 1);
+        assert_eq!(*seen.lock().expect("lock"), 1);
     }
 }

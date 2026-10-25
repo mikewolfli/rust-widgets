@@ -13,10 +13,11 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::menu_toolbar::popup_reveal::PopupReveal;
 use crate::widget::metrics::role_font;
 use crate::widget::nav_widgets::app_bar::AppBar;
 use crate::widget::nav_widgets::bottom_navigation_bar::{BottomNavigationBar, NavItem};
@@ -62,6 +63,35 @@ pub enum ScaffoldBottomNavStyle {
     Classic,
     /// A real [`BottomNavigationBar`] with its sliding M3 pill.
     Material3,
+}
+
+/// How a navigation item's badge is painted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScaffoldBadgeStyle {
+    /// A capsule carrying the badge text (a count, usually).
+    #[default]
+    Text,
+    /// A small filled dot, for "there is something" without a number.
+    Dot,
+}
+
+impl ScaffoldBadgeStyle {
+    /// The token this style is spelled as in a property write.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScaffoldBadgeStyle::Text => "text",
+            ScaffoldBadgeStyle::Dot => "dot",
+        }
+    }
+
+    /// Parses the token back, rejecting anything else.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "text" => ScaffoldBadgeStyle::Text,
+            "dot" => ScaffoldBadgeStyle::Dot,
+            _ => return None,
+        })
+    }
 }
 
 /// AdaptiveScaffold — a cross-platform adaptive scaffold combining AppBar +
@@ -119,6 +149,22 @@ pub struct AdaptiveScaffold {
     drawer_open: bool,
     /// Whether the trailing drawer is open.
     end_drawer_open: bool,
+    /// Per-item badges, parallel to `nav_items`.
+    nav_item_badges: Vec<Option<String>>,
+    /// How a badge is painted.
+    badge_style: ScaffoldBadgeStyle,
+    /// Whether the drawers slide in and out.
+    drawer_animated: bool,
+    /// How opaque the modal drawer scrim becomes at full slide, `0.0..=1.0`.
+    scrim_opacity: f32,
+    /// Whether a destination change animates its page.
+    page_transition: bool,
+    /// The leading drawer's slide, `0.0` closed and `1.0` fully in.
+    drawer_reveal: PopupReveal,
+    /// The trailing drawer's slide.
+    end_drawer_reveal: PopupReveal,
+    /// The destination page's arrival, `0.0` just switched and `1.0` settled.
+    page_reveal: PopupReveal,
     /// Emitted when the bottom navigation selection changes.
     pub nav_selected: Signal1<usize>,
     /// Emitted when the AppBar's back affordance is pressed.
@@ -161,6 +207,14 @@ impl AdaptiveScaffold {
             snackbar: None,
             drawer_open: false,
             end_drawer_open: false,
+            nav_item_badges: Vec::new(),
+            badge_style: ScaffoldBadgeStyle::default(),
+            drawer_animated: true,
+            scrim_opacity: 0.32,
+            page_transition: true,
+            drawer_reveal: PopupReveal::new(false),
+            end_drawer_reveal: PopupReveal::new(false),
+            page_reveal: PopupReveal::new(true),
             nav_selected: Signal1::new(),
             back_pressed: GenericSignal::new(),
             action_pressed: GenericSignal::new(),
@@ -311,6 +365,11 @@ impl AdaptiveScaffold {
         let opened = self.drawer.is_some() && !self.drawer_open;
         if opened {
             self.drawer_open = true;
+            if self.drawer_animated {
+                self.drawer_reveal.set_open(true);
+            } else {
+                self.drawer_reveal.jump_to(true);
+            }
             self.base.request_redraw();
         }
         self.drawer_open
@@ -321,6 +380,11 @@ impl AdaptiveScaffold {
         let closed = self.drawer_open;
         if closed {
             self.drawer_open = false;
+            if self.drawer_animated {
+                self.drawer_reveal.set_open(false);
+            } else {
+                self.drawer_reveal.jump_to(false);
+            }
             self.base.request_redraw();
         }
         closed
@@ -336,6 +400,11 @@ impl AdaptiveScaffold {
         let opened = self.end_drawer.is_some() && !self.end_drawer_open;
         if opened {
             self.end_drawer_open = true;
+            if self.drawer_animated {
+                self.end_drawer_reveal.set_open(true);
+            } else {
+                self.end_drawer_reveal.jump_to(true);
+            }
             self.base.request_redraw();
         }
         self.end_drawer_open
@@ -346,6 +415,11 @@ impl AdaptiveScaffold {
         let closed = self.end_drawer_open;
         if closed {
             self.end_drawer_open = false;
+            if self.drawer_animated {
+                self.end_drawer_reveal.set_open(false);
+            } else {
+                self.end_drawer_reveal.jump_to(false);
+            }
             self.base.request_redraw();
         }
         closed
@@ -376,14 +450,21 @@ impl AdaptiveScaffold {
         self.bottom_nav_style
     }
 
-    /// Advances the delegated bottom bar's selection pill, if one is in use.
+    /// Advances the delegated bottom bar's pill and the scaffold's own transitions.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        self.m3_bar.as_mut().is_some_and(|bar| bar.tick(delta_ms))
+        let mut moving = self.m3_bar.as_mut().is_some_and(|bar| bar.tick(delta_ms));
+        moving |= self.drawer_reveal.tick(delta_ms);
+        moving |= self.end_drawer_reveal.tick(delta_ms);
+        moving |= self.page_reveal.tick(delta_ms);
+        moving
     }
 
-    /// Whether the delegated bottom bar is between two selections.
+    /// Whether anything on the scaffold is between two states.
     pub fn is_animating(&self) -> bool {
         self.m3_bar.as_ref().is_some_and(|bar| bar.is_animating())
+            || self.drawer_reveal.is_animating()
+            || self.end_drawer_reveal.is_animating()
+            || self.page_reveal.is_animating()
     }
 
     /// Rebuilds the delegated M3 bar from the scaffold's own items, selection and band.
@@ -401,6 +482,9 @@ impl AdaptiveScaffold {
             bar.add_item(&item.icon, &item.label);
             if let Some(source) = self.nav_item_icon_sources.get(index).copied().flatten() {
                 let _ = bar.set_item_icon_source(index, Some(source));
+            }
+            if let Some(badge) = self.nav_item_badges.get(index).cloned().flatten() {
+                bar.set_badge(index, Some(badge));
             }
         }
         if !self.nav_items.is_empty() {
@@ -437,9 +521,107 @@ impl AdaptiveScaffold {
     pub fn add_nav_item(&mut self, icon: &str, label: &str) {
         self.nav_items.push(NavItem { icon: icon.to_string(), label: label.to_string() });
         self.nav_item_icon_sources.push(None);
+        self.nav_item_badges.push(None);
         self.nav_bodies.push(None);
         self.sync_m3_bar();
         self.base.request_redraw();
+    }
+
+    /// Sets a badge on a bottom-navigation item; an empty string clears it.
+    ///
+    /// The Classic strip had no badge data at all while the delegated Material3 bar did, so the
+    /// same scaffold showed a count in one style and nothing in the other.
+    pub fn set_nav_item_badge(&mut self, index: usize, text: &str) -> bool {
+        let Some(slot) = self.nav_item_badges.get_mut(index) else {
+            return false;
+        };
+        let badge = if text.is_empty() { None } else { Some(text.to_string()) };
+        if *slot == badge {
+            return true;
+        }
+        *slot = badge.clone();
+        if let Some(bar) = self.m3_bar.as_mut() {
+            bar.set_badge(index, badge);
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// The badge on `index`, when there is one.
+    pub fn nav_item_badge(&self, index: usize) -> Option<&str> {
+        self.nav_item_badges.get(index).and_then(|badge| badge.as_deref())
+    }
+
+    /// How badges are painted.
+    pub fn badge_style(&self) -> ScaffoldBadgeStyle {
+        self.badge_style
+    }
+
+    /// Sets how badges are painted.
+    pub fn set_badge_style(&mut self, style: ScaffoldBadgeStyle) {
+        if self.badge_style == style {
+            return;
+        }
+        self.badge_style = style;
+        self.base.request_redraw();
+    }
+
+    /// Whether the drawers animate.
+    pub fn drawer_animated(&self) -> bool {
+        self.drawer_animated
+    }
+
+    /// Enables or disables the drawer slide.
+    pub fn set_drawer_animated(&mut self, animated: bool) {
+        if self.drawer_animated == animated {
+            return;
+        }
+        self.drawer_animated = animated;
+        if !animated {
+            self.drawer_reveal.jump_to(self.drawer_open);
+            self.end_drawer_reveal.jump_to(self.end_drawer_open);
+        }
+        self.base.request_redraw();
+    }
+
+    /// The scrim's opacity at a fully open drawer.
+    pub fn scrim_opacity(&self) -> f32 {
+        self.scrim_opacity
+    }
+
+    /// Sets the scrim's opacity at a fully open drawer, clamped to `0.0..=1.0`.
+    pub fn set_scrim_opacity(&mut self, opacity: f32) {
+        if !opacity.is_finite() {
+            return;
+        }
+        let opacity = opacity.clamp(0.0, 1.0);
+        if (self.scrim_opacity - opacity).abs() < f32::EPSILON {
+            return;
+        }
+        self.scrim_opacity = opacity;
+        self.base.request_redraw();
+    }
+
+    /// Whether a destination change animates its page.
+    pub fn page_transition(&self) -> bool {
+        self.page_transition
+    }
+
+    /// Enables or disables the page-change transition.
+    pub fn set_page_transition(&mut self, animated: bool) {
+        if self.page_transition == animated {
+            return;
+        }
+        self.page_transition = animated;
+        if !animated {
+            self.page_reveal.jump_to(true);
+        }
+        self.base.request_redraw();
+    }
+
+    /// How far the leading drawer has slid in, `0.0` closed to `1.0` open.
+    pub fn drawer_progress(&self) -> f32 {
+        self.drawer_reveal.value()
     }
 
     /// Assigns a typed icon source to an existing navigation item index.
@@ -462,6 +644,7 @@ impl AdaptiveScaffold {
     pub fn clear_nav_items(&mut self) {
         self.nav_items.clear();
         self.nav_item_icon_sources.clear();
+        self.nav_item_badges.clear();
         self.nav_bodies.clear();
         self.selected_nav_index = 0;
         self.sync_m3_bar();
@@ -481,6 +664,13 @@ impl AdaptiveScaffold {
             self.selected_nav_index = clamped;
             if let Some(bar) = self.m3_bar.as_mut() {
                 bar.set_selected_index(clamped);
+            }
+            // A destination change is a page *arrival*: the new page slides in and fades up
+            // from the scaffold's own background, so a switch is visible as a direction rather
+            // than as an instantaneous swap.
+            if self.page_transition {
+                self.page_reveal.jump_to(false);
+                self.page_reveal.set_open(true);
             }
             self.nav_selected.emit(clamped);
             self.base.request_redraw();
@@ -647,6 +837,10 @@ impl WidgetProperties for AdaptiveScaffold {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "badge_style" => Ok(CapabilityValue::String(self.badge_style().as_str().to_string())),
+            "drawer_animated" => Ok(CapabilityValue::Bool(self.drawer_animated())),
+            "scrim_opacity" => Ok(CapabilityValue::Float(f64::from(self.scrim_opacity()))),
+            "page_transition" => Ok(CapabilityValue::Bool(self.page_transition())),
             _ => base_property_get(self, name),
         }
     }
@@ -657,12 +851,53 @@ impl WidgetProperties for AdaptiveScaffold {
                 self.set_title(&expect_string(value)?);
                 Ok(())
             }
+            "badge_style" => {
+                let text = match value {
+                    CapabilityValue::String(text) => text,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                let style = ScaffoldBadgeStyle::from_name(&text)
+                    .ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_badge_style(style);
+                Ok(())
+            }
+            "drawer_animated" => {
+                let animated = match value {
+                    CapabilityValue::Bool(animated) => animated,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_drawer_animated(animated);
+                Ok(())
+            }
+            "scrim_opacity" => {
+                let opacity = expect_f32(value)?;
+                if !(0.0..=1.0).contains(&opacity) {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                self.set_scrim_opacity(opacity);
+                Ok(())
+            }
+            "page_transition" => {
+                let animated = match value {
+                    CapabilityValue::Bool(animated) => animated,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_page_transition(animated);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "badge_style",
+            "drawer_animated",
+            "scrim_opacity",
+            "page_transition",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -718,13 +953,30 @@ impl Draw for AdaptiveScaffold {
         if let Some(body) = body {
             body.set_geometry(content_rect);
             if let Some(drawable) = crate::widget::draw_bridge::draw_of(body) {
+                // The page arrives from slightly below and fades up from the scaffold's own
+                // background. At rest (`progress == 1`) both the offset and the veil are zero,
+                // so a settled frame is byte-identical to the un-animated one.
+                let progress = self.page_reveal.value().clamp(0.0, 1.0);
+                let offset =
+                    if self.page_transition { ((1.0 - progress) * 10.0) as i32 } else { 0 };
                 context.push_clip(
                     content_rect.x,
                     content_rect.y,
                     content_rect.width,
                     content_rect.height,
                 );
+                context.push_offset(0, offset);
                 drawable.draw(context);
+                context.pop_offset();
+                if self.page_transition && progress < 1.0 {
+                    // A veil in the scaffold's background colour: painting it over the body on
+                    // each frame of the reveal is what makes the page fade **up from** the
+                    // surface rather than pop in at a lighter weight.
+                    context.fill_rect(
+                        content_rect,
+                        background.with_alpha(((1.0 - progress) * 235.0) as u8),
+                    );
+                }
                 context.pop_clip();
             }
         }
@@ -750,21 +1002,44 @@ impl Draw for AdaptiveScaffold {
         //
         // Each slot owns its band; the widget's own geometry is set to that band before it
         // draws, which is the same contract the content child follows.
-        if self.drawer_open {
+        //
+        // A drawer is painted for every non-zero slide, not only while `open`, so the closing
+        // half of the transition has something to draw. The scrim fades with the same fraction.
+        let drawer_progress = self.drawer_reveal.value().clamp(0.0, 1.0);
+        if self.drawer_open || drawer_progress > 0.0 {
+            let scrim_alpha = (self.scrim_opacity * drawer_progress * 255.0) as u8;
+            if scrim_alpha > 0 {
+                context.fill_rect(rect, Color::BLACK.with_alpha(scrim_alpha));
+            }
             let band = self.drawer_rect();
+            let offset = -(((1.0 - drawer_progress) * band.width as f32) as i32);
             if let Some(panel) = self.drawer.as_deref_mut() {
                 panel.set_geometry(band);
                 if let Some(drawable) = crate::widget::draw_bridge::draw_of(panel) {
+                    context.push_clip(rect.x, rect.y, rect.width, rect.height);
+                    context.push_offset(offset, 0);
                     drawable.draw(context);
+                    context.pop_offset();
+                    context.pop_clip();
                 }
             }
         }
-        if self.end_drawer_open {
+        let end_progress = self.end_drawer_reveal.value().clamp(0.0, 1.0);
+        if self.end_drawer_open || end_progress > 0.0 {
+            let scrim_alpha = (self.scrim_opacity * end_progress * 255.0) as u8;
+            if scrim_alpha > 0 {
+                context.fill_rect(rect, Color::BLACK.with_alpha(scrim_alpha));
+            }
             let band = self.end_drawer_rect();
+            let offset = ((1.0 - end_progress) * band.width as f32) as i32;
             if let Some(panel) = self.end_drawer.as_deref_mut() {
                 panel.set_geometry(band);
                 if let Some(drawable) = crate::widget::draw_bridge::draw_of(panel) {
+                    context.push_clip(rect.x, rect.y, rect.width, rect.height);
+                    context.push_offset(offset, 0);
                     drawable.draw(context);
+                    context.pop_offset();
+                    context.pop_clip();
                 }
             }
         }
@@ -902,6 +1177,52 @@ impl AdaptiveScaffold {
                 label_color,
                 HorizontalAlignment::Left,
             );
+
+            // Badge: a capsule (or a dot) at the icon's trailing-top corner. The delegated M3
+            // bar has always had this; the Classic strip had no badge data at all, so the same
+            // scaffold answered differently depending on the style.
+            if let Some(badge) = self.nav_item_badges.get(i).and_then(|badge| badge.as_deref()) {
+                if !badge.is_empty() {
+                    let badge_fill =
+                        crate::style::semantic_color(crate::style::SemanticColor::Error)
+                            .unwrap_or(bar_ink);
+                    let badge_ink = badge_fill.contrast_color();
+                    match self.badge_style {
+                        ScaffoldBadgeStyle::Dot => {
+                            let side = 8u32.min(icon_box.width.max(1));
+                            let dot = Rect::new(
+                                icon_box.x + icon_box.width as i32 - side as i32 / 2,
+                                icon_box.y - 2,
+                                side,
+                                side,
+                            );
+                            context.fill_rounded_rect(dot, side / 2, badge_fill);
+                        }
+                        ScaffoldBadgeStyle::Text => {
+                            let metrics = context.measure_text(badge, &label_font);
+                            let height = label_font.size().max(10.0) as u32 + 4;
+                            let width = (metrics.width + 8).max(height);
+                            let badge_rect = Rect::new(
+                                icon_box.x + icon_box.width as i32 - width as i32 / 2,
+                                icon_box.y - 2,
+                                width,
+                                height,
+                            );
+                            context.fill_rounded_rect(badge_rect, height / 2, badge_fill);
+                            context.draw_text(
+                                Point::new(
+                                    badge_rect.x + 4,
+                                    context.text_line(badge_rect, &label_font).y,
+                                ),
+                                badge,
+                                &label_font,
+                                badge_ink,
+                                HorizontalAlignment::Left,
+                            );
+                        }
+                    }
+                }
+            }
 
             // Selected indicator line
             if is_selected {

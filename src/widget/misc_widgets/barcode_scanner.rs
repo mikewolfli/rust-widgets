@@ -125,6 +125,14 @@ pub struct BarcodeScanner {
     /// Interval in milliseconds between simulated scan-line sweeps; drives the
     /// viewfinder animation speed only (no real scanning is performed).
     scan_interval: u64,
+    /// Elapsed animation time in milliseconds, advanced by [`Widget::tick`].
+    ///
+    /// The sweep used to read `SystemTime::now()` in `draw`, which made the picture a
+    /// function of the wall clock, made frames non-deterministic, and paid a syscall per
+    /// frame. The phase now belongs to the control.
+    scan_phase_ms: u64,
+    /// Reused buffer for the result overlay's format line.
+    overlay_format_text: String,
     /// Whether to show the viewfinder corner brackets.
     show_viewfinder: bool,
     /// Emitted when a barcode is detected.
@@ -141,6 +149,8 @@ impl BarcodeScanner {
             is_scanning: false,
             last_result: None,
             scan_interval: 100,
+            scan_phase_ms: 0,
+            overlay_format_text: String::new(),
             show_viewfinder: true,
             barcode_detected: Signal1::new(),
             decoder: None,
@@ -286,6 +296,20 @@ impl Widget for BarcodeScanner {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 100)
+    }
+
+    /// Advances the sweep by `delta_ms` while scanning.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.is_scanning {
+            return false;
+        }
+        self.scan_phase_ms = self.scan_phase_ms.wrapping_add(u64::from(delta_ms));
+        true
+    }
+
+    /// Whether the scan line is still sweeping.
+    fn is_animating(&self) -> bool {
+        self.is_scanning
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -522,14 +546,8 @@ impl Draw for BarcodeScanner {
             // Default scan_interval (100) / 5 = 20, matching the previous hardcoded value.
             let speed_divisor = (self.scan_interval / 5).max(1);
             let sweep_span = (vf_rect.height as u64).saturating_sub(20).max(1);
-            let scan_line_y = vf_rect.y
-                + 10
-                + ((std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64
-                    / speed_divisor)
-                    % sweep_span) as i32;
+            let scan_line_y =
+                vf_rect.y + 10 + ((self.scan_phase_ms / speed_divisor) % sweep_span) as i32;
             context.draw_line_stroke(
                 Point::new(vf_rect.x + 4, scan_line_y),
                 Point::new(vf_rect.x + vf_rect.width as i32 - 4, scan_line_y),
@@ -550,7 +568,12 @@ impl Draw for BarcodeScanner {
             // surface dimmed rather than a fixed black.
             context.fill_rect(overlay_rect, surface.blend(&Color::BLACK, 0.78));
 
-            let format_text = format!("[{}]", result.format.name());
+            self.overlay_format_text.clear();
+            let _ = core::fmt::Write::write_fmt(
+                &mut self.overlay_format_text,
+                format_args!("[{}]", result.format.name()),
+            );
+            let format_text = &self.overlay_format_text;
             let format_line = context.text_line(overlay_rect, &small_font);
             context.draw_text(
                 Point::new(rect.x + BARCODE_PADDING, format_line.y),
@@ -739,5 +762,20 @@ mod tests {
         );
         let svg = render_to_svg(&mut scanner);
         assert!(!svg.is_empty(), "rendering barcode scanner with multibyte data must not panic");
+    }
+
+    #[test]
+    fn the_scan_sweep_is_driven_by_tick_not_the_wall_clock() {
+        use crate::widget::Widget;
+
+        let mut scanner = BarcodeScanner::new(Rect::new(0, 0, 200, 120));
+        assert!(!scanner.tick(16), "an idle scanner owes no frames");
+        scanner.start_scanning();
+        assert!(scanner.is_animating());
+        let first = scanner.scan_phase_ms;
+        assert!(scanner.tick(16));
+        assert_eq!(scanner.scan_phase_ms, first + 16);
+        assert!(scanner.tick(16));
+        assert_eq!(scanner.scan_phase_ms, first + 32);
     }
 }

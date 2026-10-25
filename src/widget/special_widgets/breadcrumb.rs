@@ -3,10 +3,11 @@
 
 //! Breadcrumb navigation widget.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -78,6 +79,12 @@ pub struct Breadcrumb {
     selected_index: Option<usize>,
     segment_padding: i32,
     separator_width: i32,
+    /// The path separator used when the trail is edited as text.
+    separator: String,
+    /// Whether the caller asked for the full path to be shown despite the band's width.
+    overflow_expanded: bool,
+    /// The one layout the paint, the hit test and the overflow marker read.
+    layout_cache: Option<BreadcrumbLayout>,
     /// Whether the host wants the path in editable form.
     editing: bool,
     /// The text being edited while [`Self::editing`] is set.
@@ -88,6 +95,23 @@ pub struct Breadcrumb {
     pub context_menu_requested: Signal1<String>,
     /// Emitted with the typed path when an edit is committed.
     pub path_edited: Signal1<String>,
+    /// Emitted with the number of segments hidden behind the `…` marker when it is pressed.
+    pub overflow_clicked: Signal1<usize>,
+}
+
+/// The cached breadcrumb layout.
+///
+/// The slots used to be recomputed by every `segment_rect_at` call, so a hit test over `n`
+/// segments rebuilt and allocated the slot list `n` times. The slot list is a pure function
+/// of the band, the resolved font, the padding and the separator width, so it is built once
+/// and reused until one of those (or the segment list) changes.
+struct BreadcrumbLayout {
+    band: Rect,
+    font: Font,
+    padding: i32,
+    separator_width: i32,
+    overflow_expanded: bool,
+    slots: Vec<(Option<usize>, i32)>,
 }
 
 impl Breadcrumb {
@@ -99,11 +123,15 @@ impl Breadcrumb {
             selected_index: None,
             segment_padding: 8,
             separator_width: 14,
+            separator: String::from("/"),
+            overflow_expanded: false,
+            layout_cache: None,
             editing: false,
             edit_buffer: String::new(),
             segment_activated: Signal1::new(),
             context_menu_requested: Signal1::new(),
             path_edited: Signal1::new(),
+            overflow_clicked: Signal1::new(),
         }
     }
 
@@ -123,7 +151,7 @@ impl Breadcrumb {
                 .iter()
                 .map(|segment| segment.label.as_str())
                 .collect::<Vec<_>>()
-                .join("/");
+                .join(&self.separator);
         }
         self.base.request_redraw();
     }
@@ -167,22 +195,57 @@ impl Breadcrumb {
     /// the convention a file browser uses, and the only way to keep both the root and the
     /// current location visible. The previous layout dropped every segment past the right
     /// edge instead, so the *current* segment — the one that matters — disappeared first.
-    fn display_slots(&self) -> Vec<(Option<usize>, i32)> {
-        let band_width = self.band().width as i32;
+    fn display_slots(&mut self) -> Vec<(Option<usize>, i32)> {
+        self.ensure_layout();
+        self.cached_slots().to_vec()
+    }
+
+    /// Rebuilds the layout when the band, font, padding, separator width or expansion changed.
+    fn ensure_layout(&mut self) {
+        let band = self.band();
+        let font = effective_font(self.style()).clone();
+        let fresh = self.layout_cache.as_ref().is_some_and(|cache| {
+            cache.band == band
+                && cache.font == font
+                && cache.padding == self.segment_padding
+                && cache.separator_width == self.separator_width
+                && cache.overflow_expanded == self.overflow_expanded
+        });
+        if fresh {
+            return;
+        }
+        let slots = self.build_slots(band, &font);
+        self.layout_cache = Some(BreadcrumbLayout {
+            band,
+            font,
+            padding: self.segment_padding,
+            separator_width: self.separator_width,
+            overflow_expanded: self.overflow_expanded,
+            slots,
+        });
+    }
+
+    fn cached_slots(&self) -> &[(Option<usize>, i32)] {
+        &self.layout_cache.as_ref().expect("ensure_layout() populates the layout cache").slots
+    }
+
+    fn build_slots(&self, band: Rect, font: &Font) -> Vec<(Option<usize>, i32)> {
+        let band_width = band.width as i32;
         let all: Vec<(Option<usize>, i32)> = self
             .segments
             .iter()
             .enumerate()
             .map(|(index, segment)| {
-                (Some(index), self.segment_width(segment, self.segment_padding).max(1))
+                (Some(index), self.segment_width(segment, self.segment_padding, font).max(1))
             })
             .collect();
         let total: i32 = all.iter().map(|(_, width)| *width).sum::<i32>()
             + self.separator_width * all.len().saturating_sub(1) as i32;
-        if total <= band_width || self.segments.len() <= 2 {
+        // `overflow_expanded` is the caller's explicit "show the whole path"; the auto rule
+        // still applies when nothing fits and the caller has not asked.
+        if total <= band_width || self.segments.len() <= 2 || self.overflow_expanded {
             return all;
         }
-        let font = effective_font(self.style());
         let marker =
             (estimate_text_width("…", font, 1.0) as i32 + self.segment_padding * 2).max(16);
         let first = all.first().copied().unwrap_or((None, 0));
@@ -190,11 +253,67 @@ impl Breadcrumb {
         vec![first, (None, marker), last]
     }
 
+    /// The number of segments currently folded behind the `…` marker.
+    pub fn collapsed_count(&self) -> usize {
+        let visible = match self.layout_cache.as_ref() {
+            Some(cache) => cache.slots.iter().filter(|(slot, _)| slot.is_some()).count(),
+            None => {
+                let band = self.band();
+                let font = effective_font(self.style());
+                let slots = self.build_slots(band, font);
+                slots.iter().filter(|(slot, _)| slot.is_some()).count()
+            }
+        };
+        self.segments.len().saturating_sub(visible)
+    }
+
+    /// Shows the full path even when it is wider than the band.
+    ///
+    /// The extra segments are clipped by the band, but they are laid out and hit-testable,
+    /// which is what a host showing its own overflow popup needs them to be. A caller that
+    /// wants the automatic fold back calls [`Self::collapse`].
+    pub fn expand(&mut self) {
+        if self.overflow_expanded {
+            return;
+        }
+        self.overflow_expanded = true;
+        self.layout_cache = None;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Restores the automatic first / `…` / last folding.
+    pub fn collapse(&mut self) {
+        if !self.overflow_expanded {
+            return;
+        }
+        self.overflow_expanded = false;
+        self.layout_cache = None;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The path separator used when the trail is edited as text.
+    pub fn separator(&self) -> &str {
+        &self.separator
+    }
+
+    /// Sets the path separator used when the trail is edited as text.
+    pub fn set_separator(&mut self, separator: impl Into<String>) {
+        let separator = separator.into();
+        if self.separator == separator {
+            return;
+        }
+        self.separator = separator;
+        self.base.request_redraw();
+    }
+
     /// Replaces full segment path.
     pub fn set_segments(&mut self, segments: Vec<BreadcrumbSegment>) {
         self.segments = segments;
         self.selected_index =
             if self.segments.is_empty() { None } else { Some(self.segments.len() - 1) };
+        self.layout_cache = None;
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -208,6 +327,7 @@ impl Breadcrumb {
     pub fn push_segment(&mut self, segment: BreadcrumbSegment) {
         self.segments.push(segment);
         self.selected_index = Some(self.segments.len() - 1);
+        self.layout_cache = None;
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -216,6 +336,7 @@ impl Breadcrumb {
     pub fn clear_segments(&mut self) {
         self.segments.clear();
         self.selected_index = None;
+        self.layout_cache = None;
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -273,10 +394,10 @@ impl Breadcrumb {
     /// its overflow sat outside the clickable rectangle. Measuring with [`estimate_text_width`] — the
     /// same ruler the painter uses — makes the box fit the label it draws, so the click target
     /// covers the visible segment.
-    fn segment_width(&self, segment: &BreadcrumbSegment, padding: i32) -> i32 {
+    fn segment_width(&self, segment: &BreadcrumbSegment, padding: i32, font: &Font) -> i32 {
         // The **effective font** — the resolved theme/caller font — so the segment box and the label
         // are measured with the font the row paints with (D09-STYLE-01 / D09-STYLE-02).
-        estimate_text_width(&segment.label, effective_font(self.style()), 1.0) as i32 + padding * 2
+        estimate_text_width(&segment.label, font, 1.0) as i32 + padding * 2
     }
 
     /// The row the trail occupies: full width,
@@ -294,19 +415,17 @@ impl Breadcrumb {
 
     /// The rectangle of segment `index`, laid out from the leading edge of [`Self::band`].
     ///
-    /// One derivation for both the paint and the hit test: they used to place the separator
-    /// differently — the draw loop advanced past it only between segments, the hit test
-    /// unconditionally — so the last segment's ink and its hit box disagreed by one separator
-    /// width. A segment past the band's right edge is clamped to it, because nothing clips a
-    /// widget at this layer.
-    fn segment_rect_at(&self, index: usize) -> Option<Rect> {
+    /// Kept for the layout tests; the paint and the hit test walk the cached slot list directly.
+    #[cfg(test)]
+    fn segment_rect_at(&mut self, index: usize) -> Option<Rect> {
         if index >= self.segments.len() {
             return None;
         }
         let band = self.band();
         let band_right = band.x + band.width as i32;
-        let slots = self.display_slots();
+        self.ensure_layout();
         let mut x = band.x;
+        let slots = self.cached_slots();
 
         for (position, (slot, width)) in slots.iter().enumerate() {
             if x >= band_right {
@@ -328,7 +447,7 @@ impl Breadcrumb {
         None
     }
 
-    fn hit_index(&self, pos: Point) -> Option<usize> {
+    fn hit_index(&mut self, pos: Point) -> Option<usize> {
         let band = self.band();
         if pos.y < band.y || pos.y >= band.y + band.height as i32 {
             return None;
@@ -336,16 +455,53 @@ impl Breadcrumb {
         if pos.x < band.x || pos.x >= band.x + band.width as i32 {
             return None;
         }
-
-        for index in 0..self.segments.len() {
-            let Some(seg_rect) = self.segment_rect_at(index) else {
-                continue;
-            };
-            if pos.x >= seg_rect.x && pos.x < seg_rect.x + seg_rect.width as i32 {
-                return Some(index);
+        self.ensure_layout();
+        let band_right = band.x + band.width as i32;
+        let mut x = band.x;
+        let slots = self.cached_slots();
+        for (position, (slot, width)) in slots.iter().enumerate() {
+            if x >= band_right {
+                break;
+            }
+            let visible_width = (*width).min(band_right - x).max(0);
+            if pos.x >= x && pos.x < x + visible_width {
+                return *slot;
+            }
+            x += width;
+            if position + 1 < slots.len() {
+                x += self.separator_width;
             }
         }
+        None
+    }
 
+    /// The folded marker's rectangle and the number of segments behind it, if any.
+    fn overflow_at(&mut self, pos: Point) -> Option<usize> {
+        let band = self.band();
+        if pos.y < band.y || pos.y >= band.y + band.height as i32 {
+            return None;
+        }
+        self.ensure_layout();
+        let slots = self.cached_slots();
+        if !slots.iter().any(|(slot, _)| slot.is_none()) {
+            return None;
+        }
+        let hidden = self.segments.len().saturating_sub(2);
+        let band_right = band.x + band.width as i32;
+        let mut x = band.x;
+        for (position, (slot, width)) in slots.iter().enumerate() {
+            if x >= band_right {
+                break;
+            }
+            let visible_width = (*width).min(band_right - x).max(0);
+            if slot.is_none() {
+                return (pos.x >= x && pos.x < x + visible_width).then_some(hidden);
+            }
+            x += width;
+            if position + 1 < slots.len() {
+                x += self.separator_width;
+            }
+        }
         None
     }
 }
@@ -406,6 +562,11 @@ impl Widget for Breadcrumb {
             "path_edited" => Some(EventSignalRef::mapped("path_edited", &self.path_edited, |v| {
                 crate::widget::capability::CapabilityValue::String(v.clone())
             })),
+            "overflow_clicked" => {
+                Some(EventSignalRef::mapped("overflow_clicked", &self.overflow_clicked, |v| {
+                    crate::widget::capability::CapabilityValue::UInt(*v as u64)
+                }))
+            }
             _ => None,
         }
     }
@@ -428,6 +589,8 @@ impl WidgetProperties for Breadcrumb {
                 )))
             }
             "segment_count" => Ok(CapabilityValue::UInt(self.segments().len() as u64)),
+            "collapsed_count" => Ok(CapabilityValue::UInt(self.collapsed_count() as u64)),
+            "separator" => Ok(CapabilityValue::String(self.separator().to_string())),
             "selected_index" => match self.selected_index() {
                 Some(index) => Ok(CapabilityValue::UInt(index as u64)),
                 None => Ok(CapabilityValue::Null),
@@ -457,13 +620,26 @@ impl WidgetProperties for Breadcrumb {
                 self.set_segments(segments);
                 Ok(())
             }
-            "segment_count" | "selected_index" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "segment_count" | "selected_index" | "collapsed_count" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            "separator" => {
+                self.set_separator(expect_string(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["segments", "segment_count", "selected_index", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "segments",
+            "segment_count",
+            "selected_index",
+            "collapsed_count",
+            "separator",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `breadcrumb` publishes.
@@ -514,6 +690,11 @@ impl EventHandler for Breadcrumb {
 
         match event {
             Event::MousePress { pos, button: 1, .. } => {
+                if let Some(hidden) = self.overflow_at(*pos) {
+                    self.expand();
+                    self.overflow_clicked.emit(hidden);
+                    return;
+                }
                 if let Some(index) = self.hit_index(*pos) {
                     let _ = self.set_selected_index(index);
                 }
@@ -558,7 +739,7 @@ impl Draw for Breadcrumb {
         // `resolved_theme_style` (or the scoped block below), so none is held across
         // the draw or across another accessor — the global manager's mutex is not
         // re-entrant.
-        let style = self.base.style();
+        let style = self.base.style().clone();
         let theme = crate::style::resolved_theme_style_shared("breadcrumb");
         // `breadcrumb` resolves to the `Text` role, which carries a foreground but no
         // surface — a text control sits on whatever it was placed on. So the surface
@@ -602,7 +783,7 @@ impl Draw for Breadcrumb {
             // The editor replaces the trail while it is open. The text is shown with the same
             // fitted primitive the segments use, so a long path elides instead of escaping the
             // control, and a caret marks the insertion point.
-            let font = effective_font(style);
+            let font = effective_font(&style);
             let line = context.text_line(band, font);
             let inner = Rect::new(
                 band.x + self.segment_padding,
@@ -627,42 +808,39 @@ impl Draw for Breadcrumb {
             return;
         }
 
-        for (position, (slot, width)) in self.display_slots().iter().enumerate() {
+        let slots = self.display_slots();
+        let mut slot_x = band.x;
+        for (position, (slot, width)) in slots.iter().enumerate() {
             let Some(index) = *slot else {
                 // Collapsed middle: one marker standing in for the hidden segments.
-                let rect = Rect::new(
-                    {
-                        let mut x = band.x;
-                        for (earlier, (_, earlier_width)) in
-                            self.display_slots().iter().enumerate().take(position)
-                        {
-                            x += earlier_width;
-                            if earlier + 1 < self.display_slots().len() {
-                                x += self.separator_width;
-                            }
-                        }
-                        x
-                    },
-                    band.y,
-                    *width as u32,
-                    band.height,
-                );
-                let line = context.text_line(rect, effective_font(style));
+                let rect = Rect::new(slot_x, band.y, *width as u32, band.height);
+                let line = context.text_line(rect, effective_font(&style));
                 context.draw_text_fitted_cow(
                     Rect::new(rect.x, line.y, rect.width, line.height),
                     "…",
-                    effective_font(style),
+                    effective_font(&style),
                     separator_color,
                     HorizontalAlignment::Center,
                 );
+                slot_x += width;
+                if position + 1 < slots.len() {
+                    slot_x += self.separator_width;
+                }
                 continue;
             };
             let Some(segment) = self.segments.get(index) else {
                 continue;
             };
-            let Some(segment_rect) = self.segment_rect_at(index) else {
+            let band_right = band.x + band.width as i32;
+            let visible = (*width).min(band_right - slot_x).max(0) as u32;
+            if visible == 0 {
+                slot_x += width;
+                if position + 1 < slots.len() {
+                    slot_x += self.separator_width;
+                }
                 continue;
-            };
+            }
+            let segment_rect = Rect::new(slot_x, band.y, visible, band.height);
 
             if self.selected_index == Some(index) {
                 context.fill_rect(segment_rect, selected_background);
@@ -677,7 +855,7 @@ impl Draw for Breadcrumb {
             // separator: the box is also the click target, and D09-CTRL-02 is exactly the case where
             // ink and target disagreed. `estimate_text_width` sizes the box, so this only bites for a
             // caller font larger than the measured one — where eliding is still the correct answer.
-            let line = context.text_line(segment_rect, effective_font(style));
+            let line = context.text_line(segment_rect, effective_font(&style));
             let label_box = Rect::new(
                 segment_rect.x + self.segment_padding,
                 line.y,
@@ -687,7 +865,7 @@ impl Draw for Breadcrumb {
             context.draw_text_fitted_cow(
                 label_box,
                 &segment.label,
-                effective_font(style),
+                effective_font(&style),
                 text_color,
                 HorizontalAlignment::Left,
             );
@@ -697,7 +875,7 @@ impl Draw for Breadcrumb {
             // any text scale; the `>` glyph it replaces changed weight and baseline with the
             // theme's font.
             let gap_x = segment_rect.x + segment_rect.width as i32;
-            let has_next = position + 1 < self.display_slots().len();
+            let has_next = position + 1 < slots.len();
             if has_next && gap_x + self.separator_width <= band.x + band.width as i32 {
                 let side = 10u32.min(band.height.max(1));
                 let icon_rect = Rect::new(
@@ -712,6 +890,10 @@ impl Draw for Breadcrumb {
                     separator_color,
                     IconName::ChevronRight,
                 );
+            }
+            slot_x += width;
+            if position + 1 < slots.len() {
+                slot_x += self.separator_width;
             }
         }
     }
@@ -969,6 +1151,49 @@ mod tests {
         assert_eq!(slots[0].0, Some(0));
         assert_eq!(slots[1].0, None, "the middle collapses to a marker");
         assert_eq!(slots[2].0, Some(2));
+    }
+
+    /// The folded marker is a control, not decoration: pressing it reports the hidden count
+    /// and expands the trail; the separator property drives the edited path.
+    #[test]
+    fn the_overflow_marker_emits_and_expands() {
+        use std::sync::{Arc, Mutex};
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 140, 28));
+        breadcrumb.set_segments(vec![
+            BreadcrumbSegment::new("root", "Root"),
+            BreadcrumbSegment::new("middle", "A long middle directory"),
+            BreadcrumbSegment::new("leaf", "Leaf"),
+        ]);
+        assert_eq!(breadcrumb.collapsed_count(), 1);
+
+        let seen = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&seen);
+        breadcrumb.overflow_clicked.connect(move |hidden| sink.lock().unwrap().push(*hidden));
+
+        // Walk the same slot list the paint uses to find the marker's centre.
+        let band = breadcrumb.band();
+        let slots = breadcrumb.display_slots();
+        let mut x = band.x;
+        let mut marker_x = None;
+        for (position, (slot, width)) in slots.iter().enumerate() {
+            if slot.is_none() {
+                marker_x = Some(x + width / 2);
+            }
+            x += width;
+            if position + 1 < slots.len() {
+                x += breadcrumb.separator_width;
+            }
+        }
+        breadcrumb.handle_event(&Event::mouse_press(marker_x.expect("a marker"), 10, 1));
+
+        assert_eq!(*seen.lock().unwrap(), vec![1]);
+        assert_eq!(breadcrumb.collapsed_count(), 0, "pressing the marker shows the whole path");
+
+        breadcrumb.collapse();
+        assert_eq!(breadcrumb.collapsed_count(), 1);
+        breadcrumb.set_separator("::");
+        breadcrumb.set_editing(true);
+        assert_eq!(breadcrumb.editing_text(), "Root::A long middle directory::Leaf");
     }
 
     #[test]

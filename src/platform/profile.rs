@@ -445,6 +445,22 @@ pub fn system_theme() -> Option<bool> {
     }
 }
 
+/// A revision of the platform's environment facts (appearance, contrast, motion, locale).
+///
+/// `0` means this profile cannot report changes — `mini` has no platform singleton, and a backend
+/// that has not bound a change source answers zero. The style layer uses the revision to avoid
+/// re-reading every fact on every frame; see [`crate::style::environment`] (G-08).
+pub fn environment_generation() -> u64 {
+    #[cfg(feature = "mini")]
+    {
+        0
+    }
+    #[cfg(not(feature = "mini"))]
+    {
+        crate::platform::get_platform().environment_generation()
+    }
+}
+
 /// The render engine this profile drives its loop with.
 ///
 /// This is the single selection point for the `embedded`-versus-native runtime

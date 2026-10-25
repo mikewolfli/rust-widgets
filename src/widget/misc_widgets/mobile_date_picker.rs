@@ -39,6 +39,12 @@ pub struct MobileDatePicker {
     year_items: Vec<String>,
     month_items: Vec<String>,
     day_items: Vec<String>,
+    /// Half-width of the year drum around the selected year.
+    year_span: u32,
+    /// First year in the drum.
+    year_start: i32,
+    /// Last year in the drum.
+    year_end: i32,
     /// Emitted with a "YYYY-MM-DD" string when the date changes.
     pub date_changed: Signal1<String>,
 }
@@ -56,6 +62,9 @@ impl MobileDatePicker {
             year_items: Vec::new(),
             month_items: Vec::new(),
             day_items: Vec::new(),
+            year_span: 50,
+            year_start: 2025 - 50,
+            year_end: 2025 + 50,
             date_changed: Signal1::new(),
         }
         .with_rebuilt_items()
@@ -63,10 +72,48 @@ impl MobileDatePicker {
 
     /// Rebuilds the cached drum columns for the current date.
     fn rebuild_drum_items(&mut self) {
-        self.year_items = (self.year - 2..=self.year + 2).map(|y| y.to_string()).collect();
+        self.year = self.year.clamp(self.year_start, self.year_end);
+        self.year_items = (self.year_start..=self.year_end).map(|y| y.to_string()).collect();
         self.month_items = MONTH_NAMES.iter().map(|&n| n.to_string()).collect();
         let max_day = days_in_month(self.year, self.month);
         self.day_items = (1..=max_day).map(|d| format!("{d:02}")).collect();
+    }
+
+    /// The number of years offered on either side of the selected year.
+    pub fn year_span(&self) -> u32 {
+        self.year_span
+    }
+
+    /// Sets how many years the drum offers on either side of the selected year.
+    pub fn set_year_span(&mut self, span: u32) {
+        if self.year_span == span {
+            return;
+        }
+        self.year_span = span;
+        self.year_start = self.year.saturating_sub(span as i32);
+        self.year_end = self.year.saturating_add(span as i32);
+        self.rebuild_drum_items();
+        self.base.request_redraw();
+    }
+
+    /// Sets an explicit inclusive year range for the drum.
+    ///
+    /// A reversed range is normalised. The selected year is clamped into the range, so the
+    /// wheel always has a row for the current value.
+    pub fn set_year_range(&mut self, start: i32, end: i32) {
+        let (start, end) = if start <= end { (start, end) } else { (end, start) };
+        if self.year_start == start && self.year_end == end {
+            return;
+        }
+        self.year_start = start;
+        self.year_end = end;
+        self.rebuild_drum_items();
+        self.base.request_redraw();
+    }
+
+    /// The inclusive year range shown by the drum.
+    pub fn year_range(&self) -> (i32, i32) {
+        (self.year_start, self.year_end)
     }
 
     fn with_rebuilt_items(mut self) -> Self {
@@ -178,6 +225,7 @@ impl WidgetProperties for MobileDatePicker {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "selected_date" => Ok(CapabilityValue::String(self.date_string())),
+            "year_span" => Ok(CapabilityValue::UInt(u64::from(self.year_span))),
             _ => base_property_get(self, name),
         }
     }
@@ -190,12 +238,21 @@ impl WidgetProperties for MobileDatePicker {
                 self.set_date(date.0, date.1, date.2);
                 Ok(())
             }
+            "year_span" => {
+                let span = match value {
+                    CapabilityValue::UInt(value) => value,
+                    CapabilityValue::Int(value) if value >= 0 => value as u64,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_year_span(u32::try_from(span).unwrap_or(u32::MAX));
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["selected_date", BASE_PROPERTY_NAMES]
+        property_names_of!["selected_date", "year_span", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -303,7 +360,7 @@ impl Draw for MobileDatePicker {
 
         // Prepare column data: (offset_into_items, visible_items_list). The lists are cached
         // fields rebuilt by `set_date`, not rebuilt here.
-        let year_offset: i32 = 2; // current year is always at index 2
+        let year_offset: i32 = (self.year - self.year_start).max(0);
         let month_offset = (self.month as usize - 1) as i32;
         let day_offset = (self.day as usize - 1) as i32;
 
@@ -814,5 +871,17 @@ mod tests {
             svg.contains("height=\"32\""),
             "a row must be PICKER_ROW_HEIGHT tall, not a fraction of the panel"
         );
+    }
+
+    #[test]
+    fn the_year_drum_span_is_configurable() {
+        let mut picker = MobileDatePicker::new(Rect::new(0, 0, 300, 200));
+        assert_eq!(picker.year_span(), 50);
+        assert_eq!(picker.year_range().0, picker.year() - 50);
+        picker.set_year_range(1990, 2030);
+        assert_eq!(picker.year_range(), (1990, 2030));
+        picker.set_year_span(5);
+        assert_eq!(picker.year_range(), (picker.year() - 5, picker.year() + 5));
+        assert_eq!(picker.get("year_span"), Ok(CapabilityValue::UInt(5)));
     }
 }

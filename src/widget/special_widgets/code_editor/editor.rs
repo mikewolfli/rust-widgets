@@ -44,7 +44,7 @@ use super::types::{
 use crate::compat::MiniVec;
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -447,6 +447,14 @@ pub struct CodeEditor {
     pub(crate) extra_selections: Vec<ExtraSelection>,
     /// Lines bookmarked by the user.
     pub(crate) bookmarks: Vec<usize>,
+    /// Lines carrying a breakpoint.
+    pub(crate) breakpoints: Vec<usize>,
+    /// Whether the gutter reserves a column for breakpoint marks.
+    pub(crate) breakpoint_gutter: bool,
+    /// Whether the find bar is currently acting as a "go to line" bar.
+    pub(crate) goto_bar_visible: bool,
+    /// Whether the next Enter in the find bar should jump to a line number.
+    pub(crate) goto_mode: bool,
     /// `true` when typing replaces the character after the caret.
     pub(crate) overwrite: bool,
     /// Grey text shown after the caret, supplied by a completion host.
@@ -522,6 +530,16 @@ pub struct CodeEditor {
     pub fold_changed: Signal1<usize>,
     /// Emitted when the completion popup opens, closes or moves.
     pub completion_changed: Signal1<bool>,
+    /// Emitted with `(current hit, total hits, line, column)` after a search change.
+    pub search_result: Signal1<(usize, usize, usize, usize)>,
+    /// Emitted with the new font size after a zoom command.
+    pub zoom_changed: Signal1<f32>,
+    /// Emitted when a line's breakpoint state changes.
+    pub breakpoint_toggled: Signal1<(usize, bool)>,
+    /// Emitted when a gutter marker on a line is activated.
+    pub marker_activated: Signal1<usize>,
+    /// Emitted when the editor rebuilds its palette for a new appearance.
+    pub palette_changed: GenericSignal,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -549,6 +567,7 @@ impl CodeEditor {
     }
 
     fn build(geometry: Rect, config: CodeEditorConfig) -> Self {
+        let undo_limit = config.undo_stack_limit;
         let mut editor = Self {
             base: BaseWidget::new(WidgetKind::RichEdit, geometry, "CodeEditor"),
             model: Rc::new(RefCell::new(EditorModel::new())),
@@ -601,7 +620,7 @@ impl CodeEditor {
             hovered_tab: None,
             last_pointer_position: None,
             caret_blink: crate::style::CursorBlink::new(),
-            undo_stack: UndoStack::new(),
+            undo_stack: UndoStack::with_capacity(undo_limit),
             buffer_histories: Vec::new(),
             buffer_views: vec![BufferViewState::default()],
             active_typing: None,
@@ -609,6 +628,10 @@ impl CodeEditor {
             caret_style: CaretStyle::Line,
             extra_selections: Vec::new(),
             bookmarks: Vec::new(),
+            breakpoints: Vec::new(),
+            breakpoint_gutter: false,
+            goto_bar_visible: false,
+            goto_mode: false,
             overwrite: false,
             inline_suggestion: None,
             popup_reveal: 1.0,
@@ -638,6 +661,11 @@ impl CodeEditor {
             search_changed: Signal1::new(),
             fold_changed: Signal1::new(),
             completion_changed: Signal1::new(),
+            search_result: Signal1::new(),
+            zoom_changed: Signal1::new(),
+            breakpoint_toggled: Signal1::new(),
+            marker_activated: Signal1::new(),
+            palette_changed: GenericSignal::new(),
         };
         // An editable editor is an active insertion point the moment it exists, so its caret blinks
         // from construction rather than waiting for a focus event this widget has no notion of.
@@ -834,6 +862,122 @@ impl CodeEditor {
             return;
         }
         self.config.undo_redo_enabled = enabled;
+    }
+
+    /// Returns how many undo steps the active buffer holds.
+    pub fn undo_depth(&self) -> usize {
+        self.undo_stack.undo_count()
+    }
+
+    /// Sets the undo-step limit for the active buffer and every inactive one.
+    pub fn set_undo_limit(&mut self, limit: usize) {
+        self.config.undo_stack_limit = limit;
+        self.undo_stack.set_max_capacity(limit);
+        for history in &mut self.buffer_histories {
+            history.set_max_capacity(limit);
+        }
+    }
+
+    /// Returns the lines carrying a breakpoint, ascending.
+    pub fn breakpoints(&self) -> &[usize] {
+        &self.breakpoints
+    }
+
+    /// Returns whether the gutter reserves space for breakpoint marks.
+    pub fn is_breakpoint_gutter(&self) -> bool {
+        self.breakpoint_gutter
+    }
+
+    /// Shows or hides the breakpoint gutter column.
+    pub fn set_breakpoint_gutter(&mut self, visible: bool) {
+        if self.breakpoint_gutter == visible {
+            return;
+        }
+        self.breakpoint_gutter = visible;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns whether `line` carries a breakpoint.
+    pub fn is_breakpoint(&self, line: usize) -> bool {
+        self.breakpoints.binary_search(&line).is_ok()
+    }
+
+    /// Adds a breakpoint to `line`, returning whether it was added.
+    pub fn add_breakpoint(&mut self, line: usize) -> bool {
+        let line = line.min(self.line_count().saturating_sub(1));
+        if self.is_breakpoint(line) {
+            return false;
+        }
+        let index = self.breakpoints.partition_point(|entry| *entry < line);
+        self.breakpoints.insert(index, line);
+        self.breakpoint_toggled.emit((line, true));
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes the breakpoint from `line`, returning whether one was removed.
+    pub fn remove_breakpoint(&mut self, line: usize) -> bool {
+        let Ok(index) = self.breakpoints.binary_search(&line) else { return false };
+        self.breakpoints.remove(index);
+        self.breakpoint_toggled.emit((line, false));
+        self.base.request_redraw();
+        true
+    }
+
+    /// Toggles the breakpoint on `line`, returning the resulting state.
+    pub fn toggle_breakpoint(&mut self, line: usize) -> bool {
+        if self.is_breakpoint(line.min(self.line_count().saturating_sub(1))) {
+            self.remove_breakpoint(line.min(self.line_count().saturating_sub(1)));
+            false
+        } else {
+            self.add_breakpoint(line);
+            true
+        }
+    }
+
+    /// Increases the font size by one point.
+    pub fn zoom_in(&mut self) {
+        self.apply_zoom(self.config.font_size + 1.0);
+    }
+
+    /// Decreases the font size by one point.
+    pub fn zoom_out(&mut self) {
+        self.apply_zoom(self.config.font_size - 1.0);
+    }
+
+    /// Restores the default font size.
+    pub fn reset_zoom(&mut self) {
+        self.apply_zoom(super::types::DEFAULT_FONT_SIZE);
+    }
+
+    /// Applies a new font size and invalidates everything measured from the old one.
+    fn apply_zoom(&mut self, size: f32) {
+        let size = size.clamp(6.0, 48.0);
+        if (size - self.config.font_size).abs() < f32::EPSILON {
+            return;
+        }
+        self.config.font_size = size;
+        // Clearing the explicit advance restores the derived ratio.
+        self.config.line_advance = 0.0;
+        self.measured_geometry = None;
+        self.refresh_visible_rows();
+        self.base.request_layout();
+        self.base.request_redraw();
+        self.zoom_changed.emit(size);
+    }
+
+    /// The screen position of the IME composition's start, when one is active.
+    ///
+    /// The preedit is drawn at the caret; a host that needs to place a candidate
+    /// window reads this instead of recomputing the row height and column width.
+    /// The offset of `Preedit::cursor` inside the composition is *not* included,
+    /// because that is the host's text layout, not the document's.
+    pub fn preedit_screen_origin(&self) -> Option<Point> {
+        self.preedit.as_ref()?;
+        let map = self.coordinate_map();
+        let row = self.caret_visual_row();
+        Some(Point::new(self.caret_x(self.cursor.head), map.row_y(row)))
     }
 
     /// Sets the text drawn while the document is empty.

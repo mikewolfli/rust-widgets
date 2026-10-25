@@ -157,11 +157,31 @@ impl Overlay {
 /// The interaction contract is the one every chart in this crate shares —
 /// `hovered_index`, `data_point_clicked` — because a caller switching a chart's type
 /// should not have to relearn its events.
+/// Cached indicator output for one overlay, so the extent and the painter share one computation.
+enum CachedOverlay {
+    Single(Vec<f64>),
+    Triple(Vec<f64>, Vec<f64>, Vec<f64>),
+}
+
+/// The K-line chart control.
 pub struct CandlestickChart {
     base: BaseWidget,
     series: PriceSeries,
     overlays: Vec<Overlay>,
     price_lines: Vec<PriceLine>,
+    /// Bars derived from `series`, rebuilt when the series changes.
+    closes: Vec<f64>,
+    highs: Vec<f64>,
+    lows: Vec<f64>,
+    volumes: Vec<f64>,
+    /// Indicator values aligned with `overlays`.
+    overlay_values: Vec<CachedOverlay>,
+    /// Price decimals inferred from the series, cached with it.
+    inferred_decimals: usize,
+    /// The padded price extent including overlays and price lines.
+    extent_cache: (f64, f64),
+    /// Whether the overlay legend is painted.
+    show_overlay_legend: bool,
     /// The bar under the pointer, when there is one.
     hovered_index: Option<usize>,
     /// The price under the pointer, for the horizontal crosshair line.
@@ -174,6 +194,8 @@ pub struct CandlestickChart {
     pub bar_hovered: Signal1<usize>,
     /// Emitted with the bar index the pointer left, on exit.
     pub bar_unhovered: Signal1<usize>,
+    /// Emitted with the visible `[start, end)` bar range after every view change.
+    pub view_changed: Signal1<(usize, usize)>,
 }
 
 impl CandlestickChart {
@@ -184,12 +206,21 @@ impl CandlestickChart {
             series: PriceSeries::new(),
             overlays: Vec::new(),
             price_lines: Vec::new(),
+            closes: Vec::new(),
+            highs: Vec::new(),
+            lows: Vec::new(),
+            volumes: Vec::new(),
+            overlay_values: Vec::new(),
+            inferred_decimals: 2,
+            extent_cache: (0.0, 1.0),
+            show_overlay_legend: true,
             hovered_index: None,
             hovered_price: None,
             view: None,
             bar_clicked: Signal1::new(),
             bar_hovered: Signal1::new(),
             bar_unhovered: Signal1::new(),
+            view_changed: Signal1::new(),
         }
     }
 
@@ -206,7 +237,108 @@ impl CandlestickChart {
         if self.hovered_index.is_some_and(|index| index >= self.series.len()) {
             self.hovered_index = None;
         }
+        self.rebuild_series_cache();
         self.base.request_redraw();
+    }
+
+    /// Rebuilds the derived bar arrays, the decimals and the extent.
+    fn rebuild_series_cache(&mut self) {
+        self.closes = self.series.closes();
+        self.highs = self.series.highs();
+        self.lows = self.series.lows();
+        self.volumes = self.series.volumes();
+        self.inferred_decimals = Self::infer_decimals(self.series.bars());
+        self.rebuild_overlay_cache();
+    }
+
+    /// Recomputes every overlay once, for both the extent and the painter.
+    fn rebuild_overlay_cache(&mut self) {
+        self.overlay_values.clear();
+        self.overlay_values.reserve(self.overlays.len());
+        for overlay in &self.overlays {
+            let cached = match *overlay {
+                Overlay::MovingAverage { period } => {
+                    CachedOverlay::Single(indicators::sma(&self.closes, period))
+                }
+                Overlay::ExponentialMovingAverage { period } => {
+                    CachedOverlay::Single(indicators::ema(&self.closes, period))
+                }
+                Overlay::BollingerBands { period, multiplier } => {
+                    let (lower, middle, upper) =
+                        indicators::bollinger_bands(&self.closes, period, multiplier);
+                    CachedOverlay::Triple(upper, middle, lower)
+                }
+                Overlay::Vwap { period } => CachedOverlay::Single(indicators::vwap(
+                    &self.highs,
+                    &self.lows,
+                    &self.closes,
+                    &self.volumes,
+                    period,
+                )),
+                Overlay::DonchianChannel { period } => {
+                    let (lower, middle, upper) =
+                        indicators::donchian_channel(&self.highs, &self.lows, period);
+                    CachedOverlay::Triple(upper, middle, lower)
+                }
+            };
+            self.overlay_values.push(cached);
+        }
+        self.rebuild_extent();
+    }
+
+    /// Recomputes the padded price extent from the cached values.
+    fn rebuild_extent(&mut self) {
+        let (mut low, mut high) = self.series.price_extent();
+        if !low.is_finite() || !high.is_finite() {
+            self.extent_cache = (0.0, 1.0);
+            return;
+        }
+        let mut consider = |values: &[f64]| {
+            let (value_low, value_high) = indicators::series_extent(values);
+            if value_low.is_finite() {
+                low = low.min(value_low);
+            }
+            if value_high.is_finite() {
+                high = high.max(value_high);
+            }
+        };
+        for cached in &self.overlay_values {
+            match cached {
+                CachedOverlay::Single(values) => consider(values),
+                CachedOverlay::Triple(first, second, third) => {
+                    consider(first);
+                    consider(second);
+                    consider(third);
+                }
+            }
+        }
+        for line in &self.price_lines {
+            if line.price.is_finite() {
+                low = low.min(line.price);
+                high = high.max(line.price);
+            }
+        }
+        let span = high - low;
+        let pad = if span > 0.0 { span * 0.02 } else { high.abs().max(1.0) * 0.01 };
+        self.extent_cache = (low - pad, high + pad);
+    }
+
+    /// The decimals the series' prices appear to use.
+    fn infer_decimals(bars: &[Bar]) -> usize {
+        for bar in bars {
+            for value in [bar.open, bar.high, bar.low, bar.close] {
+                if !value.is_finite() {
+                    continue;
+                }
+                for decimals in 0..=4usize {
+                    let scaled = value * 10f64.powi(decimals as i32);
+                    if (scaled - scaled.round()).abs() < 1e-6 {
+                        return decimals;
+                    }
+                }
+            }
+        }
+        2
     }
 
     /// The overlays, in draw order.
@@ -221,12 +353,28 @@ impl CandlestickChart {
     /// calls [`Self::clear_overlays`] first.
     pub fn add_overlay(&mut self, overlay: Overlay) {
         self.overlays.push(overlay);
+        self.rebuild_overlay_cache();
         self.base.request_redraw();
     }
 
     /// Removes every overlay.
     pub fn clear_overlays(&mut self) {
         self.overlays.clear();
+        self.rebuild_overlay_cache();
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the overlay legend is drawn.
+    pub fn show_overlay_legend(&self) -> bool {
+        self.show_overlay_legend
+    }
+
+    /// Shows or hides the overlay legend.
+    pub fn set_show_overlay_legend(&mut self, show: bool) {
+        if self.show_overlay_legend == show {
+            return;
+        }
+        self.show_overlay_legend = show;
         self.base.request_redraw();
     }
 
@@ -238,12 +386,14 @@ impl CandlestickChart {
     /// Adds a horizontal price level.
     pub fn add_price_line(&mut self, line: PriceLine) {
         self.price_lines.push(line);
+        self.rebuild_extent();
         self.base.request_redraw();
     }
 
     /// Removes every price level.
     pub fn clear_price_lines(&mut self) {
         self.price_lines.clear();
+        self.rebuild_extent();
         self.base.request_redraw();
     }
 
@@ -276,6 +426,8 @@ impl CandlestickChart {
             return;
         }
         self.view = range;
+        let (start, end) = self.view_bounds();
+        self.view_changed.emit((start, end));
         self.base.request_redraw();
     }
 
@@ -350,15 +502,18 @@ impl CandlestickChart {
         index_axis: &crate::widget::special_widgets::finance::layout::IndexAxis,
         color: Color,
         width: u32,
+        start: usize,
+        end: usize,
     ) {
         let mut previous: Option<(i32, i32)> = None;
-        for (index, value) in values.iter().enumerate() {
-            if !value.is_finite() || index >= index_axis.count {
+        let visible = &values[start.min(values.len())..end.min(values.len())];
+        for (offset, value) in visible.iter().enumerate() {
+            if !value.is_finite() || offset >= index_axis.count {
                 // Break the run so the next finite point starts a new segment.
                 previous = None;
                 continue;
             }
-            let point = (index_axis.center_for(index), price_axis.y_for(*value));
+            let point = (index_axis.center_for(offset), price_axis.y_for(*value));
             if let Some(from) = previous {
                 context.draw_line_stroke(
                     crate::core::Point { x: from.0, y: from.1 },
@@ -425,65 +580,58 @@ impl CandlestickChart {
 
     /// Draws the overlays.
     fn draw_overlays(&self, context: &mut RenderContext, area: &PlotArea) {
-        let bars = self.series.bars();
-        if bars.is_empty() || self.overlays.is_empty() {
+        if self.series.bars().is_empty() || self.overlays.is_empty() {
             return;
         }
         let (low, high) = self.effective_price_extent();
         let price_axis = area.price_axis(low, high);
-        let index_axis = area.index_axis(bars.len());
+        let (start, end) = self.view_bounds();
+        let index_axis = area.index_axis(end.saturating_sub(start));
 
-        let closes = self.series.closes();
-        let highs = self.series.highs();
-        let lows = self.series.lows();
-        let volumes = self.series.volumes();
-
-        for (overlay_index, overlay) in self.overlays.iter().enumerate() {
+        for (overlay_index, cached) in self.overlay_values.iter().enumerate() {
             let color = Self::overlay_color(overlay_index);
-            match *overlay {
-                Overlay::MovingAverage { period } => {
+            match cached {
+                CachedOverlay::Single(values) => Self::draw_series_line(
+                    context,
+                    values,
+                    &price_axis,
+                    &index_axis,
+                    color,
+                    1,
+                    start,
+                    end,
+                ),
+                CachedOverlay::Triple(first, second, third) => {
                     Self::draw_series_line(
                         context,
-                        &indicators::sma(&closes, period),
+                        first,
                         &price_axis,
                         &index_axis,
                         color,
                         1,
+                        start,
+                        end,
                     );
-                }
-                Overlay::ExponentialMovingAverage { period } => {
                     Self::draw_series_line(
                         context,
-                        &indicators::ema(&closes, period),
+                        second,
                         &price_axis,
                         &index_axis,
                         color,
                         1,
+                        start,
+                        end,
                     );
-                }
-                Overlay::BollingerBands { period, multiplier } => {
-                    let (lower, middle, upper) =
-                        indicators::bollinger_bands(&closes, period, multiplier);
-                    Self::draw_series_line(context, &upper, &price_axis, &index_axis, color, 1);
-                    Self::draw_series_line(context, &middle, &price_axis, &index_axis, color, 1);
-                    Self::draw_series_line(context, &lower, &price_axis, &index_axis, color, 1);
-                }
-                Overlay::Vwap { period } => {
                     Self::draw_series_line(
                         context,
-                        &indicators::vwap(&highs, &lows, &closes, &volumes, period),
+                        third,
                         &price_axis,
                         &index_axis,
                         color,
                         1,
+                        start,
+                        end,
                     );
-                }
-                Overlay::DonchianChannel { period } => {
-                    let (lower, middle, upper) =
-                        indicators::donchian_channel(&highs, &lows, period);
-                    Self::draw_series_line(context, &upper, &price_axis, &index_axis, color, 1);
-                    Self::draw_series_line(context, &middle, &price_axis, &index_axis, color, 1);
-                    Self::draw_series_line(context, &lower, &price_axis, &index_axis, color, 1);
                 }
             }
         }
@@ -623,20 +771,7 @@ impl CandlestickChart {
     /// the caller passing a format string. Capped at four, past which a price label stops
     /// being readable at the axis width.
     fn inferred_decimals(&self) -> usize {
-        for bar in self.series.bars() {
-            for value in [bar.open, bar.high, bar.low, bar.close] {
-                if !value.is_finite() {
-                    continue;
-                }
-                for decimals in 0..=4usize {
-                    let scaled = value * 10f64.powi(decimals as i32);
-                    if (scaled - scaled.round()).abs() < 1e-6 {
-                        return decimals;
-                    }
-                }
-            }
-        }
-        2
+        self.inferred_decimals
     }
 
     /// The price extent including every overlay, so an overlay is not clipped.
@@ -645,62 +780,40 @@ impl CandlestickChart {
     /// routinely sits outside the traded range, and a chart that clipped it would show a
     /// band that appears to touch the top of the pane.
     fn effective_price_extent(&self) -> (f64, f64) {
-        let (mut low, mut high) = self.series.price_extent();
-        if !low.is_finite() || !high.is_finite() {
-            return (0.0, 1.0);
-        }
+        // Both the axis and the painter read the one cached value, so a frame does not
+        // recompute every overlay three to five times.
+        self.extent_cache
+    }
 
-        let closes = self.series.closes();
-        let highs = self.series.highs();
-        let lows = self.series.lows();
-        let volumes = self.series.volumes();
-        let mut consider = |values: &[f64]| {
-            let (value_low, value_high) = indicators::series_extent(values);
-            if value_low.is_finite() {
-                low = low.min(value_low);
+    /// Draws a compact legend for the overlays, in their draw order.
+    ///
+    /// The six-colour palette existed with no key, so a chart with three averages could not
+    /// say which was which. Each row pairs the overlay's factory name with its swatch.
+    fn draw_overlay_legend(&self, context: &mut RenderContext, area: &PlotArea) {
+        let font = role_font(self.style(), 10.0);
+        let ink = self.chrome().ink;
+        let mut y = area.rect.y + 4;
+        for (index, overlay) in self.overlays.iter().enumerate() {
+            let color = Self::overlay_color(index);
+            let name = overlay.as_str();
+            let text_width = context.measure_text(name, &font).width as i32;
+            let x = area.right() - text_width - 20;
+            if x < area.rect.x {
+                break;
             }
-            if value_high.is_finite() {
-                high = high.max(value_high);
-            }
-        };
-
-        for overlay in &self.overlays {
-            match *overlay {
-                Overlay::MovingAverage { period } => consider(&indicators::sma(&closes, period)),
-                Overlay::ExponentialMovingAverage { period } => {
-                    consider(&indicators::ema(&closes, period))
-                }
-                Overlay::BollingerBands { period, multiplier } => {
-                    let (lower, middle, upper) =
-                        indicators::bollinger_bands(&closes, period, multiplier);
-                    consider(&lower);
-                    consider(&middle);
-                    consider(&upper);
-                }
-                Overlay::Vwap { period } => {
-                    consider(&indicators::vwap(&highs, &lows, &closes, &volumes, period))
-                }
-                Overlay::DonchianChannel { period } => {
-                    let (lower, middle, upper) =
-                        indicators::donchian_channel(&highs, &lows, period);
-                    consider(&lower);
-                    consider(&middle);
-                    consider(&upper);
-                }
+            context.fill_rect(Rect::new(x, y + 3, 8, 8), color);
+            context.draw_text(
+                crate::core::Point { x: x + 12, y },
+                name,
+                &font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+            y += 14;
+            if y + 14 > area.bottom() {
+                break;
             }
         }
-        for line in &self.price_lines {
-            if line.price.is_finite() {
-                low = low.min(line.price);
-                high = high.max(line.price);
-            }
-        }
-
-        // A flat series would give a zero span; a small pad keeps the line off the frame
-        // and leaves room for the candles' own bodies.
-        let span = high - low;
-        let pad = if span > 0.0 { span * 0.02 } else { high.abs().max(1.0) * 0.01 };
-        (low - pad, high + pad)
     }
 
     /// Draws the crosshair for the hovered bar.
@@ -712,8 +825,12 @@ impl CandlestickChart {
         if index >= bars.len() {
             return;
         }
-        let index_axis = area.index_axis(bars.len());
-        let x = index_axis.center_for(index);
+        let (start, end) = self.view_bounds();
+        if index < start || index >= end {
+            return;
+        }
+        let index_axis = area.index_axis(end.saturating_sub(start));
+        let x = index_axis.center_for(index - start);
         let chrome = self.chrome();
         context.draw_line_stroke(
             crate::core::Point { x, y: area.rect.y },
@@ -844,6 +961,14 @@ impl Widget for CandlestickChart {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "view_changed" => {
+                Some(EventSignalRef::mapped("view_changed", &self.view_changed, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }
@@ -863,8 +988,12 @@ impl EventHandler for CandlestickChart {
         match event {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
                 let area = self.plot_area();
-                let index_axis = area.index_axis(self.series.len());
-                let next = index_axis.index_at(pos.x).filter(|index| *index < self.series.len());
+                let (start, end) = self.view_bounds();
+                let index_axis = area.index_axis(end.saturating_sub(start));
+                let next = index_axis
+                    .index_at(pos.x)
+                    .map(|index| start + index)
+                    .filter(|index| *index < end);
                 if next != self.hovered_index {
                     if let Some(previous) = self.hovered_index {
                         self.bar_unhovered.emit(previous);
@@ -909,9 +1038,12 @@ impl EventHandler for CandlestickChart {
             }
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
                 let area = self.plot_area();
-                let index_axis = area.index_axis(self.series.len());
-                if let Some(index) =
-                    index_axis.index_at(pos.x).filter(|index| *index < self.series.len())
+                let (start, end) = self.view_bounds();
+                let index_axis = area.index_axis(end.saturating_sub(start));
+                if let Some(index) = index_axis
+                    .index_at(pos.x)
+                    .map(|index| start + index)
+                    .filter(|index| *index < end)
                 {
                     self.bar_clicked.emit(index);
                 }
@@ -948,6 +1080,9 @@ impl Draw for CandlestickChart {
         self.draw_candles(context, &area);
         self.draw_overlays(context, &area);
         self.draw_price_lines(context, &area);
+        if self.show_overlay_legend && !self.overlays.is_empty() {
+            self.draw_overlay_legend(context, &area);
+        }
         self.draw_crosshair(context, &area);
     }
 }
@@ -969,6 +1104,7 @@ impl WidgetProperties for CandlestickChart {
             "series" => Ok(CapabilityValue::String(serialise_closes(&self.series))),
             "overlay_count" => Ok(CapabilityValue::UInt(self.overlays.len() as u64)),
             "show_price_levels" => Ok(CapabilityValue::Bool(!self.price_lines.is_empty())),
+            "show_overlay_legend" => Ok(CapabilityValue::Bool(self.show_overlay_legend)),
             _ => base_property_get(self, name),
         }
     }
@@ -1002,6 +1138,7 @@ impl WidgetProperties for CandlestickChart {
                 while self.overlays.len() < count as usize {
                     self.overlays.push(Overlay::moving_average(20));
                 }
+                self.rebuild_overlay_cache();
                 self.base.request_redraw();
                 Ok(())
             }
@@ -1014,12 +1151,26 @@ impl WidgetProperties for CandlestickChart {
                 }
                 Ok(())
             }
+            "show_overlay_legend" => {
+                let CapabilityValue::Bool(show) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.show_overlay_legend = show;
+                self.base.request_redraw();
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["series", "overlay_count", "show_price_levels", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "series",
+            "overlay_count",
+            "show_price_levels",
+            "show_overlay_legend",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `candlestick_chart` publishes.
@@ -1234,6 +1385,33 @@ mod tests {
     /// because `GenericSignal` hands the value out as an `Arc` and the slot must be
     /// `Send`; the shared counter is the pattern every other signal test in this crate
     /// uses.
+    /// The view range is shared by the painter, the overlay pass and the hit test.
+    #[test]
+    fn a_view_range_reports_and_maps_hits_to_global_indices() {
+        let mut chart = CandlestickChart::new(Rect::new(0, 0, 300, 200));
+        let mut series = PriceSeries::new();
+        for index in 0..10 {
+            let price = 10.0 + index as f64;
+            series.push(Bar::flat(price, 1.0));
+        }
+        chart.set_series(series);
+        chart.add_overlay(Overlay::moving_average(2));
+        chart.add_overlay(Overlay::bollinger_bands(3, 2.0));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        chart.view_changed.connect(move |range| sink.lock().unwrap().push(*range));
+        let clicked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let click_sink = std::sync::Arc::clone(&clicked);
+        chart.bar_clicked.connect(move |index| click_sink.lock().unwrap().push(*index));
+
+        chart.set_view_range(Some((4, 7)));
+        assert_eq!(*seen.lock().unwrap(), vec![(4, 7)]);
+        let area = chart.plot_area();
+        chart.handle_event(&crate::event::Event::mouse_press(area.rect.x + 1, area.rect.y + 5, 1));
+        assert_eq!(*clicked.lock().unwrap(), vec![4], "the left edge is the first visible bar");
+        assert!(chart.show_overlay_legend(), "the legend is on by default when overlays exist");
+    }
+
     #[test]
     fn clicking_a_bar_emits_its_index() {
         let mut chart = CandlestickChart::new(Rect::new(0, 0, 640, 360));

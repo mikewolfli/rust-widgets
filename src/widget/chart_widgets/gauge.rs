@@ -19,8 +19,11 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{draw_arc_segments, point_on_circle, RenderContext};
+use crate::signal::Signal1;
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::{expect_f32, expect_string, expect_u32};
+use crate::widget::capability::coercion::{
+    expect_f32, expect_string, expect_string_list, expect_u32,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -42,7 +45,7 @@ const TICK_COUNT: u32 = 5;
 /// Zones are drawn before the value arc, so the filled value covers its own part of the
 /// band. A zone whose `start` is greater than its `end` is refused rather than reordered,
 /// because the caller's ordering is the band's meaning.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GaugeZone {
     /// The lower bound, in gauge value units.
     pub start: f32,
@@ -50,12 +53,64 @@ pub struct GaugeZone {
     pub end: f32,
     /// The band's colour.
     pub color: Color,
+    /// A level name reported by `band_clicked`; empty falls back to the colour's spelling.
+    pub name: String,
+}
+
+/// The band type's documented `bands` spelling.
+pub type ValueBand = GaugeZone;
+
+/// How the gauge marks the current reading on its sweep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GaugeNeedleStyle {
+    /// No needle; the value arc alone marks the reading (the historical behaviour).
+    None,
+    /// A thin line from the centre to the reading.
+    Line,
+    /// A tapered triangle from the centre to the reading.
+    Triangle,
+}
+
+impl GaugeNeedleStyle {
+    /// The token this style publishes.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Line => "line",
+            Self::Triangle => "triangle",
+        }
+    }
+
+    /// Parses [`Self::as_str`].
+    pub fn from_token(token: &str) -> Option<Self> {
+        match crate::widget::capability::coercion::normalize_key(token).as_str() {
+            "none" => Some(Self::None),
+            "line" => Some(Self::Line),
+            "triangle" => Some(Self::Triangle),
+            _ => None,
+        }
+    }
 }
 
 impl GaugeZone {
     /// Creates a band from `start` to `end`.
     pub fn new(start: f32, end: f32, color: Color) -> Self {
-        Self { start, end, color }
+        Self { start, end, color, name: String::new() }
+    }
+
+    /// Names the band, which is the payload `band_clicked` reports.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    /// The name `band_clicked` reports: the explicit name, or the colour's spelling.
+    pub fn level_name(&self) -> String {
+        if self.name.is_empty() {
+            format!("{:?}", self.color)
+        } else {
+            self.name.clone()
+        }
     }
 }
 
@@ -75,6 +130,22 @@ pub struct Gauge {
     thickness: u32,
     /// Threshold colour bands drawn on the track, in value units.
     zones: Vec<GaugeZone>,
+    /// Number of major tick marks plus one, i.e. the number of segments the sweep is divided into.
+    tick_count: u32,
+    /// Sweep start, in radians clockwise from 3 o'clock.
+    start_angle: f32,
+    /// Sweep end, in radians clockwise from 3 o'clock.
+    end_angle: f32,
+    /// How the reading is marked on the sweep.
+    needle_style: GaugeNeedleStyle,
+    /// Suffix printed after the readout (the `unit_label` spelling).
+    unit_label: String,
+    /// Whether a pointer drag is currently setting the value.
+    dragging: bool,
+    /// Emitted with the new reading after an accepted change.
+    pub value_changed: Signal1<f32>,
+    /// Emitted with the band's level name when a band is clicked.
+    pub band_clicked: Signal1<String>,
     /// Whether the displayed value eases to a new reading.
     animate: bool,
     /// The displayed fraction, advanced by [`Widget::tick`] while `animate` is set.
@@ -93,6 +164,14 @@ impl Gauge {
             unit: String::new(),
             thickness: 10,
             zones: Vec::new(),
+            tick_count: TICK_COUNT,
+            start_angle: SWEEP_START,
+            end_angle: SWEEP_START + SWEEP,
+            needle_style: GaugeNeedleStyle::None,
+            unit_label: String::new(),
+            dragging: false,
+            value_changed: Signal1::new(),
+            band_clicked: Signal1::new(),
             animate: false,
             display: PropertyDriver::at(0.0, MotionSlot::Normal),
         }
@@ -113,6 +192,7 @@ impl Gauge {
         if self.animate {
             self.display.set_target(self.raw_fraction());
         }
+        self.value_changed.emit(clamped);
         self.base.request_redraw();
     }
 
@@ -175,6 +255,129 @@ impl Gauge {
     /// Returns the threshold colour bands.
     pub fn zones(&self) -> &[GaugeZone] {
         &self.zones
+    }
+
+    /// The threshold bands, under the `bands` spelling.
+    pub fn bands(&self) -> &[GaugeZone] {
+        &self.zones
+    }
+
+    /// Replaces the threshold bands, under the `bands` spelling.
+    pub fn set_bands(&mut self, bands: Vec<GaugeZone>) {
+        self.set_zones(bands);
+    }
+
+    /// Number of tick segments across the sweep.
+    pub fn tick_count(&self) -> u32 {
+        self.tick_count
+    }
+
+    /// Sets the number of tick segments. Zero is raised to one so the sweep always has marks.
+    pub fn set_tick_count(&mut self, count: u32) {
+        let count = count.max(1);
+        if self.tick_count == count {
+            return;
+        }
+        self.tick_count = count;
+        self.base.request_redraw();
+    }
+
+    /// The sweep start angle, in radians clockwise from 3 o'clock.
+    pub fn start_angle(&self) -> f32 {
+        self.start_angle
+    }
+
+    /// Sets the sweep start angle. Non-finite input is refused.
+    pub fn set_start_angle(&mut self, angle: f32) {
+        if !angle.is_finite() || self.start_angle == angle {
+            return;
+        }
+        self.start_angle = angle;
+        self.base.request_redraw();
+    }
+
+    /// The sweep end angle, in radians clockwise from 3 o'clock.
+    pub fn end_angle(&self) -> f32 {
+        self.end_angle
+    }
+
+    /// Sets the sweep end angle. Non-finite input is refused.
+    pub fn set_end_angle(&mut self, angle: f32) {
+        if !angle.is_finite() || self.end_angle == angle {
+            return;
+        }
+        self.end_angle = angle;
+        self.base.request_redraw();
+    }
+
+    /// How the reading is marked on the sweep.
+    pub fn needle_style(&self) -> GaugeNeedleStyle {
+        self.needle_style
+    }
+
+    /// Sets the needle style.
+    pub fn set_needle_style(&mut self, style: GaugeNeedleStyle) {
+        if self.needle_style == style {
+            return;
+        }
+        self.needle_style = style;
+        self.base.request_redraw();
+    }
+
+    /// The readout's unit suffix, under the `unit_label` spelling.
+    pub fn unit_label(&self) -> &str {
+        &self.unit_label
+    }
+
+    /// Sets the readout's unit suffix.
+    pub fn set_unit_label(&mut self, label: String) {
+        if self.unit == label {
+            self.unit_label = label;
+            return;
+        }
+        self.unit = label.clone();
+        self.unit_label = label;
+        self.base.request_redraw();
+    }
+
+    /// The fraction represented by a pointer angle, clamped into the sweep.
+    fn fraction_at_angle(&self, angle: f32) -> Option<f32> {
+        let sweep = self.end_angle - self.start_angle;
+        if sweep.abs() <= f32::EPSILON {
+            return None;
+        }
+        let mut delta = angle - self.start_angle;
+        while delta < 0.0 {
+            delta += core::f32::consts::TAU;
+        }
+        while delta >= core::f32::consts::TAU {
+            delta -= core::f32::consts::TAU;
+        }
+        if sweep > 0.0 {
+            Some((delta / sweep).clamp(0.0, 1.0))
+        } else {
+            // A sweep that runs the other way still addresses the same arc.
+            let positive_sweep = -sweep;
+            let wrapped = if delta > 0.0 { delta } else { delta + core::f32::consts::TAU };
+            Some((1.0 - (wrapped / positive_sweep).clamp(0.0, 1.0)).clamp(0.0, 1.0))
+        }
+    }
+
+    /// Sets the value from a pointer position, when the pointer is on the dial.
+    fn set_value_from_pointer(&mut self, pos: Point) -> bool {
+        let (center, radius) = self.dial();
+        let dx = (pos.x - center.x) as f32;
+        let dy = (pos.y - center.y) as f32;
+        if (dx * dx + dy * dy).sqrt() > radius + self.thickness as f32 {
+            return false;
+        }
+        let angle = dy.atan2(dx);
+        let Some(fraction) = self.fraction_at_angle(angle) else {
+            return false;
+        };
+        let value = self.minimum + fraction * (self.maximum - self.minimum);
+        self.set_value(value);
+        true
     }
 
     /// Enables easing from the displayed reading to a newly set value.
@@ -328,6 +531,24 @@ impl Widget for Gauge {
         self.animate && self.display.is_moving()
     }
 
+    /// Resolves the gauge's published events to its signals.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "value_changed" => {
+                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |v| {
+                    CapabilityValue::Float(f64::from(*v))
+                }))
+            }
+            "band_clicked" => {
+                Some(EventSignalRef::mapped("band_clicked", &self.band_clicked, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
+            _ => None,
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -342,6 +563,28 @@ impl WidgetProperties for Gauge {
             "unit" => Ok(CapabilityValue::String(self.unit.clone())),
             "thickness" => Ok(CapabilityValue::UInt(u64::from(self.thickness))),
             "zone_count" => Ok(CapabilityValue::UInt(self.zones.len() as u64)),
+            "bands" => Ok(CapabilityValue::Tuple(
+                self.zones
+                    .iter()
+                    .map(|zone| {
+                        CapabilityValue::String(format!(
+                            "{}|{}|{},{},{},{}|{}",
+                            zone.start,
+                            zone.end,
+                            zone.color.r,
+                            zone.color.g,
+                            zone.color.b,
+                            zone.color.a,
+                            zone.name
+                        ))
+                    })
+                    .collect(),
+            )),
+            "tick_count" => Ok(CapabilityValue::UInt(u64::from(self.tick_count))),
+            "start_angle" => Ok(CapabilityValue::Float(f64::from(self.start_angle))),
+            "end_angle" => Ok(CapabilityValue::Float(f64::from(self.end_angle))),
+            "needle_style" => Ok(CapabilityValue::String(self.needle_style.as_str().to_string())),
+            "unit_label" => Ok(CapabilityValue::String(self.unit_label.clone())),
             "animated" => Ok(CapabilityValue::Bool(self.animate)),
             _ => base_property_get(self, name),
         }
@@ -367,7 +610,58 @@ impl WidgetProperties for Gauge {
                 self.set_thickness(expect_u32(value)?);
                 Ok(())
             }
+            "tick_count" => {
+                self.set_tick_count(expect_u32(value)?);
+                Ok(())
+            }
+            "start_angle" => {
+                self.set_start_angle(expect_f32(value)?);
+                Ok(())
+            }
+            "end_angle" => {
+                self.set_end_angle(expect_f32(value)?);
+                Ok(())
+            }
+            "needle_style" => {
+                let token = expect_string(value)?;
+                let style = GaugeNeedleStyle::from_token(&token)
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_needle_style(style);
+                Ok(())
+            }
+            "unit_label" => {
+                self.set_unit_label(expect_string(value)?);
+                Ok(())
+            }
             "zone_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "bands" => {
+                let mut bands = Vec::new();
+                for entry in expect_string_list(value)? {
+                    let mut parts = entry.splitn(4, '|');
+                    let start = parts.next().and_then(|v| v.parse::<f32>().ok());
+                    let end = parts.next().and_then(|v| v.parse::<f32>().ok());
+                    let color = parts.next().and_then(|spec| {
+                        let mut channels = spec.split(',');
+                        let r = channels.next().and_then(|v| v.parse().ok());
+                        let g = channels.next().and_then(|v| v.parse().ok());
+                        let b = channels.next().and_then(|v| v.parse().ok());
+                        let a = channels.next().and_then(|v| v.parse().ok());
+                        match (r, g, b, a) {
+                            (Some(r), Some(g), Some(b), Some(a)) => Some(Color::rgba(r, g, b, a)),
+                            _ => None,
+                        }
+                    });
+                    let name = parts.next().unwrap_or_default().to_string();
+                    match (start, end, color) {
+                        (Some(start), Some(end), Some(color)) => {
+                            bands.push(GaugeZone { start, end, color, name });
+                        }
+                        _ => return Err(CapabilityAccessError::TypeMismatch),
+                    }
+                }
+                self.set_bands(bands);
+                Ok(())
+            }
             "animated" => {
                 let enabled = match value {
                     CapabilityValue::Bool(flag) => flag,
@@ -389,6 +683,12 @@ impl WidgetProperties for Gauge {
             "unit",
             "thickness",
             "zone_count",
+            "bands",
+            "tick_count",
+            "start_angle",
+            "end_angle",
+            "needle_style",
+            "unit_label",
             "animated",
             BASE_PROPERTY_NAMES
         ]
@@ -428,12 +728,14 @@ impl Draw for Gauge {
         let track = ink.blend(&surface, 0.82).legible_on(surface, 1.5);
 
         let (center, radius) = self.dial();
+        let sweep_start = self.start_angle;
+        let sweep = self.end_angle - self.start_angle;
         draw_arc_segments(
             ctx,
             center,
             radius,
-            SWEEP_START,
-            SWEEP_START + SWEEP,
+            sweep_start,
+            sweep_start + sweep,
             track,
             self.thickness,
         );
@@ -453,8 +755,8 @@ impl Draw for Gauge {
                     ctx,
                     center,
                     radius,
-                    SWEEP_START + SWEEP * start,
-                    SWEEP_START + SWEEP * end,
+                    sweep_start + sweep * start,
+                    sweep_start + sweep * end,
                     if is_enabled { zone.color } else { zone.color.with_alpha(110) },
                     self.thickness,
                 );
@@ -472,11 +774,34 @@ impl Draw for Gauge {
                 ctx,
                 center,
                 radius,
-                SWEEP_START,
-                SWEEP_START + SWEEP * fraction,
+                sweep_start,
+                sweep_start + sweep * fraction,
                 zone_color.unwrap_or(accent),
                 self.thickness,
             );
+        }
+
+        // The needle, when the caller asked for one. It is drawn over the track so it marks the
+        // exact reading rather than the filled arc's end.
+        let needle_angle = sweep_start + sweep * fraction;
+        let needle_tip =
+            point_on_circle(center, radius - self.thickness as f32 * 0.5, needle_angle);
+        let needle_color = zone_color.unwrap_or(accent);
+        match self.needle_style {
+            GaugeNeedleStyle::None => {}
+            GaugeNeedleStyle::Line => {
+                ctx.draw_line_stroke(center, needle_tip, needle_color, 2);
+            }
+            GaugeNeedleStyle::Triangle => {
+                let hub = 6.0f32.min(radius / 3.0).max(1.0);
+                let left =
+                    point_on_circle(center, hub, needle_angle + core::f32::consts::FRAC_PI_2);
+                let right =
+                    point_on_circle(center, hub, needle_angle - core::f32::consts::FRAC_PI_2);
+                ctx.draw_line_stroke(needle_tip, left, needle_color, 2);
+                ctx.draw_line_stroke(needle_tip, right, needle_color, 2);
+                ctx.draw_line_stroke(left, right, needle_color, 2);
+            }
         }
 
         // Major ticks sit just inside the track. They are drawn from the same angle formula the
@@ -484,8 +809,8 @@ impl Draw for Gauge {
         let tick_outer = (radius - (self.thickness as f32) - 3.0).max(1.0);
         let tick_inner = (tick_outer - 4.0).max(0.0);
         if tick_inner > 0.0 {
-            for index in 0..=TICK_COUNT {
-                let angle = SWEEP_START + SWEEP * (index as f32 / TICK_COUNT as f32);
+            for index in 0..=self.tick_count {
+                let angle = sweep_start + sweep * (index as f32 / self.tick_count as f32);
                 ctx.draw_line_stroke(
                     point_on_circle(center, tick_outer, angle),
                     point_on_circle(center, tick_inner, angle),
@@ -547,6 +872,48 @@ fn format_number(value: f32) -> String {
 impl EventHandler for Gauge {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
+                let (center, radius) = self.dial();
+                let dx = (pos.x - center.x) as f32;
+                let dy = (pos.y - center.y) as f32;
+                let on_dial = (dx * dx + dy * dy).sqrt() <= radius + self.thickness as f32;
+                if on_dial {
+                    if let Some(fraction) = self.fraction_at_angle(dy.atan2(dx)) {
+                        let pointer_value = self.minimum + fraction * (self.maximum - self.minimum);
+                        if let Some(zone) = self
+                            .zones
+                            .iter()
+                            .find(|zone| pointer_value >= zone.start && pointer_value <= zone.end)
+                            .cloned()
+                        {
+                            self.band_clicked.emit(zone.level_name());
+                        }
+                    }
+                }
+                if self.set_value_from_pointer(*pos) {
+                    self.dragging = true;
+                    self.base.set_mouse_pressed(true);
+                }
+            }
+            Event::MouseMove { pos } => {
+                if self.dragging {
+                    self.set_value_from_pointer(*pos);
+                }
+            }
+            Event::MouseRelease { button, .. } if *button == 1 => {
+                self.dragging = false;
+                self.base.set_mouse_pressed(false);
+            }
+            Event::MouseLeave { .. } => {
+                self.dragging = false;
+                self.base.set_mouse_pressed(false);
+            }
+            _ => { /* Other events are not relevant */ }
+        }
     }
 }
 
@@ -673,5 +1040,35 @@ mod tests {
         }
         assert!((gauge.fraction() - 0.8).abs() < 1e-3, "the eased value reaches the reading");
         assert!(!gauge.is_animating());
+    }
+
+    #[test]
+    fn ticks_sweep_needle_and_band_events_are_configurable() {
+        use crate::event::{Event, EventHandler};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut gauge = Gauge::new(Rect::new(0, 0, 160, 160));
+        assert_eq!(gauge.tick_count(), TICK_COUNT);
+        gauge.set_tick_count(12);
+        assert_eq!(gauge.tick_count(), 12);
+        gauge.set_start_angle(0.0);
+        gauge.set_end_angle(core::f32::consts::TAU);
+        assert_eq!(gauge.start_angle(), 0.0);
+        gauge.set_needle_style(GaugeNeedleStyle::Line);
+        assert_eq!(gauge.needle_style(), GaugeNeedleStyle::Line);
+        let _ = crate::widget::svg::render_to_svg(&mut gauge);
+
+        gauge.set_bands(vec![GaugeZone::new(0.0, 50.0, Color::SUCCESS).with_name("low")]);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&hits);
+        gauge.band_clicked.connect(move |_| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        // A point to the left of the centre is at the start of the sweep after the 0-radian
+        // start angle above, i.e. inside the `low` band.
+        gauge.handle_event(&Event::MousePress { pos: Point::new(2, 80), button: 1, modifiers: 0 });
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "the band click is reported");
+        assert!(gauge.value() >= 0.0 && gauge.value() <= 50.0);
     }
 }

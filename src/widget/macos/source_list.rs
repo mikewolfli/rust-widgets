@@ -19,7 +19,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{profile_metrics, role_font, ControlMetricsProfile, FOCUS_RING_WIDTH};
 use crate::widget::text_utils::elide_to_width;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 use super::{
@@ -43,12 +43,36 @@ pub struct SourceListRow {
     pub id: String,
     /// The caption shown in the row.
     pub label: String,
+    /// The sidebar's signature leading icon.
+    pub icon: Option<IconName>,
+    /// A count shown in a trailing capsule (unread items, children, ...).
+    pub badge: Option<u32>,
+    /// A small leading colour dot, for a tag or status.
+    pub accent_dot: Option<crate::core::Color>,
 }
 
 impl SourceListRow {
     /// A row with an identifier and a caption.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into() }
+        Self { id: id.into(), label: label.into(), icon: None, badge: None, accent_dot: None }
+    }
+
+    /// The same row with a leading icon.
+    pub fn with_icon(mut self, icon: IconName) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// The same row with a trailing badge count.
+    pub fn with_badge(mut self, badge: u32) -> Self {
+        self.badge = Some(badge);
+        self
+    }
+
+    /// The same row with a leading accent dot.
+    pub fn with_accent_dot(mut self, dot: crate::core::Color) -> Self {
+        self.accent_dot = Some(dot);
+        self
     }
 }
 
@@ -88,6 +112,8 @@ pub struct MacSourceList {
     row_height: u32,
     /// Emitted when the selected row changes, with the row's identifier.
     pub selection_changed: Signal1<String>,
+    /// Emitted when a row's badge changes, with `(row id, new badge)`.
+    pub badge_changed: Signal1<(String, Option<u32>)>,
 }
 
 impl MacSourceList {
@@ -100,6 +126,7 @@ impl MacSourceList {
             hovered_row: None,
             row_height: MAC_SOURCE_LIST_ROW_HEIGHT,
             selection_changed: Signal1::new(),
+            badge_changed: Signal1::new(),
         }
     }
 
@@ -143,9 +170,35 @@ impl MacSourceList {
         self.selected_row.filter(|row| *row < self.row_count())
     }
 
-    /// The identifier of the selected row, or `None` when nothing is selected.
+    /// Returns the identifier of the selected row, or `None` when nothing is selected.
     pub fn selected_id(&self) -> Option<&str> {
         self.row_and_section(self.selected_row()?).map(|(row, _)| row.id.as_str())
+    }
+
+    /// Sets a row's badge count, returning whether it changed.
+    ///
+    /// The badge is drawn in a trailing capsule. Refusing an out-of-range flat index returns
+    /// `false` rather than silently updating nothing; a change is announced through
+    /// [`Self::badge_changed`] with the row's identifier, so a host can update its own model
+    /// without re-deriving the index.
+    pub fn set_badge(&mut self, flat: usize, badge: Option<u32>) -> bool {
+        let Some((row, _)) = self.row_and_section(flat) else {
+            return false;
+        };
+        if row.badge == badge {
+            return false;
+        }
+        let id = row.id.clone();
+        // The borrow above is released before the section is mutated.
+        let Some(row) =
+            self.sections.iter_mut().flat_map(|section| section.rows.iter_mut()).nth(flat)
+        else {
+            return false;
+        };
+        row.badge = badge;
+        self.base.request_redraw();
+        self.badge_changed.emit((id, badge));
+        true
     }
 
     /// Selects the row at flat index `row`, or clears the selection when `row` is `None`.
@@ -281,6 +334,17 @@ impl Widget for MacSourceList {
                 &self.selection_changed,
                 |value| CapabilityValue::String(value.clone()),
             )),
+            "badge_changed" => {
+                Some(EventSignalRef::mapped("badge_changed", &self.badge_changed, |value| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::String(value.0.clone()),
+                        match value.1 {
+                            Some(badge) => CapabilityValue::UInt(badge as u64),
+                            None => CapabilityValue::Null,
+                        },
+                    ]))
+                }))
+            }
             _ => None,
         }
     }
@@ -420,7 +484,40 @@ impl Draw for MacSourceList {
             let Some((entry, _)) = self.row_and_section(flat) else {
                 continue;
             };
-            let available = row.width.saturating_sub((ROW_LABEL_INSET as u32) + 8);
+            let mut ink_x = row.x + ROW_LABEL_INSET;
+            if let Some(dot) = entry.accent_dot {
+                context.fill_circle(Point::new(row.x + 8, row.y + row.height as i32 / 2), 3, dot);
+                ink_x += 10;
+            }
+            if let Some(icon) = entry.icon {
+                let icon_side = 14u32;
+                let icon_y = row.y + (row.height.saturating_sub(icon_side) / 2) as i32;
+                let icon_ink = if self.selected_row() == Some(flat) {
+                    colors.accent.contrast_color()
+                } else {
+                    ink
+                };
+                crate::widget::draw_icon_at(
+                    context,
+                    Rect::new(ink_x, icon_y, icon_side, icon_side),
+                    icon_ink,
+                    icon,
+                );
+                ink_x += icon_side as i32 + 4;
+            }
+
+            // A badge is a trailing capsule; its width is measured before the label so the label
+            // is elided against the space it actually has.
+            let mut badge_width = 0u32;
+            let mut badge_text = String::new();
+            if let Some(badge) = entry.badge {
+                use core::fmt::Write as _;
+                let _ = write!(badge_text, "{badge}");
+                let metrics = context.measure_text(&badge_text, &row_font);
+                badge_width = metrics.width.min(row.width.saturating_sub(8)) + 10;
+            }
+            let reserved = (ink_x - row.x) as u32 + badge_width + 8;
+            let available = row.width.saturating_sub(reserved);
             if available == 0 {
                 continue;
             }
@@ -433,12 +530,39 @@ impl Draw for MacSourceList {
             };
             let line = context.text_line(row, &row_font);
             context.draw_text(
-                Point::new(row.x + ROW_LABEL_INSET, line.y),
+                Point::new(ink_x, line.y),
                 shown.as_ref(),
                 &row_font,
                 label_ink,
                 HorizontalAlignment::Left,
             );
+
+            if badge_width > 0 {
+                let badge_height = line.height.min(row.height.saturating_sub(6)).max(12);
+                let badge_rect = Rect::new(
+                    row.right() - badge_width as i32 - 6,
+                    row.y + (row.height.saturating_sub(badge_height) / 2) as i32,
+                    badge_width,
+                    badge_height,
+                );
+                let badge_fill = if self.selected_row() == Some(flat) {
+                    colors.accent.contrast_color().with_alpha(45)
+                } else {
+                    colors.accent
+                };
+                context.fill_rounded_rect(badge_rect, badge_height / 2, badge_fill);
+                let metrics = context.measure_text(&badge_text, &row_font);
+                context.draw_text(
+                    Point::new(
+                        badge_rect.x + (badge_rect.width as i32 - metrics.width as i32) / 2,
+                        badge_rect.y + (badge_rect.height as i32 - metrics.height as i32) / 2,
+                    ),
+                    &badge_text,
+                    &row_font,
+                    badge_fill.contrast_color(),
+                    HorizontalAlignment::Left,
+                );
+            }
         }
 
         context.pop_clip();
@@ -705,5 +829,46 @@ mod tests {
                 assert!(origin.y >= 0 && origin.y < 240, "captions stay inside the sidebar");
             }
         }
+    }
+
+    #[test]
+    fn rows_carry_icons_badges_and_accent_dots() {
+        let mut list = MacSourceList::new(Rect::new(0, 0, 220, 240));
+        list.set_sections(vec![SourceListSection::new("Mail").with_rows(vec![
+            SourceListRow::new("inbox", "Inbox")
+                .with_icon(IconName::Check)
+                .with_badge(12)
+                .with_accent_dot(crate::core::Color::rgb(255, 0, 0)),
+            SourceListRow::new("sent", "Sent"),
+        ])]);
+        assert_eq!(list.sections()[0].rows[0].badge, Some(12));
+
+        let badge = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let b = badge.clone();
+        list.badge_changed.connect(move |value: std::sync::Arc<(String, Option<u32>)>| {
+            *b.lock().unwrap() = Some((*value).clone());
+        });
+        assert!(list.set_badge(0, Some(7)));
+        assert_eq!(*badge.lock().unwrap(), Some(("inbox".to_string(), Some(7))));
+        assert!(!list.set_badge(9, Some(1)), "an unknown row is refused");
+
+        let mut recorder = Recorder::new(220, 240);
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            list.draw(&mut context);
+        }
+        recorder.end_frame();
+        let texts: Vec<&str> = recorder
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::DrawText { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"7"), "the updated badge is painted: {texts:?}");
+        assert!(texts.contains(&"Inbox"));
+        assert!(list.event_signal_dyn("badge_changed").is_some());
     }
 }

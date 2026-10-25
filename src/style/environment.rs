@@ -533,8 +533,9 @@ pub fn refresh_environment() {
             Some(provider) => EnvironmentSnapshot::from_provider(provider.as_ref()),
             // No host provider: read the platform, which is the crate's own source of device
             // truth, rather than a fabricated neutral. A device whose backend reports a text
-            // scale therefore gets it even if no host installed anything.
-            None => EnvironmentSnapshot::from_provider(&PlatformEnvironment),
+            // scale therefore gets it even if no host installed anything. The platform read is
+            // behind a generation poll; see `platform_snapshot`.
+            None => platform_snapshot(crate::compat::Instant::now()),
         })
         .unwrap_or_default();
     // A resolved style depends on these facts as well as on the theme registry (a text scale
@@ -549,6 +550,99 @@ pub fn refresh_environment() {
         #[cfg(device_profile)]
         crate::theme::invalidate_resolved_style_cache();
     }
+}
+
+/// How often the platform's environment revision is re-read.
+///
+/// Between polls the previous snapshot is reused, which is what removes the per-frame platform
+/// calls: on macOS `system_theme` is an Objective-C message plus a string comparison, and the
+/// other facts are backend queries too. The interval bounds how long a change can take to reach
+/// the screen; the facts themselves are never invented — a poll that reports no change reuses the
+/// values that were actually read last.
+pub const ENVIRONMENT_POLL_INTERVAL_MS: u64 = 250;
+
+/// The last platform snapshot, the revision it was read at, and when it was read.
+struct PlatformPoll {
+    snapshot: EnvironmentSnapshot,
+    generation: u64,
+    polled_at: crate::compat::Instant,
+}
+
+thread_local! {
+    static PLATFORM_POLL: crate::compat::RefCell<Option<PlatformPoll>> =
+        crate::compat::RefCell::new(None);
+}
+
+/// Whether a poll taken at `polled_at` is due again at `now`.
+fn poll_is_due(polled_at: crate::compat::Instant, now: crate::compat::Instant) -> bool {
+    now.duration_since(polled_at)
+        >= crate::compat::Duration::from_millis(ENVIRONMENT_POLL_INTERVAL_MS)
+}
+
+/// Whether `current` proves that the facts are unchanged since `cached`.
+///
+/// A zero revision means "this backend cannot report changes", not "nothing changed", so it can
+/// never be used as evidence of sameness.
+fn generation_proves_unchanged(cached: u64, current: u64) -> bool {
+    cached != 0 && cached == current
+}
+
+/// The platform's environment revision, with the text scale folded in.
+///
+/// `Platform::environment_generation` covers appearance, contrast, motion and locale; the text
+/// scale is not part of that hash on every backend, yet it changes the same resolved styles. Folding
+/// it in here makes a scale change visible without adding a platform method.
+fn platform_environment_generation() -> u64 {
+    let base = crate::platform::profile::environment_generation();
+    if base == 0 {
+        return 0;
+    }
+    let mut hash = base;
+    for byte in crate::platform::profile::text_scale().to_bits().to_le_bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// The platform snapshot, rebuilt only when the bounded poll says the facts may have changed.
+fn platform_snapshot(now: crate::compat::Instant) -> EnvironmentSnapshot {
+    let cached = PLATFORM_POLL
+        .try_with(|slot| {
+            slot.borrow().as_ref().map(|poll| (poll.snapshot, poll.generation, poll.polled_at))
+        })
+        .ok()
+        .flatten();
+
+    if let Some((snapshot, generation, polled_at)) = cached {
+        if !poll_is_due(polled_at, now) {
+            return snapshot;
+        }
+        let current = platform_environment_generation();
+        if generation_proves_unchanged(generation, current) {
+            // No fact changed: keep the values and move the poll window forward so the next
+            // platform query is another interval away rather than on the next frame.
+            let _ = PLATFORM_POLL.try_with(|slot| {
+                if let Some(poll) = slot.borrow_mut().as_mut() {
+                    poll.polled_at = now;
+                }
+            });
+            return snapshot;
+        }
+        let rebuilt = EnvironmentSnapshot::from_provider(&PlatformEnvironment);
+        let _ = PLATFORM_POLL.try_with(|slot| {
+            *slot.borrow_mut() =
+                Some(PlatformPoll { snapshot: rebuilt, generation: current, polled_at: now });
+        });
+        return rebuilt;
+    }
+
+    let generation = platform_environment_generation();
+    let snapshot = EnvironmentSnapshot::from_provider(&PlatformEnvironment);
+    let _ = PLATFORM_POLL.try_with(|slot| {
+        *slot.borrow_mut() = Some(PlatformPoll { snapshot, generation, polled_at: now });
+    });
+    snapshot
 }
 
 /// The device facts in force for this frame. **The** read point.
@@ -633,6 +727,34 @@ mod tests {
         fn system_accent(&self) -> Option<Color> {
             self.accent
         }
+    }
+
+    /// The bounded poll reuses a snapshot between intervals and re-reads at the interval.
+    ///
+    /// This pins the two halves that make the cache honest: a frame inside the window must not
+    /// query the platform, and a frame at or past it must. A zero platform revision is never
+    /// treated as proof that nothing changed, because zero means "cannot report changes".
+    #[test]
+    fn the_environment_poll_is_bounded_and_zero_is_not_evidence() {
+        let now = crate::compat::Instant::now();
+        assert!(!poll_is_due(now, now), "a poll is not due in the same instant");
+        assert!(!poll_is_due(
+            now - crate::compat::Duration::from_millis(ENVIRONMENT_POLL_INTERVAL_MS - 1),
+            now
+        ));
+        assert!(poll_is_due(
+            now - crate::compat::Duration::from_millis(ENVIRONMENT_POLL_INTERVAL_MS),
+            now
+        ));
+        assert!(poll_is_due(
+            now - crate::compat::Duration::from_millis(ENVIRONMENT_POLL_INTERVAL_MS + 1),
+            now
+        ));
+
+        assert!(!generation_proves_unchanged(0, 0), "zero is not a change source");
+        assert!(!generation_proves_unchanged(0, 7));
+        assert!(generation_proves_unchanged(7, 7));
+        assert!(!generation_proves_unchanged(7, 8));
     }
 
     /// The default provider answers every question with a neutral value.

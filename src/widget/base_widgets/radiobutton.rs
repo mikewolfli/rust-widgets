@@ -9,7 +9,8 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::base_widgets::button_group::{self, GroupKey, GroupMember};
-use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::base_widgets::AutoRepeat;
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -85,6 +86,17 @@ pub struct RadioButton {
     /// resolved ink byte-for-byte. The fade replaces the old two-state read of
     /// `is_hovered() || is_pressed()`, which changed the shade on the frame the flag flipped.
     fade: InteractionFade,
+    /// The auto-repeat timing while this radio is held.
+    ///
+    /// Off by default. Repeating a radio's activation re-announces the same selection, which is
+    /// useful for a host that treats the repeat as a command rather than as a state change.
+    auto_repeat: AutoRepeat,
+    /// Whether the current press began on this radio's own hit area.
+    ///
+    /// See `CheckBox::auto_repeat_armed` for why the base's `pressed` flag is not enough on its
+    /// own: it covers the whole laid-out rectangle, which may be much wider than the control's
+    /// contents.
+    auto_repeat_armed: bool,
     /// Emitted without a payload when this button becomes the selected member of
     /// its peer group. Only fires on a `false` -> `true` transition; deselection
     /// does not emit.
@@ -208,6 +220,8 @@ impl RadioButton {
             auto_exclusive: true,
             text: String::new(),
             fade: InteractionFade::new(),
+            auto_repeat: AutoRepeat::new(),
+            auto_repeat_armed: false,
             selected: GenericSignal::new(),
             checked_changed: Signal1::new(),
         }
@@ -233,6 +247,12 @@ impl RadioButton {
     /// radios that share a parent, which is the reference toolkit's rule and the reason two radios
     /// dropped into one container behave as one question without any extra wiring.
     fn exclusive_key(&self) -> Option<GroupKey> {
+        // A group a `ButtonGroup` handle adopted this radio into wins over both properties: it is
+        // the caller's explicit instruction, and the handle's registry entry is the one that has
+        // to hold the selection for the member to read it back.
+        if let Some(key) = button_group::membership(self.id()) {
+            return Some(key);
+        }
         if let Some(id) = self.group_id.as_ref() {
             return Some(GroupKey::Name(id.clone()));
         }
@@ -368,6 +388,7 @@ impl RadioButton {
             if checked {
                 self.selected.emit();
             }
+            button_group::notify_member_event(self.id(), button_group::MemberEvent::Toggled);
         }
     }
     /// Moves selection to the next enabled peer in the group and returns whether it moved.
@@ -455,6 +476,67 @@ impl RadioButton {
         if self.fade.sync(enabled && self.base.is_hovered(), enabled && self.base.is_pressed()) {
             self.request_frame_repaint(None);
         }
+    }
+
+    /// Emits `clicked` and reports the click to this radio's group, if it has one.
+    ///
+    /// Every activation path goes through here so a pointer press, a tap, a key press and an
+    /// arrow-key move cannot disagree about whether the group was told.
+    fn emit_clicked(&mut self) {
+        self.base.clicked.emit();
+        button_group::notify_member_event(self.id(), button_group::MemberEvent::Clicked);
+    }
+
+    /// Whether this radio is held and configured to repeat.
+    ///
+    /// Asked of the configuration rather than of the timer, so the animation bus starts ticking
+    /// before the first repeat is due. See `CheckBox::auto_repeat_held`.
+    fn auto_repeat_held(&self) -> bool {
+        self.auto_repeat.is_enabled()
+            && self.auto_repeat_armed
+            && self.base.is_enabled()
+            && self.base.is_pressed()
+    }
+
+    /// Ends a press for auto-repeat purposes.
+    fn end_auto_repeat(&mut self) {
+        self.auto_repeat_armed = false;
+        self.auto_repeat.reset();
+    }
+
+    /// Whether holding this radio repeats its activation.
+    pub fn is_auto_repeat(&self) -> bool {
+        self.auto_repeat.is_enabled()
+    }
+
+    /// Enables automatic repetition while the radio is held.
+    ///
+    /// Off by default. When on, holding the radio re-runs its activation at
+    /// [`Self::auto_repeat_interval`] after [`Self::auto_repeat_delay`]; selecting an already
+    /// selected radio is a no-op for the latch, so a repeat is observable through the control's
+    /// `clicked` signal (and the group's), which is what a host driving a command needs.
+    pub fn set_auto_repeat(&mut self, enabled: bool) {
+        self.auto_repeat.set_enabled(enabled);
+    }
+
+    /// How long the radio must be held before the first repeat, in milliseconds.
+    pub fn auto_repeat_delay(&self) -> u32 {
+        self.auto_repeat.delay_ms()
+    }
+
+    /// Sets the delay before the first repeat.
+    pub fn set_auto_repeat_delay(&mut self, delay_ms: u32) {
+        self.auto_repeat.set_delay_ms(delay_ms);
+    }
+
+    /// The gap between repeats while the radio is held, in milliseconds.
+    pub fn auto_repeat_interval(&self) -> u32 {
+        self.auto_repeat.interval_ms()
+    }
+
+    /// Sets the gap between repeats.
+    pub fn set_auto_repeat_interval(&mut self, interval_ms: u32) {
+        self.auto_repeat.set_interval_ms(interval_ms);
     }
 
     /// Whether this control currently owns keyboard focus.
@@ -581,6 +663,11 @@ impl Widget for RadioButton {
             return;
         }
         self.base.set_enabled(enabled);
+        if !enabled {
+            // A disabled control is inert, so a hold in progress ends here rather than resuming
+            // if the control is re-enabled while the pointer is still down.
+            self.end_auto_repeat();
+        }
         self.set_state_theme_hook();
         self.sync_group_registration();
     }
@@ -611,11 +698,17 @@ impl Widget for RadioButton {
     // radio owes frames while the tint is in flight. A resting button's drivers report no
     // movement, so it costs nothing on the animation bus.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        self.fade.tick(delta_ms)
+        let held = self.auto_repeat_held();
+        let repeats = self.auto_repeat.tick(delta_ms, held);
+        for _ in 0..repeats {
+            self.set_checked(true);
+            self.emit_clicked();
+        }
+        self.fade.tick(delta_ms) || held
     }
 
     fn is_animating(&self) -> bool {
-        self.fade.is_animating()
+        self.fade.is_animating() || self.auto_repeat_held()
     }
 
     /// Reports `Checked` for a selected radio, so the preset's `radio_button:checked` override is
@@ -686,6 +779,9 @@ impl WidgetProperties for RadioButton {
                 None => Ok(CapabilityValue::Null),
             },
             "auto_exclusive" => Ok(CapabilityValue::Bool(self.is_auto_exclusive())),
+            "auto_repeat" => Ok(CapabilityValue::Bool(self.is_auto_repeat())),
+            "auto_repeat_delay" => Ok(CapabilityValue::UInt(self.auto_repeat_delay() as u64)),
+            "auto_repeat_interval" => Ok(CapabilityValue::UInt(self.auto_repeat_interval() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -711,12 +807,33 @@ impl WidgetProperties for RadioButton {
                 self.set_auto_exclusive(expect_bool(value)?);
                 Ok(())
             }
+            "auto_repeat" => {
+                self.set_auto_repeat(expect_bool(value)?);
+                Ok(())
+            }
+            "auto_repeat_delay" => {
+                self.set_auto_repeat_delay(expect_u32(value)?);
+                Ok(())
+            }
+            "auto_repeat_interval" => {
+                self.set_auto_repeat_interval(expect_u32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "checked", "group_id", "auto_exclusive", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "text",
+            "checked",
+            "group_id",
+            "auto_exclusive",
+            "auto_repeat",
+            "auto_repeat_delay",
+            "auto_repeat_interval",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `radio_button` publishes.
@@ -750,32 +867,51 @@ impl EventHandler for RadioButton {
             | Event::MouseRelease { .. } => self.sync_fade(),
             _ => { /* Other events carry no fade-relevant pointer state */ }
         }
+        // A release, a leave or a lost focus ends an auto-repeat hold *before* the enabled gate
+        // below, so a control that was disabled mid-press cannot resume a stale hold when it is
+        // re-enabled with the pointer still down.
+        match event {
+            Event::MouseRelease { .. } | Event::MouseLeave { .. } | Event::FocusLost => {
+                self.end_auto_repeat();
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => self.end_auto_repeat(),
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => self.end_auto_repeat(),
+            _ => { /* No auto-repeat state to clear */ }
+        }
         if !self.base.is_enabled() {
             return;
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 if self.hit_area().contains_point(*pos) {
+                    // Only a press that landed on the radio may repeat; the base's `pressed` flag
+                    // covers the whole laid-out rectangle.
+                    self.auto_repeat.reset();
+                    self.auto_repeat_armed = true;
                     self.set_checked(true);
-                    self.base.clicked.emit();
+                    self.emit_clicked();
                 }
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } if self.hit_area().contains_point(*pos) => {
+                self.auto_repeat.reset();
+                self.auto_repeat_armed = true;
                 self.set_checked(true);
-                self.base.clicked.emit();
+                self.emit_clicked();
             }
             // A `Tap` carries no position, so it is accepted as-is: the platform has already
             // resolved it to this control, which is the same basis `hit_area` narrows.
             #[cfg(feature = "touch")]
             Event::Tap { .. } => {
                 self.set_checked(true);
-                self.base.clicked.emit();
+                self.emit_clicked();
             }
             Event::KeyPress { key, .. } if *key == key_codes::SPACE || *key == key_codes::ENTER => {
                 // Space or Enter
                 self.set_checked(true);
-                self.base.clicked.emit();
+                self.emit_clicked();
             }
             // Arrow keys move the selection inside the group, which is the keyboard half of
             // auto-exclusivity: Tab reaches the group, arrows choose within it.
@@ -787,7 +923,7 @@ impl EventHandler for RadioButton {
             {
                 let forward = matches!(*key, key_codes::DOWN | key_codes::RIGHT);
                 if self.navigate_group(forward) {
-                    self.base.clicked.emit();
+                    self.emit_clicked();
                 }
             }
             Event::FocusGained { reason } => {
@@ -990,9 +1126,7 @@ impl Draw for RadioButton {
 /// unregistered would keep a group (and its selection) alive after the control is gone.
 impl Drop for RadioButton {
     fn drop(&mut self) {
-        if let Some(key) = self.exclusive_key() {
-            button_group::unregister(&key, self.id());
-        }
+        button_group::leave_all(self.id());
     }
 }
 

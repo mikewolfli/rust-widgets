@@ -17,6 +17,24 @@ use alloc::collections::VecDeque;
 #[cfg(not(alloc_frugal))]
 use core::time::Duration;
 
+/// Default maximum number of queued items. Full queues reject the newest item; already
+/// accepted items retain FIFO order. Callers can retry after handling `Full`.
+pub const DEFAULT_QUEUE_CAPACITY: usize = 4096;
+
+static OVERFLOW_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Process-wide cumulative count of capacity rejections in event and blocking queues.
+pub fn overflow_count() -> u64 {
+    OVERFLOW_COUNT.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Counts one rejection. Only the bounded queue compiled outside `alloc_frugal` rejects, so the
+/// helper is gated with it; the public total stays available in every profile.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn note_overflow() {
+    OVERFLOW_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
 /// Errors returned by queue operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueError {
@@ -48,45 +66,43 @@ struct QueueState<T> {
     items: VecDeque<T>,
     /// Set once [`BlockingQueue::close`] runs; latched, never cleared.
     closed: bool,
+    rejected: u64,
 }
 
-/// A thread-safe, **unbounded** FIFO queue that blocks consumers until an item
-/// arrives.
+/// A thread-safe bounded FIFO queue that blocks consumers until an item arrives.
 ///
-/// Any number of producer threads may call [`BlockingQueue::push`] while any
-/// number of consumers block in [`BlockingQueue::pop`]. Because it is unbounded,
-/// a faster producer can grow the queue without limit; **there is no bounded
-/// variant in this crate**, so back-pressure must be applied by the producer
-/// (for example by checking [`BlockingQueue::len`] before pushing) or by using a
-/// different structure entirely. Only available when the `alloc_frugal` feature
-/// is off.
+/// A full queue rejects the newest push with [`QueueError::Full`], counts the rejection in
+/// [`Self::overflow_count`] and the process-wide [`overflow_count`], and leaves accepted items
+/// untouched. Producers never block on capacity. Only available outside `alloc_frugal`.
 #[cfg(not(alloc_frugal))]
 #[derive(Debug)]
 pub struct BlockingQueue<T> {
     state: Mutex<QueueState<T>>,
     condvar: Condvar,
+    capacity: usize,
 }
 #[cfg(not(alloc_frugal))]
 impl<T> BlockingQueue<T> {
     /// Creates an empty queue with no pre-allocated storage.
     pub fn new() -> Self {
         Self {
-            state: Mutex::new(QueueState { items: VecDeque::new(), closed: false }),
+            state: Mutex::new(QueueState { items: VecDeque::new(), closed: false, rejected: 0 }),
             condvar: Condvar::new(),
+            capacity: DEFAULT_QUEUE_CAPACITY,
         }
     }
-    /// Creates an empty queue whose backing `VecDeque` is pre-allocated for
-    /// `capacity` items.
+    /// Creates an empty queue pre-allocated for at most `capacity` items.
     ///
-    /// `capacity` is only a hint used to avoid early reallocations; the queue is
-    /// still unbounded and will grow past it as needed.
+    /// This is a hard bound, not an allocation hint. Zero capacity rejects every push.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             state: Mutex::new(QueueState {
                 items: VecDeque::with_capacity(capacity),
                 closed: false,
+                rejected: 0,
             }),
             condvar: Condvar::new(),
+            capacity,
         }
     }
     /// Appends `item` and wakes one blocked consumer.
@@ -102,6 +118,11 @@ impl<T> BlockingQueue<T> {
         let mut state = lock(&self.state);
         if state.closed {
             return Err(QueueError::Closed);
+        }
+        if state.items.len() >= self.capacity {
+            state.rejected = state.rejected.saturating_add(1);
+            note_overflow();
+            return Err(QueueError::Full);
         }
         state.items.push_back(item);
         // The lock is released before notifying; the waiter re-checks the shared
@@ -183,6 +204,11 @@ impl<T> BlockingQueue<T> {
     pub fn is_closed(&self) -> bool {
         lock(&self.state).closed
     }
+    /// Number of pushes rejected because this queue was full. Closing and clearing do not reset it.
+    pub fn overflow_count(&self) -> u64 {
+        lock(&self.state).rejected
+    }
+
     /// Number of items currently queued. Takes the same lock as [`Self::push`] and
     /// [`Self::pop`], so the value can be stale as soon as it is returned.
     pub fn len(&self) -> usize {
@@ -214,6 +240,28 @@ mod tests {
     use std::sync::Barrier;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn capacity_rejects_newest_and_reports_without_losing_accepted_items() {
+        let queue = BlockingQueue::with_capacity(2);
+        queue.push(1).unwrap();
+        queue.push(2).unwrap();
+        assert_eq!(queue.push(3), Err(QueueError::Full));
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.overflow_count(), 1);
+        assert_eq!(queue.try_pop(), Some(1));
+        queue.push(4).unwrap();
+        queue.close();
+        assert_eq!(queue.push(5), Err(QueueError::Closed));
+        assert_eq!(queue.pop(), Ok(2));
+        assert_eq!(queue.pop(), Ok(4));
+        assert_eq!(queue.pop(), Err(QueueError::Closed));
+        assert_eq!(queue.overflow_count(), 1);
+        let zero = BlockingQueue::with_capacity(0);
+        assert_eq!(zero.push(1), Err(QueueError::Full));
+        assert!(zero.is_empty());
+        assert_eq!(zero.overflow_count(), 1);
+    }
 
     /// The sequence this pins: `pop` must not miss a `push` that lands before the
     /// waiter parks. With a separate `closed` lock, `close` could set the flag and

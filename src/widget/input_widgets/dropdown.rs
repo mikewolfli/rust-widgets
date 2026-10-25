@@ -5,14 +5,16 @@
 //!
 //! A button-like label showing the current selection. When clicked, it
 //! expands to show a scrollable list of options. Selecting an item emits
-//! a `changed` signal and collapses the list.
+//! a `changed` signal and collapses the list; a row the user confirms also
+//! emits `activated`, and the row the pointer or keyboard marks while the
+//! list is open is reported through `highlighted`.
 
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
-use crate::signal::GenericSignal;
+use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
     expect_bool, expect_horizontal_alignment, expect_usize, horizontal_alignment_to_str,
@@ -26,6 +28,12 @@ use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Height of each item row in the expanded dropdown list (pixels).
 const ITEM_HEIGHT: u32 = 20;
+/// Width of the leading cell a row's icon occupies, when it has one.
+///
+/// A fixed cell rather than a per-frame measurement: the row's label starts at the same
+/// offset whatever glyph the icon is, so a list whose icons differ does not shimmer and
+/// showing a row costs no text shaping.
+const ITEM_ICON_WIDTH: u32 = 16;
 /// Padding between the button text and the widget edges.
 const PADDING: i32 = 4;
 
@@ -87,6 +95,71 @@ impl FieldGeometry {
     }
 }
 
+/// One row of a [`Dropdown`]'s list.
+///
+/// The plain model is still `Vec<String>` for callers that only have labels (through
+/// [`Dropdown::set_items`]), but a real select carries more: a disabled row, a leading glyph,
+/// and a caller-owned token. One struct holds all four rather than four parallel vectors, so
+/// the row cannot be half-updated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropdownItem {
+    text: String,
+    enabled: bool,
+    icon: Option<String>,
+    data: Option<String>,
+}
+
+impl Default for DropdownItem {
+    fn default() -> Self {
+        Self { text: String::new(), enabled: true, icon: None, data: None }
+    }
+}
+
+impl DropdownItem {
+    /// Creates an enabled row with the given label and no icon or data.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into(), enabled: true, icon: None, data: None }
+    }
+
+    /// Marks the row as enabled or disabled.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Sets the row's icon text (a glyph or short marker) drawn before the label.
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Attaches a caller-owned data token to the row.
+    pub fn with_data(mut self, data: impl Into<String>) -> Self {
+        self.data = Some(data.into());
+        self
+    }
+
+    /// The row's label — what the field shows when the row is selected.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Whether the row can be selected and activated.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// The row's icon text, if it has one.
+    pub fn icon(&self) -> Option<&str> {
+        self.icon.as_deref()
+    }
+
+    /// The caller-owned data token, if one was attached.
+    pub fn data(&self) -> Option<&str> {
+        self.data.as_deref()
+    }
+}
+
 /// Dropdown widget for selecting from a list of options.
 ///
 /// # Behaviour
@@ -97,8 +170,14 @@ impl FieldGeometry {
 /// - Losing focus also collapses the list.
 pub struct Dropdown {
     base: BaseWidget,
-    /// List of option strings.
-    items: Vec<String>,
+    /// The rows: label, enabled flag, icon and caller data.
+    items: Vec<DropdownItem>,
+    /// The labels, in row order.
+    ///
+    /// A **derived** cache, not a second source of truth: [`Self::sync_labels`] rebuilds it after
+    /// every row mutation, so [`Self::items`] can keep the `&[String]` signature it has always
+    /// had without the labels and the rows being editable independently.
+    labels: Vec<String>,
     /// Currently selected index. Defaults to `0` when items is non-empty.
     selected_index: usize,
     /// Whether the dropdown list is expanded.
@@ -112,6 +191,18 @@ pub struct Dropdown {
     alignment: crate::core::Alignment,
     /// Signal emitted when the selection changes.
     pub changed: GenericSignal,
+    /// Emitted with the row the user confirms (click or Enter).
+    ///
+    /// Distinct from [`Self::changed`], which also fires for programmatic selections and for
+    /// keyboard navigation *before* the user commits: this one says the user chose the row.
+    pub activated: Signal1<usize>,
+    /// Emitted with the row the pointer or keyboard currently marks while the list is open.
+    ///
+    /// Clearing the mark (the pointer leaving the list, or the list closing) has no row to
+    /// name, so it is not emitted; [`Self::highlighted_index`] reports the cleared state.
+    pub highlighted: Signal1<usize>,
+    /// The row `highlighted` last named, or `None` when nothing is marked.
+    highlighted_index: Option<usize>,
     /// Maximum number of rows the expanded list shows at once. `None` shows them all.
     max_visible: Option<usize>,
     /// Index of the first row painted in the popup.
@@ -126,22 +217,44 @@ impl Dropdown {
     /// The first item is automatically selected when `items` is non-empty.
     /// The widget's height should accommodate the collapsed button area.
     pub fn new(items: Vec<String>, rect: Rect) -> Self {
+        let rows: Vec<DropdownItem> = items.into_iter().map(DropdownItem::new).collect();
+        let labels = rows.iter().map(|item| item.text.clone()).collect();
         Self {
             base: BaseWidget::new(WidgetKind::Dropdown, rect, "Dropdown"),
+            items: rows,
+            labels,
             selected_index: 0,
             expanded: false,
             alignment: crate::core::Alignment::Left,
             changed: GenericSignal::new(),
-            items,
+            activated: Signal1::new(),
+            highlighted: Signal1::new(),
+            highlighted_index: None,
             max_visible: None,
             scroll_offset: 0,
             type_ahead: String::new(),
         }
     }
 
-    /// Returns the full list of option strings.
+    /// Rebuilds the label cache from the row model.
+    fn sync_labels(&mut self) {
+        self.labels.clear();
+        self.labels.extend(self.items.iter().map(|item| item.text.clone()));
+    }
+
+    /// Returns the full list of option labels.
     pub fn items(&self) -> &[String] {
-        &self.items
+        &self.labels
+    }
+
+    /// The row at `index`, or `None` when the index is out of range.
+    pub fn item(&self, index: usize) -> Option<&DropdownItem> {
+        self.items.get(index)
+    }
+
+    /// Whether a row exists and is enabled.
+    pub fn is_item_enabled(&self, index: usize) -> bool {
+        self.items.get(index).is_some_and(|item| item.is_enabled())
     }
 
     /// How the selected label is aligned within its own box.
@@ -163,12 +276,115 @@ impl Dropdown {
         self.base.request_redraw();
     }
 
-    /// Replaces all option strings and resets the selection to the first item
+    /// Replaces all rows with plain labels and resets the selection to the first item
     /// (or index 0 if the list is empty).
+    ///
+    /// Rows built with [`DropdownItem`] keep their enabled flag, icon and data through
+    /// [`Self::insert_item`]; this writer is the `Vec<String>` shape the property route carries.
     pub fn set_items(&mut self, new_items: Vec<String>) {
-        self.items = new_items;
+        self.items = new_items.into_iter().map(DropdownItem::new).collect();
+        self.sync_labels();
         self.selected_index = 0;
+        self.scroll_offset = 0;
+        self.highlighted_index = None;
         self.changed.emit();
+        self.base.request_redraw();
+    }
+
+    /// Inserts a row at `index`, shifting the rows after it.
+    ///
+    /// An index past the end is ignored, matching the list mutators elsewhere. Inserting before
+    /// the selected row keeps the selection on the row it named rather than on the row number it
+    /// happened to occupy.
+    pub fn insert_item(&mut self, index: usize, item: DropdownItem) {
+        if index > self.items.len() {
+            return;
+        }
+        let had_items = !self.items.is_empty();
+        self.items.insert(index, item);
+        self.sync_labels();
+        if had_items && index <= self.selected_index {
+            self.selected_index += 1;
+        }
+        self.scroll_offset = self.clamp_scroll(self.scroll_offset);
+        self.base.request_redraw();
+    }
+
+    /// Removes the row at `index`, returning it.
+    ///
+    /// The selection follows the rows: removing a row before it shifts it down, and removing
+    /// the selected row moves the selection to the nearest remaining row (or `0` when the list
+    /// is now empty). `changed` is emitted whenever the row the selection names is no longer
+    /// the one it named.
+    pub fn remove_item(&mut self, index: usize) -> Option<DropdownItem> {
+        if index >= self.items.len() {
+            return None;
+        }
+        let removed = self.items.remove(index);
+        self.sync_labels();
+        let mut selection_moved = false;
+        if index < self.selected_index {
+            self.selected_index -= 1;
+            selection_moved = true;
+        } else if index == self.selected_index {
+            self.selected_index = self.selected_index.min(self.items.len().saturating_sub(1));
+            selection_moved = true;
+        }
+        self.scroll_offset = self.clamp_scroll(self.scroll_offset);
+        self.highlighted_index = None;
+        if selection_moved {
+            self.changed.emit();
+        }
+        self.base.request_redraw();
+        Some(removed)
+    }
+
+    /// Enables or disables a row. A disabled row cannot be chosen by pointer or keyboard.
+    pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
+        let Some(item) = self.items.get_mut(index) else {
+            return;
+        };
+        if item.enabled == enabled {
+            return;
+        }
+        item.enabled = enabled;
+        self.base.request_redraw();
+    }
+
+    /// Sets a row's icon text, or clears it with `None`.
+    pub fn set_item_icon(&mut self, index: usize, icon: Option<String>) {
+        let Some(item) = self.items.get_mut(index) else {
+            return;
+        };
+        if item.icon == icon {
+            return;
+        }
+        item.icon = icon;
+        self.base.request_redraw();
+    }
+
+    /// Attaches a caller-owned token to a row, or clears it with `None`.
+    pub fn set_item_data(&mut self, index: usize, data: Option<String>) {
+        let Some(item) = self.items.get_mut(index) else {
+            return;
+        };
+        if item.data == data {
+            return;
+        }
+        item.data = data;
+    }
+
+    /// Relabels a row, keeping the derived label cache in step.
+    pub fn set_item_text(&mut self, index: usize, text: impl Into<String>) {
+        let text = text.into();
+        let Some(item) = self.items.get_mut(index) else {
+            return;
+        };
+        if item.text == text {
+            return;
+        }
+        item.text = text;
+        self.sync_labels();
         self.base.request_redraw();
     }
 
@@ -185,6 +401,12 @@ impl Dropdown {
     pub fn set_selected_index(&mut self, index: usize) {
         let clamped =
             if self.items.is_empty() { 0 } else { index.min(self.items.len().saturating_sub(1)) };
+        // While the list is open, the row the keyboard moves to is the row that is marked — the
+        // model's selection and the popup's current row are the same index here, so the mark is
+        // reported from the one place they meet.
+        if self.expanded && !self.items.is_empty() {
+            self.set_highlighted(Some(clamped));
+        }
         if self.selected_index != clamped {
             self.selected_index = clamped;
             self.changed.emit();
@@ -192,11 +414,27 @@ impl Dropdown {
         }
     }
 
+    /// The row the pointer or keyboard currently marks, or `None` when nothing is marked.
+    pub fn highlighted_index(&self) -> Option<usize> {
+        self.highlighted_index
+    }
+
+    /// Marks `index` as the popup's current row, reporting a change once.
+    fn set_highlighted(&mut self, index: Option<usize>) {
+        if self.highlighted_index == index {
+            return;
+        }
+        self.highlighted_index = index;
+        if let Some(index) = index {
+            self.highlighted.emit(index);
+        }
+    }
+
     /// Returns the text of the currently-selected item, or `None` if the list
     /// is empty.
     pub fn selected_text(&self) -> Option<&str> {
         if self.selected_index < self.items.len() {
-            Some(self.items[self.selected_index].as_str())
+            Some(self.items[self.selected_index].text.as_str())
         } else {
             None
         }
@@ -215,9 +453,15 @@ impl Dropdown {
         self.expanded = expanded;
         if expanded {
             self.ensure_selected_visible();
+            // Opening marks the selected row, so the popup says where Enter would land before
+            // the user moves anything.
+            let marked = self.selected_index();
+            self.set_highlighted(marked);
             #[cfg(not(alloc_frugal))]
             crate::widget::runtime::set_popup_grab(self.id());
         } else {
+            // A closing popup has no marked row; clearing the mark has no index to report.
+            self.highlighted_index = None;
             #[cfg(not(alloc_frugal))]
             crate::widget::runtime::clear_popup_grab_for(self.id());
         }
@@ -337,16 +581,26 @@ impl Dropdown {
         (start, end)
     }
 
-    /// Selects the first row at or after `start` whose label starts with `prefix`.
+    /// Selects the first enabled row at or after `start` whose label begins with `prefix`.
     fn find_prefix(&self, prefix: &str, start: usize) -> Option<usize> {
         let needle = prefix.to_lowercase();
         let count = self.items.len();
         if count == 0 {
             return None;
         }
-        (0..count)
-            .map(|offset| (start + offset) % count)
-            .find(|&index| self.items[index].to_lowercase().starts_with(&needle))
+        (0..count).map(|offset| (start + offset) % count).find(|&index| {
+            self.is_item_enabled(index)
+                && self.items[index].text.to_lowercase().starts_with(&needle)
+        })
+    }
+
+    /// The nearest enabled row before or after `from`, or `None` when there is none.
+    fn neighbour_enabled(&self, from: usize, forward: bool) -> Option<usize> {
+        if forward {
+            (from.saturating_add(1)..self.items.len()).find(|&index| self.is_item_enabled(index))
+        } else {
+            (0..from.min(self.items.len())).rev().find(|&index| self.is_item_enabled(index))
+        }
     }
 }
 
@@ -381,7 +635,7 @@ impl Widget for Dropdown {
         // painted box cannot describe two different controls. The width was the bare expression
         // `max_text_w * 8 + 30` and the height a flat `24`, while `draw` painted the whole given
         // rectangle — 120 px tall in the census cell.
-        let widest = self.items.iter().map(|s| s.len() as u32).max().unwrap_or(6) * 8;
+        let widest = self.items.iter().map(|item| item.text.len() as u32).max().unwrap_or(6) * 8;
         let side_air = (dimensions::TEXT_FIELD_MIN_HEIGHT / 2).saturating_sub(8);
         let trailing = (PADDING.max(0) as u32)
             + INDICATOR_WIDTH.max(0) as u32
@@ -417,6 +671,12 @@ impl Widget for Dropdown {
         use crate::signal::EventSignalRef;
         match name {
             "changed" => Some(EventSignalRef::unit("changed", &self.changed)),
+            "activated" => Some(EventSignalRef::mapped("activated", &self.activated, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
+            "highlighted" => Some(EventSignalRef::mapped("highlighted", &self.highlighted, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
             _ => None,
         }
     }
@@ -528,31 +788,37 @@ impl EventHandler for Dropdown {
                 if self.expanded {
                     // Clicked on one of the list items?
                     if let Some(idx) = self.hit_test_item(*pos) {
-                        self.set_selected_index(idx);
-                        self.expanded = false;
+                        // A disabled row is not a choice: the press is swallowed (the popup stays
+                        // open) rather than selecting a row the user cannot have.
+                        if self.is_item_enabled(idx) {
+                            self.set_selected_index(idx);
+                            self.activated.emit(idx);
+                            self.set_expanded(false);
+                        }
                         return;
                     }
 
-                    // Clicked back on the button header — collapse
-                    let geo = self.geometry();
-                    if geo.contains_point(*pos) {
-                        self.expanded = false;
-                        return;
-                    }
-
-                    // Clicked outside the entire widget while expanded – collapse
-                    self.expanded = false;
+                    // Clicked back on the button header, or outside the control — collapse.
+                    self.set_expanded(false);
                 } else {
-                    // Collapsed: toggle expand
+                    // Collapsed: open the list through the same entry point the keyboard uses, so
+                    // the popup grab and the marked row are set here too.
                     let geo = self.geometry();
                     if geo.contains_point(*pos) {
-                        self.expanded = true;
+                        self.set_expanded(true);
                     }
+                }
+            }
+            // Hovering the open list marks the row under the pointer. This is what makes
+            // `highlighted` a live signal rather than only a keyboard echo.
+            Event::MouseMove { pos } => {
+                if self.expanded {
+                    self.set_highlighted(self.hit_test_item(*pos));
                 }
             }
 
             Event::FocusLost => {
-                self.expanded = false;
+                self.set_expanded(false);
             }
 
             Event::KeyPress { key, modifiers: _ } => {
@@ -561,56 +827,80 @@ impl EventHandler for Dropdown {
                     if matches!(*key, key_codes::UP | key_codes::DOWN | 36 | 35 | 13 | 32)
                         && !self.items.is_empty()
                     {
-                        self.expanded = true;
-                        self.ensure_selected_visible();
-                        self.base.request_redraw();
+                        self.set_expanded(true);
                     }
                     return;
                 }
 
                 let page = self.page_size();
                 match *key {
-                    38 if self.selected_index > 0 => {
-                        // Up arrow — previous item
-                        self.set_selected_index(self.selected_index - 1);
-                        self.ensure_selected_visible();
+                    // The arrows, paging and Home/End skip disabled rows: a row that cannot be
+                    // chosen is not a navigation target either.
+                    38 => {
+                        if let Some(target) = self.neighbour_enabled(self.selected_index, false) {
+                            self.set_selected_index(target);
+                            self.ensure_selected_visible();
+                        }
                     }
-                    40 if self.selected_index + 1 < self.items.len() => {
-                        // Down arrow — next item
-                        self.set_selected_index(self.selected_index + 1);
-                        self.ensure_selected_visible();
+                    40 => {
+                        if let Some(target) = self.neighbour_enabled(self.selected_index, true) {
+                            self.set_selected_index(target);
+                            self.ensure_selected_visible();
+                        }
                     }
                     33 => {
-                        // Page Up.
-                        let target = self.selected_index.saturating_sub(page);
-                        self.set_selected_index(target);
-                        self.ensure_selected_visible();
+                        // Page Up: the nearest enabled row at or before one page up.
+                        let floor = self.selected_index.saturating_sub(page);
+                        if let Some(target) = (floor..self.selected_index)
+                            .rev()
+                            .find(|&index| self.is_item_enabled(index))
+                        {
+                            self.set_selected_index(target);
+                            self.ensure_selected_visible();
+                        }
                     }
                     34 => {
-                        // Page Down.
-                        let target =
+                        // Page Down: the nearest enabled row at or before one page down.
+                        let ceiling =
                             (self.selected_index + page).min(self.items.len().saturating_sub(1));
-                        self.set_selected_index(target);
-                        self.ensure_selected_visible();
+                        if let Some(target) = (self.selected_index + 1..=ceiling)
+                            .rev()
+                            .find(|&index| self.is_item_enabled(index))
+                        {
+                            self.set_selected_index(target);
+                            self.ensure_selected_visible();
+                        }
                     }
                     36 => {
-                        // Home.
-                        self.set_selected_index(0);
-                        self.ensure_selected_visible();
+                        // Home: the first enabled row.
+                        if let Some(target) =
+                            (0..self.items.len()).find(|&index| self.is_item_enabled(index))
+                        {
+                            self.set_selected_index(target);
+                            self.ensure_selected_visible();
+                        }
                     }
                     35 => {
-                        // End.
-                        self.set_selected_index(self.items.len().saturating_sub(1));
-                        self.ensure_selected_visible();
+                        // End: the last enabled row.
+                        if let Some(target) =
+                            (0..self.items.len()).rev().find(|&index| self.is_item_enabled(index))
+                        {
+                            self.set_selected_index(target);
+                            self.ensure_selected_visible();
+                        }
                     }
                     13 => {
-                        // Enter — commit selection, collapse
-                        self.expanded = false;
+                        // Enter commits the marked row, then closes. Activation is what the user
+                        // chose; `changed` may already have reported the navigation.
+                        if self.is_item_enabled(self.selected_index) {
+                            self.activated.emit(self.selected_index);
+                        }
+                        self.set_expanded(false);
                     }
                     27 => {
                         // Escape — cancel, collapse
-                        self.expanded = false;
                         self.type_ahead.clear();
+                        self.set_expanded(false);
                     }
                     32..=126 => {
                         // First-letter selection, wrapping from the current row.
@@ -757,11 +1047,17 @@ impl Draw for Dropdown {
         let (first, last) = self.visible_range();
         for i in first..last {
             let item_geo = self.item_rect(i);
+            let row = &self.items[i];
 
-            // Background
+            // Background. The selected row is the committed choice; the marked row (the one the
+            // pointer or keyboard is on) gets a lighter wash, so `highlighted` is visible rather
+            // than only observable.
             let is_selected = i == self.selected_index;
+            let is_highlighted = self.highlighted_index == Some(i);
             if is_selected {
                 context.fill_rect(item_geo, highlight_bg);
+            } else if is_highlighted {
+                context.fill_rect(item_geo, list_row.blend(&highlight_bg, 0.35));
             } else {
                 context.fill_rect(item_geo, list_row);
             }
@@ -769,22 +1065,41 @@ impl Draw for Dropdown {
             // Border (bottom line)
             context.draw_rect(item_geo, list_border);
 
-            // Item text
-            let item_color = if is_selected { highlight_text } else { text_color };
+            // Item text. A disabled row uses the weak ink: it is present and readable, but it
+            // cannot be chosen, so it must not read as an available option.
+            let item_color = if !row.enabled {
+                placeholder_color
+            } else if is_selected {
+                highlight_text
+            } else {
+                text_color
+            };
             let item_x = item_geo.x + PADDING;
             // The row's own line box, for the same reason as the collapsed field above: a
             // halved height here places the glyph box's top edge on the row's middle line.
             let item_line = context.text_line(item_geo, font);
+            // A row with an icon reserves one fixed cell for it, so the label of every row starts
+            // at the same offset and showing a row costs no per-frame text measurement.
+            let icon_cell = row.icon.is_some() as u32 * ITEM_ICON_WIDTH;
+            if let Some(icon) = row.icon() {
+                context.draw_text(
+                    Point::new(item_x, item_line.y),
+                    icon,
+                    font,
+                    item_color,
+                    HorizontalAlignment::Left,
+                );
+            }
             // Fitted to the row: the collapsed value was fitted but the expanded rows were not,
             // so a long item label painted past the popup (which is not clipped).
             context.draw_text_fitted_cow(
                 Rect::new(
-                    item_x,
+                    item_x + icon_cell as i32,
                     item_line.y,
-                    item_geo.width.saturating_sub((PADDING * 2) as u32),
+                    item_geo.width.saturating_sub(PADDING as u32 * 2 + icon_cell),
                     item_line.height.max(1),
                 ),
-                &self.items[i],
+                &row.text,
                 font,
                 item_color,
                 HorizontalAlignment::Left,

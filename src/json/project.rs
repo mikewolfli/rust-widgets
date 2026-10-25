@@ -50,6 +50,11 @@ pub struct ProjectNode {
     pub marker_declarations: Vec<(String, Value)>,
     /// Child indices, in document order.
     pub children: Vec<usize>,
+    /// The registry command this node references, when it declares `action_id`.
+    ///
+    /// A menu/toolbar node uses this instead of repeating text and flags: the command lives in the
+    /// project's `actions` section, and the node is a view of it.
+    pub action_id: Option<String>,
 }
 
 impl ProjectNode {
@@ -168,6 +173,15 @@ pub struct JsonProject {
     pub root_widget: String,
     /// Every node, in parent-before-child (pre-order) order. The root is first.
     nodes: Vec<ProjectNode>,
+    /// The project's commands, in document order.
+    ///
+    /// # Why the section lives on the project rather than on a node
+    ///
+    /// A command is referenced by id from whichever menu/toolbar node presents it; storing the
+    /// definition on the node would duplicate it once per reference. The `actions` section is read
+    /// from the root widget's body (the same place `layout` lives), so the document's one-widget-key
+    /// contract — which the runtime loader also enforces — is unchanged.
+    pub actions: Vec<crate::action::ActionDefinition>,
 }
 
 impl JsonProject {
@@ -196,7 +210,13 @@ impl JsonProject {
 
         let mut nodes = Vec::new();
         collect_preorder(&root_widget, body, &mut Vec::new(), 0, &mut nodes)?;
-        Ok(Self { root_widget, nodes })
+        let actions = parse_action_definitions(body.get("actions"))?;
+        Ok(Self { root_widget, nodes, actions })
+    }
+
+    /// The command with `id`, if the project declares one.
+    pub fn action(&self, id: &str) -> Option<&crate::action::ActionDefinition> {
+        self.actions.iter().find(|action| action.id == id)
     }
 
     /// The node at `index` among `node`'s children.
@@ -314,6 +334,7 @@ fn collect_preorder(
             .filter_map(|(key, _)| obj.get(*key).map(|v| (String::from(*key), v.clone())))
             .collect(),
         children: Vec::new(),
+        action_id: obj.get("action_id").and_then(Value::as_str).map(String::from),
     });
 
     let mut children: Vec<usize> = Vec::new();
@@ -368,6 +389,33 @@ fn collect_preorder(
     Ok(())
 }
 
+/// Parses the project's `actions` section.
+///
+/// The section is optional; an absent one is an empty command list. Each entry is read through
+/// [`crate::action::ActionDefinition::from_json`], so the document's spelling and the command
+/// type's spelling cannot drift. A non-array section is an error rather than an empty list: a
+/// typo that silently dropped every command is exactly the failure a designer must see.
+fn parse_action_definitions(
+    section: Option<&Value>,
+) -> Result<Vec<crate::action::ActionDefinition>, String> {
+    let Some(section) = section else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = section.as_array() else {
+        return Err(String::from("`actions` must be an array of command objects"));
+    };
+    let mut actions = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        if !item.is_object() {
+            return Err(format!("`actions[{index}]` must be an object"));
+        }
+        let definition = crate::action::ActionDefinition::from_json(&item.to_string())
+            .map_err(|reason| format!("`actions[{index}]` is invalid: {reason}"))?;
+        actions.push(definition);
+    }
+    Ok(actions)
+}
+
 /// A stable key for a path, used when the document declares none.
 fn key_from_path(path: &[usize]) -> String {
     if path.is_empty() {
@@ -393,7 +441,7 @@ fn key_from_path(path: &[usize]) -> String {
 fn collect_properties(obj: &serde_json::Map<String, Value>) -> Vec<(String, Value)> {
     let mut out: Vec<(String, Value)> = Vec::new();
     for (key, value) in obj {
-        if matches!(key.as_str(), "id" | "children") {
+        if matches!(key.as_str(), "id" | "children" | "action_id" | "actions") {
             continue;
         }
         if crate::json::is_marker_key(key) || key == crate::json::EVENTS_KEY {

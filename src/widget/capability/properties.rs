@@ -60,7 +60,7 @@ pub(crate) fn label_capability() -> WidgetCapability {
         canonical_name: "label",
         aliases: &["text_label"],
         properties: LABEL_PROPERTIES,
-        events: &[],
+        events: events_of!("label"),
         commands: &["set_text", "set_alignment"],
     }
 }
@@ -1368,7 +1368,7 @@ pub(crate) fn spinner_capability() -> WidgetCapability {
         canonical_name: "spinner",
         aliases: &["spinner_widget", "loading_spinner"],
         properties: SPINNER_PROPERTIES,
-        events: &[],
+        events: events_of!("spinner"),
         commands: &["set_active", "set_speed", "set_thickness", "set_size_ratio"],
     }
 }
@@ -1613,7 +1613,7 @@ pub(crate) fn image_view_capability() -> WidgetCapability {
         canonical_name: "image_view",
         aliases: &["image_viewer"],
         properties: IMAGE_VIEW_PROPERTIES,
-        events: &[],
+        events: events_of!("image_view"),
         commands: &["set_image", "set_scaled"],
     }
 }
@@ -1684,7 +1684,7 @@ pub(crate) fn badge_capability() -> WidgetCapability {
         canonical_name: "badge",
         aliases: &["badge_widget", "notification_badge"],
         properties: BADGE_PROPERTIES,
-        events: &[],
+        events: events_of!("badge"),
         commands: &["set_text", "set_count"],
     }
 }
@@ -2040,7 +2040,7 @@ pub(crate) fn progress_circle_capability() -> WidgetCapability {
         canonical_name: "progress_circle",
         aliases: &["circular_progress"],
         properties: PROGRESS_CIRCLE_PROPERTIES,
-        events: &[],
+        events: events_of!("progress_circle"),
         commands: &["set_value", "set_thickness", "set_indeterminate"],
     }
 }
@@ -2872,7 +2872,7 @@ pub(crate) fn clock_capability() -> WidgetCapability {
         canonical_name: "clock",
         aliases: &["analog_clock"],
         properties: CLOCK_PROPERTIES,
-        events: &[],
+        events: events_of!("clock"),
         commands: &[],
     }
 }

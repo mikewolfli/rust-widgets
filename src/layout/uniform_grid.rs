@@ -7,6 +7,18 @@ use super::Layout;
 use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 
+/// One widget's cell, recorded so the inner grid can be rebuilt when the spacing or margin
+/// changes. `GridLayout` has no post-construction spacing setter, so the uniform wrapper keeps
+/// the placement map and replays it into a fresh inner grid.
+#[derive(Debug, Clone, Copy)]
+struct UniformPlacement {
+    widget_id: ObjectId,
+    row: u32,
+    col: u32,
+    col_span: u32,
+    row_span: u32,
+}
+
 /// Fixed-grid layout manager where all cells are the same size.
 ///
 /// This is a thin wrapper around [`GridLayout`] with the stretch factors
@@ -18,6 +30,8 @@ use crate::core::{ObjectId, Rect};
 /// width and height, computed from the container rect.
 pub struct UniformGridLayout {
     inner: GridLayout,
+    /// Placements in insertion order, replayed when the inner grid is rebuilt.
+    placements: Vec<UniformPlacement>,
 }
 
 impl UniformGridLayout {
@@ -32,7 +46,57 @@ impl UniformGridLayout {
         // Uniform grid means every cell is the same size, so stretch is 1.
         inner.set_column_stretch(1);
         inner.set_row_stretch(1);
-        Self { inner }
+        Self { inner, placements: Vec::new() }
+    }
+
+    /// The wrapped grid, for a caller that needs a grid-specific capability.
+    ///
+    /// Changing a placement through this reference is not reflected in the placement map used
+    /// by [`Self::set_spacing`] / [`Self::set_margin`]; use the wrapper's own placement methods
+    /// when the spacing is also expected to change later.
+    pub fn inner(&self) -> &GridLayout {
+        &self.inner
+    }
+
+    /// Mutable access to the wrapped grid; see [`Self::inner`] for the placement caveat.
+    pub fn inner_mut(&mut self) -> &mut GridLayout {
+        &mut self.inner
+    }
+
+    /// Replaces the inner grid with one built from `spacing`/`margin`, replaying the recorded
+    /// placements. The grid dimensions and the uniform stretch factors are preserved.
+    fn rebuild(&mut self, spacing: u32, margin: u32) {
+        let margins = self.inner.margins();
+        let mut inner = GridLayout::new(self.inner.rows(), self.inner.cols(), spacing, margin);
+        inner.set_column_stretch(1);
+        inner.set_row_stretch(1);
+        if let Some(margins) = margins {
+            inner.set_margins(margins);
+        }
+        for placement in &self.placements {
+            let _ = inner.place_within_extent(
+                placement.row,
+                placement.col,
+                placement.col_span,
+                placement.row_span,
+                placement.widget_id,
+            );
+        }
+        self.inner = inner;
+    }
+
+    /// Records `widget_id`'s footprint. A previous placement of the same widget is dropped, so
+    /// the replay writes its cells exactly once, in the order the original calls made them.
+    fn record_placement(
+        &mut self,
+        widget_id: ObjectId,
+        row: u32,
+        col: u32,
+        col_span: u32,
+        row_span: u32,
+    ) {
+        self.placements.retain(|existing| existing.widget_id != widget_id);
+        self.placements.push(UniformPlacement { widget_id, row, col, col_span, row_span });
     }
 
     /// Assign a widget to a specific cell position.
@@ -43,7 +107,9 @@ impl UniformGridLayout {
         // the caller asked for, so an out-of-range cell is refused rather than grown up to.
         // Growing here would silently rewrite the row and column counts the caller chose, which
         // is the one thing this type exists to keep fixed.
-        let _ = self.inner.place_within_extent(row, col, 1, 1, widget_id);
+        if self.inner.place_within_extent(row, col, 1, 1, widget_id) {
+            self.record_placement(widget_id, row, col, 1, 1);
+        }
     }
 
     /// Assigns a widget to an explicit cell, returning whether the cell existed.
@@ -62,7 +128,15 @@ impl UniformGridLayout {
         row_span: u32,
         widget_id: ObjectId,
     ) -> bool {
-        self.inner.place_within_extent(row, col, col_span, row_span, widget_id)
+        let placed = self.inner.place_within_extent(row, col, col_span, row_span, widget_id);
+        if placed {
+            // Mirror the clamp `place_within_extent` applies, so a replayed placement covers
+            // exactly the cells the inner grid wrote.
+            let col_span = col_span.max(1).min(self.inner.cols().saturating_sub(col));
+            let row_span = row_span.max(1).min(self.inner.rows().saturating_sub(row));
+            self.record_placement(widget_id, row, col, col_span, row_span);
+        }
+        placed
     }
 
     /// Returns the number of occupied cells (widgets placed in the grid).
@@ -94,6 +168,29 @@ impl UniformGridLayout {
     pub fn margin(&self) -> u32 {
         self.inner.margin()
     }
+
+    /// Sets the gap between adjacent cells.
+    ///
+    /// The inner grid is rebuilt with the new gap; every recorded placement is replayed, so the
+    /// cell map is unchanged.
+    pub fn set_spacing(&mut self, spacing: u32) {
+        if self.inner.spacing() == spacing {
+            return;
+        }
+        let margin = self.inner.margin();
+        self.rebuild(spacing, margin);
+    }
+
+    /// Sets the outer margin around the entire grid.
+    ///
+    /// The inner grid is rebuilt with the new margin; every recorded placement is replayed.
+    pub fn set_margin(&mut self, margin: u32) {
+        if self.inner.margin() == margin {
+            return;
+        }
+        let spacing = self.inner.spacing();
+        self.rebuild(spacing, margin);
+    }
 }
 
 impl Layout for UniformGridLayout {
@@ -109,11 +206,16 @@ impl Layout for UniformGridLayout {
         // A uniform grid's dimensions are fixed, so auto-placement must use the
         // non-growing path. Delegating to `GridLayout::add_widget` would grow the grid
         // once it is full, silently undoing the row/column counts the caller chose (S-43).
-        self.inner.place_next_free_cell(widget_id);
+        if self.inner.place_next_free_cell(widget_id) {
+            if let Some((row, col)) = self.inner.cell_of(widget_id) {
+                self.record_placement(widget_id, row, col, 1, 1);
+            }
+        }
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
         self.inner.remove_widget(widget_id);
+        self.placements.retain(|placement| placement.widget_id != widget_id);
     }
 
     fn child_ids(&self) -> Vec<ObjectId> {
@@ -126,10 +228,23 @@ impl Layout for UniformGridLayout {
 
     fn clear(&mut self) {
         self.inner.clear();
+        self.placements.clear();
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         self.inner.update(rect, widgets);
+    }
+
+    fn widget_count(&self) -> usize {
+        self.inner.widget_count()
+    }
+
+    fn index_of(&self, id: ObjectId) -> Option<usize> {
+        self.inner.index_of(id)
+    }
+
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        self.inner.child_rect(id, rect)
     }
 }
 

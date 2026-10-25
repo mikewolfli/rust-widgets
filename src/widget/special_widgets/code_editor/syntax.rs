@@ -42,6 +42,8 @@ pub enum LineState {
     },
     /// Inside a Go backtick raw string.
     RawStringTick,
+    /// Inside an HTML/XML `<!-- … -->` comment.
+    HtmlComment,
 }
 
 impl LineState {
@@ -133,6 +135,32 @@ pub enum LanguageId {
     Go,
     /// C-family source, including `#define` preprocessor lines.
     CLike,
+    /// Java source.
+    Java,
+    /// C# source, including `#if` preprocessor lines.
+    CSharp,
+    /// C++ source.
+    Cpp,
+    /// Kotlin source.
+    Kotlin,
+    /// Swift source.
+    Swift,
+    /// HTML source, including `<!-- … -->` comments.
+    Html,
+    /// XML source, including `<!-- … -->` comments.
+    Xml,
+    /// JSON data (no comments; `true`/`false`/`null` are keywords).
+    Json,
+    /// CSS source (block comments only).
+    Css,
+    /// YAML source (`#` comments).
+    Yaml,
+    /// TOML source (`#` comments).
+    Toml,
+    /// Shell source (`#` comments).
+    Shell,
+    /// SQL source (`--` line comments, `/* */` block comments).
+    Sql,
     /// Markdown-ish plain text.
     Markdown,
     /// No highlighting at all.
@@ -149,6 +177,19 @@ impl LanguageId {
             Self::JavaScript => "JavaScript",
             Self::Go => "Go",
             Self::CLike => "C",
+            Self::Java => "Java",
+            Self::CSharp => "C#",
+            Self::Cpp => "C++",
+            Self::Kotlin => "Kotlin",
+            Self::Swift => "Swift",
+            Self::Html => "HTML",
+            Self::Xml => "XML",
+            Self::Json => "JSON",
+            Self::Css => "CSS",
+            Self::Yaml => "YAML",
+            Self::Toml => "TOML",
+            Self::Shell => "Shell",
+            Self::Sql => "SQL",
             Self::Markdown => "Markdown",
             Self::PlainText => "Plain Text",
         }
@@ -156,22 +197,80 @@ impl LanguageId {
 
     /// Returns the number of spaces a tab expands to for this language.
     pub fn default_tab_width(self) -> usize {
-        super::types::DEFAULT_TAB_WIDTH
+        match self {
+            // Markup and data formats are conventionally two-space indented.
+            Self::Html | Self::Xml | Self::Json | Self::Css => 2,
+            _ => super::types::DEFAULT_TAB_WIDTH,
+        }
     }
 
     /// Returns `true` when `#` starts a line comment instead of a preprocessor.
     pub fn uses_hash_comments(self) -> bool {
-        matches!(self, Self::Python)
+        matches!(self, Self::Python | Self::Shell | Self::Yaml | Self::Toml)
     }
 
     /// Returns `true` when `/* ... */` block comments are supported.
     pub fn supports_block_comments(self) -> bool {
-        matches!(self, Self::Rust | Self::JavaScript | Self::Go | Self::CLike)
+        matches!(
+            self,
+            Self::Rust
+                | Self::JavaScript
+                | Self::Go
+                | Self::CLike
+                | Self::Java
+                | Self::CSharp
+                | Self::Cpp
+                | Self::Kotlin
+                | Self::Swift
+                | Self::Css
+                | Self::Sql
+        )
     }
 
     /// Returns `true` when `#`-prefixed preprocessor lines are supported.
     pub fn supports_preprocessor(self) -> bool {
-        matches!(self, Self::Rust | Self::CLike)
+        matches!(self, Self::Rust | Self::CLike | Self::Cpp | Self::CSharp)
+    }
+
+    /// Returns `true` when `//` starts a line comment.
+    pub fn supports_slash_comments(self) -> bool {
+        matches!(
+            self,
+            Self::Rust
+                | Self::JavaScript
+                | Self::Go
+                | Self::CLike
+                | Self::Java
+                | Self::CSharp
+                | Self::Cpp
+                | Self::Kotlin
+                | Self::Swift
+        )
+    }
+
+    /// Returns `true` when `--` starts a line comment.
+    pub fn supports_dash_comments(self) -> bool {
+        matches!(self, Self::Sql)
+    }
+
+    /// Returns `true` when `<!-- … -->` comments are supported.
+    pub fn supports_html_comments(self) -> bool {
+        matches!(self, Self::Html | Self::Xml)
+    }
+
+    /// Returns `true` when a single-quoted literal is a character, not a string.
+    pub fn single_quote_is_char(self) -> bool {
+        matches!(
+            self,
+            Self::Rust
+                | Self::Go
+                | Self::CLike
+                | Self::Java
+                | Self::CSharp
+                | Self::Cpp
+                | Self::Kotlin
+                | Self::Swift
+        )
     }
 
     /// Returns `true` when `ch` may appear inside an identifier.
@@ -271,6 +370,349 @@ impl LanguageId {
                 "extern", "for", "goto", "if", "inline", "register", "restrict", "return",
                 "sizeof", "static", "struct", "switch", "typedef", "union", "volatile", "while",
             ],
+            Self::Java => &[
+                "abstract",
+                "assert",
+                "boolean",
+                "break",
+                "byte",
+                "case",
+                "catch",
+                "char",
+                "class",
+                "const",
+                "continue",
+                "default",
+                "do",
+                "double",
+                "else",
+                "enum",
+                "extends",
+                "final",
+                "finally",
+                "float",
+                "for",
+                "goto",
+                "if",
+                "implements",
+                "import",
+                "instanceof",
+                "int",
+                "interface",
+                "long",
+                "native",
+                "new",
+                "null",
+                "package",
+                "private",
+                "protected",
+                "public",
+                "return",
+                "short",
+                "static",
+                "super",
+                "switch",
+                "synchronized",
+                "this",
+                "throw",
+                "throws",
+                "transient",
+                "true",
+                "false",
+                "try",
+                "void",
+                "volatile",
+                "while",
+            ],
+            Self::CSharp => &[
+                "abstract",
+                "as",
+                "base",
+                "bool",
+                "break",
+                "byte",
+                "case",
+                "catch",
+                "char",
+                "checked",
+                "class",
+                "const",
+                "continue",
+                "decimal",
+                "default",
+                "delegate",
+                "do",
+                "double",
+                "else",
+                "enum",
+                "event",
+                "explicit",
+                "extern",
+                "false",
+                "finally",
+                "fixed",
+                "float",
+                "for",
+                "foreach",
+                "goto",
+                "if",
+                "implicit",
+                "in",
+                "int",
+                "interface",
+                "internal",
+                "is",
+                "lock",
+                "long",
+                "namespace",
+                "new",
+                "null",
+                "object",
+                "operator",
+                "out",
+                "override",
+                "params",
+                "private",
+                "protected",
+                "public",
+                "readonly",
+                "ref",
+                "return",
+                "sbyte",
+                "sealed",
+                "short",
+                "sizeof",
+                "stackalloc",
+                "static",
+                "string",
+                "struct",
+                "switch",
+                "this",
+                "throw",
+                "true",
+                "try",
+                "typeof",
+                "uint",
+                "ulong",
+                "unchecked",
+                "unsafe",
+                "ushort",
+                "using",
+                "virtual",
+                "void",
+                "volatile",
+                "while",
+            ],
+            Self::Cpp => &[
+                "alignas",
+                "alignof",
+                "auto",
+                "bool",
+                "break",
+                "case",
+                "catch",
+                "char",
+                "class",
+                "const",
+                "constexpr",
+                "continue",
+                "decltype",
+                "default",
+                "delete",
+                "do",
+                "double",
+                "else",
+                "enum",
+                "explicit",
+                "extern",
+                "false",
+                "float",
+                "for",
+                "friend",
+                "goto",
+                "if",
+                "inline",
+                "int",
+                "long",
+                "mutable",
+                "namespace",
+                "new",
+                "noexcept",
+                "nullptr",
+                "operator",
+                "private",
+                "protected",
+                "public",
+                "register",
+                "return",
+                "short",
+                "signed",
+                "sizeof",
+                "static",
+                "struct",
+                "switch",
+                "template",
+                "this",
+                "throw",
+                "true",
+                "try",
+                "typedef",
+                "typename",
+                "union",
+                "unsigned",
+                "using",
+                "virtual",
+                "void",
+                "volatile",
+                "while",
+            ],
+            Self::Kotlin => &[
+                "as",
+                "break",
+                "class",
+                "continue",
+                "do",
+                "else",
+                "false",
+                "for",
+                "fun",
+                "if",
+                "in",
+                "interface",
+                "is",
+                "null",
+                "object",
+                "package",
+                "return",
+                "super",
+                "this",
+                "throw",
+                "true",
+                "try",
+                "typealias",
+                "val",
+                "var",
+                "when",
+                "while",
+            ],
+            Self::Swift => &[
+                "associatedtype",
+                "class",
+                "deinit",
+                "enum",
+                "extension",
+                "fileprivate",
+                "func",
+                "import",
+                "init",
+                "inout",
+                "internal",
+                "let",
+                "open",
+                "operator",
+                "private",
+                "protocol",
+                "public",
+                "rethrows",
+                "static",
+                "struct",
+                "subscript",
+                "typealias",
+                "var",
+                "break",
+                "case",
+                "continue",
+                "default",
+                "defer",
+                "do",
+                "else",
+                "fallthrough",
+                "for",
+                "guard",
+                "if",
+                "in",
+                "repeat",
+                "return",
+                "switch",
+                "where",
+                "while",
+                "as",
+                "catch",
+                "false",
+                "is",
+                "nil",
+                "self",
+                "Self",
+                "throw",
+                "throws",
+                "true",
+                "try",
+            ],
+            Self::Html | Self::Xml | Self::Css => &[],
+            Self::Json => &["true", "false", "null"],
+            Self::Yaml => &["true", "false", "null", "yes", "no", "on", "off"],
+            Self::Toml => &["true", "false"],
+            Self::Shell => &[
+                "if", "then", "else", "elif", "fi", "for", "while", "in", "do", "done", "case",
+                "esac", "function", "select", "until", "time", "return", "break", "continue",
+                "local", "export", "readonly", "declare", "unset", "shift", "source", "alias",
+            ],
+            Self::Sql => &[
+                "select",
+                "from",
+                "where",
+                "insert",
+                "into",
+                "values",
+                "update",
+                "set",
+                "delete",
+                "create",
+                "table",
+                "drop",
+                "alter",
+                "add",
+                "column",
+                "index",
+                "view",
+                "join",
+                "inner",
+                "left",
+                "right",
+                "outer",
+                "on",
+                "group",
+                "by",
+                "order",
+                "having",
+                "limit",
+                "offset",
+                "distinct",
+                "as",
+                "and",
+                "or",
+                "not",
+                "null",
+                "is",
+                "in",
+                "like",
+                "between",
+                "exists",
+                "union",
+                "all",
+                "case",
+                "when",
+                "then",
+                "else",
+                "end",
+                "primary",
+                "key",
+                "foreign",
+                "references",
+                "default",
+                "unique",
+                "check",
+            ],
             Self::Markdown | Self::PlainText => &[],
         }
     }
@@ -293,13 +735,42 @@ impl LanguageId {
                 &["bool", "byte", "error", "float32", "float64", "int", "rune", "string", "uint"]
             }
             Self::CLike => &["char", "double", "float", "int", "long", "short", "void"],
-            Self::Markdown | Self::PlainText => &[],
+            Self::Java => &[
+                "boolean", "byte", "char", "double", "float", "int", "long", "short", "void",
+                "String", "Object",
+            ],
+            Self::CSharp => &[
+                "bool", "byte", "char", "decimal", "double", "float", "int", "long", "object",
+                "sbyte", "short", "string", "uint", "ulong", "ushort", "void",
+            ],
+            Self::Cpp => {
+                &["bool", "char", "double", "float", "int", "long", "short", "void", "size_t"]
+            }
+            Self::Kotlin => &[
+                "Any", "Boolean", "Byte", "Char", "Double", "Float", "Int", "Long", "Short",
+                "String", "Unit",
+            ],
+            Self::Swift => {
+                &["Any", "Bool", "Character", "Double", "Float", "Int", "String", "Void"]
+            }
+            Self::Sql => &["int", "integer", "text", "varchar", "boolean", "date", "timestamp"],
+            Self::Html
+            | Self::Xml
+            | Self::Json
+            | Self::Css
+            | Self::Yaml
+            | Self::Toml
+            | Self::Shell
+            | Self::Markdown
+            | Self::PlainText => &[],
         }
     }
 
     /// Returns `true` when `#` opens a line comment for this language.
     pub fn comment_prefix(self) -> &'static str {
-        if self.uses_hash_comments() {
+        if self.supports_dash_comments() {
+            "-- "
+        } else if self.uses_hash_comments() {
             "# "
         } else {
             "// "
@@ -313,7 +784,10 @@ impl LanguageId {
     /// or a Markdown heading is not a degraded toggle, it is corruption. Callers
     /// consult this and refuse rather than guess, so the failure is visible.
     pub fn supports_line_comments(self) -> bool {
-        !matches!(self, Self::Markdown | Self::PlainText)
+        !matches!(
+            self,
+            Self::Markdown | Self::PlainText | Self::Json | Self::Html | Self::Xml | Self::Css
+        )
     }
 
     /// Returns `true` when bracket/quote auto-pairing is meaningful.
@@ -456,6 +930,20 @@ impl SyntaxHighlighter for BuiltinHighlighter {
                     index = end;
                     state = LineState::Clean;
                 }
+                LineState::HtmlComment => {
+                    let end = match line.find("-->") {
+                        Some(offset) => offset + 3,
+                        None => {
+                            if len > 0 {
+                                spans.push(TokenSpan::new(0, len, TokenKind::BlockComment));
+                            }
+                            return (spans, state);
+                        }
+                    };
+                    spans.push(TokenSpan::new(0, end, TokenKind::BlockComment));
+                    index = end;
+                    state = LineState::Clean;
+                }
                 LineState::Clean => {}
             }
         }
@@ -485,9 +973,27 @@ impl SyntaxHighlighter for BuiltinHighlighter {
                     continue;
                 }
             }
-            if !self.language.uses_hash_comments() && rest.starts_with("//") {
+            if self.language.supports_slash_comments() && rest.starts_with("//") {
                 spans.push(TokenSpan::new(index, len, TokenKind::Comment));
                 break;
+            }
+            if self.language.supports_dash_comments() && rest.starts_with("--") {
+                spans.push(TokenSpan::new(index, len, TokenKind::Comment));
+                break;
+            }
+            if self.language.supports_html_comments() && rest.starts_with("<!--") {
+                match rest.find("-->") {
+                    Some(offset) => {
+                        let end = (index + offset + 3).min(len);
+                        spans.push(TokenSpan::new(index, end, TokenKind::BlockComment));
+                        index = end;
+                        continue;
+                    }
+                    None => {
+                        spans.push(TokenSpan::new(index, len, TokenKind::BlockComment));
+                        return (spans, LineState::HtmlComment);
+                    }
+                }
             }
             // A Rust raw string: `r"…"`, `r#"…"#`, `r##"…"##`. Colours the
             // whole literal, and only spills across lines when the closing
@@ -541,8 +1047,11 @@ impl SyntaxHighlighter for BuiltinHighlighter {
                 let search_from = quote.len();
                 // Backslash escapes protect the delimiter in normal strings and
                 // chars. Go raw strings (backticks) and Python triple quotes are
-                // scanned verbatim.
-                let escape_aware = quote.len() == 1 && ch != '`';
+                // scanned verbatim; so is a shell single-quoted string, where a
+                // backslash is literal.
+                let escape_aware = quote.len() == 1
+                    && ch != '`'
+                    && !(self.language == LanguageId::Shell && ch == '\'');
                 let found = if escape_aware {
                     let mut cursor = search_from;
                     let mut found = None;
@@ -588,7 +1097,7 @@ impl SyntaxHighlighter for BuiltinHighlighter {
                         return (spans, spill.unwrap_or(LineState::Clean));
                     }
                 };
-                let kind = if quote.len() == 1 && ch == '\'' && !self.language.uses_hash_comments()
+                let kind = if quote.len() == 1 && ch == '\'' && self.language.single_quote_is_char()
                 {
                     TokenKind::Character
                 } else {
@@ -996,5 +1505,50 @@ mod tests {
         let (spans, state) = highlighter.highlight_line("", state);
         assert!(spans.is_empty());
         assert_eq!(state, LineState::BlockComment);
+    }
+
+    /// Every language the editor advertises must classify its own comments and
+    /// strings, which is the defect the seven-language set had: Java/C++ fell into
+    /// the C family and SQL/HTML had no rule at all.
+    #[test]
+    fn the_common_languages_have_their_own_comment_and_string_rules() {
+        let java = BuiltinHighlighter::new(LanguageId::Java);
+        let spans = kinds(&java, "int x = 1; // note");
+        assert_eq!(spans.last(), Some(&TokenKind::Comment));
+
+        let cpp = BuiltinHighlighter::new(LanguageId::Cpp);
+        let spans = kinds(&cpp, "/* note */ auto x = 1;");
+        assert_eq!(spans.first(), Some(&TokenKind::BlockComment));
+
+        let sql = BuiltinHighlighter::new(LanguageId::Sql);
+        let spans = kinds(&sql, "select 'x' -- note");
+        assert_eq!(spans.last(), Some(&TokenKind::Comment));
+        assert!(spans.contains(&TokenKind::String), "single quotes are strings in SQL");
+
+        let yaml = BuiltinHighlighter::new(LanguageId::Yaml);
+        assert_eq!(kinds(&yaml, "key: value # note").last(), Some(&TokenKind::Comment));
+
+        let json = BuiltinHighlighter::new(LanguageId::Json);
+        assert!(!kinds(&json, "{\"a\": true}").contains(&TokenKind::Comment));
+    }
+
+    /// An HTML comment spans lines and must keep the following line commented.
+    #[test]
+    fn an_html_comment_spans_lines() {
+        let highlighter = BuiltinHighlighter::new(LanguageId::Html);
+        let (_, state) = highlighter.highlight_line("<!-- start", LineState::Clean);
+        assert_eq!(state, LineState::HtmlComment);
+        let (spans, state) = highlighter.highlight_line("still a comment -->", state);
+        assert_eq!(state, LineState::Clean);
+        assert!(spans.iter().all(|span| span.kind == TokenKind::BlockComment));
+    }
+
+    /// Single quotes in JavaScript are strings, not character literals.
+    #[test]
+    fn javascript_single_quotes_are_strings() {
+        let highlighter = BuiltinHighlighter::new(LanguageId::JavaScript);
+        let spans = kinds(&highlighter, "const a = 'x';");
+        assert!(spans.contains(&TokenKind::String));
+        assert!(!spans.contains(&TokenKind::Character));
     }
 }

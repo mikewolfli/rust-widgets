@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Color dialog widget.
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -160,6 +160,8 @@ fn color_from_hsv(hue: f32, saturation: f32, value: f32, alpha: u8) -> Color {
 pub struct ColorDialog {
     base: BaseWidget,
     current_color: Color,
+    /// The colour the dialog opened with, restored by [`ColorDialog::reject`].
+    initial_color: Color,
     options_alpha: bool,
     /// Whether the action row is hidden.
     no_buttons: bool,
@@ -178,18 +180,26 @@ pub struct ColorDialog {
     /// Whether the hex field has focus.
     hex_focused: bool,
     modal: bool,
-    /// Emitted with the new color on every colour change, including ones made
-    /// by keyboard nudges and by clicks in the picker area. Fires during
-    /// [`ColorDialog::set_current_color`] and therefore also *before* the user
-    /// confirms, so a slot reacting to it sees uncommitted selections.
+    /// Emitted with the new colour on every live colour change: picker clicks, keyboard
+    /// nudges, hex typing, presets and [`ColorDialog::set_current_color`]. This is the
+    /// uncommitted stream, separate from the confirmed [`ColorDialog::color_selected`].
+    pub current_color_changed: Signal1<Color>,
+    /// Emitted by [`ColorDialog::accept`] with the confirmed colour, before `accepted`.
+    ///
+    /// It used to fire on every live change, which meant a slot could not tell a preview
+    /// from the user's answer. Live changes use
+    /// [`ColorDialog::current_color_changed`]; this one fires once, on confirmation.
     pub color_selected: Signal1<Color>,
     /// Emitted by [`ColorDialog::accept`], when the user confirms with Enter.
-    /// Carries no color — read [`ColorDialog::current_color`] instead.
     pub accepted: GenericSignal,
-    /// Emitted by [`ColorDialog::reject`], when the user cancels with Escape.
-    /// The selected color is **not** rolled back, so the caller must decide
-    /// whether to keep the pre-dialog value.
+    /// Emitted by [`ColorDialog::reject`], when the user cancels with Escape. The colour has
+    /// already been rolled back to [`ColorDialog::initial_color`] when this fires.
     pub rejected: GenericSignal,
+    /// Emitted when Tab moves the focus ring; the payload is this dialog's own object id (the
+    /// dialog is one `ObjectId`; its self-drawn buttons are not separate objects).
+    pub focus_changed: Signal1<ObjectId>,
+    /// The action button the keyboard focus ring is on.
+    focus: Option<usize>,
     /// Reused buffer for the labels this dialog translates while drawing.
     ///
     /// The draw pass used to allocate two `String`s per frame (`tr!` returns an owned
@@ -286,6 +296,7 @@ impl ColorDialog {
         Self {
             base: BaseWidget::new(WidgetKind::ColorDialog, geometry, "ColorDialog"),
             current_color: Color::rgb(255, 255, 255),
+            initial_color: Color::rgb(255, 255, 255),
             options_alpha: false,
             no_buttons: false,
             show_hex_input: false,
@@ -296,9 +307,12 @@ impl ColorDialog {
             hex_input: String::new(),
             hex_focused: false,
             modal: true,
+            current_color_changed: Signal1::new(),
             color_selected: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
+            focus_changed: Signal1::new(),
+            focus: None,
             draw_text_buf: String::new(),
         }
     }
@@ -333,12 +347,12 @@ impl ColorDialog {
     pub fn options_alpha(&self) -> bool {
         self.options_alpha
     }
-    /// Sets the current color and emits `color_selected`.
+    /// Sets the current color and emits `current_color_changed`.
     ///
     /// A write of the value the dialog already holds is a no-op: it neither signals nor
     /// redraws. Signalling on a repeated value made a slot that called back into this setter
-    /// recurse without ever making progress; the signal is named `color_selected`, so reporting
-    /// a selection the caller already made would be false.
+    /// recurse without ever making progress; the signal is named `_changed`, so reporting a
+    /// write that changed nothing would be false.
     pub fn set_current_color(&mut self, color: Color) {
         if self.current_color == color {
             return;
@@ -350,8 +364,23 @@ impl ColorDialog {
             self.hue = hue_of(color);
         }
         self.current_color = color;
-        self.color_selected.emit(color);
+        self.current_color_changed.emit(color);
         self.base.request_redraw();
+    }
+
+    /// The colour [`ColorDialog::reject`] restores.
+    pub fn initial_color(&self) -> Color {
+        self.initial_color
+    }
+
+    /// Sets the rollback colour and selects it.
+    ///
+    /// This is the "Remember" half of the confirm/cancel pair: `reject` restores exactly this
+    /// value, so a caller that opened the dialog on a known colour gets it back on cancel
+    /// instead of having to snapshot and restore it itself.
+    pub fn set_initial_color(&mut self, color: Color) {
+        self.initial_color = color;
+        self.set_current_color(color);
     }
     /// Enables or disables alpha handling for picker clicks. See
     /// [`ColorDialog::options_alpha`]. Repaints because the alpha rail appears or disappears.
@@ -456,20 +485,25 @@ impl ColorDialog {
         self.custom_colors.push(color);
         self.base.request_redraw();
     }
-    /// Emits `accepted` and hides the dialog.
+    /// Emits `color_selected` with the confirmed colour, then `accepted`, and hides the dialog.
     ///
-    /// The signal is emitted before hiding, and nothing else happens: no
-    /// validation, and no signal distinguishing this acceptance from a previous
-    /// one.
+    /// The confirmed colour is carried by the signal rather than only left on the control, so
+    /// a slot does not have to read the dialog back after the fact — and a live preview can no
+    /// longer be mistaken for the answer.
     pub fn accept(&mut self) {
+        self.color_selected.emit(self.current_color);
         self.accepted.emit();
         self.hide();
     }
-    /// Emits `rejected` and hides the dialog.
+    /// Restores [`ColorDialog::initial_color`], emits `rejected`, and hides the dialog.
     ///
-    /// The color chosen so far is left untouched, so a caller that wants cancel
-    /// to restore the original color must snapshot it beforehand.
+    /// The rollback is part of rejecting: a caller that previewed colours and cancelled must
+    /// not be left holding the last preview. A rollback that actually changes the value emits
+    /// `current_color_changed`, so live listeners see the same transition the pixels do.
     pub fn reject(&mut self) {
+        if self.current_color != self.initial_color {
+            self.set_current_color(self.initial_color);
+        }
         self.rejected.emit();
         self.hide();
     }
@@ -635,6 +669,17 @@ impl ColorDialog {
         self.action_buttons().iter().position(|button| button.contains_point(pos))
     }
 
+    /// Moves the focus ring across the action buttons and announces the move.
+    fn move_focus(&mut self) {
+        let count = Self::action_labels().len();
+        let next = super::move_focus(self.focus, count, true);
+        if next != self.focus {
+            self.focus = next;
+            self.focus_changed.emit(self.id());
+            self.base.request_redraw();
+        }
+    }
+
     fn point_in_rect(pos: Point, rect: Rect) -> bool {
         pos.x >= rect.x
             && pos.x < rect.x + rect.width as i32
@@ -714,7 +759,17 @@ impl Widget for ColorDialog {
         match name {
             "color_selected" => {
                 Some(EventSignalRef::mapped("color_selected", &self.color_selected, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Color(*v)
+                }))
+            }
+            "current_color_changed" => Some(EventSignalRef::mapped(
+                "current_color_changed",
+                &self.current_color_changed,
+                |v| CapabilityValue::Color(*v),
+            )),
+            "focus_changed" => {
+                Some(EventSignalRef::mapped("focus_changed", &self.focus_changed, |v| {
+                    CapabilityValue::UInt(*v)
                 }))
             }
             "accepted" => Some(EventSignalRef::unit("accepted", &self.accepted)),
@@ -853,6 +908,7 @@ impl EventHandler for ColorDialog {
                 // first anyway: a press on a button must never fall through to the picker.
                 if !self.no_buttons {
                     if let Some(index) = self.button_at(*pos) {
+                        self.focus = Some(index);
                         if index == 0 {
                             self.accept();
                         } else {
@@ -909,6 +965,13 @@ impl EventHandler for ColorDialog {
                 }
             }
             Event::KeyPress { key, .. } => {
+                if *key == key_codes::TAB {
+                    // Tab leaves a focused hex field before it moves the ring, so one key does
+                    // not both commit the field and skip it.
+                    self.hex_focused = false;
+                    self.move_focus();
+                    return;
+                }
                 if self.hex_focused {
                     if *key == key_codes::BACKSPACE {
                         self.hex_input.pop();
@@ -922,7 +985,11 @@ impl EventHandler for ColorDialog {
                     return;
                 }
                 if *key == key_codes::ENTER {
-                    self.accept();
+                    if self.focus == Some(1) {
+                        self.reject();
+                    } else {
+                        self.accept();
+                    }
                 } else if *key == key_codes::ESCAPE {
                     self.reject();
                 } else if *key == key_codes::LEFT {
@@ -1198,6 +1265,9 @@ impl Draw for ColorDialog {
         context.fill_rect(cancel_rect, surface);
         context.draw_rect(cancel_rect, border);
         context.draw_text_line_cow(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
+        if let Some(focused) = self.focus.and_then(|index| row.buttons.get(index)) {
+            context.draw_rounded_rect_stroke(*focused, 2, accent, 2);
+        }
     }
 }
 
@@ -1256,11 +1326,11 @@ mod tests {
     }
 
     #[test]
-    fn set_current_color_emits_signal() {
+    fn set_current_color_emits_the_live_signal() {
         let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
         let emitted = Arc::new(Mutex::new(Vec::<Color>::new()));
         let sink = emitted.clone();
-        dialog.color_selected.connect(move |color| {
+        dialog.current_color_changed.connect(move |color| {
             if let Ok(mut guard) = sink.lock() {
                 guard.push(*color);
             }
@@ -1278,13 +1348,33 @@ mod tests {
         dialog.set_current_color(Color::rgb(10, 20, 30));
         let emitted = Arc::new(Mutex::new(0usize));
         let sink = emitted.clone();
-        dialog.color_selected.connect(move |_| {
+        dialog.current_color_changed.connect(move |_| {
             if let Ok(mut count) = sink.lock() {
                 *count += 1;
             }
         });
         dialog.set_current_color(Color::rgb(10, 20, 30));
         assert_eq!(*emitted.lock().expect("lock"), 0, "a repeated write must not signal");
+    }
+
+    #[test]
+    fn accept_reports_the_confirmed_color_and_reject_rolls_back() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
+        dialog.set_initial_color(Color::rgb(4, 5, 6));
+        let confirmed = Arc::new(Mutex::new(Vec::<Color>::new()));
+        let sink = Arc::clone(&confirmed);
+        dialog.color_selected.connect(move |color| {
+            sink.lock().expect("lock").push(*color);
+        });
+        dialog.current_color_changed.connect(|_| {});
+        dialog.set_current_color(Color::rgb(7, 8, 9));
+        assert!(confirmed.lock().expect("lock").is_empty(), "a live change is not a confirmation");
+        dialog.accept();
+        assert_eq!(*confirmed.lock().expect("lock"), vec![Color::rgb(7, 8, 9)]);
+
+        dialog.set_current_color(Color::rgb(11, 12, 13));
+        dialog.reject();
+        assert_eq!(dialog.current_color(), Color::rgb(4, 5, 6), "cancel must roll back");
     }
 
     #[test]

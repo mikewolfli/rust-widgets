@@ -23,14 +23,16 @@
 //! Both modes support mirror mode (bottom half mirrors top), peak hold indicators, and
 //! configurable bar count and spacing.
 
-use std::cell::Cell;
+use alloc::collections::VecDeque;
+use core::cell::Cell;
 
 use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
-use crate::widget::capability::coercion::expect_usize;
+use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_f32, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -66,10 +68,10 @@ pub struct AudioVisualizer {
     base: BaseWidget,
     /// Audio sample data normalized to -1.0 to 1.0, at most `SAMPLE_HISTORY_LIMIT` of them.
     ///
-    /// Bounded because both `add_sample` and `set_samples` are streaming entry points: an
-    /// unbounded `Vec` grew for the lifetime of the widget and every `bar_value` call walked all
-    /// of it.
-    samples: Vec<f32>,
+    /// A deque rather than a `Vec`: [`Self::add_sample`] is fed per sample by a streaming host, so
+    /// dropping the oldest entry must be O(1) instead of shifting the whole window (`remove(0)`
+    /// moved 512 elements tens of thousands of times a second at 44.1 kHz).
+    samples: VecDeque<f32>,
     /// Which derivation [`AudioVisualizer::bar_value`] uses for each bar.
     mode: VisualizerMode,
     /// Host-computed spectrum bins, when the host already runs its own transform.
@@ -125,6 +127,22 @@ pub struct AudioVisualizer {
     /// shared timer would do exactly that, and the symptom is every marker sliding down together as
     /// soon as the loudest bar stopped.
     peak_ages: Vec<u64>,
+    /// Emitted with the overall level, throttled to `level_report_interval_ms`.
+    pub level_changed: Signal1<f32>,
+    /// Emitted when the window peak exceeds [`Self::peak_threshold`], with that peak.
+    pub peak_exceeded: Signal1<f32>,
+    /// Emitted with the new mode name when [`Self::set_mode`] changes it.
+    pub mode_changed: Signal1<String>,
+    /// Threshold above which `peak_exceeded` fires, `0.0..=1.0`.
+    peak_threshold: f32,
+    /// Minimum milliseconds between two `level_changed` / `peak_exceeded` reports.
+    level_report_interval_ms: u32,
+    /// Milliseconds accumulated towards the next throttled report.
+    report_clock_ms: u32,
+    /// The level last announced, so an unchanged meter stays quiet.
+    last_reported_level: f32,
+    /// The peak last announced.
+    last_reported_peak: f32,
 }
 
 /// The fall rate of a released peak, in units of full height per second.
@@ -158,7 +176,7 @@ impl AudioVisualizer {
         let bar_count = 64;
         Self {
             base: BaseWidget::new(WidgetKind::AudioVisualizer, geometry, "AudioVisualizer"),
-            samples: Vec::new(),
+            samples: VecDeque::new(),
             mode: VisualizerMode::Waveform,
             spectrum: None,
             spectrum_cache: Cell::new(None),
@@ -174,6 +192,14 @@ impl AudioVisualizer {
             smoothed_levels: Vec::new(),
             attack_ms: 0.0,
             release_ms: 0.0,
+            level_changed: Signal1::new(),
+            peak_exceeded: Signal1::new(),
+            mode_changed: Signal1::new(),
+            peak_threshold: 0.9,
+            level_report_interval_ms: 50,
+            report_clock_ms: 0,
+            last_reported_level: 0.0,
+            last_reported_peak: 0.0,
         }
     }
 
@@ -182,14 +208,38 @@ impl AudioVisualizer {
     /// Only the newest 512 samples are retained. The bound is deliberate: the spectrum path
     /// analyses a 256-sample window, and two windows are enough history for both modes, whereas
     /// keeping whatever length the caller passed made a long stream grow the widget without limit.
-    pub fn set_samples(&mut self, mut data: Vec<f32>) {
-        if data.len() > SAMPLE_HISTORY_LIMIT {
-            let excess = data.len() - SAMPLE_HISTORY_LIMIT;
-            data.drain(..excess);
-        }
-        self.samples = data;
+    pub fn set_samples(&mut self, data: Vec<f32>) {
+        let skip = data.len().saturating_sub(SAMPLE_HISTORY_LIMIT);
+        self.samples = data.into_iter().skip(skip).map(|v| v.clamp(-1.0, 1.0)).collect();
         self.spectrum_cache.set(None);
         self.base.request_redraw();
+    }
+
+    /// Appends a block of samples, keeping the bounded history.
+    ///
+    /// This is the bulk entry point: a host that decodes a frame block of audio should call it
+    /// once per block rather than once per sample. It performs one `pop_front` per discarded
+    /// sample and one allocation-free `push_back` per new sample.
+    ///
+    /// # FFT cache contract
+    ///
+    /// The spectrum magnitudes are cached until the sample history changes. A host that feeds a
+    /// block must therefore feed the *whole* block before drawing: the first draw after the call
+    /// runs the transform once, and every later draw of the same history reuses it.
+    pub fn set_samples_bulk(&mut self, data: &[f32]) {
+        for &sample in data {
+            self.push_sample(sample);
+        }
+        self.spectrum_cache.set(None);
+        self.base.request_redraw();
+    }
+
+    /// Appends one sample, evicting the oldest in O(1) once the history is full.
+    fn push_sample(&mut self, value: f32) {
+        if self.samples.len() >= SAMPLE_HISTORY_LIMIT {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(value.clamp(-1.0, 1.0));
     }
 
     /// Adds a single audio sample. Useful for streaming data.
@@ -197,12 +247,7 @@ impl AudioVisualizer {
     /// Once the history is full the oldest sample is dropped, so the buffer stays bounded at 512
     /// samples instead of growing for the lifetime of the widget.
     pub fn add_sample(&mut self, value: f32) {
-        if self.samples.len() >= SAMPLE_HISTORY_LIMIT {
-            // Dropping from the front is O(len) on a `Vec`, but `len` is capped at 512 here, so the
-            // cost is a bounded shift rather than a reallocation.
-            self.samples.remove(0);
-        }
-        self.samples.push(value.clamp(-1.0, 1.0));
+        self.push_sample(value);
         self.spectrum_cache.set(None);
         self.base.request_redraw();
     }
@@ -271,9 +316,13 @@ impl AudioVisualizer {
         self.base.request_redraw();
     }
 
-    /// Returns a reference to the retained samples, at most 512 of the newest ones.
-    pub fn samples(&self) -> &[f32] {
-        &self.samples
+    /// Returns the retained samples, at most 512 of the newest ones.
+    ///
+    /// The storage is a ring, so this materialises an ordered copy for inspection rather than
+    /// exposing the internal buffer. The streaming paths (`add_sample`, `set_samples_bulk`) do not
+    /// call it and never compact.
+    pub fn samples(&self) -> Vec<f32> {
+        self.samples.iter().copied().collect()
     }
 
     /// Selects how each bar's level is derived.
@@ -285,7 +334,42 @@ impl AudioVisualizer {
             return;
         }
         self.mode = mode;
+        let name = match mode {
+            VisualizerMode::Waveform => "waveform",
+            VisualizerMode::Spectrum => "spectrum",
+        };
+        self.mode_changed.emit(name.to_string());
         self.base.request_redraw();
+    }
+
+    /// The threshold above which `peak_exceeded` fires.
+    pub fn peak_threshold(&self) -> f32 {
+        self.peak_threshold
+    }
+
+    /// Sets the peak threshold, clamped into `0.0..=1.0`.
+    pub fn set_peak_threshold(&mut self, threshold: f32) {
+        if !threshold.is_finite() {
+            return;
+        }
+        let threshold = threshold.clamp(0.0, 1.0);
+        if self.peak_threshold == threshold {
+            return;
+        }
+        self.peak_threshold = threshold;
+    }
+
+    /// The minimum milliseconds between two throttled level reports; `0` reports on every tick.
+    pub fn level_report_interval(&self) -> u32 {
+        self.level_report_interval_ms
+    }
+
+    /// Sets the level report throttle interval.
+    pub fn set_level_report_interval(&mut self, ms: u32) {
+        if self.level_report_interval_ms == ms {
+            return;
+        }
+        self.level_report_interval_ms = ms;
     }
 
     /// Returns the active bar-derivation mode.
@@ -530,9 +614,9 @@ impl AudioVisualizer {
         if start >= end {
             return 0.0;
         }
-        let chunk = &self.samples[start..end];
-        let sum: f32 = chunk.iter().map(|sample| sample.abs()).sum();
-        (sum / chunk.len() as f32).min(1.0)
+        let sum: f32 =
+            self.samples.iter().skip(start).take(end - start).map(|sample| sample.abs()).sum();
+        (sum / (end - start) as f32).min(1.0)
     }
 
     /// The spectrum-mode level of bar `index`: the peak magnitude of its logarithmic band.
@@ -595,7 +679,9 @@ impl AudioVisualizer {
         let mut window = [0.0f32; SPECTRUM_WINDOW];
         let available = self.samples.len().min(SPECTRUM_WINDOW);
         let start = self.samples.len() - available;
-        window[..available].copy_from_slice(&self.samples[start..]);
+        for (slot, sample) in self.samples.iter().skip(start).enumerate() {
+            window[slot] = *sample;
+        }
         window
     }
 
@@ -607,6 +693,38 @@ impl AudioVisualizer {
         let magnitudes = fft_magnitudes(&self.analysis_window());
         self.spectrum_cache.set(Some(magnitudes));
         magnitudes
+    }
+
+    /// Emits the throttled level and peak reports; `true` when either fired.
+    fn advance_level_report(&mut self, delta_ms: u32) -> bool {
+        self.report_clock_ms = self.report_clock_ms.saturating_add(delta_ms);
+        if self.level_report_interval_ms != 0
+            && self.report_clock_ms < self.level_report_interval_ms
+        {
+            return false;
+        }
+        self.report_clock_ms = 0;
+
+        let level = if self.bar_count == 0 {
+            0.0
+        } else {
+            (0..self.bar_count).map(|index| self.display_level(index)).sum::<f32>()
+                / self.bar_count as f32
+        };
+        let mut reported = false;
+        if (level - self.last_reported_level).abs() > 0.005 {
+            self.last_reported_level = level;
+            self.level_changed.emit(level);
+            reported = true;
+        }
+
+        let peak = self.samples.iter().fold(0.0f32, |current, sample| current.max(sample.abs()));
+        if peak > self.peak_threshold && (peak - self.last_reported_peak).abs() > 0.005 {
+            self.last_reported_peak = peak;
+            self.peak_exceeded.emit(peak);
+            reported = true;
+        }
+        reported
     }
 }
 
@@ -717,10 +835,11 @@ impl Widget for AudioVisualizer {
     fn tick(&mut self, delta_ms: u32) -> bool {
         let peaked = self.advance_peak_hold(delta_ms as u64);
         let smoothed = self.advance_smoothing(delta_ms);
+        let reported = self.advance_level_report(delta_ms);
         if peaked || smoothed {
             self.base.request_redraw();
         }
-        peaked || smoothed
+        peaked || smoothed || reported
     }
 
     /// Whether the peak-hold markers are still falling, i.e. whether a frame is owed.
@@ -751,6 +870,32 @@ impl Widget for AudioVisualizer {
     }
 
     impl_widget_property_hooks!();
+
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// Without these arms the three names were accepted by `connect_event` and wired to nothing:
+    /// the meter emitted into its own fields while the hub held slots nobody called.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "level_changed" => {
+                Some(EventSignalRef::mapped("level_changed", &self.level_changed, |v| {
+                    CapabilityValue::Float(*v as f64)
+                }))
+            }
+            "peak_exceeded" => {
+                Some(EventSignalRef::mapped("peak_exceeded", &self.peak_exceeded, |v| {
+                    CapabilityValue::Float(*v as f64)
+                }))
+            }
+            "mode_changed" => {
+                Some(EventSignalRef::mapped("mode_changed", &self.mode_changed, |v| {
+                    CapabilityValue::String((*v).clone())
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `AudioVisualizer`'s property contract.
@@ -762,6 +907,17 @@ impl WidgetProperties for AudioVisualizer {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "bar_count" => Ok(CapabilityValue::UInt(self.bar_count() as u64)),
+            "peak_threshold" => Ok(CapabilityValue::Float(self.peak_threshold() as f64)),
+            "mode" => Ok(CapabilityValue::String(
+                match self.mode() {
+                    VisualizerMode::Waveform => "waveform",
+                    VisualizerMode::Spectrum => "spectrum",
+                }
+                .to_string(),
+            )),
+            "level_report_interval" => {
+                Ok(CapabilityValue::UInt(self.level_report_interval() as u64))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -772,12 +928,36 @@ impl WidgetProperties for AudioVisualizer {
                 self.set_bar_count(expect_usize(value)?);
                 Ok(())
             }
+            "peak_threshold" => {
+                self.set_peak_threshold(expect_f32(value)?);
+                Ok(())
+            }
+            "mode" => {
+                let mode = match expect_string(value)?.to_ascii_lowercase().as_str() {
+                    "waveform" => VisualizerMode::Waveform,
+                    "spectrum" => VisualizerMode::Spectrum,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_mode(mode);
+                Ok(())
+            }
+            "level_report_interval" => {
+                let ms = expect_usize(value)?.min(u32::MAX as usize) as u32;
+                self.set_level_report_interval(ms);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["bar_count", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "bar_count",
+            "peak_threshold",
+            "mode",
+            "level_report_interval",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -914,7 +1094,7 @@ mod tests {
         let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
         let data = vec![0.0, 0.5, 1.0, -0.5, 0.0];
         av.set_samples(data.clone());
-        assert_eq!(av.samples(), &data);
+        assert_eq!(av.samples(), data);
     }
 
     #[test]
@@ -1458,5 +1638,53 @@ mod tests {
         assert!(first > 0.0 && first < raw, "one tick is a step toward the signal: {first}");
         av.tick(1000);
         assert!((av.display_level(0) - raw).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_meter_publishes_throttled_level_and_peak_reports() {
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        let levels = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peaks = std::sync::Arc::new(std::sync::Mutex::new(0.0f32));
+        let modes = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let l = levels.clone();
+        av.level_changed.connect(move |_value: std::sync::Arc<f32>| {
+            l.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let p = peaks.clone();
+        av.peak_exceeded.connect(move |value: std::sync::Arc<f32>| {
+            *p.lock().unwrap() = *value;
+        });
+        let m = modes.clone();
+        av.mode_changed.connect(move |value: std::sync::Arc<String>| {
+            *m.lock().unwrap() = (*value).clone();
+        });
+
+        av.set_peak_threshold(0.5);
+        av.set_level_report_interval(50);
+        av.set_samples(vec![1.0, -1.0, 0.5, 0.5]);
+        assert!(!av.tick(16), "a report is not due yet");
+        assert_eq!(levels.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(av.tick(50));
+        assert_eq!(levels.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(*peaks.lock().unwrap() > 0.99);
+
+        av.set_mode(VisualizerMode::Spectrum);
+        assert_eq!(*modes.lock().unwrap(), "spectrum");
+        for name in ["level_changed", "peak_exceeded", "mode_changed"] {
+            assert!(av.event_signal_dyn(name).is_some(), "{name} must resolve");
+        }
+    }
+
+    #[test]
+    fn bulk_samples_keep_the_ring_ordered_and_bounded() {
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        av.set_samples_bulk(&[0.1, 0.2, 0.3]);
+        assert_eq!(av.samples(), vec![0.1, 0.2, 0.3]);
+        let block: Vec<f32> =
+            (0..SAMPLE_HISTORY_LIMIT + 100).map(|i| (i % 7) as f32 / 7.0).collect();
+        av.set_samples_bulk(&block);
+        assert_eq!(av.samples().len(), SAMPLE_HISTORY_LIMIT);
+        // The newest block tail survives, in order.
+        assert_eq!(av.samples()[SAMPLE_HISTORY_LIMIT - 1], block[block.len() - 1]);
     }
 }

@@ -309,6 +309,9 @@ pub fn default_widget_property_default_value(
             "elide" => CapabilityValue::String("right".to_string()),
             "drag_enabled" => CapabilityValue::Bool(false),
             "accepts_drops" => CapabilityValue::Bool(false),
+            "auto_repeat" => CapabilityValue::Bool(false),
+            "auto_repeat_delay" => CapabilityValue::UInt(500),
+            "auto_repeat_interval" => CapabilityValue::UInt(100),
             "menu_open" => CapabilityValue::Bool(false),
             "menu_item_count" => CapabilityValue::UInt(0),
             "enabled" => CapabilityValue::Bool(true),
@@ -322,6 +325,10 @@ pub fn default_widget_property_default_value(
             "elide" => CapabilityValue::String("none".to_string()),
             "margin" => CapabilityValue::UInt(0),
             "scaled_contents" => CapabilityValue::Bool(false),
+            "indent" => CapabilityValue::UInt(0),
+            "text_format" => CapabilityValue::String("plain".to_string()),
+            "open_external_links" => CapabilityValue::Bool(false),
+            "link_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::CheckBox => match property_name {
@@ -330,6 +337,9 @@ pub fn default_widget_property_default_value(
             "checked" => CapabilityValue::Bool(false),
             "tristate_enabled" => CapabilityValue::Bool(false),
             "auto_exclusive" => CapabilityValue::Bool(false),
+            "auto_repeat" => CapabilityValue::Bool(false),
+            "auto_repeat_delay" => CapabilityValue::UInt(500),
+            "auto_repeat_interval" => CapabilityValue::UInt(100),
             _ => return None,
         },
         WidgetKind::RadioButton => match property_name {
@@ -338,6 +348,9 @@ pub fn default_widget_property_default_value(
             "group_id" => CapabilityValue::Null,
             // A radio is exclusive by construction; see `RadioButton::new`.
             "auto_exclusive" => CapabilityValue::Bool(true),
+            "auto_repeat" => CapabilityValue::Bool(false),
+            "auto_repeat_delay" => CapabilityValue::UInt(500),
+            "auto_repeat_interval" => CapabilityValue::UInt(100),
             _ => return None,
         },
         WidgetKind::Slider => match property_name {
@@ -406,6 +419,7 @@ pub fn default_widget_property_default_value(
             "display_text" | "value_text" => CapabilityValue::String("0".to_string()),
             "special_value_text" => CapabilityValue::Null,
             "wrapping" => CapabilityValue::Bool(false),
+            "keyboard_tracking" => CapabilityValue::Bool(true),
             // A fresh spin box is left-to-right, the same default `SpinBox::new` sets. Declared here as
             // well as in the schema because `schema_defaults_are_readable_and_writable_when_declared`
             // requires every declared property to answer its own default — a name the designer offers
@@ -421,6 +435,8 @@ pub fn default_widget_property_default_value(
             "items" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "current_index" => CapabilityValue::Null,
             "current_text" => CapabilityValue::String(String::new()),
+            "placeholder_text" => CapabilityValue::String(String::new()),
+            "minimum_contents_length" => CapabilityValue::UInt(0),
             "editable" => CapabilityValue::Bool(false),
             "max_visible_items" => CapabilityValue::UInt(10),
             "insert_policy" => CapabilityValue::String("insert_at_bottom".to_string()),
@@ -522,6 +538,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Toolbox => match property_name {
+            "mode" => CapabilityValue::String("exclusive".to_string()),
             "item_count" => CapabilityValue::UInt(0),
             "current_index" => CapabilityValue::UInt(0),
             "orientation" => CapabilityValue::String("vertical".to_string()),
@@ -574,6 +591,8 @@ pub fn default_widget_property_default_value(
             "placeholder_text" => CapabilityValue::String(String::new()),
             "max_length" => CapabilityValue::Null,
             "read_only" => CapabilityValue::Bool(false),
+            // A fresh field allows the selection to be dragged out; see `LineEdit::new`.
+            "drag_enabled" => CapabilityValue::Bool(true),
             // Mirrors `LineEdit::new`, which starts in `EchoMode::Normal`.
             "echo_mode" => CapabilityValue::String("normal".to_string()),
             "cursor_position" => CapabilityValue::UInt(0),
@@ -597,6 +616,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::ListView => match property_name {
+            "icon_visible_in_list_mode" => CapabilityValue::Bool(false),
             "has_model" => CapabilityValue::Bool(false),
             "row_count" => CapabilityValue::UInt(0),
             "focused_row" => CapabilityValue::Null,
@@ -622,6 +642,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::TreeView => match property_name {
+            "expansion_animated" => CapabilityValue::Bool(false),
             "has_model" => CapabilityValue::Bool(false),
             "node_count" => CapabilityValue::UInt(0),
             "focused_node" => CapabilityValue::Null,
@@ -633,6 +654,12 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::TreeTable => match property_name {
+            "header_visible" => CapabilityValue::Bool(true),
+            "expands_on_double_click" => CapabilityValue::Bool(true),
+            "middle_click_expands" => CapabilityValue::Bool(true),
+            "sort_role" => CapabilityValue::String("text".to_string()),
+            "case_sensitive" => CapabilityValue::Bool(false),
+            "projection_strategy" => CapabilityValue::String("windowed".to_string()),
             "has_model" => CapabilityValue::Bool(false),
             "row_count" => CapabilityValue::UInt(0),
             "column_count" => CapabilityValue::UInt(0),
@@ -643,6 +670,14 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Table => match property_name {
+            "header_visible" => CapabilityValue::Bool(true),
+            "editable" => CapabilityValue::Bool(true),
+            "edit_triggers" => CapabilityValue::String("none".to_string()),
+            "section_resize_mode" => CapabilityValue::String("fixed".to_string()),
+            "selection_behavior" => CapabilityValue::String("cells".to_string()),
+            "sort_indicator_visible" => CapabilityValue::Bool(true),
+            "current_cell" => CapabilityValue::Null,
+            "wheel_scroll_mode" => CapabilityValue::String("per_row".to_string()),
             "has_model" => CapabilityValue::Bool(false),
             "has_delegate" => CapabilityValue::Bool(false),
             "row_count" => CapabilityValue::UInt(0),
@@ -670,6 +705,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::DataView => match property_name {
+            "selected_rows" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "selection_mode" => CapabilityValue::String("single".to_string()),
             "has_data_source" => CapabilityValue::Bool(false),
             "row_count" => CapabilityValue::UInt(0),
             "scroll_row" => CapabilityValue::UInt(0),
@@ -679,6 +716,9 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::GridTable => match property_name {
+            "sorting_enabled" => CapabilityValue::Bool(true),
+            "sort_role" => CapabilityValue::String("display".to_string()),
+            "auto_refresh" => CapabilityValue::Bool(true),
             "has_data_source" => CapabilityValue::Bool(false),
             "row_count" => CapabilityValue::UInt(0),
             "column_count" => CapabilityValue::UInt(0),
@@ -775,6 +815,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Pagination => match property_name {
+            "wheel_paging_enabled" => CapabilityValue::Bool(true),
             "total" => CapabilityValue::UInt(0),
             "page_size" => CapabilityValue::UInt(10),
             "page" => CapabilityValue::UInt(0),
@@ -848,6 +889,8 @@ pub fn default_widget_property_default_value(
             "marker_count" => CapabilityValue::UInt(0),
             // `rich_edit` and `code_editor` share this kind; see the `ListView` note.
             "read_only" => CapabilityValue::Bool(false),
+            "line_wrap" => CapabilityValue::Bool(false),
+            "placeholder_text" => CapabilityValue::String(String::new()),
             // `markdown_editor` shares this kind; see the `ListView` note above.
             "preview_mode" => CapabilityValue::Bool(false),
             "word_count" => CapabilityValue::UInt(0),
@@ -966,6 +1009,9 @@ pub fn default_widget_property_default_value(
             "auto_exclusive" => CapabilityValue::Bool(false),
             "auto_raise" => CapabilityValue::Bool(false),
             "group_id" => CapabilityValue::Null,
+            "auto_repeat" => CapabilityValue::Bool(false),
+            "auto_repeat_delay" => CapabilityValue::UInt(500),
+            "auto_repeat_interval" => CapabilityValue::UInt(100),
             "icon_source" => CapabilityValue::Null,
             "arrow_type" => CapabilityValue::String("none".to_string()),
             "popup_mode" => CapabilityValue::String("instant".to_string()),
@@ -1032,6 +1078,8 @@ pub fn default_widget_property_default_value(
             "maximum" => CapabilityValue::UInt(100),
             "thickness" => CapabilityValue::UInt(10),
             "sweep_angle" => CapabilityValue::UInt(360),
+            // Mirrors `Arc::new`'s 12-o'clock origin.
+            "start_angle" => CapabilityValue::Float(0.0),
             "indeterminate" => CapabilityValue::Bool(false),
             "rounded" => CapabilityValue::Bool(false),
             "show_value" => CapabilityValue::Bool(true),
@@ -1042,6 +1090,8 @@ pub fn default_widget_property_default_value(
             "thickness" => CapabilityValue::UInt(4),
             "speed" => CapabilityValue::Float(1.0),
             "size_ratio" => CapabilityValue::Float(0.8),
+            // Mirrors `SpinnerStyle::default()`.
+            "style" => CapabilityValue::String("arc".to_string()),
             _ => return None,
         },
         WidgetKind::Roller => match property_name {
@@ -1090,6 +1140,12 @@ pub fn default_widget_property_default_value(
         // rejects.
         WidgetKind::Switch | WidgetKind::CupertinoSwitch => match property_name {
             "checked" => CapabilityValue::Bool(false),
+            // The ON track takes the theme's accent unless the caller names a colour, so "not
+            // set" is `Null` — the same optional-colour default the other override properties
+            // use.
+            "on_track_color" => CapabilityValue::Null,
+            // Mirrors `SwitchGeometry::default()` (`Material`).
+            "switch_geometry" => CapabilityValue::String("material".to_string()),
             _ => return None,
         },
         WidgetKind::Line => match property_name {
@@ -1157,6 +1213,9 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::QueryBuilder => match property_name {
+            "live_update" => CapabilityValue::Bool(true),
+            "commit_delay_ms" => CapabilityValue::UInt(300),
+            "has_pending_commit" => CapabilityValue::Bool(false),
             "row_count" => CapabilityValue::UInt(0),
             "incomplete_row_count" => CapabilityValue::UInt(0),
             "field_count" => CapabilityValue::UInt(0),
@@ -1297,6 +1356,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::TabWidget => match property_name {
+            "document_mode" => CapabilityValue::Bool(false),
             "tab_count" => CapabilityValue::UInt(0),
             "current_index" => CapabilityValue::UInt(0),
             // The first tab's title. A freshly constructed `TabWidget` has no tabs, so the
@@ -1391,6 +1451,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::NavigationDrawer => match property_name {
+            "section_separator_visible" => CapabilityValue::Bool(true),
             "open" => CapabilityValue::Bool(false),
             "width" => CapabilityValue::Float(250.0),
             _ => return None,
@@ -1410,6 +1471,9 @@ pub fn default_widget_property_default_value(
         WidgetKind::Divider => match property_name {
             "orientation" => CapabilityValue::String("horizontal".to_string()),
             "thickness" => CapabilityValue::Float(1.0),
+            // The constructor's neutral grey, which is also the fallback the line uses when no
+            // theme is installed.
+            "color" => CapabilityValue::Color(crate::core::Color::rgba(180, 180, 180, 200)),
             _ => return None,
         },
         WidgetKind::Stepper => match property_name {
@@ -1483,6 +1547,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::MasonryLayout => match property_name {
+            "item_spacing" => CapabilityValue::UInt(4),
             "column_count" => CapabilityValue::UInt(2),
             "item_count" => CapabilityValue::UInt(0),
             _ => return None,
@@ -1493,6 +1558,10 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::AdaptiveScaffold => match property_name {
+            "badge_style" => CapabilityValue::String("text".to_string()),
+            "drawer_animated" => CapabilityValue::Bool(true),
+            "scrim_opacity" => CapabilityValue::Float(0.32),
+            "page_transition" => CapabilityValue::Bool(true),
             "title" => CapabilityValue::String(String::new()),
             _ => return None,
         },
@@ -1543,6 +1612,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::NavigationStack => match property_name {
+            "back_visible" => CapabilityValue::Bool(true),
             "page_count" => CapabilityValue::UInt(0),
             // A fresh stack is empty, so it has no current page (and page 0 is not
             // reachable until something is pushed).
@@ -1564,6 +1634,9 @@ pub fn default_widget_property_default_value(
                     .unwrap_or(crate::core::Color::PRIMARY),
             ),
             "indeterminate" => CapabilityValue::Bool(false),
+            // The centre reading is opt-in, and its template is the documented default.
+            "show_center_text" => CapabilityValue::Bool(false),
+            "center_text_format" => CapabilityValue::String("{percent}%".to_string()),
             _ => return None,
         },
         WidgetKind::Icon => match property_name {
@@ -1712,6 +1785,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::PropertiesPanel => match property_name {
+            "description_mode" => CapabilityValue::String("tooltip".to_string()),
+            "edit_trigger" => CapabilityValue::String("single_click".to_string()),
             "property_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
@@ -1773,6 +1848,7 @@ pub fn default_widget_property_default_value(
 
         // ── New widgets (navigation) ───────────────────────────────
         WidgetKind::TabView => match property_name {
+            "keyboard_navigation_enabled" => CapabilityValue::Bool(true),
             "tab_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::UInt(0),
             _ => return None,
@@ -1836,6 +1912,10 @@ pub fn default_widget_property_default_value(
 
         // ── New widgets (view) ──────────────────────────────────────
         WidgetKind::ImageGallery => match property_name {
+            "strip_offset" => CapabilityValue::UInt(0),
+            "strip_scroll_enabled" => CapabilityValue::Bool(true),
+            "wheel_mode" => CapabilityValue::String("strip".to_string()),
+            "arrow_key_navigation_enabled" => CapabilityValue::Bool(true),
             "current_index" => CapabilityValue::UInt(0),
             // An empty list of the declared schema rather than `Null`: a dropped binding resolves to
             // this default, and `Null` is a value the `Records` schema check refuses.
@@ -1878,24 +1958,28 @@ pub fn default_widget_property_default_value(
         // at zero size, so both content setters are writable from the schema default; the
         // distribution controls start with no items, which is why their counts are zero.
         WidgetKind::Spacer => match property_name {
+            "widget" => CapabilityValue::Null,
             "flex" => CapabilityValue::UInt(1),
             "base_size" => CapabilityValue::UInt(0),
             "paint_hint" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::Center => match property_name {
+            "widget" => CapabilityValue::Null,
             "content" => CapabilityValue::String(String::new()),
             "content_width" | "content_height" => CapabilityValue::UInt(0),
             "width_factor" | "height_factor" => CapabilityValue::Float(1.0),
             _ => return None,
         },
         WidgetKind::Align => match property_name {
+            "widget" => CapabilityValue::Null,
             "content" => CapabilityValue::String(String::new()),
             "content_width" | "content_height" => CapabilityValue::UInt(0),
             "alignment" => CapabilityValue::String("centre".to_string()),
             _ => return None,
         },
         WidgetKind::SizedBox | WidgetKind::IntrinsicWidth => match property_name {
+            "widget" => CapabilityValue::Null,
             "content" => CapabilityValue::String(String::new()),
             "content_width" | "content_height" => CapabilityValue::UInt(0),
             // `SizedBox` also publishes the fixed box it asks its parent for. A freshly built box
@@ -1905,6 +1989,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Padding => match property_name {
+            "widget" => CapabilityValue::Null,
             "content" => CapabilityValue::String(String::new()),
             "content_width" | "content_height" => CapabilityValue::UInt(0),
             "padding_top" | "padding_right" | "padding_bottom" | "padding_left" => {
@@ -1913,12 +1998,14 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Expanded => match property_name {
+            "widget" => CapabilityValue::Null,
             "content" => CapabilityValue::String(String::new()),
             "content_width" | "content_height" => CapabilityValue::UInt(0),
             "flex" => CapabilityValue::UInt(1),
             _ => return None,
         },
         WidgetKind::Flexible => match property_name {
+            "widget" => CapabilityValue::Null,
             "content" => CapabilityValue::String(String::new()),
             "content_width" | "content_height" => CapabilityValue::UInt(0),
             "flex" => CapabilityValue::UInt(1),
@@ -1926,6 +2013,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::AspectRatio => match property_name {
+            "widget" => CapabilityValue::Null,
             "content" => CapabilityValue::String(String::new()),
             "content_width" | "content_height" => CapabilityValue::UInt(0),
             // The constructor's own default, so the schema and the control agree.
@@ -1975,6 +2063,8 @@ pub fn default_widget_property_default_value(
         WidgetKind::Clock => match property_name {
             "hour" | "minute" | "second" => CapabilityValue::UInt(0),
             "show_seconds" => CapabilityValue::Bool(false),
+            // Mirrors `ClockTimeSource::default()` (`Manual`).
+            "time_source" => CapabilityValue::String("manual".to_string()),
             _ => return None,
         },
         WidgetKind::Gauge => match property_name {

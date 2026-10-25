@@ -9,8 +9,9 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::base_widgets::button_group::{self, GroupKey};
+use crate::widget::base_widgets::AutoRepeat;
 use crate::widget::capability::coercion::{
-    check_state_to_str, expect_bool, expect_check_state, expect_string,
+    check_state_to_str, expect_bool, expect_check_state, expect_string, expect_u32,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -88,6 +89,19 @@ pub struct CheckBox {
     /// than a snap, and the box's only pointer feedback — the control previously looked
     /// identical with the pointer over it and away from it.
     fade: InteractionFade,
+    /// The auto-repeat timing while this box is held.
+    ///
+    /// Off by default. A checkbox has no held visual state of its own — it toggles on press — so
+    /// a repeat re-runs that activation, which is what the reference toolkit's repeat cycle does
+    /// to a checkable button.
+    auto_repeat: AutoRepeat,
+    /// Whether the current press began on this box's own hit area.
+    ///
+    /// The base records `pressed` for the whole laid-out rectangle, which is wider than the
+    /// indicator-and-label region this control reacts to. Repeating on that flag alone would let
+    /// a press on empty space beside a checkbox toggle it over and over, so the repeat is armed
+    /// only by an activation that actually landed on the box.
+    auto_repeat_armed: bool,
     /// Emitted with a boolean view of the state on every change: `true` for
     /// [`CheckState::Checked`], `false` for the other two.
     ///
@@ -232,6 +246,8 @@ impl CheckBox {
             tristate_enabled: false,
             auto_exclusive: false,
             fade: InteractionFade::new(),
+            auto_repeat: AutoRepeat::new(),
+            auto_repeat_armed: false,
             toggled: Signal1::new(),
             state_changed: Signal1::new(),
         }
@@ -240,8 +256,13 @@ impl CheckBox {
     ///
     /// The reference toolkit groups auto-exclusive buttons by **parent**, which is why no
     /// `group_id` is needed here: two auto-exclusive boxes under one container are a group, and a
-    /// box with no parent is a group of one (and therefore never excludes anything).
+    /// box with no parent is a group of one (and therefore never excludes anything). A group a
+    /// [`crate::widget::base_widgets::ButtonGroup`] handle adopted this box into always wins,
+    /// because it is a direct instruction from the caller.
     fn exclusive_key(&self) -> Option<GroupKey> {
+        if let Some(key) = button_group::membership(self.id()) {
+            return Some(key);
+        }
         if !self.auto_exclusive {
             return None;
         }
@@ -371,12 +392,18 @@ impl CheckBox {
         // latch must not announce the same value a second time.
         if previous != state {
             self.state_changed.emit(state);
-            // Emit toggled signal for boolean transitions
-            match (previous, state) {
-                (CheckState::Unchecked, CheckState::Checked) => self.toggled.emit(true),
-                (CheckState::Checked, CheckState::Unchecked) => self.toggled.emit(false),
-                // No action needed for this transition
-                _ => {}
+            // Every effective state change, including the ones involving `PartiallyChecked`, is a
+            // latch change as far as a group observer is concerned.
+            button_group::notify_member_event(self.id(), button_group::MemberEvent::Toggled);
+            // `toggled` is the three-valued state's boolean projection, so it fires exactly when
+            // that projection moves: partial↔unchecked is `false`→`false` and stays silent, while
+            // partial→checked is `false`→`true` and must fire. Emitting only on the two
+            // full-state transitions (the old rule) left `toggled` disagreeing with its own
+            // documented payload for every transition that touched the partial state.
+            let previous_checked = previous == CheckState::Checked;
+            let current_checked = state == CheckState::Checked;
+            if previous_checked != current_checked {
+                self.toggled.emit(current_checked);
             }
         }
         self.base.request_redraw();
@@ -417,20 +444,90 @@ impl CheckBox {
         }
     }
 
+    /// Whether this box is held and configured to repeat.
+    ///
+    /// Asked of the configuration rather than of the timer: the timer has not started before the
+    /// first tick, so an `is_animating` that answered `false` here would keep the bus from ever
+    /// starting the ticks the timer needs.
+    fn auto_repeat_held(&self) -> bool {
+        self.auto_repeat.is_enabled()
+            && self.auto_repeat_armed
+            && self.base.is_enabled()
+            && self.base.is_pressed()
+    }
+
+    /// Whether holding this box repeats its activation.
+    pub fn is_auto_repeat(&self) -> bool {
+        self.auto_repeat.is_enabled()
+    }
+
+    /// Enables automatic repetition while the box is held.
+    ///
+    /// Off by default. When on, holding the box re-runs its activation at
+    /// [`Self::auto_repeat_interval`] after [`Self::auto_repeat_delay`], which advances the check
+    /// state one step per repeat.
+    pub fn set_auto_repeat(&mut self, enabled: bool) {
+        self.auto_repeat.set_enabled(enabled);
+    }
+
+    /// How long the box must be held before the first repeat, in milliseconds.
+    pub fn auto_repeat_delay(&self) -> u32 {
+        self.auto_repeat.delay_ms()
+    }
+
+    /// Sets the delay before the first repeat.
+    pub fn set_auto_repeat_delay(&mut self, delay_ms: u32) {
+        self.auto_repeat.set_delay_ms(delay_ms);
+    }
+
+    /// The gap between repeats while the box is held, in milliseconds.
+    pub fn auto_repeat_interval(&self) -> u32 {
+        self.auto_repeat.interval_ms()
+    }
+
+    /// Sets the gap between repeats.
+    pub fn set_auto_repeat_interval(&mut self, interval_ms: u32) {
+        self.auto_repeat.set_interval_ms(interval_ms);
+    }
+
+    /// Ends a press for auto-repeat purposes: the next press starts its delay from zero.
+    fn end_auto_repeat(&mut self) {
+        self.auto_repeat_armed = false;
+        self.auto_repeat.reset();
+    }
+
     /// Toggles between checked states.
+    ///
+    /// # Cycle
+    ///
+    /// With tristate off the box alternates `Unchecked` and `Checked`. With it on the cycle is
+    /// the reference toolkit's: `Unchecked` → `PartiallyChecked` → `Checked` → `Unchecked`. The
+    /// partial state therefore comes **before** the full one, which is not a cosmetic choice: a
+    /// host migrating from the baseline expects three clicks on a mixed box to end where the
+    /// baseline ends, and the old order (full before partial) made the visible sequence run
+    /// backwards. [`CheckBox::next_check_state`] is the same decision exposed for a caller that
+    /// needs to render or validate the next step without performing it.
     pub fn toggle(&mut self) {
-        let next_state = match self.state() {
-            CheckState::Unchecked => CheckState::Checked,
-            CheckState::Checked => {
+        let next_state = self.next_check_state();
+        self.set_state(next_state);
+    }
+
+    /// The state [`CheckBox::toggle`] would move to, without moving there.
+    ///
+    /// Exposed so a host with its own input policy can implement a different cycle — call this to
+    /// read the default step, or ignore it and call [`CheckBox::set_state`] with its own choice.
+    pub fn next_check_state(&self) -> CheckState {
+        match self.state() {
+            CheckState::Unchecked => {
                 if self.tristate_enabled {
                     CheckState::PartiallyChecked
                 } else {
-                    CheckState::Unchecked
+                    CheckState::Checked
                 }
             }
-            CheckState::PartiallyChecked => CheckState::Unchecked,
-        };
-        self.set_state(next_state);
+            CheckState::PartiallyChecked => CheckState::Checked,
+            CheckState::Checked => CheckState::Unchecked,
+        }
     }
 
     /// Submits one animated or interactive frame as damage bounded by the painted box
@@ -549,6 +646,11 @@ impl Widget for CheckBox {
         // checkbox disabled after theming still resolves `check_box:disabled`.
         if self.base.is_enabled() != enabled {
             self.base.set_enabled(enabled);
+            if !enabled {
+                // A disabled box is inert, so a hold in progress ends here rather than resuming
+                // if the box is re-enabled while the pointer is still down.
+                self.end_auto_repeat();
+            }
             self.set_state_theme_hook();
         }
         self.base.request_redraw();
@@ -570,11 +672,17 @@ impl Widget for CheckBox {
     // checkbox owes frames while the tint is in flight. A resting box's drivers report no
     // movement, so it costs nothing on the animation bus.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        self.fade.tick(delta_ms)
+        let held = self.auto_repeat_held();
+        let repeats = self.auto_repeat.tick(delta_ms, held);
+        for _ in 0..repeats {
+            // One repeat is one more activation of the same press, so it advances the cycle.
+            self.toggle();
+        }
+        self.fade.tick(delta_ms) || held
     }
 
     fn is_animating(&self) -> bool {
-        self.fade.is_animating()
+        self.fade.is_animating() || self.auto_repeat_held()
     }
 
     /// Reports `Checked` when the box is latched, so the preset's `check_box:checked` override
@@ -634,6 +742,9 @@ impl WidgetProperties for CheckBox {
             "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
             "tristate_enabled" => Ok(CapabilityValue::Bool(self.is_tristate_enabled())),
             "auto_exclusive" => Ok(CapabilityValue::Bool(self.is_auto_exclusive())),
+            "auto_repeat" => Ok(CapabilityValue::Bool(self.is_auto_repeat())),
+            "auto_repeat_delay" => Ok(CapabilityValue::UInt(self.auto_repeat_delay() as u64)),
+            "auto_repeat_interval" => Ok(CapabilityValue::UInt(self.auto_repeat_interval() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -660,6 +771,18 @@ impl WidgetProperties for CheckBox {
                 self.set_auto_exclusive(expect_bool(value)?);
                 Ok(())
             }
+            "auto_repeat" => {
+                self.set_auto_repeat(expect_bool(value)?);
+                Ok(())
+            }
+            "auto_repeat_delay" => {
+                self.set_auto_repeat_delay(expect_u32(value)?);
+                Ok(())
+            }
+            "auto_repeat_interval" => {
+                self.set_auto_repeat_interval(expect_u32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -671,6 +794,9 @@ impl WidgetProperties for CheckBox {
             "checked",
             "tristate_enabled",
             "auto_exclusive",
+            "auto_repeat",
+            "auto_repeat_delay",
+            "auto_repeat_interval",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -737,15 +863,28 @@ impl EventHandler for CheckBox {
             // live. A caller that wants the row to toggle should size the control to the row.
             Event::MousePress { pos, button, .. } if *button == 1 && self.base.is_enabled() => {
                 if self.hit_area().contains_point(*pos) {
+                    // Only a press that actually landed on the box may repeat: the base records
+                    // `pressed` for the whole laid-out rectangle, which can be much wider.
+                    self.auto_repeat.reset();
+                    self.auto_repeat_armed = true;
                     self.toggle();
                 }
+            }
+            Event::MouseRelease { .. } | Event::MouseLeave { .. } | Event::FocusLost => {
+                self.end_auto_repeat();
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } if self.base.is_enabled() => {
                 if self.hit_area().contains_point(*pos) {
+                    self.auto_repeat.reset();
+                    self.auto_repeat_armed = true;
                     self.toggle();
                 }
             }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => self.end_auto_repeat(),
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => self.end_auto_repeat(),
             Event::KeyPress { key, .. } if *key == key_codes::SPACE && self.base.is_enabled() => {
                 self.toggle();
             }
@@ -922,9 +1061,7 @@ impl Draw for CheckBox {
 /// every control that described it is gone.
 impl Drop for CheckBox {
     fn drop(&mut self) {
-        if let Some(key) = self.exclusive_key() {
-            button_group::unregister(&key, self.id());
-        }
+        button_group::leave_all(self.id());
     }
 }
 
@@ -958,7 +1095,7 @@ mod tests {
         assert!(cb.is_enabled());
     }
 
-    // ── 2. State transitions (Unchecked→Checked→PartiallyChecked→Unchecked) ─
+    // ── 2. State transitions (Unchecked→PartiallyChecked→Checked→Unchecked) ─
     #[test]
     fn test_toggle_unchecked_to_checked() {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
@@ -977,38 +1114,48 @@ mod tests {
     }
 
     #[test]
-    fn test_toggle_checked_to_partial_when_tristate() {
+    fn test_toggle_unchecked_to_partial_when_tristate() {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         cb.set_tristate_enabled(true);
-        cb.set_checked(true);
-        assert_eq!(cb.state(), CheckState::Checked);
+        assert_eq!(cb.state(), CheckState::Unchecked);
         cb.toggle();
         assert_eq!(cb.state(), CheckState::PartiallyChecked);
         assert!(cb.is_partially_checked());
     }
 
     #[test]
-    fn test_toggle_partial_to_unchecked() {
+    fn test_toggle_partial_to_checked_when_tristate() {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         cb.set_tristate_enabled(true);
         cb.set_state(CheckState::PartiallyChecked);
         cb.toggle();
-        assert_eq!(cb.state(), CheckState::Unchecked);
+        assert_eq!(cb.state(), CheckState::Checked);
     }
 
     #[test]
     fn test_tristate_cycle() {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         cb.set_tristate_enabled(true);
-        // Unchecked → Checked
-        cb.toggle();
-        assert_eq!(cb.state(), CheckState::Checked);
-        // Checked → PartiallyChecked
+        // Unchecked → PartiallyChecked
         cb.toggle();
         assert_eq!(cb.state(), CheckState::PartiallyChecked);
-        // PartiallyChecked → Unchecked
+        // PartiallyChecked → Checked
+        cb.toggle();
+        assert_eq!(cb.state(), CheckState::Checked);
+        // Checked → Unchecked
         cb.toggle();
         assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn the_next_state_is_the_state_a_toggle_reaches() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.set_tristate_enabled(true);
+        for expected in [CheckState::PartiallyChecked, CheckState::Checked, CheckState::Unchecked] {
+            assert_eq!(cb.next_check_state(), expected);
+            cb.toggle();
+            assert_eq!(cb.state(), expected);
+        }
     }
 
     // ── 3. set_checked(true/false) ──────────────────────────────────────────
@@ -1077,13 +1224,13 @@ mod tests {
     fn test_toggled_not_emitted_on_partial_transition() {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         cb.set_tristate_enabled(true);
-        cb.set_state(CheckState::PartiallyChecked);
         let emitted_count = Arc::new(AtomicU32::new(0));
         let ec = emitted_count.clone();
         cb.toggled.connect(move |_| {
             ec.fetch_add(1, Ordering::SeqCst);
         });
-        // Partial → Unchecked does not emit toggled
+        // Unchecked → PartiallyChecked collapses to `false` on both sides, so `toggled`
+        // (the three-valued state's boolean projection) must stay silent.
         cb.toggle();
         assert_eq!(emitted_count.load(Ordering::SeqCst), 0);
     }
@@ -1096,13 +1243,13 @@ mod tests {
         let states = Arc::new(Mutex::new(Vec::new()));
         let s2 = states.clone();
         cb.state_changed.connect(move |s| s2.lock().unwrap().push(*s));
-        cb.toggle(); // Unchecked → Checked
-        cb.toggle(); // Checked → PartiallyChecked
-        cb.toggle(); // PartiallyChecked → Unchecked
+        cb.toggle(); // Unchecked → PartiallyChecked
+        cb.toggle(); // PartiallyChecked → Checked
+        cb.toggle(); // Checked → Unchecked
         let guard = states.lock().unwrap();
         assert_eq!(guard.len(), 3);
-        assert_eq!(guard[0], CheckState::Checked);
-        assert_eq!(guard[1], CheckState::PartiallyChecked);
+        assert_eq!(guard[0], CheckState::PartiallyChecked);
+        assert_eq!(guard[1], CheckState::Checked);
         assert_eq!(guard[2], CheckState::Unchecked);
     }
 

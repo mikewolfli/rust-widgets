@@ -9,7 +9,7 @@ use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -18,6 +18,7 @@ use crate::widget::view_widgets::table_widget::ItemDelegate;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// The margin a tree leaves between its own frame and its rows: 2 px on every edge.
@@ -324,6 +325,19 @@ pub struct TreeView {
     animation_len: usize,
     /// Whether a vertical scroll-bar thumb is painted.
     show_scrollbar: bool,
+    /// The visible projection of the current expansion state.
+    ///
+    /// A state change used to materialise the projection three or four times (once to resolve the
+    /// row, once for the before-count, once for the after-count and once more on the next access).
+    /// One state change now rebuilds this cache once and every reader slices it.
+    projection_cache: Vec<usize>,
+    /// Whether `projection_cache` still describes the model and the expansion state.
+    projection_valid: bool,
+    /// The data generation `projection_cache` was built from.
+    projection_generation: u64,
+    /// Advanced by the model's `data_changed` signal, which a `&self` projection reader cannot
+    /// observe by rebuilding. A mismatch makes the reader fall back to a bounded walk.
+    data_generation: Arc<AtomicU64>,
 }
 impl TreeView {
     /// Creates an empty tree view.
@@ -351,6 +365,10 @@ impl TreeView {
             animation_start: None,
             animation_len: 0,
             show_scrollbar: false,
+            projection_cache: Vec::new(),
+            projection_valid: false,
+            projection_generation: 0,
+            data_generation: Arc::new(AtomicU64::new(0)),
         }
     }
     /// Binds an external tree model.
@@ -362,7 +380,9 @@ impl TreeView {
         if let Some(data_changed) = model.data_changed_signal() {
             let redraw = self.base.redraw_requested_signal().clone();
             let layout = self.base.layout_requested_signal().clone();
+            let generation = Arc::clone(&self.data_generation);
             data_changed.connect_scoped(&self.model_connection_scope, move || {
+                generation.fetch_add(1, Ordering::Relaxed);
                 redraw.emit();
                 layout.emit();
             });
@@ -371,6 +391,8 @@ impl TreeView {
         self.expanded_override.clear();
         self.editing = None;
         self.normalize_projection_state();
+        self.data_generation.fetch_add(1, Ordering::Relaxed);
+        self.rebuild_projection();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -405,8 +427,32 @@ impl TreeView {
     ///
     /// The draw loop only needs the rows its content box can hold, and the pointer paths only
     /// need one row. Walking the whole model for either made the cost follow the document
-    /// rather than the viewport.
+    /// rather than the viewport. A current cache is sliced instead of walked.
     pub fn visible_indices_limited(&self, limit: usize) -> Vec<usize> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        if self.projection_is_current() {
+            return self.projection_cache.iter().take(limit).copied().collect();
+        }
+        self.walk_visible_indices(limit)
+    }
+
+    /// Whether the cached projection still describes the current model and expansion state.
+    fn projection_is_current(&self) -> bool {
+        self.projection_valid
+            && self.projection_generation == self.data_generation.load(Ordering::Relaxed)
+    }
+
+    /// Rebuilds the cached projection exactly once.
+    fn rebuild_projection(&mut self) {
+        self.projection_generation = self.data_generation.load(Ordering::Relaxed);
+        self.projection_cache = self.walk_visible_indices(usize::MAX);
+        self.projection_valid = true;
+    }
+
+    /// The one walk over the model, applying the ancestor-expansion rule.
+    fn walk_visible_indices(&self, limit: usize) -> Vec<usize> {
         let Some(model) = self.model.as_ref() else {
             return Vec::new();
         };
@@ -441,8 +487,12 @@ impl TreeView {
     /// The **model** index of visible row `target`, or `None` when the projection is shorter.
     ///
     /// Single-row lookup that stops as soon as the row is found; the pointer paths used to
-    /// materialise the whole projection to read one entry from it.
+    /// materialise the whole projection to read one entry from it. A current cache makes it an
+    /// index.
     fn visible_index_at(&self, target: usize) -> Option<usize> {
+        if self.projection_is_current() {
+            return self.projection_cache.get(target).copied();
+        }
         let model = self.model.as_ref()?;
         let count = model.node_count();
         let mut shown = 0usize;
@@ -499,18 +549,63 @@ impl TreeView {
     /// Toggles the node at **visible** index `index`.
     ///
     /// The gesture a disclosure glyph carries: one entry point so a click and a keyboard action
-    /// cannot disagree about what "toggle" means.
+    /// cannot disagree about what "toggle" means. The projection is resolved once here rather than
+    /// once in the toggle and again in the setter.
     pub fn toggle_expanded(&mut self, index: usize) -> bool {
-        let Some(model_index) = self.visible_indices().get(index).copied() else {
+        self.ensure_projection();
+        let Some(model_index) = self.projection_cache.get(index).copied() else {
             return false;
         };
-        self.set_expanded(index, !self.is_expanded(model_index))
+        let expanded = !self.is_expanded(model_index);
+        self.apply_expansion(index, model_index, expanded)
     }
 
-    fn set_expanded(&mut self, visible_index: usize, expanded: bool) -> bool {
-        let Some(model_index) = self.visible_indices().get(visible_index).copied() else {
+    /// Expands the node at **visible** index `index`.
+    ///
+    /// Returns `false` when `index` is not a visible row, or names a leaf.
+    pub fn set_expanded(&mut self, visible_index: usize, expanded: bool) -> bool {
+        self.ensure_projection();
+        let Some(model_index) = self.projection_cache.get(visible_index).copied() else {
             return false;
         };
+        self.apply_expansion(visible_index, model_index, expanded)
+    }
+
+    /// Expands the node at **model** index `model_index`.
+    ///
+    /// A model index is stable across the expansion changes that move visible rows, so this is
+    /// the form a host holding a node identity should use. A node hidden under a collapsed
+    /// ancestor can still be marked expanded; nothing is painted for it until it is revealed.
+    pub fn set_model_expanded(&mut self, model_index: usize, expanded: bool) -> bool {
+        let Some(node) = self.model.as_ref().and_then(|model| model.node(model_index)) else {
+            return false;
+        };
+        if !node.has_children {
+            return false;
+        }
+        if self.is_expanded(model_index) == expanded {
+            return true;
+        }
+        self.expanded_override.insert(model_index, expanded);
+        if expanded {
+            self.expanded.emit(model_index);
+        } else {
+            self.collapsed.emit(model_index);
+        }
+        self.normalize_projection_state();
+        self.rebuild_projection();
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Applies one expansion decision and rebuilds the projection exactly once.
+    fn apply_expansion(
+        &mut self,
+        visible_index: usize,
+        model_index: usize,
+        expanded: bool,
+    ) -> bool {
         let has_children = self
             .model
             .as_ref()
@@ -523,7 +618,7 @@ impl TreeView {
         if self.is_expanded(model_index) == expanded {
             return true;
         }
-        let before = self.visible_row_count();
+        let before = self.projection_cache.len();
         self.expanded_override.insert(model_index, expanded);
         if expanded {
             self.expanded.emit(model_index);
@@ -533,8 +628,9 @@ impl TreeView {
         // A collapse can hide the selected or focused node; the projection state has to follow, the
         // same way it follows a model swap.
         self.normalize_projection_state();
+        self.rebuild_projection();
         if self.animated {
-            let after = self.visible_row_count();
+            let after = self.projection_cache.len();
             if expanded && after > before {
                 // Only the rows that appeared fade; the rows that were already painted keep
                 // their resting ink, so the tree does not flash on every expansion.
@@ -550,6 +646,107 @@ impl TreeView {
         self.base.request_layout();
         self.base.request_redraw();
         true
+    }
+
+    /// Rebuilds the cached projection when a model change invalidated it.
+    fn ensure_projection(&mut self) {
+        if !self.projection_is_current() {
+            self.rebuild_projection();
+        }
+    }
+
+    /// Expands every branch in the model.
+    ///
+    /// Returns how many branch nodes changed state. The projection is rebuilt once, not once per
+    /// node; `expanded` is emitted for each branch that actually changed.
+    pub fn expand_all(&mut self) -> usize {
+        let Some(count) = self.model.as_ref().map(|model| model.node_count()) else {
+            return 0;
+        };
+        let mut changed = 0usize;
+        for index in 0..count {
+            let Some(node) = self.model.as_ref().and_then(|model| model.node(index)) else {
+                continue;
+            };
+            if !node.has_children || self.is_expanded(index) {
+                continue;
+            }
+            self.expanded_override.insert(index, true);
+            self.expanded.emit(index);
+            changed += 1;
+        }
+        if changed > 0 {
+            self.normalize_projection_state();
+            self.rebuild_projection();
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+        changed
+    }
+
+    /// Collapses every branch in the model.
+    pub fn collapse_all(&mut self) -> usize {
+        let Some(count) = self.model.as_ref().map(|model| model.node_count()) else {
+            return 0;
+        };
+        let mut changed = 0usize;
+        for index in 0..count {
+            let Some(node) = self.model.as_ref().and_then(|model| model.node(index)) else {
+                continue;
+            };
+            if !node.has_children || !self.is_expanded(index) {
+                continue;
+            }
+            self.expanded_override.insert(index, false);
+            self.collapsed.emit(index);
+            changed += 1;
+        }
+        if changed > 0 {
+            self.normalize_projection_state();
+            self.rebuild_projection();
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+        changed
+    }
+
+    /// Expands every branch shallower than `depth`.
+    ///
+    /// `expand_to_depth(1)` therefore reveals each root's direct children and leaves deeper
+    /// branches closed. Returns how many branches changed state.
+    pub fn expand_to_depth(&mut self, depth: usize) -> usize {
+        let Some(count) = self.model.as_ref().map(|model| model.node_count()) else {
+            return 0;
+        };
+        let mut changed = 0usize;
+        for index in 0..count {
+            let Some(node) = self.model.as_ref().and_then(|model| model.node(index)) else {
+                continue;
+            };
+            if !node.has_children || node.depth >= depth || self.is_expanded(index) {
+                continue;
+            }
+            self.expanded_override.insert(index, true);
+            self.expanded.emit(index);
+            changed += 1;
+        }
+        if changed > 0 {
+            self.normalize_projection_state();
+            self.rebuild_projection();
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+        changed
+    }
+
+    /// Whether an expansion fades its newly revealed rows in (`animated`'s alias).
+    pub fn expansion_animated(&self) -> bool {
+        self.animated
+    }
+
+    /// Enables or disables the expansion fade (`set_animated`'s alias).
+    pub fn set_expansion_animated(&mut self, animated: bool) {
+        self.set_animated(animated);
     }
 
     /// Returns the current visible node count.
@@ -573,6 +770,9 @@ impl TreeView {
         if !model.fetch_more(model_index) {
             return false;
         }
+        // A successful fetch can add children without raising the model's change signal, so the
+        // cached projection is stale even though the generation did not move.
+        self.rebuild_projection();
         self.base.request_layout();
         self.base.request_redraw();
         true
@@ -780,6 +980,9 @@ impl TreeView {
     /// need the bound: the hit test runs per pointer move, and a `Vec` per move would make a large
     /// tree's hover cost follow the document rather than the viewport.
     pub fn visible_row_count(&self) -> usize {
+        if self.projection_is_current() {
+            return self.projection_cache.len();
+        }
         let Some(model) = self.model.as_ref() else {
             return 0;
         };
@@ -1036,6 +1239,7 @@ impl WidgetProperties for TreeView {
             "has_model" => Ok(CapabilityValue::Bool(self.has_model())),
             "node_count" => Ok(CapabilityValue::UInt(self.node_count() as u64)),
             "has_delegate" => Ok(CapabilityValue::Bool(self.has_delegate())),
+            "expansion_animated" => Ok(CapabilityValue::Bool(self.expansion_animated())),
             // The focused node's expansion state, or `Null` when it is not a visible branch: a
             // `bool` could not say "no branch is focused", which is a different fact from
             // "collapsed".
@@ -1057,6 +1261,10 @@ impl WidgetProperties for TreeView {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
+            "expansion_animated" => {
+                self.set_expansion_animated(expect_bool(value)?);
+                Ok(())
+            }
             "focused_node" => match value {
                 CapabilityValue::Null => {
                     self.clear_focused_node();
@@ -1089,6 +1297,7 @@ impl WidgetProperties for TreeView {
             "focused_node",
             "selected_node",
             "has_delegate",
+            "expansion_animated",
             "expanded_focused_node",
             BASE_PROPERTY_NAMES
         ]

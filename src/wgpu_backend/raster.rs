@@ -4,6 +4,16 @@
 //! CPU rasterization helpers for WGPU backend.
 use super::commands::WgpuDrawCommand;
 use super::types::{PixelRect, Rgba8};
+use std::cell::RefCell;
+
+thread_local! {
+    /// Reusable shadow layer buffer. Shadows are drawn per command, so allocating a full layer for
+    /// each one made every shadowed control pay a large zeroed allocation twice (G-11).
+    static SHADOW_LAYER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// Reusable horizontal-pass buffer for [`box_blur_layer_rgba8`]. Kept separate from the layer
+    /// so a nested shadow (a layer inside a layer) still has its own scratch.
+    static SHADOW_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
 // The blend-mode enum is defined once in the render layer and reused here rather than
 // mirrored, so the two backends cannot disagree about the set of modes (principle #54).
 use crate::render::BlendMode;
@@ -1623,53 +1633,59 @@ fn box_shadow_cpu_rgba8(
     let lw = lx1 - lx0;
     let lh = ly1 - ly0;
 
-    // Independent, transparent shadow layer.
-    let mut layer = vec![0u8; lw * lh * 4];
-    // Fill the body (clamped to the layer) with the shadow colour.
-    let bx0 = (visible.x as i64 - lx0 as i64).max(0) as usize;
-    let by0 = (visible.y as i64 - ly0 as i64).max(0) as usize;
-    let bx1 = ((visible.right() as i64 - lx0 as i64).clamp(0, lw as i64)) as usize;
-    let by1 = ((visible.bottom() as i64 - ly0 as i64).clamp(0, lh as i64)) as usize;
-    for y in by0..by1 {
-        for x in bx0..bx1 {
-            let o = (y * lw + x) * 4;
-            layer[o] = color.r;
-            layer[o + 1] = color.g;
-            layer[o + 2] = color.b;
-            layer[o + 3] = color.a;
-        }
-    }
-
-    // Blur the layer in place (separable moving average, matching the software
-    // backend's kernel).
-    box_blur_layer_rgba8(&mut layer, lw, lh, blur_radius as usize);
-
-    // Composite the layer back, but only inside `paint_region` (the caller's
-    // clip, or the framebuffer): any pixel the caller clipped away must stay
-    // exactly as it was (N-S-63). The body is opaque shadow colour, so a
-    // source-over composite reads the layer's alpha as coverage.
-    let Some(dst) = paint_region.intersect(PixelRect { x: 0, y: 0, width, height }) else { return };
-    for y in dst.y..dst.bottom() {
-        for x in dst.x..dst.right() {
-            let lxo = x as i64 - lx0 as i64;
-            let lyo = y as i64 - ly0 as i64;
-            if lxo < 0 || lyo < 0 || lxo >= lw as i64 || lyo >= lh as i64 {
-                continue;
-            }
-            let o = (lyo as usize * lw + lxo as usize) * 4;
-            let alpha = layer[o + 3];
-            if alpha == 0 {
-                continue;
-            }
-            let src = Rgba8 { r: layer[o], g: layer[o + 1], b: layer[o + 2], a: alpha };
-            if alpha == 255 {
-                blend_pixel_cpu_rgba8(pixels, width, x as u32, y as u32, src, blend);
-            } else {
-                // Partial coverage from the blur ramp: source-over the scene.
-                blend_cpu_rgba8(pixels, width, x as u32, y as u32, src, alpha as f32 / 255.0);
+    // Independent, transparent shadow layer, retained by capacity between calls.
+    SHADOW_LAYER.with(|cell| {
+        let mut layer = cell.borrow_mut();
+        layer.clear();
+        layer.resize(lw * lh * 4, 0);
+        // Fill the body (clamped to the layer) with the shadow colour.
+        let bx0 = (visible.x as i64 - lx0 as i64).max(0) as usize;
+        let by0 = (visible.y as i64 - ly0 as i64).max(0) as usize;
+        let bx1 = ((visible.right() as i64 - lx0 as i64).clamp(0, lw as i64)) as usize;
+        let by1 = ((visible.bottom() as i64 - ly0 as i64).clamp(0, lh as i64)) as usize;
+        for y in by0..by1 {
+            for x in bx0..bx1 {
+                let o = (y * lw + x) * 4;
+                layer[o] = color.r;
+                layer[o + 1] = color.g;
+                layer[o + 2] = color.b;
+                layer[o + 3] = color.a;
             }
         }
-    }
+
+        // Blur the layer in place (separable moving average, matching the software
+        // backend's kernel).
+        box_blur_layer_rgba8(&mut layer[..], lw, lh, blur_radius as usize);
+
+        // Composite the layer back, but only inside `paint_region` (the caller's
+        // clip, or the framebuffer): any pixel the caller clipped away must stay
+        // exactly as it was (N-S-63). The body is opaque shadow colour, so a
+        // source-over composite reads the layer's alpha as coverage.
+        let Some(dst) = paint_region.intersect(PixelRect { x: 0, y: 0, width, height }) else {
+            return;
+        };
+        for y in dst.y..dst.bottom() {
+            for x in dst.x..dst.right() {
+                let lxo = x as i64 - lx0 as i64;
+                let lyo = y as i64 - ly0 as i64;
+                if lxo < 0 || lyo < 0 || lxo >= lw as i64 || lyo >= lh as i64 {
+                    continue;
+                }
+                let o = (lyo as usize * lw + lxo as usize) * 4;
+                let alpha = layer[o + 3];
+                if alpha == 0 {
+                    continue;
+                }
+                let src = Rgba8 { r: layer[o], g: layer[o + 1], b: layer[o + 2], a: alpha };
+                if alpha == 255 {
+                    blend_pixel_cpu_rgba8(pixels, width, x as u32, y as u32, src, blend);
+                } else {
+                    // Partial coverage from the blur ramp: source-over the scene.
+                    blend_cpu_rgba8(pixels, width, x as u32, y as u32, src, alpha as f32 / 255.0);
+                }
+            }
+        }
+    });
 }
 
 /// Box-blurs an RGBA buffer in place using a separable moving average.
@@ -1682,47 +1698,51 @@ fn box_blur_layer_rgba8(layer: &mut [u8], width: usize, height: usize, radius: u
     if radius == 0 || width == 0 || height == 0 {
         return;
     }
-    let mut scratch = vec![0u8; layer.len()];
-    // Horizontal pass: `layer` -> `scratch`.
-    for y in 0..height {
-        for x in 0..width {
-            let lo = x.saturating_sub(radius);
-            let hi = (x + radius).min(width - 1);
-            let mut sums = [0u32; 4];
-            let mut count = 0u32;
-            for kx in lo..=hi {
-                let i = (y * width + kx) * 4;
-                for c in 0..4 {
-                    sums[c] += layer[i + c] as u32;
-                }
-                count += 1;
-            }
-            let di = (y * width + x) * 4;
-            for c in 0..4 {
-                scratch[di + c] = (sums[c] / count.max(1)) as u8;
-            }
-        }
-    }
-    // Vertical pass: `scratch` -> `layer`.
-    for x in 0..width {
+    SHADOW_SCRATCH.with(|cell| {
+        let mut scratch = cell.borrow_mut();
+        scratch.clear();
+        scratch.resize(layer.len(), 0);
+        // Horizontal pass: `layer` -> `scratch`.
         for y in 0..height {
-            let lo = y.saturating_sub(radius);
-            let hi = (y + radius).min(height - 1);
-            let mut sums = [0u32; 4];
-            let mut count = 0u32;
-            for ky in lo..=hi {
-                let i = (ky * width + x) * 4;
-                for c in 0..4 {
-                    sums[c] += scratch[i + c] as u32;
+            for x in 0..width {
+                let lo = x.saturating_sub(radius);
+                let hi = (x + radius).min(width - 1);
+                let mut sums = [0u32; 4];
+                let mut count = 0u32;
+                for kx in lo..=hi {
+                    let i = (y * width + kx) * 4;
+                    for c in 0..4 {
+                        sums[c] += layer[i + c] as u32;
+                    }
+                    count += 1;
                 }
-                count += 1;
-            }
-            let di = (y * width + x) * 4;
-            for c in 0..4 {
-                layer[di + c] = (sums[c] / count.max(1)) as u8;
+                let di = (y * width + x) * 4;
+                for c in 0..4 {
+                    scratch[di + c] = (sums[c] / count.max(1)) as u8;
+                }
             }
         }
-    }
+        // Vertical pass: `scratch` -> `layer`.
+        for x in 0..width {
+            for y in 0..height {
+                let lo = y.saturating_sub(radius);
+                let hi = (y + radius).min(height - 1);
+                let mut sums = [0u32; 4];
+                let mut count = 0u32;
+                for ky in lo..=hi {
+                    let i = (ky * width + x) * 4;
+                    for c in 0..4 {
+                        sums[c] += scratch[i + c] as u32;
+                    }
+                    count += 1;
+                }
+                let di = (y * width + x) * 4;
+                for c in 0..4 {
+                    layer[di + c] = (sums[c] / count.max(1)) as u8;
+                }
+            }
+        }
+    });
 }
 
 /// Writes pixels into the framebuffer through the rasteriser's active blend
@@ -1851,8 +1871,8 @@ mod tests {
             16,
             16,
             &[WgpuDrawCommand::FillPathNonZero {
-                points,
-                contours: vec![(0, 4), (4, 8)],
+                points: points.into(),
+                contours: vec![(0, 4), (4, 8)].into(),
                 color: RED,
                 clip: None,
             }],
@@ -1869,8 +1889,8 @@ mod tests {
             16,
             16,
             &[WgpuDrawCommand::FillPathNonZero {
-                points: vec![(1, 1), (15, 1), (15, 15)],
-                contours: vec![(0, 4)],
+                points: vec![(1, 1), (15, 1), (15, 15)].into(),
+                contours: vec![(0, 4)].into(),
                 color: RED,
                 clip: None,
             }],
@@ -2086,7 +2106,7 @@ mod tests {
             8,
             &[WgpuDrawCommand::FillLinearGradient {
                 rect: rect(0, 0, 8, 8),
-                gradient_data: ramp.clone(),
+                gradient_data: ramp.clone().into(),
                 clip: None,
             }],
         )
@@ -2108,7 +2128,7 @@ mod tests {
             8,
             &[WgpuDrawCommand::DrawGradient {
                 rect: rect(0, 0, 8, 8),
-                gradient_data: ramp,
+                gradient_data: ramp.into(),
                 clip: None,
             }],
         )
@@ -2135,7 +2155,7 @@ mod tests {
             16,
             &[WgpuDrawCommand::FillRadialGradient {
                 rect: rect(0, 0, 16, 16),
-                gradient_data: ramp,
+                gradient_data: ramp.into(),
                 clip: None,
             }],
         )
@@ -2273,7 +2293,7 @@ mod tests {
                 "DrawText",
                 WgpuDrawCommand::DrawText {
                     rect: rect(0, 0, 16, 8),
-                    text: "HH".to_string(),
+                    text: "HH".into(),
                     color: grey,
                     clip: None,
                 },
@@ -2282,7 +2302,7 @@ mod tests {
                 "DrawImage",
                 WgpuDrawCommand::DrawImage {
                     rect: rect(0, 0, 16, 16),
-                    rgba8: [128, 128, 128, 255].repeat(16 * 16),
+                    rgba8: [128, 128, 128, 255].repeat(16 * 16).into(),
                     image_width: 16,
                     image_height: 16,
                     clip: None,
@@ -2346,7 +2366,7 @@ mod tests {
             (
                 "DrawPath",
                 WgpuDrawCommand::DrawPath {
-                    points: vec![(0, 0), (15, 15), (0, 15)],
+                    points: vec![(0, 0), (15, 15), (0, 15)].into(),
                     closed: true,
                     color: grey,
                     filled: true,
@@ -2357,8 +2377,8 @@ mod tests {
             (
                 "FillPathNonZero",
                 WgpuDrawCommand::FillPathNonZero {
-                    points: vec![(0, 0), (15, 0), (0, 15)],
-                    contours: vec![(0, 3)],
+                    points: vec![(0, 0), (15, 0), (0, 15)].into(),
+                    contours: vec![(0, 3)].into(),
                     color: grey,
                     clip: None,
                 },

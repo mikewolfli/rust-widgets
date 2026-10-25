@@ -123,6 +123,43 @@ impl SignatureStroke {
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
+
+    /// A stable, parseable summary of the stroke.
+    ///
+    /// The published `stroke_completed` payload used to be `Debug` output — `SignatureStroke { … }`
+    /// with a `Point { x: 42, y: 17 }` per point — which is not a value a subscriber can read: the
+    /// spelling is the struct's own and would change with any field added. This is the contract: four
+    /// `key=value` pairs separated by `;`, in this order, numbers formatted with exactly three
+    /// decimals.
+    ///
+    /// ```text
+    /// points=<count>;pressure_avg=<f32>;pressure_min=<f32>;pressure_max=<f32>
+    /// ```
+    ///
+    /// An empty stroke reports `points=0` and the neutral pressure for all three figures, so a
+    /// consumer never has to special-case a missing value. Coordinates are deliberately not included:
+    /// a full point list is what [`Self::points`] is for, and flattening it into a string would be the
+    /// same lossy-in-the-other-direction mistake.
+    pub fn summary(&self) -> String {
+        if self.pressures.is_empty() {
+            return format!(
+                "points=0;pressure_avg={NEUTRAL_PRESSURE:.3};pressure_min={NEUTRAL_PRESSURE:.3};pressure_max={NEUTRAL_PRESSURE:.3}"
+            );
+        }
+        let mut min = f32::INFINITY;
+        let mut max = f32::NEG_INFINITY;
+        let mut total = 0.0f32;
+        for pressure in &self.pressures {
+            min = min.min(*pressure);
+            max = max.max(*pressure);
+            total += *pressure;
+        }
+        let average = total / self.pressures.len() as f32;
+        format!(
+            "points={};pressure_avg={average:.3};pressure_min={min:.3};pressure_max={max:.3}",
+            self.points.len()
+        )
+    }
 }
 
 impl Default for SignatureStroke {
@@ -672,7 +709,9 @@ impl Widget for SignaturePad {
             "changed" => Some(EventSignalRef::unit("changed", &self.changed)),
             "stroke_completed" => {
                 Some(EventSignalRef::mapped("stroke_completed", &self.stroke_completed, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    // A documented key=value summary rather than the struct's `Debug` spelling; see
+                    // `SignatureStroke::summary` for the grammar.
+                    CapabilityValue::String(v.summary())
                 }))
             }
             _ => None,
@@ -756,6 +795,17 @@ impl WidgetProperties for SignaturePad {
         match name {
             "undo" => {
                 let _ = self.undo();
+                Ok(())
+            }
+            // `redo` and `clear` are payload-free and already exist as methods; only `undo` was
+            // routed, so a designer could publish an Undo affordance and nothing else even though
+            // the capability advertises all three names.
+            "redo" => {
+                let _ = self.redo();
+                Ok(())
+            }
+            "clear" => {
+                self.clear();
                 Ok(())
             }
             _ => Err(CapabilityAccessError::UnknownCommand),
@@ -1497,5 +1547,37 @@ mod tests {
         p.handle_event(&Event::mouse_press(10, 20, 1));
         p.handle_event(&Event::mouse_release(10, 20, 1));
         assert!(p.is_empty());
+    }
+
+    #[test]
+    fn command_routes_redo_and_clear() {
+        let mut p = pad();
+        p.strokes.push(SignatureStroke::from_points(vec![Point::new(1, 1)]));
+        assert!(p.undo());
+        assert_eq!(p.stroke_count(), 0);
+
+        p.command("redo").expect("redo is command-routed");
+        assert_eq!(p.stroke_count(), 1);
+
+        p.command("clear").expect("clear is command-routed");
+        assert_eq!(p.stroke_count(), 0);
+    }
+
+    #[test]
+    fn stroke_summary_is_a_documented_key_value_string() {
+        let mut stroke = SignatureStroke::new();
+        stroke.push_with_pressure(Point::new(1, 1), 0.25);
+        stroke.push_with_pressure(Point::new(2, 2), 1.0);
+        let summary = stroke.summary();
+        assert_eq!(
+            summary, "points=2;pressure_avg=0.625;pressure_min=0.250;pressure_max=1.000",
+            "the payload's grammar must stay stable"
+        );
+
+        // An empty stroke reports zeros and the neutral pressure rather than a missing value.
+        assert_eq!(
+            SignatureStroke::new().summary(),
+            "points=0;pressure_avg=1.000;pressure_min=1.000;pressure_max=1.000"
+        );
     }
 }

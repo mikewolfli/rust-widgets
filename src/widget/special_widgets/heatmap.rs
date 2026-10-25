@@ -35,6 +35,8 @@
 //! it is reachable by name from the declarative JSON path (`"heatmap"`), from a CSS
 //! selector (`Heatmap`), and through the typed `create_heatmap` on `ControlBackend`.
 
+use core::cell::Cell;
+
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -151,6 +153,32 @@ pub struct Heatmap {
     ramp: Option<Box<dyn ColorRamp>>,
     /// Cached legend samples for the width they were built at.
     legend_cache: Option<(u32, Vec<Color>)>,
+    /// Cached `(min, max)` over the cell values, or `None` while it must be derived.
+    ///
+    /// Drawing used to walk the whole matrix once per cell through `color_for_value` →
+    /// `scale_range` → `data_range`, which is quadratic in the number of cells. The range is a
+    /// pure function of `values`, so it is derived once and invalidated by every write below.
+    /// `Cell` keeps the accessor immutable, so no borrow is held across a callback.
+    data_range_cache: Cell<Option<Option<(f64, f64)>>>,
+    /// Visible row count, or `None` to fit the whole matrix.
+    viewport_rows: Option<usize>,
+    /// Visible column count, or `None` to fit the whole matrix.
+    viewport_columns: Option<usize>,
+    /// The first visible display row.
+    first_row: usize,
+    /// The first visible display column.
+    first_column: usize,
+    /// The corner a region drag started at, in data coordinates.
+    region_anchor: Option<(usize, usize)>,
+    /// The corner a region drag has reached, in data coordinates.
+    region_current: Option<(usize, usize)>,
+    /// A pan in progress: `(press position, first row at press, first column at press)`.
+    pan_drag: Option<(Point, usize, usize)>,
+    /// Emitted when a dragged rectangle is released, carrying
+    /// `(row_start, column_start, row_end, column_end)` in data coordinates (inclusive).
+    pub region_selected: Signal1<(usize, usize, usize, usize)>,
+    /// Emitted when a cell is double-clicked, carrying `(row, column)`.
+    pub cell_double_clicked: Signal1<(usize, usize)>,
 }
 
 impl Heatmap {
@@ -178,7 +206,112 @@ impl Heatmap {
             column_order: Vec::new(),
             ramp: None,
             legend_cache: None,
+            data_range_cache: Cell::new(None),
+            viewport_rows: None,
+            viewport_columns: None,
+            first_row: 0,
+            first_column: 0,
+            region_anchor: None,
+            region_current: None,
+            pan_drag: None,
+            region_selected: Signal1::new(),
+            cell_double_clicked: Signal1::new(),
         }
+    }
+
+    /// The number of rows currently painted.
+    pub fn viewport_rows(&self) -> usize {
+        self.viewport_rows.unwrap_or_else(|| self.row_count()).clamp(1, self.row_count().max(1))
+    }
+
+    /// The number of columns currently painted.
+    pub fn viewport_columns(&self) -> usize {
+        self.viewport_columns
+            .unwrap_or_else(|| self.column_count())
+            .clamp(1, self.column_count().max(1))
+    }
+
+    /// Sets how many rows are painted, or `None` to fit every row.
+    pub fn set_viewport_rows(&mut self, rows: Option<usize>) {
+        let rows = rows.map(|rows| rows.max(1));
+        if self.viewport_rows == rows {
+            return;
+        }
+        self.viewport_rows = rows;
+        self.clamp_pan();
+        self.base.request_redraw();
+    }
+
+    /// Sets how many columns are painted, or `None` to fit every column.
+    pub fn set_viewport_columns(&mut self, columns: Option<usize>) {
+        let columns = columns.map(|columns| columns.max(1));
+        if self.viewport_columns == columns {
+            return;
+        }
+        self.viewport_columns = columns;
+        self.clamp_pan();
+        self.base.request_redraw();
+    }
+
+    /// The first visible display row.
+    pub fn first_row(&self) -> usize {
+        self.first_row
+    }
+
+    /// The first visible display column.
+    pub fn first_column(&self) -> usize {
+        self.first_column
+    }
+
+    /// Pans to `(row, column)` as the top-left visible cell.
+    pub fn set_pan(&mut self, row: usize, column: usize) {
+        let row = row.min(self.row_count().saturating_sub(self.viewport_rows()));
+        let column = column.min(self.column_count().saturating_sub(self.viewport_columns()));
+        if self.first_row == row && self.first_column == column {
+            return;
+        }
+        self.first_row = row;
+        self.first_column = column;
+        self.base.request_redraw();
+    }
+
+    /// Pans by a signed number of rows and columns.
+    pub fn pan_by(&mut self, rows: isize, columns: isize) {
+        let row = (self.first_row as isize + rows).max(0) as usize;
+        let column = (self.first_column as isize + columns).max(0) as usize;
+        self.set_pan(row, column);
+    }
+
+    /// Zooms the viewport by `factor`.
+    ///
+    /// A factor above one shows fewer cells (zoom in), below one shows more (zoom out). The counts
+    /// are derived from the **currently visible** counts, so a zoom before any viewport was set
+    /// starts from the whole matrix rather than from an arbitrary constant.
+    pub fn zoom_by(&mut self, factor: f32) {
+        if !factor.is_finite() || factor <= 0.0 {
+            return;
+        }
+        let rows = ((self.viewport_rows() as f32) / factor).round() as usize;
+        let columns = ((self.viewport_columns() as f32) / factor).round() as usize;
+        self.set_viewport_rows(Some(rows.max(1)));
+        self.set_viewport_columns(Some(columns.max(1)));
+    }
+
+    /// Restores the fit-everything viewport.
+    pub fn reset_view(&mut self) {
+        self.viewport_rows = None;
+        self.viewport_columns = None;
+        self.first_row = 0;
+        self.first_column = 0;
+        self.base.request_redraw();
+    }
+
+    /// Re-clamps the pan after the data or the viewport changed.
+    fn clamp_pan(&mut self) {
+        let max_row = self.row_count().saturating_sub(self.viewport_rows());
+        let max_column = self.column_count().saturating_sub(self.viewport_columns());
+        self.first_row = self.first_row.min(max_row);
+        self.first_column = self.first_column.min(max_column);
     }
 
     /// Replaces the colour ramp, or restores the built-in one with `None`.
@@ -323,6 +456,14 @@ impl Heatmap {
         self.row_labels = row_labels;
         self.column_labels = column_labels;
         self.hovered_cell = None;
+        self.region_anchor = None;
+        self.region_current = None;
+        // A new matrix is a new coordinate space: the previous pan addresses rows that no longer
+        // mean the same thing, so the viewport returns to its top-left corner.
+        self.first_row = 0;
+        self.first_column = 0;
+        self.clamp_pan();
+        self.data_range_cache.set(None);
         self.base.request_redraw();
     }
 
@@ -366,6 +507,7 @@ impl Heatmap {
             return false;
         };
         *cell = HeatmapCell::new(value);
+        self.data_range_cache.set(None);
         self.base.request_redraw();
         true
     }
@@ -379,6 +521,7 @@ impl Heatmap {
             return false;
         };
         *cell = HeatmapCell::empty();
+        self.data_range_cache.set(None);
         self.base.request_redraw();
         true
     }
@@ -457,7 +600,13 @@ impl Heatmap {
     }
 
     /// The lowest and highest present values in the matrix, ignoring empty cells.
+    ///
+    /// Derived once per data change: every cell's colour asks for the range, so rescanning the
+    /// matrix for each of them made `draw` O((rows × columns)²).
     fn data_range(&self) -> Option<(f64, f64)> {
+        if let Some(cached) = self.data_range_cache.get() {
+            return cached;
+        }
         let mut low = f64::INFINITY;
         let mut high = f64::NEG_INFINITY;
         let mut seen = false;
@@ -470,11 +619,9 @@ impl Heatmap {
                 }
             }
         }
-        if seen {
-            Some((low, high))
-        } else {
-            None
-        }
+        let range = if seen { Some((low, high)) } else { None };
+        self.data_range_cache.set(Some(range));
+        range
     }
 
     /// The colour for `value` under the active scale.
@@ -517,9 +664,9 @@ impl Heatmap {
 
     /// The grid cell under `pos`, or `None` when the pointer is outside the grid.
     fn cell_at(&self, pos: Point) -> Option<(usize, usize)> {
-        let rows = self.row_count();
-        let columns = self.column_count();
-        if rows == 0 || columns == 0 {
+        let rows = self.viewport_rows();
+        let columns = self.viewport_columns();
+        if self.row_count() == 0 || self.column_count() == 0 {
             return None;
         }
         let grid = self.grid_rect();
@@ -532,10 +679,47 @@ impl Heatmap {
             return None;
         }
         // Integer arithmetic, and the column is floored by the same expression the drawing
-        // uses, so a click lands in the cell it looks like it landed in.
+        // uses, so a click lands in the cell it looks like it landed in. The position is the one
+        // **inside the viewport**; the display index is that plus the pan offset.
         let column = (dx as u64 * columns as u64 / grid.width as u64) as usize;
         let row = (dy as u64 * rows as u64 / grid.height as u64) as usize;
-        Some((self.data_row(row.min(rows - 1)), self.data_column(column.min(columns - 1))))
+        let display_row = (row + self.first_row).min(self.row_count() - 1);
+        let display_column = (column + self.first_column).min(self.column_count() - 1);
+        Some((self.data_row(display_row), self.data_column(display_column)))
+    }
+
+    /// The grid rectangle a cell occupies, in viewport coordinates.
+    fn cell_rect(&self, display_row: usize, display_column: usize) -> Option<Rect> {
+        let grid = self.grid_rect();
+        let rows = self.viewport_rows();
+        let columns = self.viewport_columns();
+        if display_row < self.first_row
+            || display_column < self.first_column
+            || display_row >= self.first_row + rows
+            || display_column >= self.first_column + columns
+        {
+            return None;
+        }
+        let row = display_row - self.first_row;
+        let column = display_column - self.first_column;
+        let cell_width = grid.width as i32 / columns.max(1) as i32;
+        let cell_height = grid.height as i32 / rows.max(1) as i32;
+        if cell_width <= 0 || cell_height <= 0 {
+            return None;
+        }
+        let x = grid.x + column as i32 * cell_width;
+        let y = grid.y + row as i32 * cell_height;
+        let width = if column + 1 == columns {
+            grid.width as i32 - column as i32 * cell_width
+        } else {
+            cell_width
+        };
+        let height = if row + 1 == rows {
+            grid.height as i32 - row as i32 * cell_height
+        } else {
+            cell_height
+        };
+        Some(Rect::new(x, y, width.max(1) as u32, height.max(1) as u32))
     }
 }
 
@@ -686,6 +870,26 @@ impl Widget for Heatmap {
                     ])
                 }))
             }
+            "cell_double_clicked" => Some(EventSignalRef::mapped(
+                "cell_double_clicked",
+                &self.cell_double_clicked,
+                |v| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ])
+                },
+            )),
+            "region_selected" => {
+                Some(EventSignalRef::mapped("region_selected", &self.region_selected, |v| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                        CapabilityValue::UInt(v.2 as u64),
+                        CapabilityValue::UInt(v.3 as u64),
+                    ])
+                }))
+            }
             _ => None,
         }
     }
@@ -724,6 +928,10 @@ impl WidgetProperties for Heatmap {
             }),
             "show_labels" => Ok(CapabilityValue::Bool(self.show_labels())),
             "show_legend" => Ok(CapabilityValue::Bool(self.show_legend())),
+            // The resolved counts, so a caller reads how much of the matrix is actually on screen.
+            // Writing `0` restores the fit-everything viewport.
+            "viewport_rows" => Ok(CapabilityValue::UInt(self.viewport_rows() as u64)),
+            "viewport_columns" => Ok(CapabilityValue::UInt(self.viewport_columns() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -752,6 +960,26 @@ impl WidgetProperties for Heatmap {
                 self.set_show_legend(expect_bool(value)?);
                 Ok(())
             }
+            "viewport_rows" => {
+                let rows = match value {
+                    CapabilityValue::UInt(rows) => {
+                        usize::try_from(rows).map_err(|_| CapabilityAccessError::TypeMismatch)?
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_viewport_rows((rows > 0).then_some(rows));
+                Ok(())
+            }
+            "viewport_columns" => {
+                let columns = match value {
+                    CapabilityValue::UInt(columns) => {
+                        usize::try_from(columns).map_err(|_| CapabilityAccessError::TypeMismatch)?
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_viewport_columns((columns > 0).then_some(columns));
+                Ok(())
+            }
             // The three data-bearing properties are written through `set_data`; a scalar
             // write cannot express a matrix, and accepting one would have to guess at
             // which cell it meant.
@@ -773,6 +1001,8 @@ impl WidgetProperties for Heatmap {
             "resolved_maximum",
             "show_labels",
             "show_legend",
+            "viewport_rows",
+            "viewport_columns",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -792,6 +1022,7 @@ impl WidgetProperties for Heatmap {
                     }
                 }
                 self.hovered_cell = None;
+                self.data_range_cache.set(None);
                 self.base.request_redraw();
                 Ok(())
             }
@@ -861,8 +1092,12 @@ impl Draw for Heatmap {
             return;
         }
 
-        let cell_width = grid.width as i32 / columns as i32;
-        let cell_height = grid.height as i32 / rows as i32;
+        // The painted grid is the **viewport**, not the whole matrix: a 1000×1000 matrix drawn
+        // into a 200×150 control has 0-pixel cells, which is neither readable nor clickable.
+        let view_rows = self.viewport_rows();
+        let view_columns = self.viewport_columns();
+        let cell_width = grid.width as i32 / view_columns as i32;
+        let cell_height = grid.height as i32 / view_rows as i32;
         if cell_width <= 0 || cell_height <= 0 {
             return;
         }
@@ -871,18 +1106,20 @@ impl Draw for Heatmap {
         // cell is extended to the grid's edge so rounding does not leave a seam. The
         // occupancy test uses the same expression as `cell_at`, so a click lands in the
         // cell it looks like it landed in.
-        for row in 0..rows {
+        for row in 0..view_rows {
             let y = grid.y + row as i32 * cell_height;
-            let data_row = self.data_row(row);
-            for column in 0..columns {
+            let display_row = self.first_row + row;
+            let data_row = self.data_row(display_row);
+            for column in 0..view_columns {
                 let x = grid.x + column as i32 * cell_width;
-                let data_column = self.data_column(column);
-                let width = if column + 1 == columns {
+                let display_column = self.first_column + column;
+                let data_column = self.data_column(display_column);
+                let width = if column + 1 == view_columns {
                     grid.width as i32 - column as i32 * cell_width
                 } else {
                     cell_width
                 };
-                let height = if row + 1 == rows {
+                let height = if row + 1 == view_rows {
                     grid.height as i32 - row as i32 * cell_height
                 } else {
                     cell_height
@@ -912,6 +1149,36 @@ impl Draw for Heatmap {
             }
         }
 
+        // ── The dragged region ──
+        //
+        // A rubber band over the release rectangle. The two corners are held in data coordinates,
+        // so the band follows the cells rather than the pixels if the viewport changes mid-drag.
+        if let (Some(anchor), Some(current)) = (self.region_anchor, self.region_current) {
+            let (row_start, row_end) = (anchor.0.min(current.0), anchor.0.max(current.0));
+            let (column_start, column_end) = (anchor.1.min(current.1), anchor.1.max(current.1));
+            let top_left = self
+                .row_order
+                .iter()
+                .position(|index| *index == row_start)
+                .zip(self.column_order.iter().position(|index| *index == column_start))
+                .and_then(|(row, column)| self.cell_rect(row, column));
+            let bottom_right = self
+                .row_order
+                .iter()
+                .position(|index| *index == row_end)
+                .zip(self.column_order.iter().position(|index| *index == column_end))
+                .and_then(|(row, column)| self.cell_rect(row, column));
+            if let (Some(top_left), Some(bottom_right)) = (top_left, bottom_right) {
+                let band = Rect::new(
+                    top_left.x,
+                    top_left.y,
+                    (bottom_right.x + bottom_right.width as i32 - top_left.x).max(1) as u32,
+                    (bottom_right.y + bottom_right.height as i32 - top_left.y).max(1) as u32,
+                );
+                context.draw_rect_stroke(band, text_color, 2);
+            }
+        }
+
         // ── Hover read-out ──
         if self.show_tooltip {
             if let Some((row, column)) = self.hovered_cell {
@@ -919,6 +1186,11 @@ impl Draw for Heatmap {
                     self.row_order.iter().position(|index| *index == row).unwrap_or(row);
                 let display_column =
                     self.column_order.iter().position(|index| *index == column).unwrap_or(column);
+                // A hovered cell the viewport has scrolled away from has no box; the read-out is
+                // then anchored to the grid's own origin rather than to a position off the pane.
+                let cell_box = self.cell_rect(display_row, display_column);
+                let view_row = display_row.saturating_sub(self.first_row);
+                let view_column = display_column.saturating_sub(self.first_column);
                 let value = self.cell(row, column).and_then(|cell| cell.value);
                 let row_label = self.row_labels.get(row).map(String::as_str).unwrap_or("");
                 let column_label = self.column_labels.get(column).map(String::as_str).unwrap_or("");
@@ -931,13 +1203,17 @@ impl Draw for Heatmap {
                 let metrics = context.measure_text(&text, font);
                 let width = metrics.width as i32 + 8;
                 let height = metrics.height.max(1) as i32 + 6;
-                let mut x = grid.x + (display_column as i32 * cell_width) + cell_width;
-                let mut y = grid.y + (display_row as i32 * cell_height) - height - 2;
+                let mut x = cell_box
+                    .map(|cell_box| cell_box.x + cell_box.width as i32)
+                    .unwrap_or(grid.x + view_column as i32 * cell_width);
+                let mut y = cell_box
+                    .map(|cell_box| cell_box.y - height - 2)
+                    .unwrap_or(grid.y + view_row as i32 * cell_height - height - 2);
                 if x + width > rect.x + rect.width as i32 {
-                    x = grid.x + display_column as i32 * cell_width - width;
+                    x = grid.x + view_column as i32 * cell_width - width;
                 }
                 if y < rect.y {
-                    y = grid.y + (display_row as i32 + 1) * cell_height + 2;
+                    y = grid.y + (view_row as i32 + 1) * cell_height + 2;
                 }
                 x = x.max(rect.x);
                 y = y.max(rect.y).min(rect.y + rect.height as i32 - height);
@@ -955,7 +1231,7 @@ impl Draw for Heatmap {
         }
 
         if self.show_labels {
-            self.draw_labels(context, grid, font, text_color, cell_height);
+            self.draw_labels(context, grid, font, text_color);
         }
         if self.show_legend {
             self.draw_legend(context, rect, grid, font, text_color);
@@ -965,45 +1241,49 @@ impl Draw for Heatmap {
 
 impl Heatmap {
     /// Draws the row labels down the left gutter and the column labels across the top.
-    fn draw_labels(
-        &self,
-        context: &mut RenderContext,
-        grid: Rect,
-        font: &Font,
-        text_color: Color,
-        cell_height: i32,
-    ) {
-        let rows = self.row_count();
-        let columns = self.column_count();
-        let cell_width = grid.width as i32 / columns.max(1) as i32;
+    fn draw_labels(&self, context: &mut RenderContext, grid: Rect, font: &Font, text_color: Color) {
+        let view_rows = self.viewport_rows();
+        let view_columns = self.viewport_columns();
+        let cell_width = grid.width as i32 / view_columns.max(1) as i32;
+        let cell_height = grid.height as i32 / view_rows.max(1) as i32;
         let font_height = context.measure_text("M", font).height as i32;
-        for row in 0..rows {
+        for view_row in 0..view_rows {
+            let display_row = self.first_row + view_row;
+            let data_row = self.data_row(display_row);
+            let Some(label) = self.row_labels.get(data_row) else {
+                continue;
+            };
             // The origin is the glyph box's **top edge**, so centring means subtracting half the
             // line box. The old `row_centre` used the row's middle as the top edge, which sat
             // every label half a line low — with three rows in a short control the labels read as
             // one overlapping `R1R2R3` column instead of one label per row.
-            let y = grid.y + row as i32 * cell_height + (cell_height - font_height) / 2;
+            let y = grid.y + view_row as i32 * cell_height + (cell_height - font_height) / 2;
             // The row gutter is exactly `LABEL_GUTTER` wide and the label starts at its
             // left edge, so the room available is the gutter itself — not the distance to
             // the grid, which is the same number and would drift if the two ever stopped
             // being equal.
             context.draw_text_fitted_cow(
                 Rect::new(grid.x - LABEL_GUTTER, y, LABEL_GUTTER as u32, font_height.max(1) as u32),
-                &self.row_labels[row],
+                label,
                 font,
                 text_color,
                 HorizontalAlignment::Left,
             );
         }
         let full = self.geometry();
-        for column in 0..columns {
+        for view_column in 0..view_columns {
+            let display_column = self.first_column + view_column;
+            let data_column = self.data_column(display_column);
+            let Some(label) = self.column_labels.get(data_column) else {
+                continue;
+            };
             // Centred on the cell so the label cannot be read as belonging to its
             // neighbour, which is what left-aligning in a narrow cell does. The box is the
             // cell itself, so a label wider than its column is fitted to the column rather
             // than centring on the cell and running into (or past) the one beside it.
-            let cell_x = grid.x + column as i32 * cell_width;
-            let width = if column + 1 == columns {
-                grid.width as i32 - column as i32 * cell_width
+            let cell_x = grid.x + view_column as i32 * cell_width;
+            let width = if view_column + 1 == view_columns {
+                grid.width as i32 - view_column as i32 * cell_width
             } else {
                 cell_width
             };
@@ -1013,7 +1293,7 @@ impl Heatmap {
             let height = (grid.y - top).max(1) as u32;
             context.draw_text_fitted_cow(
                 Rect::new(cell_x, top, width.max(1) as u32, height),
-                &self.column_labels[column],
+                label,
                 font,
                 text_color,
                 HorizontalAlignment::Center,
@@ -1134,6 +1414,28 @@ impl EventHandler for Heatmap {
         }
         match event {
             Event::MouseMove { pos, .. } => {
+                // A left drag selects a rectangular region; middle/right drags pan. Both are
+                // gestures over the grid, so each is checked before hover is even considered.
+                if let Some((origin, first_row, first_column)) = self.pan_drag {
+                    let grid = self.grid_rect();
+                    let cell_width = grid.width as i32 / self.viewport_columns() as i32;
+                    let cell_height = grid.height as i32 / self.viewport_rows() as i32;
+                    let rows = (origin.y - pos.y) / cell_height.max(1);
+                    let columns = (origin.x - pos.x) / cell_width.max(1);
+                    let row = (first_row as i32 + rows).max(0) as usize;
+                    let column = (first_column as i32 + columns).max(0) as usize;
+                    self.set_pan(row, column);
+                    return;
+                }
+                if self.region_anchor.is_some() {
+                    if let Some(cell) = self.cell_at(*pos) {
+                        if self.region_current != Some(cell) {
+                            self.region_current = Some(cell);
+                            self.base.request_redraw();
+                        }
+                    }
+                    return;
+                }
                 let cell = self.cell_at(*pos);
                 if cell != self.hovered_cell {
                     self.hovered_cell = cell;
@@ -1146,7 +1448,45 @@ impl EventHandler for Heatmap {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 if let Some((row, column)) = self.cell_at(*pos) {
                     self.set_selected_cell(Some((row, column)));
+                    self.region_anchor = Some((row, column));
+                    self.region_current = Some((row, column));
                     self.cell_clicked.emit((row, column));
+                }
+            }
+            // The middle and right buttons pan. They are not otherwise used by this control, and a
+            // left drag is taken by the region selection.
+            Event::MousePress { pos, button, .. } if *button == 2 || *button == 3 => {
+                if self.grid_rect().contains_point(*pos) {
+                    self.pan_drag = Some((*pos, self.first_row, self.first_column));
+                }
+            }
+            Event::MouseRelease { .. } => {
+                self.pan_drag = None;
+                if let (Some(anchor), Some(current)) = (self.region_anchor, self.region_current) {
+                    self.region_anchor = None;
+                    self.region_current = None;
+                    self.base.request_redraw();
+                    // A press-and-release on one cell is the click the press already reported; a
+                    // drag across cells is the rectangle this event exists for.
+                    if anchor != current {
+                        let (row_start, row_end) =
+                            (anchor.0.min(current.0), anchor.0.max(current.0));
+                        let (column_start, column_end) =
+                            (anchor.1.min(current.1), anchor.1.max(current.1));
+                        self.region_selected.emit((row_start, column_start, row_end, column_end));
+                    }
+                }
+            }
+            Event::MouseDoubleClick { pos, button: 1 } => {
+                if let Some((row, column)) = self.cell_at(*pos) {
+                    self.cell_double_clicked.emit((row, column));
+                }
+            }
+            Event::Wheel { delta, .. } => {
+                if delta.y < 0 {
+                    self.zoom_by(1.2);
+                } else if delta.y > 0 {
+                    self.zoom_by(1.0 / 1.2);
                 }
             }
             #[cfg(feature = "touch")]
@@ -1157,9 +1497,15 @@ impl EventHandler for Heatmap {
                 }
             }
             // Leaving the control clears the readout: a stale highlight would claim the
-            // pointer is somewhere it is not.
-            Event::MouseLeave { .. } if self.hovered_cell.take().is_some() => {
-                self.base.request_redraw();
+            // pointer is somewhere it is not. A half-finished region is abandoned for the same
+            // reason.
+            Event::MouseLeave { .. } => {
+                let had_region = self.region_anchor.take().is_some();
+                self.region_current = None;
+                self.pan_drag = None;
+                if self.hovered_cell.take().is_some() || had_region {
+                    self.base.request_redraw();
+                }
             }
             _ => {}
         }
@@ -1721,5 +2067,113 @@ mod tests {
         // Out-of-range fractions clamp rather than extrapolating outside the ramp.
         assert_eq!(interpolate_ramp(-1.0), RAMP_LOW);
         assert_eq!(interpolate_ramp(2.0), RAMP_HIGH);
+    }
+
+    #[test]
+    fn viewport_limits_cells_and_pan_clamps() {
+        let mut heatmap = sample();
+        assert_eq!(heatmap.viewport_rows(), 3);
+        assert_eq!(heatmap.viewport_columns(), 4);
+
+        heatmap.set_viewport_rows(Some(2));
+        heatmap.set_viewport_columns(Some(2));
+        assert_eq!(heatmap.viewport_rows(), 2);
+        assert_eq!(heatmap.viewport_columns(), 2);
+
+        heatmap.set_pan(1, 2);
+        assert_eq!((heatmap.first_row(), heatmap.first_column()), (1, 2));
+        // Past the end is clamped to the last full page, not left scrollable into emptiness.
+        heatmap.set_pan(99, 99);
+        assert_eq!((heatmap.first_row(), heatmap.first_column()), (1, 2));
+
+        heatmap.pan_by(-5, -5);
+        assert_eq!((heatmap.first_row(), heatmap.first_column()), (0, 0));
+
+        heatmap.reset_view();
+        assert_eq!(heatmap.viewport_rows(), 3);
+        assert_eq!((heatmap.first_row(), heatmap.first_column()), (0, 0));
+    }
+
+    #[test]
+    fn zoom_by_changes_the_visible_cell_count() {
+        let mut heatmap = sample();
+        // Start from a fit-everything viewport and zoom in: fewer rows and columns.
+        heatmap.zoom_by(2.0);
+        assert_eq!(heatmap.viewport_rows(), 2);
+        assert_eq!(heatmap.viewport_columns(), 2);
+
+        // Zooming back out restores more cells but never more than the matrix has.
+        heatmap.zoom_by(0.5);
+        assert_eq!(heatmap.viewport_rows(), 3);
+        assert_eq!(heatmap.viewport_columns(), 4);
+        heatmap.zoom_by(0.01);
+        assert_eq!(heatmap.viewport_rows(), 3);
+        assert_eq!(heatmap.viewport_columns(), 4);
+
+        // The properties expose the resolved counts and writing 0 restores the fit.
+        heatmap.set("viewport_rows", CapabilityValue::UInt(2)).expect("writable");
+        assert_eq!(heatmap.get("viewport_rows").unwrap(), CapabilityValue::UInt(2));
+        heatmap.set("viewport_rows", CapabilityValue::UInt(0)).expect("writable");
+        assert_eq!(heatmap.viewport_rows(), 3);
+    }
+
+    #[test]
+    fn a_drag_reports_the_selected_region() {
+        use crate::compat::{Arc, Mutex};
+        let mut heatmap = sample();
+        let regions = Arc::new(Mutex::new(Vec::<(usize, usize, usize, usize)>::new()));
+        let sink = regions.clone();
+        heatmap.region_selected.connect(move |region| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*region);
+            }
+        });
+
+        let start = heatmap.cell_rect(0, 0).expect("cell 0,0 is laid out");
+        let end = heatmap.cell_rect(2, 3).expect("cell 2,3 is laid out");
+        let (sx, sy) = (start.x + 2, start.y + 2);
+        let (ex, ey) = (end.x + 2, end.y + 2);
+        heatmap.handle_event(&Event::mouse_press(sx, sy, 1));
+        heatmap.handle_event(&Event::mouse_move(ex, ey));
+        heatmap.handle_event(&Event::mouse_release(ex, ey, 1));
+
+        let got = regions.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got, vec![(0, 0, 2, 3)]);
+    }
+
+    #[test]
+    fn a_click_without_movement_reports_no_region() {
+        use crate::compat::Arc;
+        use core::sync::atomic::{AtomicBool, Ordering};
+        let mut heatmap = sample();
+        let fired = Arc::new(AtomicBool::new(false));
+        let sink = fired.clone();
+        heatmap.region_selected.connect(move |_| {
+            sink.store(true, Ordering::SeqCst);
+        });
+
+        let cell = heatmap.cell_rect(1, 1).expect("cell is laid out");
+        let (x, y) = (cell.x + 2, cell.y + 2);
+        heatmap.handle_event(&Event::mouse_press(x, y, 1));
+        heatmap.handle_event(&Event::mouse_release(x, y, 1));
+        assert!(!fired.load(Ordering::SeqCst), "a click is not a region drag");
+    }
+
+    #[test]
+    fn a_double_click_reports_its_cell() {
+        use crate::compat::{Arc, Mutex};
+        let mut heatmap = sample();
+        let clicked = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = clicked.clone();
+        heatmap.cell_double_clicked.connect(move |cell| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*cell);
+            }
+        });
+
+        let cell = heatmap.cell_rect(2, 1).expect("cell is laid out");
+        heatmap.handle_event(&Event::mouse_double_click(cell.x + 2, cell.y + 2, 1));
+        let got = clicked.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got, vec![(2, 1)]);
     }
 }

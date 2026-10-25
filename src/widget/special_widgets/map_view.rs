@@ -3,6 +3,7 @@
 
 //! MapView widget.
 
+use crate::compat::HashMap;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -23,6 +24,83 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// box drift apart.
 const MAP_MARKER_SIZE: u32 = 6;
 
+/// The default pin colour, and the colour of a cluster badge.
+const MAP_MARKER_COLOR: Color = Color::rgb(59, 114, 190);
+
+/// The colour of the selected marker's pin.
+const MAP_MARKER_SELECTED_COLOR: Color = Color::rgb(230, 88, 76);
+
+/// How one marker is painted, independent of where it sits.
+///
+/// # Why the style is per marker
+///
+/// The pin's colour encodes the marker's *kind* (a station, a vehicle, an alert), which is data
+/// about the marker rather than a property of the map. A single map-wide colour, which is what the
+/// control painted before, forced every caller to draw its own overlay for that distinction or to
+/// drop it. `size` is a diameter in logical pixels; `icon` replaces the pin with real geometry when
+/// the caller supplies one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarkerStyle {
+    /// Fill colour of the pin or the icon.
+    pub color: Color,
+    /// Pin diameter in logical pixels.
+    pub size: u32,
+    /// Optional icon painted instead of the pin.
+    pub icon: Option<crate::widget::IconSource>,
+}
+
+impl Default for MarkerStyle {
+    fn default() -> Self {
+        Self { color: MAP_MARKER_COLOR, size: MAP_MARKER_SIZE, icon: None }
+    }
+}
+
+impl MarkerStyle {
+    /// Creates a pin style with `color` and `size` (floored at 2 pixels).
+    pub fn new(color: Color, size: u32) -> Self {
+        Self { color, size: size.max(2), icon: None }
+    }
+
+    /// Replaces the pin with `icon`, keeping the colour as the icon's ink.
+    pub fn with_icon(mut self, icon: crate::widget::IconSource) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+}
+
+/// The coordinate mapping the map paints with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MapProjection {
+    /// World coordinates are screen offsets at zoom 1: one world unit is one pixel.
+    #[default]
+    Linear,
+    /// The y axis is Web Mercator latitude, in degree units, so north-south distances grow
+    /// toward the poles the way a slippy map draws them. x is unchanged.
+    Mercator,
+}
+
+impl MapProjection {
+    /// The token this projection is published under.
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Mercator => "mercator",
+        }
+    }
+
+    /// Parses a published token; `None` for an unknown spelling.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "linear" => Some(Self::Linear),
+            "mercator" => Some(Self::Mercator),
+            _ => None,
+        }
+    }
+}
+
+/// The latitude Web Mercator truncates at, so the projection stays finite.
+const MERCATOR_MAX_LATITUDE: f32 = 85.051_13;
+
 /// One map marker with logical world coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapMarker {
@@ -32,15 +110,34 @@ pub struct MapMarker {
     pub label: String,
     /// World x coordinate in logical map units.
     pub x: f32,
-    /// World y coordinate in logical map units.
+    /// World y coordinate in logical map units (latitude in degrees under
+    /// [`MapProjection::Mercator`]).
     pub y: f32,
+    /// How the marker is painted.
+    pub style: MarkerStyle,
 }
 
 impl MapMarker {
-    /// Creates a map marker.
+    /// Creates a map marker with the default pin style.
     pub fn new(id: impl Into<String>, label: impl Into<String>, x: f32, y: f32) -> Self {
-        Self { id: id.into(), label: label.into(), x, y }
+        Self { id: id.into(), label: label.into(), x, y, style: MarkerStyle::default() }
     }
+
+    /// Sets the marker's paint style.
+    pub fn with_style(mut self, style: MarkerStyle) -> Self {
+        self.style = style;
+        self
+    }
+}
+
+/// One painted cluster: the marker indices it groups and the point it is drawn at.
+struct MapCluster {
+    /// The members' indices into [`MapView::markers`].
+    indices: Vec<usize>,
+    /// Screen position the badge is painted at.
+    screen: (f32, f32),
+    /// World position reported when the badge is clicked.
+    world: (f32, f32),
 }
 
 /// Lightweight map view with pan/zoom and marker selection.
@@ -71,12 +168,22 @@ pub struct MapView {
     drag: Option<(Point, f32, f32)>,
     /// Whether nearby markers are grouped into one count badge.
     cluster_markers: bool,
+    /// The y-axis mapping.
+    projection: MapProjection,
     /// Emitted when center changes. Payload is (x, y).
     pub center_changed: Signal1<(f32, f32)>,
     /// Emitted when zoom changes.
     pub zoom_changed: Signal1<f32>,
     /// Emitted when marker is selected. Payload is marker id.
     pub marker_selected: Signal1<String>,
+    /// Emitted when a marker is clicked. Payload is marker id.
+    ///
+    /// Distinct from [`Self::marker_selected`] because a click is an *act* and a selection is a
+    /// *state*: a caller that re-selects the already-selected pin still deserves the click, which a
+    /// selection-change signal by definition cannot deliver.
+    pub marker_clicked: Signal1<String>,
+    /// Emitted when a multi-marker cluster badge is clicked. Payload is the cluster's world centre.
+    pub cluster_clicked: Signal1<(f32, f32)>,
 }
 
 impl MapView {
@@ -92,11 +199,14 @@ impl MapView {
             last_pointer: None,
             drag: None,
             cluster_markers: false,
+            projection: MapProjection::Linear,
             markers: Vec::new(),
             selected_marker: None,
             center_changed: Signal1::new(),
             zoom_changed: Signal1::new(),
             marker_selected: Signal1::new(),
+            marker_clicked: Signal1::new(),
+            cluster_clicked: Signal1::new(),
         }
     }
 
@@ -149,14 +259,104 @@ impl MapView {
         self.cluster_markers
     }
 
+    /// The y coordinate the projection paints with.
+    ///
+    /// `Linear` is the identity, so a map that never asks for a projection behaves exactly as it
+    /// did. `Mercator` maps a latitude in degrees onto its Web Mercator ordinate (also in degrees),
+    /// which makes the same trip cover more screen height near the poles — the reason a slippy map's
+    /// equator-to-45° band is smaller than its 45°-to-60° band. x is untouched by either.
+    fn project_world_y(&self, y: f32) -> f32 {
+        match self.projection {
+            MapProjection::Linear => y,
+            MapProjection::Mercator => {
+                let latitude = y.clamp(-MERCATOR_MAX_LATITUDE, MERCATOR_MAX_LATITUDE).to_radians();
+                (core::f32::consts::FRAC_PI_4 + latitude / 2.0).tan().ln().to_degrees()
+            }
+        }
+    }
+
+    /// The inverse of [`Self::project_world_y`], so a pointer position can be turned back into a
+    /// world latitude before it becomes the map centre.
+    fn unproject_world_y(&self, projected: f32) -> f32 {
+        match self.projection {
+            MapProjection::Linear => projected,
+            MapProjection::Mercator => {
+                let ordinate = projected.to_radians();
+                // `2·atan(e^y) - π/2` is the inverse Gudermannian.
+                (2.0 * ordinate.exp().atan() - core::f32::consts::FRAC_PI_2).to_degrees()
+            }
+        }
+    }
+
+    /// Returns the coordinate mapping.
+    pub fn projection(&self) -> MapProjection {
+        self.projection
+    }
+
+    /// Sets the coordinate mapping.
+    pub fn set_projection(&mut self, projection: MapProjection) {
+        if self.projection == projection {
+            return;
+        }
+        self.projection = projection;
+        self.base.request_redraw();
+    }
+
+    /// Adds one marker, returning its index.
+    ///
+    /// [`Self::set_markers`] replaces the whole list and was the only way to change the marker set;
+    /// adding or removing one pin therefore meant cloning the entire list, which also dropped the
+    /// selection whenever the replace happened to reorder it.
+    pub fn add_marker(&mut self, marker: MapMarker) -> usize {
+        let index = self.markers.len();
+        self.markers.push(marker);
+        self.base.request_redraw();
+        index
+    }
+
+    /// Removes the marker with `id`, returning it when it was present.
+    ///
+    /// The selected index is adjusted rather than cleared: removing a pin *above* the selected one
+    /// shifts it down by one, and clearing the selection there would report a selection the caller
+    /// never changed.
+    pub fn remove_marker(&mut self, id: &str) -> Option<MapMarker> {
+        let index = self.markers.iter().position(|marker| marker.id == id)?;
+        let removed = self.markers.remove(index);
+        self.selected_marker = match self.selected_marker {
+            Some(selected) if selected == index => None,
+            Some(selected) if selected > index => Some(selected - 1),
+            other => other,
+        };
+        self.base.request_redraw();
+        Some(removed)
+    }
+
+    /// Sets the paint style of the marker with `id`, returning whether it exists.
+    pub fn set_marker_style(&mut self, id: &str, style: MarkerStyle) -> bool {
+        let Some(marker) = self.markers.iter_mut().find(|marker| marker.id == id) else {
+            return false;
+        };
+        marker.style = style;
+        self.base.request_redraw();
+        true
+    }
+
+    /// The pin diameter of the marker at `index`.
+    fn marker_size(&self, index: usize) -> u32 {
+        self.markers.get(index).map_or(MAP_MARKER_SIZE, |marker| marker.style.size.max(2))
+    }
+
     /// Zooms by `factor` while keeping the world point under `anchor` fixed on screen.
     fn zoom_at(&mut self, factor: f32, anchor: Point) {
         let rect = self.geometry();
         let zoom_before = self.painted_zoom().max(0.0001);
         let center_px = rect.x as f32 + rect.width as f32 / 2.0;
         let center_py = rect.y as f32 + rect.height as f32 / 2.0;
+        // The anchor is converted into projected space, so a Mercator map keeps the latitude under
+        // the pointer fixed rather than the raw world value (which would slide it vertically).
         let world_x = self.center_x + (anchor.x as f32 - center_px) / zoom_before;
-        let world_y = self.center_y + (anchor.y as f32 - center_py) / zoom_before;
+        let world_y =
+            self.project_world_y(self.center_y) + (anchor.y as f32 - center_py) / zoom_before;
         let before = self.zoom;
         self.zoom_by(factor);
         if (self.zoom - before).abs() < f32::EPSILON {
@@ -164,7 +364,8 @@ impl MapView {
         }
         let zoom_after = self.painted_zoom().max(0.0001);
         self.center_x = world_x - (anchor.x as f32 - center_px) / zoom_after;
-        self.center_y = world_y - (anchor.y as f32 - center_py) / zoom_after;
+        self.center_y =
+            self.unproject_world_y(world_y - (anchor.y as f32 - center_py) / zoom_after);
         self.center_changed.emit((self.center_x, self.center_y));
         self.base.request_redraw();
     }
@@ -243,7 +444,12 @@ impl MapView {
         // about how big the map currently is.
         let zoom = self.painted_zoom();
         let sx = rect.x as f32 + rect.width as f32 / 2.0 + (world_x - self.center_x) * zoom;
-        let sy = rect.y as f32 + rect.height as f32 / 2.0 + (world_y - self.center_y) * zoom;
+        // Both ends go through the projection: comparing a projected marker against an unprojected
+        // centre would paint a Mercator map at the mercator ordinate of the *offset* rather than as
+        // an offset from the centre, so every pin would sit off its place except at the equator.
+        let sy = rect.y as f32
+            + rect.height as f32 / 2.0
+            + (self.project_world_y(world_y) - self.project_world_y(self.center_y)) * zoom;
         (sx, sy)
     }
 
@@ -263,9 +469,9 @@ impl MapView {
         };
         let (sx, sy) = self.world_to_screen(marker.x, marker.y);
         let (px, py) = (sx.round() as i32, sy.round() as i32);
-        // The pin is `MARKER_SIZE` across and centred on the point, so the whole pin — not just
-        // its centre — must fit inside the pane.
-        let half = MAP_MARKER_SIZE as i32 / 2;
+        // The pin is the marker's own diameter across and centred on the point, so the whole pin —
+        // not just its centre — must fit inside the pane.
+        let half = self.marker_size(index) as i32 / 2;
         px - half >= rect.x
             && (px + half) < rect.x + rect.width as i32
             && py - half >= rect.y
@@ -285,11 +491,87 @@ impl MapView {
             let (sx, sy) = self.world_to_screen(marker.x, marker.y);
             let dx = sx - px;
             let dy = sy - py;
-            if dx * dx + dy * dy <= 64.0 {
+            // The hit radius follows the pin's own size: a 24 px icon with an 8 px hit box is a
+            // target the user can see and cannot press.
+            let reach = (self.marker_size(index) as f32 / 2.0).max(2.0) + 2.0;
+            if dx * dx + dy * dy <= reach * reach {
                 return Some(index);
             }
         }
         None
+    }
+
+    /// Groups markers into screen-space grid buckets.
+    ///
+    /// # Why a grid instead of pair-wise greedy grouping
+    ///
+    /// The previous grouping compared every unclaimed marker with every later one, which is
+    /// quadratic in the number of pins and ran on every frame — hundreds of markers made the map's
+    /// own paint the slowest thing on the frame. A bucket per `CELL` by `CELL` pixel square is one
+    /// pass: each marker falls into exactly one cell, and a cell's members are its cluster. The
+    /// cell is derived from the painted zoom, so zooming in separates markers naturally. Markers
+    /// are not re-grouped incrementally: the projection changes every frame of a zoom animation, so
+    /// a cache keyed on the camera would be invalidated as often as it was used.
+    fn clusters(&self) -> Vec<MapCluster> {
+        const CELL: f32 = 36.0;
+        let mut order: Vec<Vec<usize>> = Vec::new();
+        let mut cells: HashMap<(i32, i32), usize> = HashMap::new();
+        for index in 0..self.markers.len() {
+            if !self.marker_is_inside(index) {
+                continue;
+            }
+            let Some(marker) = self.markers.get(index) else {
+                continue;
+            };
+            let (sx, sy) = self.world_to_screen(marker.x, marker.y);
+            let key = ((sx / CELL).floor() as i32, (sy / CELL).floor() as i32);
+            match cells.get(&key).copied() {
+                Some(bucket) => order[bucket].push(index),
+                None => {
+                    cells.insert(key, order.len());
+                    order.push(vec![index]);
+                }
+            }
+        }
+        order
+            .into_iter()
+            .filter_map(|indices| {
+                let mut screen = (0.0f32, 0.0f32);
+                let mut world = (0.0f32, 0.0f32);
+                for index in &indices {
+                    let marker = self.markers.get(*index)?;
+                    let (sx, sy) = self.world_to_screen(marker.x, marker.y);
+                    screen.0 += sx;
+                    screen.1 += sy;
+                    world.0 += marker.x;
+                    world.1 += marker.y;
+                }
+                let count = indices.len() as f32;
+                Some(MapCluster {
+                    indices,
+                    screen: (screen.0 / count, screen.1 / count),
+                    world: (world.0 / count, world.1 / count),
+                })
+            })
+            .collect()
+    }
+
+    /// The multi-marker cluster under `pos`, if the pointer is on its badge.
+    fn cluster_at(&self, pos: Point) -> Option<MapCluster> {
+        if !self.cluster_markers {
+            return None;
+        }
+        let px = pos.x as f32;
+        let py = pos.y as f32;
+        self.clusters().into_iter().find(|cluster| {
+            if cluster.indices.len() < 2 {
+                return false;
+            }
+            let dx = cluster.screen.0 - px;
+            let dy = cluster.screen.1 - py;
+            // The badge is drawn with a 9 px radius; the hit box adds the pointer's own reach.
+            dx * dx + dy * dy <= 12.0 * 12.0
+        })
     }
 
     fn select_marker(&mut self, index: usize) -> bool {
@@ -297,14 +579,90 @@ impl MapView {
             return false;
         }
         if self.selected_marker == Some(index) {
+            // A click on the already-selected pin is still a click: the state did not change, but
+            // the act did.
+            if let Some(marker) = self.markers.get(index) {
+                self.marker_clicked.emit(marker.id.clone());
+            }
             return true;
         }
         self.selected_marker = Some(index);
         if let Some(marker) = self.markers.get(index) {
             self.marker_selected.emit(marker.id.clone());
+            self.marker_clicked.emit(marker.id.clone());
         }
         self.base.request_redraw();
         true
+    }
+}
+
+impl MapView {
+    /// Paints one marker: its pin (or icon) and its label.
+    ///
+    /// The paint and the hit test read the same `marker_is_inside` and `marker_size`, so a pin's ink
+    /// and its clickable area cannot disagree about either position or extent.
+    fn draw_marker(
+        &self,
+        context: &mut RenderContext,
+        index: usize,
+        style: &crate::style::WidgetStyle,
+        ink: Color,
+    ) {
+        // A marker panned or zoomed out of the pane is not drawn: its pin would land over the
+        // neighbouring widget, since nothing clips a widget at this layer. The hit test asks the
+        // same question, so an invisible pin is also not clickable.
+        if !self.marker_is_inside(index) {
+            return;
+        }
+        let Some(marker) = self.markers.get(index) else {
+            return;
+        };
+        let rect = self.geometry();
+        let (sx, sy) = self.world_to_screen(marker.x, marker.y);
+        let size = self.marker_size(index);
+        let half = size as i32 / 2;
+        // Selection is a state of the map, so it overrides the marker's own colour; the marker's
+        // colour is its kind, which the user still needs to read from an unselected pin.
+        let color = if self.selected_marker == Some(index) {
+            MAP_MARKER_SELECTED_COLOR
+        } else {
+            marker.style.color
+        };
+        if let Some(icon) = marker.style.icon {
+            let slot = Rect::new(sx as i32 - half, sy as i32 - half, size, size);
+            if let Err(error) = crate::widget::paint_icon(context, icon.into(), slot, color) {
+                log::warn!("map marker '{}' icon failed: {error:?}", marker.id);
+            }
+        } else {
+            // A pin, not a square: a circle over a tapering tip points at the place the marker
+            // names, which a square centred on the coordinate does not.
+            let head = Point::new(sx as i32, sy as i32 - half);
+            context.fill_circle(head, half.max(2) as u32, color);
+            context.execute_command(crate::render::RenderCommand::DrawPath {
+                points: vec![
+                    Point::new(sx as i32 - half / 2, sy as i32 - 1),
+                    Point::new(sx as i32 + half / 2, sy as i32 - 1),
+                    Point::new(sx as i32, sy as i32 + half),
+                ],
+                closed: true,
+                color,
+                filled: true,
+                width: 0,
+            });
+        }
+        // A marker label is bounded by the pane: it is placed beside a point that may sit
+        // anywhere, so unbounded it could start inside and end past the edge.
+        let label_left = (sx as i32) + half + 3;
+        let label_width = (rect.x + rect.width as i32 - label_left).max(0) as u32;
+        if label_width > 0 {
+            context.draw_text_fitted_cow(
+                Rect::new(label_left, sy as i32 - half, label_width, 14),
+                &marker.label,
+                effective_font(style),
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
     }
 }
 
@@ -366,6 +724,19 @@ impl Widget for MapView {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "marker_clicked" => {
+                Some(EventSignalRef::mapped("marker_clicked", &self.marker_clicked, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
+            "cluster_clicked" => {
+                Some(EventSignalRef::mapped("cluster_clicked", &self.cluster_clicked, |v| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::Float(v.0 as f64),
+                        CapabilityValue::Float(v.1 as f64),
+                    ])
+                }))
+            }
             _ => None,
         }
     }
@@ -389,6 +760,7 @@ impl WidgetProperties for MapView {
                 Some(id) => Ok(CapabilityValue::String(id.to_string())),
                 None => Ok(CapabilityValue::Null),
             },
+            "projection" => Ok(CapabilityValue::String(self.projection().token().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -411,6 +783,16 @@ impl WidgetProperties for MapView {
                 self.set_zoom(expect_f32(value)?);
                 Ok(())
             }
+            "projection" => {
+                let token = match value {
+                    CapabilityValue::String(token) => token,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                let projection =
+                    MapProjection::from_token(&token).ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_projection(projection);
+                Ok(())
+            }
             // Derived counts and the selection identity are computed from the marker
             // list, so they are refused as read-only rather than reported as names
             // this control does not know.
@@ -426,6 +808,7 @@ impl WidgetProperties for MapView {
             "zoom",
             "marker_count",
             "selected_marker_id",
+            "projection",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -471,9 +854,11 @@ impl EventHandler for MapView {
                 self.last_pointer = Some(*pos);
                 if let Some((origin, center_x, center_y)) = self.drag {
                     let zoom = self.painted_zoom().max(0.0001);
+                    // `center_y` is held in projected space for the duration of the drag, so a
+                    // Mercator map pans smoothly instead of accelerating as the pointer climbs.
                     self.set_center(
                         center_x - (pos.x - origin.x) as f32 / zoom,
-                        center_y - (pos.y - origin.y) as f32 / zoom,
+                        self.unproject_world_y(center_y - (pos.y - origin.y) as f32 / zoom),
                     );
                 }
             }
@@ -493,11 +878,18 @@ impl EventHandler for MapView {
                 _ => { /* Other keys are not relevant */ }
             },
             Event::MousePress { pos, button: 1, .. } => {
+                // A cluster badge is a target of its own: pressing one reports the group it stands
+                // for instead of selecting whichever member happens to be nearest.
+                if let Some(cluster) = self.cluster_at(*pos) {
+                    self.cluster_clicked.emit(cluster.world);
+                    self.base.request_redraw();
+                    return;
+                }
                 if let Some(index) = self.hit_marker_index(*pos) {
                     let _ = self.select_marker(index);
                 } else {
                     // A press on empty map starts a pan; a press on a pin selects instead.
-                    self.drag = Some((*pos, self.center_x, self.center_y));
+                    self.drag = Some((*pos, self.center_x, self.project_world_y(self.center_y)));
                 }
             }
             _ => { /* Other events are not relevant */ }
@@ -592,93 +984,30 @@ impl Draw for MapView {
         }
 
         if self.cluster_markers {
-            // Greedy grouping in screen space: a pin's cluster is every unclaimed marker within
-            // one badge-width of it. The point is to stop a zoomed-out map from painting a
-            // solid block of overlapping pins.
-            let mut claimed = vec![false; self.markers.len()];
-            for index in 0..self.markers.len() {
-                if claimed[index] || !self.marker_is_inside(index) {
-                    continue;
-                }
-                let (sx, sy) = self.world_to_screen(self.markers[index].x, self.markers[index].y);
-                claimed[index] = true;
-                let mut members = 1usize;
-                for (other, marker) in self.markers.iter().enumerate().skip(index + 1) {
-                    if claimed[other] {
-                        continue;
-                    }
-                    let (ox, oy) = self.world_to_screen(marker.x, marker.y);
-                    if (ox - sx).abs() <= 36.0 && (oy - sy).abs() <= 36.0 {
-                        claimed[other] = true;
-                        members += 1;
-                    }
-                }
-                let radius = if members > 1 { 9u32 } else { MAP_MARKER_SIZE / 2 };
-                context.fill_circle(
-                    Point::new(sx as i32, sy as i32),
-                    radius,
-                    Color::rgb(59, 114, 190),
-                );
-                if members > 1 {
+            // Grid-bucket grouping in screen space: each marker belongs to one 36 px cell and a
+            // cell's members are its badge. See `clusters` for why this replaced pair-wise greedy
+            // grouping. A one-member cluster is drawn as an ordinary pin, so clustering never hides
+            // a marker that is nowhere near another.
+            for cluster in self.clusters() {
+                let (sx, sy) = cluster.screen;
+                if cluster.indices.len() > 1 {
+                    context.fill_circle(Point::new(sx as i32, sy as i32), 9, MAP_MARKER_COLOR);
+                    let count = cluster.indices.len().to_string();
+                    let metrics = context.measure_text(&count, effective_font(style));
                     context.draw_text(
-                        Point::new(sx as i32 - 4, sy as i32 - 6),
-                        &members.to_string(),
+                        Point::new(sx as i32 - metrics.width as i32 / 2, sy as i32 - 6),
+                        &count,
                         effective_font(style),
                         Color::WHITE,
                         HorizontalAlignment::Left,
                     );
+                } else if let Some(index) = cluster.indices.first().copied() {
+                    self.draw_marker(context, index, style, ink);
                 }
             }
         } else {
-            for (index, marker) in self.markers.iter().enumerate() {
-                // A marker panned or zoomed out of the pane is not drawn: its pin would land over
-                // the neighbouring widget, since nothing clips a widget at this layer. The hit test
-                // asks the same question, so an invisible pin is also not clickable.
-                if !self.marker_is_inside(index) {
-                    continue;
-                }
-                let (sx, sy) = self.world_to_screen(marker.x, marker.y);
-                let half = MAP_MARKER_SIZE as i32 / 2;
-                // A pin, not a square: a circle over a tapering tip points at the place the
-                // marker names, which a square centred on the coordinate does not.
-                let color = if self.selected_marker == Some(index) {
-                    Color::rgb(230, 88, 76)
-                } else {
-                    Color::rgb(59, 114, 190)
-                };
-                let head = Point::new(sx as i32, sy as i32 - half);
-                context.fill_circle(head, half.max(3) as u32, color);
-                context.execute_command(crate::render::RenderCommand::DrawPath {
-                    points: vec![
-                        Point::new(sx as i32 - half / 2, sy as i32 - 1),
-                        Point::new(sx as i32 + half / 2, sy as i32 - 1),
-                        Point::new(sx as i32, sy as i32 + half),
-                    ],
-                    closed: true,
-                    color,
-                    filled: true,
-                    width: 0,
-                });
-                let marker_rect = Rect::new(
-                    (sx as i32) - half,
-                    (sy as i32) - half,
-                    MAP_MARKER_SIZE,
-                    MAP_MARKER_SIZE,
-                );
-                let _ = marker_rect;
-                // A marker label is bounded by the pane: it is placed beside a point that may sit
-                // anywhere, so unbounded it could start inside and end past the edge.
-                let label_left = (sx as i32) + half + 3;
-                let label_width = (rect.x + rect.width as i32 - label_left).max(0) as u32;
-                if label_width > 0 {
-                    context.draw_text_fitted_cow(
-                        Rect::new(label_left, sy as i32 - half, label_width, 14),
-                        &marker.label,
-                        effective_font(style),
-                        ink,
-                        HorizontalAlignment::Left,
-                    );
-                }
+            for index in 0..self.markers.len() {
+                self.draw_marker(context, index, style, ink);
             }
         }
 
@@ -921,5 +1250,112 @@ mod tests {
         assert_eq!(map.zoom(), 1.0);
         map.pan_by(f32::NAN, 0.0);
         assert_eq!(map.center(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn add_and_remove_marker_keeps_the_selected_id() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.add_marker(MapMarker::new("a", "A", 0.0, 0.0));
+        map.add_marker(MapMarker::new("b", "B", 20.0, 0.0));
+        assert!(map.select_marker(1));
+        assert_eq!(map.selected_marker_id(), Some("b"));
+
+        // Removing a marker above the selection shifts it down, it does not clear it.
+        let removed = map.remove_marker("a").expect("a exists");
+        assert_eq!(removed.id, "a");
+        assert_eq!(map.selected_marker_id(), Some("b"));
+        assert_eq!(map.markers().len(), 1);
+
+        // Removing the selected marker clears the selection.
+        assert!(map.remove_marker("b").is_some());
+        assert_eq!(map.selected_marker_id(), None);
+    }
+
+    #[test]
+    fn marker_click_emits_even_when_already_selected() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.set_markers(vec![MapMarker::new("m1", "Alpha", 0.0, 0.0)]);
+        let clicks = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = clicks.clone();
+        map.marker_clicked.connect(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+
+        map.handle_event(&Event::mouse_press(200, 120, 1));
+        map.handle_event(&Event::mouse_press(200, 120, 1));
+
+        let got = clicks.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got, vec!["m1".to_string(), "m1".to_string()]);
+    }
+
+    #[test]
+    fn mercator_projection_pushes_northern_latitudes_away_from_the_centre() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.set_markers(vec![MapMarker::new("north", "North", 0.0, 45.0)]);
+        let (_, linear_y) = map.world_to_screen(0.0, 45.0);
+
+        map.set_projection(MapProjection::Mercator);
+        let (_, mercator_y) = map.world_to_screen(0.0, 45.0);
+        assert!(
+            mercator_y > linear_y,
+            "mercator must stretch the y axis: linear {linear_y}, mercator {mercator_y}"
+        );
+
+        // Centring on the latitude puts it back on the middle line, which is what makes the
+        // inverse projection correct rather than merely monotone.
+        map.set_center(0.0, 45.0);
+        let (_, centred_y) = map.world_to_screen(0.0, 45.0);
+        assert!((centred_y - 120.0).abs() < 0.5, "centred marker y was {centred_y}");
+    }
+
+    #[test]
+    fn projection_property_round_trips() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        assert_eq!(map.get("projection").unwrap(), CapabilityValue::String("linear".into()));
+        map.set("projection", CapabilityValue::String("mercator".into()))
+            .expect("mercator is a published token");
+        assert_eq!(map.projection(), MapProjection::Mercator);
+        assert!(map.set("projection", CapabilityValue::String("globe".into())).is_err());
+    }
+
+    #[test]
+    fn cluster_badge_reports_its_world_centre() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.set_markers(vec![
+            MapMarker::new("a", "A", 0.0, 0.0),
+            MapMarker::new("b", "B", 10.0, 10.0),
+        ]);
+        map.set_cluster_markers(true);
+
+        let clusters = map.clusters();
+        assert_eq!(clusters.len(), 1, "nearby pins must form one bucket");
+        assert_eq!(clusters[0].indices.len(), 2);
+
+        let centres = Arc::new(Mutex::new(Vec::<(f32, f32)>::new()));
+        let sink = centres.clone();
+        map.cluster_clicked.connect(move |centre| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*centre);
+            }
+        });
+
+        let (sx, sy) = clusters[0].screen;
+        map.handle_event(&Event::mouse_press(sx as i32, sy as i32, 1));
+        let got = centres.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got.len(), 1);
+        assert!((got[0].0 - 5.0).abs() < 0.01 && (got[0].1 - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn marker_style_size_widens_the_hit_box() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.set_markers(vec![MapMarker::new("big", "Big", 0.0, 0.0)
+            .with_style(MarkerStyle::new(Color::rgb(1, 2, 3), 24))]);
+        // 10 px from the centre: outside the default 6 px pin, inside the 24 px one.
+        assert!(map.hit_marker_index(Point::new(210, 120)).is_some());
+        assert!(map.set_marker_style("big", MarkerStyle::new(Color::rgb(1, 2, 3), 6)));
+        assert!(map.hit_marker_index(Point::new(210, 120)).is_none());
     }
 }

@@ -279,6 +279,136 @@ pub trait GestureRecognizer: std::fmt::Debug + Send {
 // GestureEngine — chain of recognizers
 // ────────────────────────────────────────────
 
+/// One of the eleven built-in recognisers, stored inline in the chain.
+///
+/// # Why an enum rather than a `Box<dyn GestureRecognizer>` per entry
+///
+/// [`GestureEngine::new`] used to heap-allocate eleven boxed trait objects per engine, and the
+/// event loop builds one engine per interaction target. The built-in chain is fixed and closed, so
+/// its concrete types are known here: an enum keeps them inline, removes eleven allocations per
+/// target, and still dispatches through the same [`GestureRecognizer`] contract — implemented below
+/// by delegation. A host-supplied chain keeps its boxed trait objects, because those types are not
+/// known to the crate (see [`GestureEngine::from_recognizers`]).
+#[derive(Debug)]
+enum StandardRecognizer {
+    Tap(TapGesture),
+    DoubleTap(DoubleTapGesture),
+    LongPress(LongPressGesture),
+    LongPressDrag(LongPressDragGesture),
+    Pan(PanGesture),
+    Swipe(SwipeGesture),
+    Fling(FlingGesture),
+    TwoFingerTap(TwoFingerTapGesture),
+    TwoFingerSwipe(TwoFingerSwipeGesture),
+    Pinch(PinchGesture),
+    Rotate(RotateGesture),
+}
+
+impl GestureRecognizer for StandardRecognizer {
+    fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
+        match self {
+            Self::Tap(recognizer) => recognizer.process(event, now_ms),
+            Self::DoubleTap(recognizer) => recognizer.process(event, now_ms),
+            Self::LongPress(recognizer) => recognizer.process(event, now_ms),
+            Self::LongPressDrag(recognizer) => recognizer.process(event, now_ms),
+            Self::Pan(recognizer) => recognizer.process(event, now_ms),
+            Self::Swipe(recognizer) => recognizer.process(event, now_ms),
+            Self::Fling(recognizer) => recognizer.process(event, now_ms),
+            Self::TwoFingerTap(recognizer) => recognizer.process(event, now_ms),
+            Self::TwoFingerSwipe(recognizer) => recognizer.process(event, now_ms),
+            Self::Pinch(recognizer) => recognizer.process(event, now_ms),
+            Self::Rotate(recognizer) => recognizer.process(event, now_ms),
+        }
+    }
+
+    fn reset(&mut self) {
+        match self {
+            Self::Tap(recognizer) => recognizer.reset(),
+            Self::DoubleTap(recognizer) => recognizer.reset(),
+            Self::LongPress(recognizer) => recognizer.reset(),
+            Self::LongPressDrag(recognizer) => recognizer.reset(),
+            Self::Pan(recognizer) => recognizer.reset(),
+            Self::Swipe(recognizer) => recognizer.reset(),
+            Self::Fling(recognizer) => recognizer.reset(),
+            Self::TwoFingerTap(recognizer) => recognizer.reset(),
+            Self::TwoFingerSwipe(recognizer) => recognizer.reset(),
+            Self::Pinch(recognizer) => recognizer.reset(),
+            Self::Rotate(recognizer) => recognizer.reset(),
+        }
+    }
+
+    fn kind(&self) -> GestureKind {
+        match self {
+            Self::Tap(recognizer) => recognizer.kind(),
+            Self::DoubleTap(recognizer) => recognizer.kind(),
+            Self::LongPress(recognizer) => recognizer.kind(),
+            Self::LongPressDrag(recognizer) => recognizer.kind(),
+            Self::Pan(recognizer) => recognizer.kind(),
+            Self::Swipe(recognizer) => recognizer.kind(),
+            Self::Fling(recognizer) => recognizer.kind(),
+            Self::TwoFingerTap(recognizer) => recognizer.kind(),
+            Self::TwoFingerSwipe(recognizer) => recognizer.kind(),
+            Self::Pinch(recognizer) => recognizer.kind(),
+            Self::Rotate(recognizer) => recognizer.kind(),
+        }
+    }
+
+    fn status(&self) -> GestureState {
+        match self {
+            Self::Tap(recognizer) => recognizer.status(),
+            Self::DoubleTap(recognizer) => recognizer.status(),
+            Self::LongPress(recognizer) => recognizer.status(),
+            Self::LongPressDrag(recognizer) => recognizer.status(),
+            Self::Pan(recognizer) => recognizer.status(),
+            Self::Swipe(recognizer) => recognizer.status(),
+            Self::Fling(recognizer) => recognizer.status(),
+            Self::TwoFingerTap(recognizer) => recognizer.status(),
+            Self::TwoFingerSwipe(recognizer) => recognizer.status(),
+            Self::Pinch(recognizer) => recognizer.status(),
+            Self::Rotate(recognizer) => recognizer.status(),
+        }
+    }
+
+    fn partial(&self) -> Option<Event> {
+        match self {
+            Self::Tap(recognizer) => recognizer.partial(),
+            Self::DoubleTap(recognizer) => recognizer.partial(),
+            Self::LongPress(recognizer) => recognizer.partial(),
+            Self::LongPressDrag(recognizer) => recognizer.partial(),
+            Self::Pan(recognizer) => recognizer.partial(),
+            Self::Swipe(recognizer) => recognizer.partial(),
+            Self::Fling(recognizer) => recognizer.partial(),
+            Self::TwoFingerTap(recognizer) => recognizer.partial(),
+            Self::TwoFingerSwipe(recognizer) => recognizer.partial(),
+            Self::Pinch(recognizer) => recognizer.partial(),
+            Self::Rotate(recognizer) => recognizer.partial(),
+        }
+    }
+}
+
+/// One chain entry: a built-in recogniser stored inline, or a caller-supplied boxed one.
+#[derive(Debug)]
+enum RecognizerSlot {
+    Standard(StandardRecognizer),
+    Custom(Box<dyn GestureRecognizer>),
+}
+
+impl RecognizerSlot {
+    fn as_recognizer(&mut self) -> &mut dyn GestureRecognizer {
+        match self {
+            Self::Standard(recognizer) => recognizer,
+            Self::Custom(recognizer) => recognizer.as_mut(),
+        }
+    }
+
+    fn as_recognizer_ref(&self) -> &dyn GestureRecognizer {
+        match self {
+            Self::Standard(recognizer) => recognizer,
+            Self::Custom(recognizer) => recognizer.as_ref(),
+        }
+    }
+}
+
 /// An ordered chain of gesture recognisers.
 ///
 /// Events are fed to every recognizer in order. The first recognizer
@@ -286,7 +416,7 @@ pub trait GestureRecognizer: std::fmt::Debug + Send {
 /// skipped for that round).
 #[derive(Debug)]
 pub struct GestureEngine {
-    recognizers: Vec<Box<dyn GestureRecognizer>>,
+    recognizers: Vec<RecognizerSlot>,
     last_timestamp_ms: u64,
     /// How more than one produced event in one update is resolved.
     conflict: GestureConflictPolicy,
@@ -314,18 +444,23 @@ pub enum GestureConflictPolicy {
 impl GestureEngine {
     /// Create an engine pre-populated with the standard recognizers.
     pub fn new() -> Self {
-        let recognizers: Vec<Box<dyn GestureRecognizer>> = vec![
-            Box::new(TapGesture::new()),
-            Box::new(DoubleTapGesture::new()),
-            Box::new(LongPressGesture::new()),
-            Box::new(LongPressDragGesture::new()),
-            Box::new(PanGesture::new()),
-            Box::new(SwipeGesture::new()),
-            Box::new(FlingGesture::new()),
-            Box::new(TwoFingerTapGesture::new()),
-            Box::new(TwoFingerSwipeGesture::new()),
-            Box::new(PinchGesture::new()),
-            Box::new(RotateGesture::new()),
+        // Inline enum entries: eleven boxed trait objects per engine became one buffer (G-27).
+        let recognizers: Vec<RecognizerSlot> = vec![
+            RecognizerSlot::Standard(StandardRecognizer::Tap(TapGesture::new())),
+            RecognizerSlot::Standard(StandardRecognizer::DoubleTap(DoubleTapGesture::new())),
+            RecognizerSlot::Standard(StandardRecognizer::LongPress(LongPressGesture::new())),
+            RecognizerSlot::Standard(
+                StandardRecognizer::LongPressDrag(LongPressDragGesture::new()),
+            ),
+            RecognizerSlot::Standard(StandardRecognizer::Pan(PanGesture::new())),
+            RecognizerSlot::Standard(StandardRecognizer::Swipe(SwipeGesture::new())),
+            RecognizerSlot::Standard(StandardRecognizer::Fling(FlingGesture::new())),
+            RecognizerSlot::Standard(StandardRecognizer::TwoFingerTap(TwoFingerTapGesture::new())),
+            RecognizerSlot::Standard(StandardRecognizer::TwoFingerSwipe(
+                TwoFingerSwipeGesture::new(),
+            )),
+            RecognizerSlot::Standard(StandardRecognizer::Pinch(PinchGesture::new())),
+            RecognizerSlot::Standard(StandardRecognizer::Rotate(RotateGesture::new())),
         ];
         Self {
             recognizers,
@@ -342,7 +477,7 @@ impl GestureEngine {
     /// conflict configuration applies to the supplied chain unchanged.
     pub fn from_recognizers(recognizers: Vec<Box<dyn GestureRecognizer>>) -> Self {
         Self {
-            recognizers,
+            recognizers: recognizers.into_iter().map(RecognizerSlot::Custom).collect(),
             last_timestamp_ms: 0,
             conflict: GestureConflictPolicy::default(),
             priorities: crate::compat::HashMap::new(),
@@ -389,7 +524,8 @@ impl GestureEngine {
         let mut derived: Option<Event> = None;
         let conflict = self.conflict;
         let priorities = &self.priorities;
-        for (index, r) in self.recognizers.iter_mut().enumerate() {
+        for (index, slot) in self.recognizers.iter_mut().enumerate() {
+            let r = slot.as_recognizer();
             // The raw event first: recognizers that track the touch sequence directly
             // (tap, press, swipe, pinch, rotate) read this one.
             let mut hit = r.process(event, now_ms);
@@ -435,7 +571,7 @@ impl GestureEngine {
             if let Some((_, _, winner)) = produced.as_ref() {
                 for (index, recognizer) in self.recognizers.iter_mut().enumerate() {
                     if index != *winner {
-                        recognizer.reset();
+                        recognizer.as_recognizer().reset();
                     }
                 }
             }
@@ -485,7 +621,10 @@ impl GestureEngine {
     /// This is the "partial delivery" half of [`GestureUpdate`]: a pinch reports its current
     /// scale and centre, so a consumer can follow the fingers before the recogniser commits.
     pub fn previews(&self) -> Vec<Event> {
-        self.recognizers.iter().filter_map(|recognizer| recognizer.partial()).collect()
+        self.recognizers
+            .iter()
+            .filter_map(|recognizer| recognizer.as_recognizer_ref().partial())
+            .collect()
     }
 
     /// Cancels any in-progress gesture from outside and resets every recogniser.
@@ -545,7 +684,7 @@ impl GestureEngine {
     /// Reset all recognizers (e.g., when a touch sequence is cancelled).
     pub fn reset_all(&mut self) {
         for r in &mut self.recognizers {
-            r.reset();
+            r.as_recognizer().reset();
         }
     }
 }
@@ -601,6 +740,14 @@ mod tests {
     fn gesture_engine_new() {
         let engine = GestureEngine::new();
         assert_eq!(engine.recognizers.len(), 11);
+    }
+
+    /// The standard chain is stored inline, not as eleven boxed trait objects (G-27).
+    #[test]
+    fn the_standard_chain_is_inline() {
+        let engine = GestureEngine::new();
+        assert!(engine.recognizers.iter().all(|slot| matches!(slot, RecognizerSlot::Standard(_))));
+        assert_eq!(engine.previews().len(), 0, "an idle chain has no previews");
     }
 
     #[test]

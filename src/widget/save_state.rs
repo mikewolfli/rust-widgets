@@ -25,6 +25,8 @@
 //! restore. Nothing in the frame loop reads it, no control serialises itself automatically, and a
 //! control that does not implement [`SaveState`] contributes nothing.
 
+#[cfg(not(alloc_frugal))]
+use crate::compat::BTreeSet;
 use crate::compat::{String, Vec};
 #[cfg(not(alloc_frugal))]
 use crate::core::ObjectId;
@@ -181,12 +183,13 @@ pub fn restore_save_state(
 fn walk(root: ObjectId, visit: &mut impl FnMut(ObjectId)) {
     let mut stack = Vec::new();
     stack.push(root);
-    let mut visited = Vec::new();
+    // A set rather than a linear `Vec::contains`: a nested dock/tab tree with a hundred nodes
+    // turned every visit into a walk of everything already seen (G-39).
+    let mut visited = BTreeSet::new();
     while let Some(id) = stack.pop() {
-        if visited.contains(&id) {
+        if !visited.insert(id) {
             continue;
         }
-        visited.push(id);
         visit(id);
         let mut children = children_of(id);
         children.extend(crate::widget::runtime::surfaces_of(id));

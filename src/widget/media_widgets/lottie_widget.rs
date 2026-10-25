@@ -8,13 +8,13 @@
 //! when the animation finishes. Shapes defined in the Lottie JSON are parsed
 //! and rendered using the RenderContext.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
-use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -283,6 +283,75 @@ impl LottieColor {
     }
 }
 
+/// How playback traverses the Lottie timeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LottieDirection {
+    /// Frames advance from `ip` towards `op`.
+    #[default]
+    Forward,
+    /// Frames advance from `op` back towards `ip`.
+    Reverse,
+}
+
+/// A font resolver for Lottie text layers.
+///
+/// The control ships no font data, so a text layer's family name would otherwise have to be
+/// guessed. A host installs a provider to map the document's family name onto a real font; when
+/// none is installed the control falls back to [`Font::new`] with the document's own family and
+/// size, which is honest about what it can draw.
+pub trait LottieFontProvider {
+    /// Resolves `family` at `size` points.
+    fn font(&self, family: &str, size: f32, bold: bool) -> Font;
+}
+
+/// One decoded image asset supplied by the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LottieImage {
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Tightly packed RGBA bytes, `width * height * 4` long.
+    pub data: Vec<u8>,
+}
+
+/// Resolves a Lottie image layer's `refId` to decoded pixels.
+///
+/// The control does not decode image assets (PNG/JPEG/WebP); the host supplies the RGBA buffer
+/// for the asset id the document references.
+pub trait LottieImageProvider {
+    /// The decoded image for `asset_id`, or `None` when the host cannot supply it.
+    fn image(&self, asset_id: &str) -> Option<LottieImage>;
+}
+
+/// A text layer parsed from a composition.
+#[derive(Debug, Clone)]
+pub struct LottieTextLayer {
+    /// The text to draw.
+    pub text: String,
+    /// Font family the document names.
+    pub family: String,
+    /// Point size in composition units.
+    pub size: f64,
+    /// Fill colour of the text.
+    pub color: LottieColor,
+    /// Layer transform.
+    pub transform: LottieTransform,
+    /// Layer index, used for stacking.
+    pub index: i32,
+}
+
+/// An image layer parsed from a composition.
+#[derive(Debug, Clone)]
+pub struct LottieImageLayer {
+    /// Asset id the layer references.
+    pub asset_id: String,
+    /// Layer transform.
+    pub transform: LottieTransform,
+    /// Layer index, used for stacking.
+    pub index: i32,
+}
+
 /// A rectangle shape ("rc").
 #[derive(Debug, Clone)]
 pub struct LottieRectShape {
@@ -347,7 +416,16 @@ pub struct LottiePathShape {
     pub out_tangents: Vec<[f64; 2]>,
     /// Whether the contour is closed (`c` in the source).
     pub closed: bool,
+    /// Cached device-space flattening, keyed by the placement it was produced for.
+    ///
+    /// A path's geometry is sampled once at load, so the same outline is tessellated on every
+    /// frame. Without the cache the renderer rebuilt an SVG `d` string and ran the flattener for
+    /// every path of every frame.
+    flatten_cache: core::cell::RefCell<Option<(PathCacheKey, Vec<Point>, Vec<(usize, usize)>)>>,
 }
+
+/// The placement components a flattened path depends on.
+type PathCacheKey = (u64, u64, u64, u64);
 
 impl LottiePathShape {
     /// Parses a `"sh"` shape from its `ks.k` value.
@@ -403,6 +481,7 @@ impl LottiePathShape {
             in_tangents: read_points("i"),
             out_tangents: read_points("o"),
             closed,
+            flatten_cache: core::cell::RefCell::new(None),
         })
     }
 }
@@ -686,6 +765,44 @@ impl LottieLayer {
     }
 }
 
+impl LottieTextLayer {
+    /// Parses a `ty: 5` text layer.
+    fn from_json(layer_val: &serde_json::Value) -> Option<Self> {
+        let index = layer_val.get("ind").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let transform = layer_val.get("ks").map(LottieLayer::parse_transform).unwrap_or_default();
+        let document = layer_val.get("t")?.get("d")?.get("k")?;
+        // An animated text layer stores a keyframe array; the renderer samples the first one.
+        let sample = match document {
+            serde_json::Value::Array(frames) => frames.first()?.get("s")?,
+            other => other,
+        };
+        let text = sample.get("t").and_then(|v| v.as_str())?.to_string();
+        let family = sample.get("f").and_then(|v| v.as_str()).unwrap_or("Arial").to_string();
+        let size = sample.get("s").and_then(|v| v.as_f64()).unwrap_or(12.0).max(1.0);
+        let color = sample
+            .get("fc")
+            .and_then(|v| v.as_array())
+            .map(|channels| LottieColor {
+                r: channels.first().and_then(|v| v.as_f64()).unwrap_or(0.0),
+                g: channels.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0),
+                b: channels.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0),
+                a: 1.0,
+            })
+            .unwrap_or(LottieColor { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
+        Some(Self { text, family, size, color, transform, index })
+    }
+}
+
+impl LottieImageLayer {
+    /// Parses a `ty: 2` image layer, keeping the asset id and transform.
+    fn from_json(layer_val: &serde_json::Value) -> Option<Self> {
+        let index = layer_val.get("ind").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let asset_id = layer_val.get("refId").and_then(|v| v.as_str())?.to_string();
+        let transform = layer_val.get("ks").map(LottieLayer::parse_transform).unwrap_or_default();
+        Some(Self { asset_id, transform, index })
+    }
+}
+
 /// LottieWidget — a Lottie JSON animation player widget.
 pub struct LottieWidget {
     base: BaseWidget,
@@ -695,6 +812,12 @@ pub struct LottieWidget {
     playing: bool,
     /// Loop count: 0 = infinite, >0 = number of repetitions.
     loop_count: i32,
+    /// Completed repetitions, kept separately so playing never consumes the configured count.
+    loops_completed: i32,
+    /// Playback traversal direction.
+    direction: LottieDirection,
+    /// Playback speed multiplier applied on top of `frame_rate`.
+    speed: f32,
     /// Frame rate in frames per second.
     frame_rate: f32,
     /// Internal timer accumulator in **microseconds**.
@@ -726,6 +849,16 @@ pub struct LottieWidget {
     /// partially renderable instead of seeing shapes silently disappear
     /// (D09-LOT-01). Query it with [`Self::unsupported_shapes`].
     unsupported_shapes: Vec<String>,
+    /// Text layers (`ty: 5`), painted after shape layers.
+    text_layers: Vec<LottieTextLayer>,
+    /// Image layers (`ty: 2`), painted after text when the host supplies the asset.
+    image_layers: Vec<LottieImageLayer>,
+    /// Optional resolver for text-layer fonts.
+    font_provider: Option<Box<dyn LottieFontProvider>>,
+    /// Optional resolver for image-layer assets.
+    image_provider: Option<Box<dyn LottieImageProvider>>,
+    /// Decoded image assets already resolved, so a provider is asked at most once per asset.
+    image_cache: core::cell::RefCell<Vec<(String, LottieImage)>>,
 }
 
 impl LottieWidget {
@@ -738,6 +871,9 @@ impl LottieWidget {
             total_frames: 0,
             playing: false,
             loop_count: 0,
+            loops_completed: 0,
+            direction: LottieDirection::Forward,
+            speed: 1.0,
             frame_rate: 30.0,
             frame_timer_us: 0,
             animation_finished: GenericSignal::new(),
@@ -747,6 +883,11 @@ impl LottieWidget {
             comp_height: 100.0,
             frame_offset: 0.0,
             unsupported_shapes: Vec::new(),
+            text_layers: Vec::new(),
+            image_layers: Vec::new(),
+            font_provider: None,
+            image_provider: None,
+            image_cache: core::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -845,19 +986,37 @@ impl LottieWidget {
         } else {
             Vec::new()
         };
+        self.text_layers.clear();
+        self.image_layers.clear();
         // Layer-level features this renderer does not implement are reported alongside the
-        // unsupported shape types. A matte, a mask, or a text/image layer changes what a
-        // composition *means*, so silently drawing the layer without it would be a lie rather
-        // than a simplification.
+        // unsupported shape types. A matte or a mask changes what a composition *means*, so
+        // silently drawing the layer without it would be a lie rather than a simplification.
+        // Text and image layers are parsed and painted; an image paints only when the host's
+        // image provider resolves its asset, which is a host gap rather than a renderer gap.
         let mut unsupported = Vec::new();
         if let Some(layers_arr) = parsed.get("layers").and_then(|v| v.as_array()) {
             for layer in layers_arr {
                 let layer_type = layer.get("ty").and_then(|v| v.as_i64()).unwrap_or(4);
-                // 4 is a shape layer, the only kind this renderer draws.
-                if layer_type != 4 {
-                    let tag = format!("layer:{layer_type}");
-                    if !unsupported.contains(&tag) {
-                        unsupported.push(tag);
+                match layer_type {
+                    // 4 is a shape layer, the only kind `LottieLayer` parses.
+                    4 => {}
+                    5 => {
+                        if let Some(text) = LottieTextLayer::from_json(layer) {
+                            self.text_layers.push(text);
+                        } else {
+                            Self::push_unique(&mut unsupported, "text-layer");
+                        }
+                    }
+                    2 => {
+                        if let Some(image) = LottieImageLayer::from_json(layer) {
+                            self.image_layers.push(image);
+                        } else {
+                            Self::push_unique(&mut unsupported, "image-layer");
+                        }
+                    }
+                    other => {
+                        let tag = format!("layer:{other}");
+                        Self::push_unique(&mut unsupported, &tag);
                     }
                 }
                 if layer.get("tt").and_then(|v| v.as_i64()).is_some_and(|matte| matte != 0) {
@@ -873,6 +1032,9 @@ impl LottieWidget {
                 }
             }
         }
+        self.text_layers.sort_by_key(|layer| layer.index);
+        self.image_layers.sort_by_key(|layer| layer.index);
+        self.image_cache.borrow_mut().clear();
         // The paint order is fixed by the document, so it is resolved here rather than per frame.
         // Lower `index` is lower in the stack, which is the order `render_layers` draws in.
         self.layer_order = (0..self.layers.len()).collect();
@@ -891,6 +1053,7 @@ impl LottieWidget {
         self.current_frame = 0;
         self.frame_timer_us = 0;
         self.playing = false;
+        self.loops_completed = 0;
         Ok(())
     }
 
@@ -930,6 +1093,72 @@ impl LottieWidget {
     /// Returns the current loop count.
     pub fn loop_count(&self) -> i32 {
         self.loop_count
+    }
+
+    /// The number of repetitions completed so far.
+    ///
+    /// Playing a finite-loop animation used to decrement [`Self::loop_count`] itself, so the
+    /// property a caller configured read back as zero once the animation finished. The counter is
+    /// separate from the configuration now.
+    pub fn loops_completed(&self) -> i32 {
+        self.loops_completed
+    }
+
+    /// How playback traverses the timeline.
+    pub fn direction(&self) -> LottieDirection {
+        self.direction
+    }
+
+    /// Sets the traversal direction.
+    pub fn set_direction(&mut self, direction: LottieDirection) {
+        if self.direction == direction {
+            return;
+        }
+        self.direction = direction;
+        self.base.request_redraw();
+    }
+
+    /// The playback speed multiplier.
+    pub fn speed(&self) -> f32 {
+        self.speed
+    }
+
+    /// Sets the speed multiplier applied on top of the frame rate.
+    ///
+    /// Clamped to `0.05..=20.0` for the same reason as the sibling animated image: a zero speed
+    /// would divide the frame period into a value `tick` can never reach.
+    pub fn set_speed(&mut self, speed: f32) {
+        if !speed.is_finite() {
+            return;
+        }
+        let speed = speed.clamp(0.05, 20.0);
+        if self.speed == speed {
+            return;
+        }
+        self.speed = speed;
+        self.base.request_redraw();
+    }
+
+    /// Installs a font resolver for text layers.
+    pub fn set_font_provider(&mut self, provider: Box<dyn LottieFontProvider>) {
+        self.font_provider = Some(provider);
+        self.base.request_redraw();
+    }
+
+    /// Installs an image-asset resolver for image layers.
+    pub fn set_image_provider(&mut self, provider: Box<dyn LottieImageProvider>) {
+        self.image_provider = Some(provider);
+        self.base.request_redraw();
+    }
+
+    /// The text layers parsed from the loaded document.
+    pub fn text_layers(&self) -> &[LottieTextLayer] {
+        &self.text_layers
+    }
+
+    /// The image layers parsed from the loaded document.
+    pub fn image_layers(&self) -> &[LottieImageLayer] {
+        &self.image_layers
     }
 
     /// Sets the frame rate in frames per second.
@@ -984,27 +1213,39 @@ impl LottieWidget {
             return false;
         }
 
-        let next = self.current_frame + 1;
-        if next >= self.total_frames {
-            // Reached the end of the sequence.
-            if self.loop_count == 0 {
-                // Infinite looping: wrap around.
-                self.current_frame = 0;
-            } else {
-                // Finite looping: count down.
-                if self.loop_count > 0 {
-                    self.loop_count -= 1;
-                }
-                if self.loop_count == 0 {
-                    // All loops completed, stop.
-                    self.playing = false;
-                    self.animation_finished.emit();
-                    return true;
-                }
-                self.current_frame = 0;
+        let stepped = match self.direction {
+            LottieDirection::Forward => {
+                let next = self.current_frame + 1;
+                (next < self.total_frames).then_some(next)
             }
-        } else {
-            self.current_frame = next;
+            LottieDirection::Reverse => self.current_frame.checked_sub(1),
+        };
+
+        match stepped {
+            Some(next) => self.current_frame = next,
+            None => {
+                // Reached the end of the sequence.
+                if self.loop_count == 0 {
+                    // Infinite looping: wrap around.
+                    self.current_frame = match self.direction {
+                        LottieDirection::Forward => 0,
+                        LottieDirection::Reverse => self.total_frames - 1,
+                    };
+                } else {
+                    self.loops_completed += 1;
+                    if self.loops_completed >= self.loop_count {
+                        // All loops completed, stop. The configured `loop_count` is not touched:
+                        // it is a setting, not a resource to spend.
+                        self.playing = false;
+                        self.animation_finished.emit();
+                        return true;
+                    }
+                    self.current_frame = match self.direction {
+                        LottieDirection::Forward => 0,
+                        LottieDirection::Reverse => self.total_frames - 1,
+                    };
+                }
+            }
         }
 
         // The accumulator is *not* reset here. `tick` subtracts exactly one period
@@ -1038,7 +1279,9 @@ impl LottieWidget {
         // `set_frame_rate` and by the loader, so this cannot divide by zero or produce
         // a non-finite period; the guard keeps a hand-built struct safe regardless.
         let period_us = if self.frame_rate > 0.0 {
-            (1_000_000.0 / self.frame_rate as f64).round().max(1.0) as u64
+            let effective_rate =
+                (self.frame_rate as f64 * self.speed as f64).max(f64::MIN_POSITIVE);
+            (1_000_000.0 / effective_rate).round().max(1.0) as u64
         } else {
             33_000
         };
@@ -1168,6 +1411,97 @@ impl LottieWidget {
             };
 
             self.draw_shapes(context, frame, &layer.shapes, placement);
+        }
+
+        self.draw_text_layers(context, frame, offset_x, offset_y, scale);
+        self.draw_image_layers(context, frame, offset_x, offset_y, scale);
+    }
+
+    /// Paints the parsed text layers.
+    ///
+    /// The family is resolved through the installed [`LottieFontProvider`]; without one the
+    /// document's own family and size are used, which draws the text in whatever face the
+    /// renderer can supply rather than skipping the layer.
+    fn draw_text_layers(
+        &self,
+        context: &mut RenderContext,
+        frame: f64,
+        offset_x: f64,
+        offset_y: f64,
+        scale: f64,
+    ) {
+        for layer in &self.text_layers {
+            if layer.text.is_empty() {
+                continue;
+            }
+            let t = &layer.transform;
+            let pos = t.position.at_frame(frame);
+            let s = t.scale.at_frame(frame);
+            let opacity = (t.opacity.at_frame_scalar(frame) / 100.0).clamp(0.0, 1.0);
+            let x = offset_x + pos.0.unwrap_or(0.0) * scale;
+            let y = offset_y + pos.1.unwrap_or(0.0) * scale;
+            let size = (layer.size * scale * s.1.unwrap_or(100.0) / 100.0).max(1.0) as f32;
+            let font = match self.font_provider.as_ref() {
+                Some(provider) => provider.font(&layer.family, size, false),
+                None => Font::new(layer.family.clone(), size, false, false),
+            };
+            let color = layer.color.at_frame(frame).with_alpha_f32(opacity as f32);
+            context.draw_text(
+                Point::new(x.round() as i32, y.round() as i32),
+                &layer.text,
+                &font,
+                color,
+                HorizontalAlignment::Left,
+            );
+        }
+    }
+
+    /// Paints the parsed image layers when the host's provider resolves their asset.
+    fn draw_image_layers(
+        &self,
+        context: &mut RenderContext,
+        frame: f64,
+        offset_x: f64,
+        offset_y: f64,
+        scale: f64,
+    ) {
+        let Some(provider) = self.image_provider.as_ref() else {
+            return;
+        };
+        for layer in &self.image_layers {
+            let image = {
+                let mut cache = self.image_cache.borrow_mut();
+                if let Some(position) = cache.iter().position(|(id, _)| id == &layer.asset_id) {
+                    Some(cache[position].1.clone())
+                } else if let Some(decoded) = provider.image(&layer.asset_id) {
+                    cache.push((layer.asset_id.clone(), decoded.clone()));
+                    Some(decoded)
+                } else {
+                    None
+                }
+            };
+            let Some(image) = image else {
+                continue;
+            };
+            let t = &layer.transform;
+            let pos = t.position.at_frame(frame);
+            let s = t.scale.at_frame(frame);
+            let opacity = (t.opacity.at_frame_scalar(frame) / 100.0).clamp(0.0, 1.0) as f32;
+            let x = offset_x + pos.0.unwrap_or(0.0) * scale;
+            let y = offset_y + pos.1.unwrap_or(0.0) * scale;
+            let sx = s.0.unwrap_or(100.0) / 100.0;
+            let sy = s.1.unwrap_or(100.0) / 100.0;
+            let width = (image.width as f64 * scale * sx).round().max(0.0) as u32;
+            let height = (image.height as f64 * scale * sy).round().max(0.0) as u32;
+            if width == 0 || height == 0 {
+                continue;
+            }
+            // The image primitive carries no opacity of its own; a faded layer is drawn only
+            // when it is effectively visible, so an invisible layer does not paint opaque pixels.
+            if opacity <= 0.01 {
+                continue;
+            }
+            context.draw_image(x.round() as i32, y.round() as i32, width, height, &image.data);
         }
     }
 
@@ -1434,9 +1768,25 @@ impl LottieWidget {
             return;
         }
 
-        let (points, contour_ranges) = match self.flatten_lottie_path(path, placement) {
-            Some(contours) => contours,
-            None => return,
+        let key: PathCacheKey = (
+            placement.tx.to_bits(),
+            placement.ty.to_bits(),
+            placement.scale_x.to_bits(),
+            placement.scale_y.to_bits(),
+        );
+        let reusable = matches!(
+            path.flatten_cache.borrow().as_ref(),
+            Some((cached, _, _)) if *cached == key
+        );
+        if !reusable {
+            if let Some((points, ranges)) = self.flatten_lottie_path(path, placement) {
+                *path.flatten_cache.borrow_mut() = Some((key, points, ranges));
+            }
+        }
+        // The borrow is held while the contours are painted, so a cache hit copies no outline.
+        let cache = path.flatten_cache.borrow();
+        let Some((_, points, contour_ranges)) = cache.as_ref() else {
+            return;
         };
 
         // Fill every contour first, then stroke, matching the rectangle/ellipse
@@ -1446,7 +1796,7 @@ impl LottieWidget {
                 (fill.opacity.at_frame_scalar(frame) / 100.0 * placement.opacity).clamp(0.0, 1.0)
                     as f32,
             );
-            for (start, end) in &contour_ranges {
+            for (start, end) in contour_ranges {
                 context.draw_path(&points[*start..*end], true, fill_color, true, 0);
             }
         }
@@ -1458,7 +1808,7 @@ impl LottieWidget {
             );
             let sw = (stroke.width.at_frame_scalar(frame) * placement.scale_x).round() as u32;
             if sw > 0 {
-                for (start, end) in &contour_ranges {
+                for (start, end) in contour_ranges {
                     // The closing edge of a contour is implicit in the fill, so a
                     // stroked contour is emitted closed so the backend joins the last
                     // point back to the first.
@@ -1611,6 +1961,16 @@ impl WidgetProperties for LottieWidget {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "playing" => Ok(CapabilityValue::Bool(self.is_playing())),
+            "loop_count" => Ok(CapabilityValue::Int(self.loop_count() as i64)),
+            "loops_completed" => Ok(CapabilityValue::Int(self.loops_completed() as i64)),
+            "direction" => Ok(CapabilityValue::String(
+                match self.direction() {
+                    LottieDirection::Forward => "forward",
+                    LottieDirection::Reverse => "reverse",
+                }
+                .to_string(),
+            )),
+            "speed" => Ok(CapabilityValue::Float(self.speed() as f64)),
             _ => base_property_get(self, name),
         }
     }
@@ -1625,12 +1985,42 @@ impl WidgetProperties for LottieWidget {
                 }
                 Ok(())
             }
+            "loop_count" => {
+                let count = match value {
+                    CapabilityValue::Int(value) => value as i32,
+                    CapabilityValue::UInt(value) => value as i32,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_loop_count(count);
+                Ok(())
+            }
+            "direction" => {
+                let direction = match expect_string(value)?.to_ascii_lowercase().as_str() {
+                    "forward" => LottieDirection::Forward,
+                    "reverse" => LottieDirection::Reverse,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_direction(direction);
+                Ok(())
+            }
+            "speed" => {
+                self.set_speed(expect_f32(value)?);
+                Ok(())
+            }
+            "loops_completed" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["playing", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "playing",
+            "loop_count",
+            "loops_completed",
+            "direction",
+            "speed",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs the published playback commands.
@@ -2720,14 +3110,14 @@ mod tests {
     }
 
     #[test]
-    fn a_text_layer_is_reported_as_the_layer_type_it_is() {
+    fn a_text_layer_without_text_data_is_reported() {
         let json = r#"{"op":10,"ip":0,"fr":30,"w":100,"h":100,
             "layers":[{"ind":0,"ty":5,"ks":{},"shapes":[]}]}"#;
         let mut lottie = LottieWidget::new(Rect::new(0, 0, 100, 100));
         lottie.load_json(json).unwrap();
         assert!(
-            lottie.unsupported_shapes().iter().any(|tag| tag == "layer:5"),
-            "an unrendered text layer must be named: {:?}",
+            lottie.unsupported_shapes().iter().any(|tag| tag == "text-layer"),
+            "a text layer with no document text cannot be drawn and must be named: {:?}",
             lottie.unsupported_shapes()
         );
     }
@@ -2744,5 +3134,84 @@ mod tests {
         // With an ease-in handle the value at a quarter of the segment is below the linear
         // interpolation of 2.5.
         assert!(linear < 2.5, "the handle must shape the interpolation: {linear}");
+    }
+
+    /// Playing a finite loop must not consume the configured count.
+    #[test]
+    fn looping_counts_completions_without_consuming_the_setting() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        let json = make_lottie_json(3.0, 0.0, 30.0);
+        lottie.load_json(&json).unwrap();
+        lottie.set_loop_count(2);
+        lottie.play();
+        // Three frames per loop: two full loops finish on the sixth advance.
+        for _ in 0..6 {
+            lottie.advance_frame();
+        }
+        assert!(!lottie.is_playing());
+        assert_eq!(lottie.loop_count(), 2, "the configured count is a setting, not a budget");
+        assert_eq!(lottie.loops_completed(), 2);
+    }
+
+    #[test]
+    fn reverse_direction_and_speed_are_honoured() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        let json = make_lottie_json(3.0, 0.0, 10.0);
+        lottie.load_json(&json).unwrap();
+        lottie.set_current_frame(2);
+        lottie.set_direction(LottieDirection::Reverse);
+        lottie.play();
+        assert!(lottie.tick(100));
+        assert_eq!(lottie.current_frame(), 1);
+
+        // At 10 fps a frame lasts 100 ms; 2x speed halves that.
+        lottie.set_direction(LottieDirection::Forward);
+        lottie.set_speed(2.0);
+        lottie.set_current_frame(0);
+        assert!(lottie.tick(50));
+        assert_eq!(lottie.current_frame(), 1);
+    }
+
+    #[test]
+    fn text_and_image_layers_are_parsed_and_reported_as_supported() {
+        let json = r#"{
+            "op":30,"ip":0,"fr":30,"w":100,"h":100,
+            "layers":[
+                {"ty":5,"ind":1,"ks":{"p":{"k":[10,20]}},
+                 "t":{"d":{"k":[{"s":{"t":"Hi","f":"Arial","s":14,"fc":[1,0,0]}}]}}},
+                {"ty":2,"ind":2,"refId":"img_0","ks":{"p":{"k":[0,0]}}}
+            ]
+        }"#;
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.load_json(json).unwrap();
+        assert_eq!(lottie.text_layers().len(), 1);
+        assert_eq!(lottie.text_layers()[0].text, "Hi");
+        assert_eq!(lottie.image_layers().len(), 1);
+        assert_eq!(lottie.image_layers()[0].asset_id, "img_0");
+        assert!(
+            !lottie.has_unsupported_shapes(),
+            "text and image layers are rendered now: {:?}",
+            lottie.unsupported_shapes()
+        );
+    }
+
+    #[test]
+    fn a_static_path_is_flattened_once_and_reused() {
+        let json = r#"{
+            "op":30,"ip":0,"fr":30,"w":100,"h":100,
+            "layers":[{
+                "ind":0,"ks":{"p":{"k":[0,0]}},
+                "shapes":[
+                    {"ty":"sh","ks":{"k":{"v":[[10,10],[90,10],[50,90]],"i":[[0,0],[0,0],[0,0]],"o":[[0,0],[0,0],[0,0]],"c":true}}},
+                    {"ty":"fl","c":{"k":[1,0,0,1]},"o":{"k":100},"r":1}
+                ]
+            }]
+        }"#;
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 100, 100));
+        lottie.load_json(&json).unwrap();
+        let first = crate::widget::svg::render_to_svg(&mut lottie);
+        let second = crate::widget::svg::render_to_svg(&mut lottie);
+        assert_eq!(first, second, "a cached outline must paint the same picture");
+        assert!(first.starts_with("<svg"));
     }
 }

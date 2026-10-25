@@ -14,7 +14,7 @@ things therefore have to agree:
 
   1. the name published in the capability table,
   2. a signal field (or accessor) that the name resolves to,
-  3. an `.emit(..)` call site in the widget's **own** code that fires it.
+  3. an `.emit(..)` / `.emit_at(..)` call site in the widget's **own** code that fires it.
 
 Nothing checked any of the three against each other. Two real defects were found by hand:
 
@@ -221,7 +221,7 @@ def collect_struct_emits() -> dict[str, set[str]]:
                     depth -= 1
                 index += 1
             body = production[match.end() : index]
-            for call in re.finditer(r"(\w+)\.emit\(", body):
+            for call in re.finditer(r"(\w+)\.(?:emit|emit_at)\(", body):
                 emits.setdefault(struct, set()).add(call.group(1))
     return emits
 
@@ -383,6 +383,14 @@ def main() -> int:
             if not resolved:
                 unresolved.append((capability, event))
                 continue
+
+            # An accessor named `<field>_signal` reads the field `<field>`. The emit set records
+            # the field a `.emit(..)` was called on, so include that base name; otherwise a
+            # wrapper signal (`CanvasPointerEvent`) looks unemitted even though its accessor and
+            # its `emit_at` call site are both present.
+            resolved |= {
+                name[: -len("_signal")] for name in resolved if name.endswith("_signal")
+            }
 
             if event in DATA_SOURCE_SIGNALS:
                 continue

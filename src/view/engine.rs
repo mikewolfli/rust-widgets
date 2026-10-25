@@ -638,7 +638,26 @@ impl ViewEngine {
                     matches!(patch, super::Patch::Remove { .. } | super::Patch::Replace { .. })
                 })
             {
-                Some(self.id_of_path.clone())
+                let roots: Vec<&[usize]> = report
+                    .patches
+                    .iter()
+                    .filter_map(|patch| {
+                        let id = match patch {
+                            super::Patch::Remove { id } | super::Patch::Replace { id, .. } => id,
+                            _ => return None,
+                        };
+                        self.id_of_path.iter().find_map(|(path, candidate)| {
+                            (candidate == id).then_some(path.as_slice())
+                        })
+                    })
+                    .collect();
+                Some(
+                    self.id_of_path
+                        .iter()
+                        .filter(|(path, _)| roots.iter().any(|root| path.starts_with(root)))
+                        .map(|(path, id)| (path.clone(), *id))
+                        .collect(),
+                )
             } else {
                 None
             };
@@ -653,7 +672,8 @@ impl ViewEngine {
         // mutably borrowed by `apply`. A named layer requested here is created through `create`
         // on first use, exactly as `layer_for` does on the mount path; the stack is synced back
         // into `self.layers` afterwards so both paths agree about z-order.
-        let layer_cell = core::cell::RefCell::new(self.layers.clone());
+        let existing_layer_count = self.layers.len();
+        let layer_cell = core::cell::RefCell::new(&mut self.layers);
         let host: super::apply::OverlayHost<'_> = &|name: &str| {
             if let Some(id) =
                 layer_cell.borrow().iter().find(|(layer, _)| layer == name).map(|(_, id)| *id)
@@ -678,21 +698,18 @@ impl ViewEngine {
         // it is a host the engine owns, not a child of the root (the same shape
         // `layer_for` uses on the `mount` path). Only layers created during this batch are
         // registered; an existing layer was registered when it was made.
-        let created_layers = layer_cell.into_inner();
-        for (name, layer) in &created_layers {
-            if self.layer(name).is_none() {
-                self.layout.register_node(
-                    *layer,
-                    crate::compat::String::from("overlay"),
-                    layer_key(name),
-                    None,
-                );
-                if name == super::apply::DEFAULT_LAYER {
-                    self.layout.set_overlay_root(*layer);
-                }
+        let layers = layer_cell.into_inner();
+        for (name, layer) in &layers[existing_layer_count..] {
+            self.layout.register_node(
+                *layer,
+                crate::compat::String::from("overlay"),
+                layer_key(name),
+                None,
+            );
+            if name == super::apply::DEFAULT_LAYER {
+                self.layout.set_overlay_root(*layer);
             }
         }
-        self.layers = created_layers;
 
         // ── Lifecycle hooks for the subtrees this batch created and destroyed ──
         //

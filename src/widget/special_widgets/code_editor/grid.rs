@@ -31,6 +31,7 @@
 //! terminal emulators and other editors use, so the editor's idea of "wide"
 //! cannot disagree with the one the reader is used to.
 
+use alloc::vec::Vec;
 use unicode_width::UnicodeWidthChar;
 
 /// Grid columns a single non-tab character occupies.
@@ -51,15 +52,34 @@ pub(crate) fn tab_advance(column: usize, tab_width: usize) -> usize {
     width - (column % width)
 }
 
+/// Lazily built per-character column and byte tables for a non-simple line.
+///
+/// One pass fills both, so the repeated `column_of_char`/`byte_of_char` calls a
+/// paint pass makes for one line become array reads rather than repeated
+/// `chars()` walks (the wrapped-row and diagnostic paths call them several times
+/// per segment).
+#[derive(Debug, Clone)]
+struct ColumnIndex {
+    /// `columns[i]` is the grid column where character `i` starts; the last
+    /// entry is the end column of the line.
+    columns: Vec<usize>,
+    /// `bytes[i]` is the byte offset where character `i` starts; the last entry
+    /// is `text.len()`.
+    bytes: Vec<usize>,
+}
+
 /// The grid view of one document line.
 ///
 /// Built per line while painting, per line while hit-testing: it borrows the
-/// line's `&str` and holds no data that could go stale.
-#[derive(Debug, Clone, Copy)]
+/// line's `&str` and holds no data that could go stale. The optional index is
+/// filled on first use for a non-simple line and is not `Copy`, so a grid is
+/// borrowed (never duplicated) once it exists.
+#[derive(Debug, Clone)]
 pub(crate) struct LineGrid<'a> {
     text: &'a str,
     tab_width: usize,
     simple: bool,
+    index: core::cell::OnceCell<ColumnIndex>,
 }
 
 impl<'a> LineGrid<'a> {
@@ -68,7 +88,24 @@ impl<'a> LineGrid<'a> {
         // `is_ascii` is a fast scan; `contains('\t')` only matters on the hit
         // path, so it is folded into the same condition.
         let simple = text.is_ascii() && !text.as_bytes().contains(&b'\t');
-        Self { text, tab_width: tab_width.max(1), simple }
+        Self { text, tab_width: tab_width.max(1), simple, index: core::cell::OnceCell::new() }
+    }
+
+    /// The lazily built character tables.
+    fn index(&self) -> &ColumnIndex {
+        self.index.get_or_init(|| {
+            let mut columns = Vec::with_capacity(self.text.len() + 1);
+            let mut bytes = Vec::with_capacity(self.text.len() + 1);
+            let mut column = 0usize;
+            for (byte, ch) in self.text.char_indices() {
+                columns.push(column);
+                bytes.push(byte);
+                column += self.advance(ch, column);
+            }
+            columns.push(column);
+            bytes.push(self.text.len());
+            ColumnIndex { columns, bytes }
+        })
     }
 
     /// Number of characters in the line.
@@ -76,7 +113,7 @@ impl<'a> LineGrid<'a> {
         if self.simple {
             self.text.len()
         } else {
-            self.text.chars().count()
+            self.index().columns.len() - 1
         }
     }
 
@@ -85,7 +122,7 @@ impl<'a> LineGrid<'a> {
         if self.simple {
             self.text.len()
         } else {
-            self.column_of_char(self.char_len())
+            *self.index().columns.last().unwrap_or(&0)
         }
     }
 
@@ -103,14 +140,8 @@ impl<'a> LineGrid<'a> {
         if self.simple {
             return index.min(self.text.len());
         }
-        let mut column = 0usize;
-        for (taken, ch) in self.text.chars().enumerate() {
-            if taken == index {
-                return column;
-            }
-            column += self.advance(ch, column);
-        }
-        column
+        let columns = &self.index().columns;
+        columns[index.min(columns.len() - 1)]
     }
 
     /// Grid column at which character `index` starts (clamped to the line).
@@ -119,7 +150,8 @@ impl<'a> LineGrid<'a> {
         if self.simple {
             return index.min(self.text.len());
         }
-        self.text.char_indices().nth(index).map(|(byte, _)| byte).unwrap_or(self.text.len())
+        let bytes = &self.index().bytes;
+        bytes[index.min(bytes.len() - 1)]
     }
 
     /// Character index at byte offset `byte` (clamped to the line).
@@ -127,7 +159,8 @@ impl<'a> LineGrid<'a> {
         if self.simple {
             return byte.min(self.text.len());
         }
-        self.text[..byte.min(self.text.len())].chars().count()
+        let bytes = &self.index().bytes;
+        bytes.partition_point(|start| *start <= byte.min(self.text.len())) - 1
     }
 
     /// Character index whose cell contains `column`, snapping to the nearer
@@ -169,17 +202,8 @@ impl<'a> LineGrid<'a> {
         if self.simple {
             return column.min(self.text.len());
         }
-        let mut start = 0usize;
-        let mut index = 0usize;
-        for ch in self.text.chars() {
-            let width = self.advance(ch, start);
-            if start >= column {
-                return index;
-            }
-            start += width;
-            index += 1;
-        }
-        index
+        let columns = &self.index().columns;
+        columns.partition_point(|start| *start < column).min(columns.len() - 1)
     }
 
     /// How many visual rows the line wraps into at `columns` grid columns.

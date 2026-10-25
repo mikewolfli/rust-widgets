@@ -12,7 +12,7 @@ use crate::compat::Cow;
 use crate::core::{HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::GenericSignal;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -71,6 +71,16 @@ pub struct MacWindowChrome {
     pub minimize_requested: GenericSignal,
     /// Emitted when the zoom control is pressed.
     pub zoom_requested: GenericSignal,
+    /// Emitted when fullscreen is requested (the control never changes it itself).
+    pub fullscreen_requested: GenericSignal,
+    /// Emitted when the window's focused state is reported, with the new state.
+    pub window_focus_changed: Signal1<bool>,
+    /// Whether the window is presented in fullscreen.
+    fullscreen: bool,
+    /// Whether the document has unsaved edits; macOS marks the close control with a dot.
+    document_edited: bool,
+    /// Whether the window is key (focused).
+    focused: bool,
 }
 
 impl MacWindowChrome {
@@ -88,6 +98,11 @@ impl MacWindowChrome {
             close_requested: GenericSignal::new(),
             minimize_requested: GenericSignal::new(),
             zoom_requested: GenericSignal::new(),
+            fullscreen_requested: GenericSignal::new(),
+            window_focus_changed: Signal1::new(),
+            fullscreen: false,
+            document_edited: false,
+            focused: true,
         }
     }
 
@@ -135,6 +150,60 @@ impl MacWindowChrome {
             return;
         }
         self.draggable = draggable;
+    }
+
+    /// Whether the window is in fullscreen presentation.
+    pub fn is_fullscreen(&self) -> bool {
+        self.fullscreen
+    }
+
+    /// Records the window's fullscreen state.
+    ///
+    /// The control requests the mode through `fullscreen_requested`; the host owns the actual
+    /// window transition and reports the result here.
+    pub fn set_fullscreen(&mut self, fullscreen: bool) {
+        if self.fullscreen == fullscreen {
+            return;
+        }
+        self.fullscreen = fullscreen;
+        self.base.request_redraw();
+    }
+
+    /// Requests fullscreen presentation from the host.
+    pub fn request_fullscreen(&mut self) {
+        self.fullscreen_requested.emit();
+    }
+
+    /// Whether the document has unsaved edits.
+    pub fn is_document_edited(&self) -> bool {
+        self.document_edited
+    }
+
+    /// Marks the document edited, which dots the close control.
+    pub fn set_document_edited(&mut self, edited: bool) {
+        if self.document_edited == edited {
+            return;
+        }
+        self.document_edited = edited;
+        self.base.request_redraw();
+    }
+
+    /// Whether the window is key (focused).
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Reports that the window gained or lost focus, emitting `window_focus_changed`.
+    ///
+    /// An unfocused window uses the palette's inactive surface and ink, which is the macOS
+    /// convention that tells a user which window will receive the next keystroke.
+    pub fn set_focused(&mut self, focused: bool) {
+        if self.focused == focused {
+            return;
+        }
+        self.focused = focused;
+        self.window_focus_changed.emit(focused);
+        self.base.request_redraw();
     }
 
     /// The height of the bar in points.
@@ -308,6 +377,14 @@ impl Widget for MacWindowChrome {
                 Some(EventSignalRef::unit("minimize_requested", &self.minimize_requested))
             }
             "zoom_requested" => Some(EventSignalRef::unit("zoom_requested", &self.zoom_requested)),
+            "fullscreen_requested" => {
+                Some(EventSignalRef::unit("fullscreen_requested", &self.fullscreen_requested))
+            }
+            "window_focus_changed" => Some(EventSignalRef::mapped(
+                "window_focus_changed",
+                &self.window_focus_changed,
+                |value| CapabilityValue::Bool(*value),
+            )),
             _ => None,
         }
     }
@@ -320,6 +397,9 @@ impl WidgetProperties for MacWindowChrome {
             "chrome_height" => Ok(CapabilityValue::UInt(self.bar_height() as u64)),
             "buttons_visible" => Ok(CapabilityValue::Bool(self.buttons_visible())),
             "draggable" => Ok(CapabilityValue::Bool(self.draggable())),
+            "fullscreen" => Ok(CapabilityValue::Bool(self.is_fullscreen())),
+            "document_edited" => Ok(CapabilityValue::Bool(self.is_document_edited())),
+            "focused" => Ok(CapabilityValue::Bool(self.is_focused())),
             _ => base_property_get(self, name),
         }
     }
@@ -338,6 +418,18 @@ impl WidgetProperties for MacWindowChrome {
                 self.set_draggable(expect_bool(value)?);
                 Ok(())
             }
+            "fullscreen" => {
+                self.set_fullscreen(expect_bool(value)?);
+                Ok(())
+            }
+            "document_edited" => {
+                self.set_document_edited(expect_bool(value)?);
+                Ok(())
+            }
+            "focused" => {
+                self.set_focused(expect_bool(value)?);
+                Ok(())
+            }
             // Fixed by the control's own metrics; a caller that needs a taller bar draws a
             // different chrome component rather than stretching this one.
             "chrome_height" => Err(CapabilityAccessError::ReadOnlyProperty),
@@ -351,6 +443,9 @@ impl WidgetProperties for MacWindowChrome {
             "chrome_height",
             "buttons_visible",
             "draggable",
+            "fullscreen",
+            "document_edited",
+            "focused",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -366,8 +461,16 @@ impl Draw for MacWindowChrome {
         let colors = palette();
         let style = self.base.style();
         let font = role_font(style, 13.0);
+        let bar_surface = if self.focused { colors.raised } else { colors.inactive_surface };
+        let chrome_ink = if !self.base.is_enabled() {
+            colors.muted
+        } else if self.focused {
+            colors.ink
+        } else {
+            colors.inactive_ink
+        };
 
-        context.fill_rect(bar, colors.raised);
+        context.fill_rect(bar, bar_surface);
         // The hairline separating the bar from the window's content.
         context.draw_line(
             Point::new(bar.x, bar.bottom() - 1),
@@ -386,7 +489,7 @@ impl Draw for MacWindowChrome {
             let mut measure = |text: &str| context.measure_text(text, &font).width;
             let shown: Cow<'_, str> = elide_to_width(&self.title, available, &mut measure);
             let line = context.text_line(bar, &font);
-            let ink = if self.base.is_enabled() { colors.ink } else { colors.muted };
+            let ink = chrome_ink;
             context.draw_text(
                 Point::new(bar.center().x, line.y),
                 shown.as_ref(),
@@ -410,6 +513,10 @@ impl Draw for MacWindowChrome {
             }
             if self.pressed == Some(button) {
                 context.draw_circle(rect.center(), rect.width / 2, colors.separator);
+            }
+            // macOS dots the close control when the document has unsaved edits.
+            if button == WindowChromeButton::Close && self.document_edited {
+                context.fill_circle(rect.center(), (rect.width / 6).max(1), fill.contrast_color());
             }
         }
 
@@ -442,6 +549,13 @@ impl EventHandler for MacWindowChrome {
                     self.pressed = Some(control);
                     self.base.request_redraw();
                     self.request(control);
+                }
+            }
+            // A double-click on the free band is the macOS zoom gesture.
+            Event::MouseDoubleClick { pos, button: 1, .. } => {
+                if self.is_in_drag_band(*pos) {
+                    self.zoom_requested.emit();
+                    self.base.request_redraw();
                 }
             }
             // The control the pointer went down on, if any; the release redraws only when a
@@ -627,5 +741,57 @@ mod tests {
                 assert!(center.y + *radius as i32 <= 28);
             }
         }
+    }
+
+    #[test]
+    fn fullscreen_focus_and_edited_state_are_reported() {
+        let mut bar = sample();
+        let fullscreen = Arc::new(AtomicUsize::new(0));
+        let f = Arc::clone(&fullscreen);
+        bar.fullscreen_requested.connect(move || {
+            f.fetch_add(1, Ordering::SeqCst);
+        });
+        bar.request_fullscreen();
+        assert_eq!(fullscreen.load(Ordering::SeqCst), 1);
+        assert!(!bar.is_fullscreen());
+        bar.set_fullscreen(true);
+        assert!(bar.is_fullscreen());
+
+        let focused = Arc::new(std::sync::Mutex::new(None));
+        let observed = Arc::clone(&focused);
+        bar.window_focus_changed.connect(move |value: Arc<bool>| {
+            *observed.lock().unwrap() = Some(*value);
+        });
+        bar.set_focused(false);
+        assert_eq!(*focused.lock().unwrap(), Some(false));
+        assert!(!bar.is_focused());
+
+        bar.set_document_edited(true);
+        assert!(bar.is_document_edited());
+        let mut recorder = Recorder::new(320, 28);
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            bar.draw(&mut context);
+        }
+        recorder.end_frame();
+        let circles = recorder
+            .commands
+            .iter()
+            .filter(|command| matches!(command, RenderCommand::FillCircle { .. }))
+            .count();
+        assert_eq!(circles, 4, "three traffic lights plus the edited dot");
+    }
+
+    #[test]
+    fn double_clicking_the_drag_band_requests_zoom() {
+        let mut bar = sample();
+        let zooms = Arc::new(AtomicUsize::new(0));
+        let z = Arc::clone(&zooms);
+        bar.zoom_requested.connect(move || {
+            z.fetch_add(1, Ordering::SeqCst);
+        });
+        bar.handle_event(&Event::MouseDoubleClick { pos: Point::new(250, 14), button: 1 });
+        assert_eq!(zooms.load(Ordering::SeqCst), 1);
     }
 }

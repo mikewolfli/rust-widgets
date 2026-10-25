@@ -76,8 +76,19 @@ impl UpdateBatcher {
     /// Also restarts the batch timer. Returns an empty vector when nothing is
     /// pending, in which case the timer is **not** restarted.
     pub fn flush(&mut self) -> Vec<Rect> {
+        self.take_merged_tracker()
+            .map(|tracker| tracker.regions.into_iter().map(|region| region.rect).collect())
+            .unwrap_or_default()
+    }
+
+    /// Drains the batch into a tracker that has already been merged once.
+    ///
+    /// `flush_clipped` used to call `flush` and then rebuild a second tracker from its output and
+    /// merge again — the same clip information computed twice per frame (G-31). The tracker is
+    /// handed over already merged, so `render_dirty_regions`' own `merge()` is a no-op.
+    fn take_merged_tracker(&mut self) -> Option<DirtyRegionTracker> {
         if self.pending_updates.is_empty() {
-            return Vec::new();
+            return None;
         }
         let mut tracker = DirtyRegionTracker::new();
         for rect in self.pending_updates.drain(..) {
@@ -86,7 +97,7 @@ impl UpdateBatcher {
         tracker.merge();
         self.last_batch = Some(Instant::now());
         self.first_pending = None;
-        tracker.regions.into_iter().map(|r| r.rect).collect()
+        Some(tracker)
     }
     /// Flush pending updates and render only dirty regions.
     pub fn flush_clipped(
@@ -94,14 +105,9 @@ impl UpdateBatcher {
         ctx: &mut crate::render::RenderContext,
         render_all: impl FnMut(&mut crate::render::RenderContext),
     ) {
-        let rects = self.flush();
-        if rects.is_empty() {
+        let Some(mut tracker) = self.take_merged_tracker() else {
             return;
-        }
-        let mut tracker = DirtyRegionTracker::new();
-        for rect in rects {
-            tracker.add(rect);
-        }
+        };
         super::render_dirty_regions(&mut tracker, ctx, render_all);
     }
 

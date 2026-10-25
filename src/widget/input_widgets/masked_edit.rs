@@ -18,7 +18,7 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
     expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
@@ -176,6 +176,19 @@ pub struct MaskedEdit {
     alignment: crate::core::Alignment,
     /// Emitted when the text changes, providing the raw text.
     pub text_changed: Signal1<String>,
+    /// Emitted when editing ends — Enter is pressed, the field loses focus, or Escape
+    /// abandons the edit. Carries no payload; the committed value reads back through
+    /// [`Self::raw_text`].
+    pub editing_finished: GenericSignal,
+    /// Emitted when Enter is pressed in the field, after the value is committed.
+    pub return_pressed: GenericSignal,
+    /// Emitted with the display position where a typed character was refused.
+    ///
+    /// A mask silently dropping a character was the one case a host could not observe: the
+    /// value did not change, so `text_changed` stayed quiet, and a validation message had
+    /// nothing to attach to. The position is the mask segment the character was aimed at, so
+    /// a host can point at the offending cell.
+    pub input_rejected: Signal1<usize>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
@@ -184,7 +197,9 @@ pub struct MaskedEdit {
 impl MaskedEdit {
     /// Creates a new MaskedEdit widget with the given geometry.
     ///
-    /// Initially has an empty mask, so all input is accepted freely.
+    /// Initially has an empty mask. A mask with no input segments has nowhere to place a
+    /// character, so typing into an unmasked field is refused and reported through
+    /// [`Self::input_rejected`]; call [`Self::set_mask`] first.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::MaskedEdit, geometry, "MaskedEdit"),
@@ -199,6 +214,9 @@ impl MaskedEdit {
             focused: false,
             alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
+            editing_finished: GenericSignal::new(),
+            return_pressed: GenericSignal::new(),
+            input_rejected: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
@@ -207,7 +225,9 @@ impl MaskedEdit {
 
     /// Sets the input mask. The mask pattern is parsed into segments.
     ///
-    /// If the mask is empty, no formatting is applied and all input is accepted.
+    /// An empty mask has no input segments, so there is no cell for a typed character to land
+    /// in: the value can still be set programmatically, and typing reports
+    /// [`Self::input_rejected`] rather than silently discarding the character.
     pub fn set_mask(&mut self, mask: &str) {
         self.mask = mask.to_string();
         let (segments, placeholder) = parse_mask(mask);
@@ -536,6 +556,9 @@ impl MaskedEdit {
         self.delete_selection();
         let raw_idx = self.display_to_raw_index(self.cursor_pos);
         if raw_idx >= self.input_count() {
+            // No free cell remains (or the mask is empty): the character is refused rather than
+            // stored, and the host is told which cell it tried to fill.
+            self.input_rejected.emit(self.cursor_pos.min(self.segments.len()));
             return;
         }
 
@@ -553,7 +576,13 @@ impl MaskedEdit {
                 self.cursor_pos = seg_idx + 1;
                 self.text_changed.emit(self.raw_text.clone());
                 self.base.request_redraw();
+            } else {
+                // The character reached a cell whose class refuses it; the mask drops it, and the
+                // rejection names the cell so a host can explain the refusal.
+                self.input_rejected.emit(seg_idx);
             }
+        } else {
+            self.input_rejected.emit(self.cursor_pos.min(self.segments.len()));
         }
     }
 
@@ -565,7 +594,13 @@ impl MaskedEdit {
     /// the mask and advances the caret exactly as a keystroke would — which is what keeps a
     /// multi-character commit filling successive slots instead of only the first.
     fn insert_committed_text(&mut self, text: &str) {
-        for ch in text.chars().filter(|c| !c.is_control()) {
+        for ch in text.chars() {
+            if ch.is_control() {
+                // A committed control code is not content. It is refused before the mask ever
+                // sees it, and the refusal is reported like any other dropped character.
+                self.input_rejected.emit(self.cursor_pos.min(self.segments.len()));
+                continue;
+            }
             self.insert_char(ch);
         }
     }
@@ -819,6 +854,15 @@ impl Widget for MaskedEdit {
             "text_changed" => {
                 Some(EventSignalRef::mapped("text_changed", &self.text_changed, |v| {
                     CapabilityValue::String(v.clone())
+                }))
+            }
+            "editing_finished" => {
+                Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
+            }
+            "return_pressed" => Some(EventSignalRef::unit("return_pressed", &self.return_pressed)),
+            "input_rejected" => {
+                Some(EventSignalRef::mapped("input_rejected", &self.input_rejected, |v| {
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,
@@ -1205,6 +1249,9 @@ impl EventHandler for MaskedEdit {
             }
             Event::FocusLost => {
                 self.focused = false;
+                // Losing focus ends the edit, the same way Enter does; a host validating per
+                // finished edit needs to hear about the gesture that did not press Enter.
+                self.editing_finished.emit();
                 self.base.request_redraw();
             }
             // A press focuses the field only when it lands on the **painted band**.
@@ -1293,11 +1340,15 @@ impl EventHandler for MaskedEdit {
                         self.delete();
                     }
                     13 => {
-                        // Enter — commit, no special action
+                        // Enter commits the value and ends the edit. The mask has nothing left
+                        // to resolve, but the two signals are the commit's observable form.
+                        self.return_pressed.emit();
+                        self.editing_finished.emit();
                     }
                     27 => {
-                        // Escape — lose focus
+                        // Escape — abandon the edit and lose focus.
                         self.focused = false;
+                        self.editing_finished.emit();
                         self.base.request_redraw();
                     }
                     37 => {

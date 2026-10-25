@@ -327,6 +327,51 @@ thread_local! {
     static MODAL: RefCell<alloc::vec::Vec<ObjectId>> = const { RefCell::new(alloc::vec::Vec::new()) };
 }
 
+thread_local! {
+    /// Mounted controls whose **last observed** answer to `Widget::is_animating` was `true`.
+    ///
+    /// # Why this registry exists
+    ///
+    /// The animation sweep used to walk every mounted control and ask each one `is_animating`,
+    /// which is a virtual call per control per frame even for a still window (G-06). This set is
+    /// the registry the sweep now walks instead: membership *is* the per-control animating bit,
+    /// and a control is added when it reports `true` at any point the runtime can observe it
+    /// (mount, event dispatch, property write, global sweep, its own tick) and removed when it
+    /// reports `false`.
+    ///
+    /// # Why it cannot leak a settled control
+    ///
+    /// Every path that can change a mounted control's state goes through one of those observation
+    /// points: `with_widget_mut`, `dispatch_event`, `for_each_mounted_widget` (the global-theme
+    /// path), `register`, [`tick_animations_sweep`], or `unregister`. A control that settles is
+    /// removed on the tick that observed the settle, and a destroyed control is removed by
+    /// `unregister` (with a stale-id cleanup in the sweep as a belt-and-braces guard).
+    #[allow(clippy::missing_const_for_thread_local)]
+    static ANIMATING: RefCell<alloc::collections::BTreeSet<ObjectId>> =
+        RefCell::new(alloc::collections::BTreeSet::new());
+
+    /// Candidate ids taken out of [`ANIMATING`] for one sweep. Reused across frames so a still
+    /// frame allocates nothing (G-06/G-37).
+    static ANIMATION_IDS: RefCell<alloc::vec::Vec<ObjectId>> =
+        const { RefCell::new(alloc::vec::Vec::new()) };
+
+    /// Window -> union of animation damage, reused across sweeps (G-07).
+    static WINDOW_ANIMATION_DAMAGE: RefCell<alloc::vec::Vec<(ObjectId, Rect)>> =
+        const { RefCell::new(alloc::vec::Vec::new()) };
+}
+
+/// Records the animating bit observed for `id`.
+fn note_animating(id: ObjectId, animating: bool) {
+    let _ = ANIMATING.try_with(|set| {
+        let mut set = set.borrow_mut();
+        if animating {
+            set.insert(id);
+        } else {
+            set.remove(&id);
+        }
+    });
+}
+
 /// How many ids one thread reserves at a time.
 ///
 /// Large enough that the reservation is rare (a thread creating a whole window's worth of
@@ -443,6 +488,11 @@ pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
     if let Some(state) = with_widget(id, crate::platform::accessibility::A11yState::from_widget) {
         crate::widget::a11y_submit::submit_mounted(id, &state);
     }
+    // Seed the animation registry with the control's initial state: a spinner or a control that
+    // mounts mid-transition is already animating before any event reaches it (G-06).
+    if read_widget(id, |widget| widget.is_animating()).unwrap_or(false) {
+        note_animating(id, true);
+    }
     Some(id)
 }
 
@@ -528,11 +578,16 @@ pub fn register_with_id(
     {
         crate::widget::a11y_submit::submit_mounted(declared_id, &state);
     }
+    if read_widget(declared_id, |widget| widget.is_animating()).unwrap_or(false) {
+        note_animating(declared_id, true);
+    }
     Ok(declared_id)
 }
 
 /// Removes a mounted widget, dropping it. Returns whether it was present.
 pub fn unregister(id: ObjectId) -> bool {
+    // A destroyed control must not keep requesting frames through the animation registry.
+    note_animating(id, false);
     // Drop any host-window association with the widget it belonged to, so a
     // recycled or reused id cannot inherit a stale host window.
     let removed_host = HOST_WINDOWS.try_with(|map| map.borrow_mut().remove(&id)).ok().flatten();
@@ -875,7 +930,37 @@ pub fn set_focusable_position(id: ObjectId, x: i32, y: i32) -> bool {
 // next node for its own.
 thread_local! {
     static CHILD_IDS: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };
+    // The root's direct children, reused across frames. `render_frame_tree` has to copy them out
+    // of the registry before it starts recursing, and a fresh `Vec` per frame was pure allocator
+    // traffic on an otherwise static frame (G-36).
+    static ROOT_CHILD_IDS: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };
+    // One child list per recursion depth, reused across frames. A node's children must be copied
+    // out of the registry before the painter recurses: `read_widget` holds the registry borrow
+    // while its callback runs, so recursing inside it would make the child's `with_widget_mut`
+    // panic. Depth-first painting means one buffer per live level is enough (G-36).
+    static PAINT_CHILD_BUFFERS: RefCell<Vec<Vec<ObjectId>>> = const { RefCell::new(Vec::new()) };
 }
+
+/// Takes an empty child buffer from the per-depth pool, allocating only on a cold first use.
+fn take_paint_children() -> Vec<ObjectId> {
+    PAINT_CHILD_BUFFERS.with(|pool| pool.borrow_mut().pop()).unwrap_or_default()
+}
+
+/// Returns a child buffer to the pool for the next frame's paint.
+fn return_paint_children(mut buffer: Vec<ObjectId>) {
+    buffer.clear();
+    let _ = PAINT_CHILD_BUFFERS.try_with(|pool| {
+        if let Ok(mut pool) = pool.try_borrow_mut() {
+            if pool.len() < MAX_PAINT_BUFFER_POOL {
+                pool.push(buffer);
+            }
+        }
+    });
+}
+
+/// The deepest recursion the buffer pool retains for; beyond it a buffer is dropped rather than
+/// retained forever.
+const MAX_PAINT_BUFFER_POOL: usize = 64;
 
 /// Runs `f` with `widget_id`'s child ids, reusing a per-thread buffer instead of allocating.
 ///
@@ -1727,6 +1812,10 @@ pub fn for_each_mounted_widget<R>(mut f: impl FnMut(ObjectId, &mut dyn Widget) -
     let _ = MOUNTED.try_with(|map| {
         for (id, entry) in map.borrow_mut().iter_mut() {
             f(*id, entry.widget.as_mut());
+            // A global operation (theme application, contrast override) is one of the few ways a
+            // control's animation state changes without a `with_widget_mut` call. Observing the
+            // bit here keeps the animation registry complete for that path (G-06).
+            note_animating(*id, entry.widget.is_animating());
         }
     });
 }
@@ -2095,19 +2184,13 @@ pub fn last_frame_stats() -> Option<FrameStats> {
     LAST_FRAME_STATS.try_with(|slot| slot.borrow().clone()).ok().flatten()
 }
 
-/// Counts mounted controls that currently report themselves as animating.
+/// Counts mounted controls whose last observed animation bit is set.
 ///
-/// Split out so the two readers of the same fact -- [`drive_frame`]'s diagnostic count
-/// and [`has_animating_widgets`]'s boolean -- cannot drift: both walk the registry once
-/// and ask the same predicate.
+/// Both readers of the fact -- [`drive_frame`]'s diagnostic count and
+/// [`has_animating_widgets`]'s boolean -- read the **same registry** the sweep drives, so they
+/// cannot disagree with what a frame will actually tick (G-06).
 fn count_animating_widgets() -> usize {
-    let mut count = 0usize;
-    for_each_mounted_widget(|_, widget| {
-        if widget.is_animating() {
-            count += 1;
-        }
-    });
-    count
+    ANIMATING.try_with(|set| set.borrow().len()).unwrap_or(0)
 }
 
 thread_local! {
@@ -2356,10 +2439,12 @@ fn take_frame_repaint_reasons() -> alloc::vec::Vec<(ObjectId, RepaintReason)> {
 ///   runs at a speed that depends on how many layers happened to call in.
 ///
 /// So the driver is this one function, called once per frame by the host *before* it paints.
-/// The set of controls advanced is whatever answers `true` to its own
-/// [`Widget::is_animating`] rather than a registry the runtime maintains: a registry would
-/// have a "registered but never unregistered" leak, while self-reporting cannot -- an
-/// unmounted control simply is not in the map any more.
+/// The set of controls advanced is the runtime's **animating registry** ([`ANIMATING`]), not a
+/// fresh virtual `is_animating()` call for every mounted control. Membership is the control's
+/// animating bit; it is set whenever the runtime observes a state change that leaves the control
+/// in flight (mount, event dispatch, property write, tick) and cleared when a tick observes the
+/// control settled. `unregister` clears it too, so a destroyed control cannot keep the registry
+/// (or the frame loop) alive (G-06).
 ///
 /// # The return value is the whole point
 ///
@@ -2398,6 +2483,13 @@ pub fn tick_animations(delta_ms: u32) -> bool {
     tick_animations_sweep(delta_ms).1
 }
 
+// The ids one animation sweep advanced. Reused across frames: a still frame used to allocate an
+// empty `Vec` every time the sweep ran, so the "sixty still frames" promise of a cheap idle frame
+// still paid one allocation per frame (G-37).
+thread_local! {
+    static ANIMATION_MOVED: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };
+}
+
 /// The sweep behind [`tick_animations`], also reporting how many controls it advanced.
 ///
 /// `drive_frame` needs both numbers. Asking the registry a second time to count what the sweep
@@ -2428,28 +2520,66 @@ fn tick_animations_sweep(delta_ms: u32) -> (usize, bool) {
     // Ids that advanced this sweep. Collected rather than invalidated in place: the sweep
     // holds each widget out of the registry for its `tick`, and a repaint request walks the
     // parent chain (and may call back into the registry), so doing it inside the loop would
-    // nest two registry drives.
-    let mut moved: alloc::vec::Vec<ObjectId> = alloc::vec::Vec::new();
-    for_each_mounted_widget(|id, widget| {
-        // `is_animating` first, so a resting control (the common case) is not asked to
-        // interpolate at all: this is what keeps a static frame free.
-        if widget.is_animating() {
-            // `tick` also reports "moving"; either answer keeps the frame coming, because a
-            // control can be mid-flight while its own `is_animating` is a coarser fact.
-            if widget.tick(delta_ms) || widget.is_animating() {
-                still_animating = true;
+    // nest two registry drives. The buffer is taken from its thread-local slot and put back
+    // afterwards, so a frame with nothing to do allocates nothing (G-37).
+    let mut moved: alloc::vec::Vec<ObjectId> =
+        ANIMATION_MOVED.with(|slot| core::mem::take(&mut *slot.borrow_mut()));
+    moved.clear();
+    // The sweep visits the animating registry, not the whole tree (G-06). The ids are copied out
+    // first because ticking re-enters the registry and may change the set; the buffer is reused
+    // across frames.
+    let mut candidates: alloc::vec::Vec<ObjectId> =
+        ANIMATION_IDS.with(|slot| core::mem::take(&mut *slot.borrow_mut()));
+    candidates.clear();
+    ANIMATING.with(|set| candidates.extend(set.borrow().iter().copied()));
+    for id in candidates.iter().copied() {
+        // `with_widget_mut` detaches the control for its tick, which is the same contract the old
+        // `for_each_mounted_widget` sweep relied on, and records the resulting animation bit on
+        // the way out. A control that is no longer mounted (destroyed by a callback) is dropped
+        // from the registry here.
+        let outcome = with_widget_mut(id, |widget| {
+            if !widget.is_animating() {
+                return None;
             }
-            // Counted *after* the tick, matching the ledger's pre-refactor meaning: a control
-            // that settles on this frame is not reported as still ticking.
-            if widget.is_animating() {
-                ticked += 1;
+            let moving = widget.tick(delta_ms);
+            Some((moving, widget.is_animating()))
+        });
+        match outcome {
+            Some(Some((moving, still))) => {
+                // `tick` also reports "moving"; either answer keeps the frame coming, because a
+                // control can be mid-flight while its own `is_animating` is a coarser fact.
+                if moving || still {
+                    still_animating = true;
+                }
+                // Counted *after* the tick, matching the ledger's pre-refactor meaning: a control
+                // that settles on this frame is not reported as still ticking.
+                if still {
+                    ticked += 1;
+                }
+                // Submitted even on the settle frame, where `tick` has just placed the value at
+                // its target and both answers are now `false`. That frame is the one that paints
+                // the **finished** state; skipping it left the last drawn frame one step short —
+                // measured as a menu popup frozen at 70% of its height after the reveal had
+                // already settled in the model.
+                moved.push(id);
             }
-            // Submitted even on the settle frame, where `tick` has just placed the value at
-            // its target and both answers are now `false`. That frame is the one that paints
-            // the **finished** state; skipping it left the last drawn frame one step short —
-            // measured as a menu popup frozen at 70% of its height after the reveal had
-            // already settled in the model.
-            moved.push(id);
+            Some(None) => {
+                // The bit became false between the last observation and this sweep.
+            }
+            None => {
+                // Not mounted any more. A lent-out control (`is_mounted` still true) is refused
+                // rather than gone, so it keeps its bit for a later sweep.
+                if !is_mounted(id) {
+                    note_animating(id, false);
+                }
+            }
+        }
+    }
+    ANIMATION_IDS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        candidates.clear();
+        if candidates.capacity() > slot.capacity() {
+            *slot = candidates;
         }
     });
 
@@ -2464,9 +2594,16 @@ fn tick_animations_sweep(delta_ms: u32) -> (usize, bool) {
     // window tree. Submitting the repaint here — with the cause named — is what makes
     // `needs_another_frame` mean "another frame will be *drawn*", not just "another frame will
     // be computed".
-    for id in moved {
-        request_narrow_repaint(id, RepaintReason::Animation);
-    }
+    submit_animation_repaints(&moved);
+    // Return the buffer to its slot, keeping the larger of the two capacities so the next
+    // sweep does not have to grow it again.
+    ANIMATION_MOVED.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        moved.clear();
+        if moved.capacity() > slot.capacity() {
+            *slot = moved;
+        }
+    });
     flush_deferred_damage();
     // The latch is written **both ways**, and that is the whole point.
     //
@@ -2564,15 +2701,9 @@ fn animation_bus_needs_another_frame_given(mounted_animating: bool) -> bool {
 /// Whether any mounted control is currently animating.
 ///
 /// A host can ask this before deciding whether to enter a continuous-frame mode, without
-/// paying for the sweep [`tick_animations`] performs.
+/// paying for a full-tree walk: the answer is the animation registry's emptiness (G-06).
 pub fn has_animating_widgets() -> bool {
-    let mut animating = false;
-    for_each_mounted_widget(|_, widget| {
-        if widget.is_animating() {
-            animating = true;
-        }
-    });
-    animating
+    ANIMATING.try_with(|set| !set.borrow().is_empty()).unwrap_or(false)
 }
 
 /// Returns the geometry of a mounted widget, or `None` when it is not mounted.
@@ -2693,8 +2824,12 @@ pub fn with_widget_mut<R>(id: ObjectId, f: impl FnOnce(&mut dyn Widget) -> R) ->
         /* exclusive = */ true,
     );
     let result = f(mounted.widget.as_mut());
+    // Observe the animation bit while the control is still ours: a setter that started a fade
+    // registers the control here, before the next sweep looks for work (G-06).
+    let animating = mounted.widget.is_animating();
     drop(_lent);
     let destroyed = in_flight.finish();
+    note_animating(id, animating && !destroyed);
     if !destroyed {
         // Reinsert unless a callback replaced this id while `f` ran (the callback's own registration
         // wins); a tombstone means the callback destroyed it, so it must not come back.
@@ -3196,7 +3331,11 @@ pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
     // on an unwind, so the registry is consistent either way.
     guard.run(&mut mounted, event);
 
+    // An event handler is the main way an animation starts (hover, press, toggle), so the bit is
+    // observed here before the control is reinserted (G-06).
+    let animating = mounted.widget.is_animating();
     let destroyed = guard.finish();
+    note_animating(id, animating && !destroyed);
     if destroyed {
         // A handler unregistered this control. The authoritative cleanup (focus, hover, capture,
         // cached frame, own-id map) already ran inside `unregister`; only the owned widget remains,
@@ -3708,22 +3847,50 @@ pub(crate) fn flush_deferred_damage() {
     }
 }
 
-/// Submits a repaint for `id` bounded by its painted box, plus the same rectangle on the
-/// window that paints it.
+/// Submits the repaints for one animation sweep, aggregating by window.
 ///
-/// This is what the animation sweep uses per advanced control. It is a narrowing of
-/// [`request_repaint_subtree_because`]: the window is still told, because on a window-tree
-/// backend the window is what redraws the children, but it is told a rectangle instead of
-/// being asked to repaint everything.
-fn request_narrow_repaint(id: ObjectId, reason: RepaintReason) {
-    let Some(rect) = painted_box_with_damage_margin(id) else {
-        request_repaint_subtree_because(id, reason);
-        return;
-    };
-    request_repaint_rect_because(id, rect, reason);
-    if let Some(window) = top_level_window_of(id) {
-        request_repaint_rect_because(window, rect, reason);
+/// # What is per control and what is per window
+///
+/// Each advanced control keeps its own submission: a control can be a **mounted surface** with its
+/// own platform invalidation, and its per-widget damage is what an incremental render of that
+/// surface reads. What is hoisted is the *window* half. Every advanced control used to walk the
+/// parent chain a second time and submit the same rectangle to its window, so N controls in one
+/// window produced N identical window submissions and N layer invalidations. This unions their
+/// boxes first and tells the window once, which is the same pixels with one submission (G-07).
+///
+/// A windowless control still takes the normal path (it is its own target). A control whose box
+/// cannot be read falls back to the subtree request, exactly as before.
+fn submit_animation_repaints(moved: &[ObjectId]) {
+    let mut windows: alloc::vec::Vec<(ObjectId, Rect)> =
+        WINDOW_ANIMATION_DAMAGE.with(|slot| core::mem::take(&mut *slot.borrow_mut()));
+    windows.clear();
+    for &id in moved {
+        let Some(rect) = painted_box_with_damage_margin(id) else {
+            request_repaint_subtree_because(id, RepaintReason::Animation);
+            continue;
+        };
+        // The control's own rectangle, and its surface when it has one.
+        request_repaint_rect_because(id, rect, RepaintReason::Animation);
+        if let Some(window) = top_level_window_of(id) {
+            match windows.iter_mut().find(|(candidate, _)| *candidate == window) {
+                Some((_, union)) => {
+                    let merged = union.union(&rect);
+                    *union = merged;
+                }
+                None => windows.push((window, rect)),
+            }
+        }
     }
+    for &(window, rect) in &windows {
+        request_repaint_rect_because(window, rect, RepaintReason::Animation);
+    }
+    WINDOW_ANIMATION_DAMAGE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        windows.clear();
+        if windows.capacity() > slot.capacity() {
+            *slot = windows;
+        }
+    });
 }
 
 /// The rectangle to hand [`request_repaint_rect`] for `id`: its painted box grown by
@@ -5231,20 +5398,22 @@ pub fn render_frame_at_geometry(id: ObjectId, clear: crate::core::Color) -> Opti
 ///
 /// Only direct children are reordered: every popup control in this crate draws its list itself, so
 /// the popup is the direct child. Nested containers keep their own declaration order.
-fn ordered_root_children(children: Vec<ObjectId>) -> Vec<ObjectId> {
-    let mut ordinary = Vec::with_capacity(children.len());
+fn ordered_root_children(children: &mut Vec<ObjectId>) {
+    // Stable partition in place: ordinary children keep their order, then the overlays keep
+    // theirs. The previous implementation allocated two new vectors and copied every id, on every
+    // frame, just to move the few overlay children to the back (G-36).
     let mut overlays = Vec::new();
-    for child in children {
-        let overlay = read_widget(child, |widget| widget.is_visible() && widget.has_open_popup())
+    children.retain(|child| {
+        let overlay = read_widget(*child, |widget| widget.is_visible() && widget.has_open_popup())
             .unwrap_or(false);
         if overlay {
-            overlays.push(child);
+            overlays.push(*child);
+            false
         } else {
-            ordinary.push(child);
+            true
         }
-    }
-    ordinary.extend(overlays);
-    ordinary
+    });
+    children.extend(overlays);
 }
 
 /// Renders one frame of a widget **and its descendants**, returning RGBA bytes.
@@ -5297,10 +5466,11 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     // chrome, which the children then sit on top of. Its descendant clip and child list are
     // read in that same loan, so the root is not visited twice before the traversal starts.
     let mut root_clip = None;
-    let mut root_children = Vec::new();
+    let mut root_children = ROOT_CHILD_IDS.with(|slot| core::mem::take(&mut *slot.borrow_mut()));
+    root_children.clear();
     let mut painted = with_widget_mut(id, |widget| {
         root_clip = widget.children_clip();
-        root_children = widget.base().children().to_vec();
+        root_children.extend_from_slice(widget.base().children());
         let Some(drawable) = widget.as_draw_mut() else {
             return false;
         };
@@ -5327,9 +5497,12 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
         // carried rectangle a control's content would escape the viewport as soon as it scrolled.
         //
         // `SubtreeMetrics` is a per-frame memo: subtree bounds and the open-popup flag are each
-        // computed once per node, not once per ancestor that asks for them.
-        let mut metrics = HashMap::new();
-        for child in ordered_root_children(root_children) {
+        // computed once per node, not once per ancestor that asks for them. The table is taken from
+        // a thread-local slot and returned afterwards, so a static frame allocates none (G-36).
+        let mut metrics = TREE_METRICS.with(|slot| core::mem::take(&mut *slot.borrow_mut()));
+        metrics.clear();
+        ordered_root_children(&mut root_children);
+        for child in root_children.iter().copied() {
             // A node whose clip has no area cannot paint anything, and neither can its
             // descendants. Skipping the node skips the subtree, the same rule hiding uses.
             if root_clip.is_some_and(|rect| rect.width == 0 || rect.height == 0) {
@@ -5351,7 +5524,21 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
                 painted = true;
             }
         }
+        TREE_METRICS.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if metrics.capacity() > slot.capacity() {
+                metrics.clear();
+                *slot = metrics;
+            }
+        });
     }
+    ROOT_CHILD_IDS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if root_children.capacity() > slot.capacity() {
+            root_children.clear();
+            *slot = root_children;
+        }
+    });
 
     if !painted {
         return None;
@@ -5367,6 +5554,12 @@ struct SubtreeMetrics {
     bounds: Option<Rect>,
     /// Whether any visible node in the subtree paints an overlay outside its own rectangle.
     has_open_popup: bool,
+}
+
+// The per-frame subtree memo, reused across frames. `render_frame_tree` empties it at the start
+// and stores the grown buffer back at the end (G-36).
+thread_local! {
+    static TREE_METRICS: RefCell<HashMap<ObjectId, SubtreeMetrics>> = RefCell::new(HashMap::new());
 }
 
 /// The result of offering one widget subtree to the layer cache.
@@ -5508,11 +5701,12 @@ fn paint_widget_layer(
     // the frame origin. `end_frame` publishes the drawn back buffer as the frame to take.
     let layer_size = Size::new(bounds.width, bounds.height);
     let mut offscreen = SoftwarePaintBackend::new(layer_size, 1.0);
-    let mut children = Vec::new();
+    let mut children = take_paint_children();
     let mut child_clip = None;
     let mut self_drew = false;
     let rendered = with_widget_mut(id, |widget| {
-        children = widget.base().children().to_vec();
+        children.clear();
+        children.extend_from_slice(widget.base().children());
         child_clip = intersect_clip(clip, widget.children_clip());
         let Some(drawable) = widget.as_draw_mut() else {
             return;
@@ -5524,12 +5718,13 @@ fn paint_widget_layer(
         self_drew = true;
     });
     if rendered.is_none() {
+        return_paint_children(children);
         return LayerPaint { drew: false, cacheable: true };
     }
 
     let mut child_drew = false;
     let mut cacheable = true;
-    for child in children {
+    for &child in &children {
         let painted = paint_widget_layer(
             child,
             child_clip,
@@ -5545,6 +5740,7 @@ fn paint_widget_layer(
         child_drew |= painted.drew;
         cacheable &= painted.cacheable;
     }
+    return_paint_children(children);
     if !self_drew && !child_drew {
         return LayerPaint { drew: false, cacheable };
     }
@@ -5585,14 +5781,15 @@ fn paint_widget_direct(
     depth: u32,
     metrics: &mut HashMap<ObjectId, SubtreeMetrics>,
 ) -> LayerPaint {
-    let mut children = Vec::new();
+    let mut children = take_paint_children();
     let mut child_clip = None;
     let mut self_drew = false;
     let rendered = with_widget_mut(id, |widget| {
         if !widget.is_visible() {
             return;
         }
-        children = widget.base().children().to_vec();
+        children.clear();
+        children.extend_from_slice(widget.base().children());
         child_clip = intersect_clip(clip, widget.children_clip());
         let Some(drawable) = widget.as_draw_mut() else {
             return;
@@ -5610,10 +5807,11 @@ fn paint_widget_direct(
         self_drew = true;
     });
     if rendered.is_none() {
+        return_paint_children(children);
         return LayerPaint { drew: false, cacheable: false };
     }
     let mut child_drew = false;
-    for child in children {
+    for &child in &children {
         let painted = paint_widget_layer(
             child,
             child_clip,
@@ -5628,6 +5826,7 @@ fn paint_widget_direct(
         );
         child_drew |= painted.drew;
     }
+    return_paint_children(children);
     LayerPaint { drew: self_drew || child_drew, cacheable: false }
 }
 
@@ -5839,6 +6038,97 @@ mod tests {
         assert!(
             outcome.needs_another_frame,
             "a transition still in flight means the host must schedule another frame"
+        );
+    }
+
+    /// The animation registry is the one source of truth for the sweep and both counters (G-06).
+    #[test]
+    fn the_animation_registry_tracks_start_settle_and_destroy() {
+        let _serial = serialise_drive_frame();
+        let id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+        // A resting neighbour must not be in the registry, so it cannot be swept either.
+        let resting = register(Box::new(crate::widget::Label::new(
+            "rest".to_string(),
+            crate::core::Rect::new(0, 40, 80, 24),
+        )))
+        .expect("mount");
+        let _resting_unmount = MountGuard(resting);
+
+        let _ = drive_frame(0);
+        assert!(!has_animating_widgets(), "a fresh button rests");
+        assert_eq!(count_animating_widgets(), 0);
+
+        assert!(dispatch_event(id, &crate::event::Event::MouseEnter { pos: Point::new(5, 5) }));
+        assert!(has_animating_widgets(), "the hover registers the control at dispatch time");
+        assert_eq!(count_animating_widgets(), 1, "the resting label is not registered");
+
+        let mut frames = 0;
+        while has_animating_widgets() && frames < 120 {
+            let outcome = drive_frame(16);
+            // Only the registered control may be advanced.
+            assert!(outcome.controls_ticked <= count_animating_widgets().max(1));
+            frames += 1;
+        }
+        assert!(!has_animating_widgets(), "the transition settles on its own");
+        assert_eq!(count_animating_widgets(), 0);
+
+        // A destroyed control must not keep the registry (and the frame loop) alive.
+        assert!(dispatch_event(id, &crate::event::Event::MouseLeave { pos: Point::new(5, 5) }));
+        assert!(has_animating_widgets(), "leaving the control starts its fade out");
+        assert!(unregister(id));
+        assert!(!has_animating_widgets(), "unregister clears the animating bit");
+    }
+
+    /// Animation damage is unioned per window, so N controls in one window submit once (G-07).
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn animation_damage_is_unioned_per_window() {
+        let _serial = serialise_drive_frame();
+        let window = register(Box::new(crate::widget::Window::new(
+            "animation aggregation".to_string(),
+            crate::core::Rect::new(0, 0, 400, 300),
+        )))
+        .expect("mount");
+        let _window_unmount = MountGuard(window);
+        let left = register(Box::new(crate::widget::Button::new(
+            "a".to_string(),
+            crate::core::Rect::new(10, 10, 80, 32),
+        )))
+        .expect("mount");
+        let _left_unmount = MountGuard(left);
+        let right = register(Box::new(crate::widget::Button::new(
+            "b".to_string(),
+            crate::core::Rect::new(200, 150, 80, 32),
+        )))
+        .expect("mount");
+        let _right_unmount = MountGuard(right);
+        with_widget_mut(window, |widget| {
+            widget.base_mut().add_child_linked(left);
+            widget.base_mut().add_child_linked(right);
+        });
+
+        let _ = drive_frame(0);
+        // Start from a clean tracker: mounting and linking may have recorded damage.
+        assert!(set_repaint_mode(window, RepaintMode::Full));
+        assert!(set_repaint_mode(window, RepaintMode::Dirty));
+        assert!(dispatch_event(left, &crate::event::Event::MouseEnter { pos: Point::new(15, 15) }));
+        assert!(dispatch_event(
+            right,
+            &crate::event::Event::MouseEnter { pos: Point::new(205, 155) }
+        ));
+        let _ = drive_frame(16);
+
+        let damage = dirty_rects(window);
+        assert_eq!(damage.len(), 1, "two moving children union into one window region: {damage:?}");
+        let union = damage[0];
+        assert!(
+            union.contains_point(Point::new(10, 10)) && union.contains_point(Point::new(279, 181)),
+            "the union must cover both controls: {union:?}"
         );
     }
 

@@ -106,6 +106,48 @@ impl std::fmt::Display for ChartType {
     }
 }
 
+/// Which edge of a plot an attached axis sits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisEdge {
+    /// The left edge (the usual Y axis).
+    Left,
+    /// The right edge (a secondary Y axis).
+    Right,
+    /// The top edge.
+    Top,
+    /// The bottom edge (the usual X axis).
+    Bottom,
+}
+
+/// A secondary axis attached to a chart's plot.
+///
+/// An axis carries its own label and an optional explicit range. Without a range it
+/// follows the chart's auto-computed range, which is what a caller that only wants a
+/// second label expects.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Axis {
+    /// The axis caption.
+    pub label: String,
+    /// An explicit lower bound, or `None` to follow the chart's range.
+    pub minimum: Option<f64>,
+    /// An explicit upper bound, or `None` to follow the chart's range.
+    pub maximum: Option<f64>,
+}
+
+impl Axis {
+    /// Creates an axis with no explicit range.
+    pub fn new(label: impl Into<String>) -> Self {
+        Self { label: label.into(), minimum: None, maximum: None }
+    }
+
+    /// Sets an explicit range.
+    pub fn with_range(mut self, minimum: f64, maximum: f64) -> Self {
+        self.minimum = Some(minimum);
+        self.maximum = Some(maximum);
+        self
+    }
+}
+
 /// Chart
 pub trait Chart {
     /// Add a series
@@ -120,6 +162,21 @@ pub trait Chart {
     fn set_x_axis_label(&mut self, label: String);
     /// Set y-axis label
     fn set_y_axis_label(&mut self, label: String);
+    /// Zooms to a data-space rectangle `(x, y, width, height)`.
+    ///
+    /// Returns whether the renderer accepted the window. The default answers `false`: a
+    /// renderer without a cartesian window (a pie chart) has no meaningful rectangle to zoom
+    /// into, and reporting success there would be the "wire that never fires" this crate
+    /// treats as a defect.
+    fn zoom_in(&mut self, _rect: Rect) -> bool {
+        false
+    }
+    /// Restores the auto-computed range after a zoom.
+    fn zoom_reset(&mut self) {}
+    /// Pans a zoomed window by `(dx, dy)` data units.
+    fn scroll(&mut self, _dx: f64, _dy: f64) {}
+    /// Attaches a secondary axis to one edge of the plot.
+    fn attach_axis(&mut self, _axis: Axis, _edge: AxisEdge) {}
     /// Draw the chart
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext);
 }

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 use super::{
-    canonicalize_shortcut_type, normalize_shortcut, Action, ActionBinding, ActionHostKind,
+    canonicalize_shortcut_type, normalize_shortcut, Action, ActionBinding, ActionDefinition,
+    ActionHostKind,
 };
 use crate::compat::{HashMap, String, Vec};
 use crate::core::ObjectId;
@@ -145,6 +146,54 @@ impl ActionManager {
     pub fn trigger_action(&mut self, action_id: &str) -> bool {
         self.actions.get_mut(action_id).map(|action| action.trigger()).unwrap_or(false)
     }
+    /// Returns every registered action id, in map order.
+    ///
+    /// A host building a menu or toolbar asks the registry what commands exist instead of
+    /// keeping a second list; that is what makes `bind_action_to_*` the one attachment path.
+    pub fn action_ids(&self) -> Vec<&String> {
+        self.actions.keys().collect()
+    }
+
+    /// The canonical chord currently bound to `action_id`, if any.
+    pub fn shortcut_for_action(&self, action_id: &str) -> Option<&String> {
+        self.shortcut_to_action
+            .iter()
+            .find(|(_, bound)| bound.as_str() == action_id)
+            .map(|(chord, _)| chord)
+    }
+
+    /// Exports one command together with the chord the registry holds for it.
+    pub fn action_definition(&self, action_id: &str) -> Option<ActionDefinition> {
+        let action = self.actions.get(action_id)?;
+        let mut definition = ActionDefinition::from_action(action);
+        definition.shortcut = self.shortcut_for_action(action_id).cloned().unwrap_or_default();
+        Some(definition)
+    }
+
+    /// Registers a serialized command, including its chord and flags.
+    ///
+    /// This is the inverse of [`Self::action_definition`], so a document's `actions` section can
+    /// rebuild the same registry state that produced it.
+    pub fn register_definition(&mut self, definition: &ActionDefinition) -> bool {
+        if !self.register_action(definition.id.clone(), definition.text.clone()) {
+            return false;
+        }
+        if let Some(action) = self.actions.get_mut(&definition.id) {
+            action.set_enabled(definition.enabled);
+            action.set_checkable(definition.checkable);
+            if definition.checkable {
+                action.set_checked(definition.checked);
+            }
+        }
+        if !definition.shortcut.is_empty()
+            && !self.bind_shortcut(definition.shortcut.clone(), definition.id.clone())
+        {
+            self.unregister_action(&definition.id);
+            return false;
+        }
+        true
+    }
+
     /// Binds an action to a menu host.
     pub fn bind_action_to_menu(&mut self, action_id: impl Into<String>, menu_id: ObjectId) -> bool {
         self.bind_action(action_id.into(), menu_id, ActionHostKind::Menu)

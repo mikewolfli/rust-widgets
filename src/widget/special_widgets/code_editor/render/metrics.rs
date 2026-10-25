@@ -136,7 +136,20 @@ impl CodeEditor {
     /// straight column beside the source, and the fold affordance sits between
     /// them and the text rather than pushing the numbers around.
     pub fn gutter_width(&self) -> i32 {
-        GUTTER_LEFT_PAD + self.line_number_slot() + self.fold_marker_width() + GUTTER_RIGHT_PAD
+        GUTTER_LEFT_PAD
+            + self.breakpoint_slot()
+            + self.line_number_slot()
+            + self.fold_marker_width()
+            + GUTTER_RIGHT_PAD
+    }
+
+    /// Width reserved for breakpoint marks, or `0` when the column is hidden.
+    pub(crate) fn breakpoint_slot(&self) -> i32 {
+        if self.breakpoint_gutter {
+            10
+        } else {
+            0
+        }
     }
 
     /// Width of the line-number column, or `0` when numbers are hidden.
@@ -161,7 +174,7 @@ impl CodeEditor {
     /// Shared by the painter and the hit-test, so the `v` a user sees is the `v`
     /// a click must land on.
     pub(crate) fn fold_marker_offset(&self) -> i32 {
-        GUTTER_LEFT_PAD + self.line_number_slot() + 2
+        GUTTER_LEFT_PAD + self.breakpoint_slot() + self.line_number_slot() + 2
     }
 
     /// Returns the minimap width, or 0 when disabled.

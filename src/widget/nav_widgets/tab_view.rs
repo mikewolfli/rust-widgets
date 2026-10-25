@@ -56,6 +56,10 @@ pub struct TabView {
     movable: bool,
     /// An in-flight strip drag: `(origin_x, tab_index)`.
     drag: Option<(f32, usize)>,
+    /// Where a drag would insert the tab, for the painted insertion preview.
+    drag_preview: Option<usize>,
+    /// Whether Ctrl+PageUp/PageDown and Ctrl+Tab cycle the tabs.
+    keyboard_navigation_enabled: bool,
     /// Whether the strip scrolls instead of squeezing its tabs.
     scrollable_strip: bool,
     /// The strip's horizontal scroll offset, in pixels, when scrolling is enabled.
@@ -100,6 +104,8 @@ impl TabView {
             closable: false,
             movable: false,
             drag: None,
+            drag_preview: None,
+            keyboard_navigation_enabled: true,
             scrollable_strip: false,
             strip_offset: 0,
             swipe: None,
@@ -235,9 +241,33 @@ impl TabView {
             self.selected_index = clamped;
             self.indicator.jump_to(fraction);
             self.indicator.set_target(1.0);
+            self.reveal_tab_in_strip(clamped);
             self.tab_changed.emit(clamped);
             self.base.request_redraw();
         }
+    }
+
+    /// Scrolls a scrollable strip so `index` is inside its band.
+    fn reveal_tab_in_strip(&mut self, index: usize) {
+        if !self.scrollable_strip {
+            return;
+        }
+        let strip = self.tab_bar_rect();
+        let run = self.tab_run(strip);
+        let Some(tab) = run.get(index) else { return };
+        let left = tab.x - strip.x;
+        let right = left + tab.width as i32;
+        let current = self.strip_offset;
+        let next = if left < current {
+            left
+        } else if right > current + strip.width as i32 {
+            right - strip.width as i32
+        } else {
+            return;
+        };
+        let content_width: i32 = run.iter().map(|rect| rect.width as i32 + TAB_SPACING).sum();
+        let max_offset = (content_width - strip.width as i32).max(0);
+        self.strip_offset = next.clamp(0, max_offset);
     }
 
     /// The tab index the selection indicator is currently drawn at, as a fractional value.
@@ -285,7 +315,58 @@ impl TabView {
             return;
         }
         self.movable = movable;
+        if !movable {
+            self.drag = None;
+        }
         self.base.request_redraw();
+    }
+
+    /// Whether keyboard navigation between tabs is enabled.
+    pub fn keyboard_navigation_enabled(&self) -> bool {
+        self.keyboard_navigation_enabled
+    }
+
+    /// Enables or disables keyboard navigation between tabs.
+    pub fn set_keyboard_navigation_enabled(&mut self, enabled: bool) {
+        self.keyboard_navigation_enabled = enabled;
+    }
+
+    /// The insertion slot a drag is currently previewing, when one is in flight.
+    pub fn drag_preview(&self) -> Option<usize> {
+        self.drag_preview
+    }
+
+    /// The insertion slot `pos` names while a tab is being dragged.
+    ///
+    /// A point past a tab's midpoint inserts after it, which is what makes a drop at the end of
+    /// the strip reachable; a point before it inserts before that tab.
+    fn drag_insertion_at(&self, pos: Point) -> Option<usize> {
+        let run = self.visible_tab_run(self.tab_bar_rect());
+        if run.is_empty() {
+            return None;
+        }
+        for (index, box_rect) in run.iter().enumerate() {
+            if pos.x < box_rect.x + box_rect.width as i32 / 2 {
+                return Some(index);
+            }
+            if pos.x < box_rect.x + box_rect.width as i32 {
+                return Some(index + 1);
+            }
+        }
+        Some(run.len())
+    }
+
+    /// The x coordinate of insertion slot `index` in the painted strip.
+    fn insertion_x(&self, index: usize) -> Option<i32> {
+        let run = self.visible_tab_run(self.tab_bar_rect());
+        if run.is_empty() {
+            return None;
+        }
+        if index >= run.len() {
+            let last = run.last()?;
+            return Some(last.x + last.width as i32);
+        }
+        Some(run[index].x)
     }
 
     /// Moves the tab at `from` to `to`, keeping the same tab selected.
@@ -634,6 +715,9 @@ impl WidgetProperties for TabView {
             "selected_index" => {
                 Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64))
             }
+            "keyboard_navigation_enabled" => {
+                Ok(CapabilityValue::Bool(self.keyboard_navigation_enabled()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -646,12 +730,25 @@ impl WidgetProperties for TabView {
             }
             // Derived from the tab list.
             "tab_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "keyboard_navigation_enabled" => {
+                let enabled = match value {
+                    CapabilityValue::Bool(enabled) => enabled,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_keyboard_navigation_enabled(enabled);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["tab_count", "selected_index", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "tab_count",
+            "selected_index",
+            "keyboard_navigation_enabled",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -837,6 +934,17 @@ impl Draw for TabView {
                 );
             }
         }
+        // A drag shows where the tab would land before the user commits the drop. Without it the
+        // only feedback was the reorder happening on release, which reads as a mis-drop when the
+        // target was not the one intended.
+        if let Some(preview) = self.drag_preview {
+            if let Some(x) = self.insertion_x(preview) {
+                context.fill_rect(
+                    Rect::new(x.saturating_sub(1), strip.y + 4, 2, strip.height.saturating_sub(8)),
+                    indicator,
+                );
+            }
+        }
         if self.scrollable_strip {
             context.pop_clip();
         }
@@ -930,6 +1038,7 @@ impl EventHandler for TabView {
                         }
                         if self.movable {
                             self.drag = Some((pos.x as f32, index));
+                            self.drag_preview = Some(index);
                         }
                         self.set_current_index(index);
                         return;
@@ -941,7 +1050,16 @@ impl EventHandler for TabView {
             }
             Event::MouseMove { pos } => {
                 self.forward_to_content(event);
-                let _ = pos;
+                // While a tab is dragged, the strip paints an insertion marker at the slot the
+                // pointer names. The preview is cleared on release, so a settled frame is
+                // byte-identical to the pre-drag one.
+                if self.drag.is_some() {
+                    let preview = self.drag_insertion_at(*pos);
+                    if preview != self.drag_preview {
+                        self.drag_preview = preview;
+                        self.base.request_redraw();
+                    }
+                }
             }
             Event::MouseRelease { pos, button } => {
                 if *button == 1 {
@@ -959,6 +1077,7 @@ impl EventHandler for TabView {
                         return;
                     }
                     if let Some((origin, index)) = self.drag.take() {
+                        self.drag_preview = None;
                         let strip = self.tab_bar_rect();
                         let target = self.visible_tab_run(strip).into_iter().position(|box_rect| {
                             pos.x >= box_rect.x
@@ -996,7 +1115,10 @@ impl EventHandler for TabView {
                 self.forward_to_content(event);
             }
             Event::Wheel { delta, .. } => {
-                if self.scrollable_strip && delta.x != 0 {
+                // A vertical wheel is the common case, so it falls back to `delta.y` rather than
+                // being ignored just because a mouse has no horizontal axis.
+                let scrolled = if delta.x != 0 { delta.x } else { delta.y };
+                if self.scrollable_strip && scrolled != 0 {
                     let strip = self.tab_bar_rect();
                     let content_width: i32 = self
                         .visible_tab_run(strip)
@@ -1004,11 +1126,49 @@ impl EventHandler for TabView {
                         .map(|tab| tab.width as i32 + TAB_SPACING)
                         .sum();
                     let max_offset = (content_width - strip.width as i32).max(0);
-                    self.strip_offset = (self.strip_offset - delta.x * 24).clamp(0, max_offset);
+                    self.strip_offset = (self.strip_offset - scrolled * 24).clamp(0, max_offset);
                     self.base.request_redraw();
                     return;
                 }
                 self.base.handle_event(event);
+            }
+            // Keyboard switching: Ctrl+PageDown/PageUp and Ctrl+Tab / Ctrl+Shift+Tab cycle the
+            // tabs, wrapping at the ends the way a tab strip does. The gate is focus, so a
+            // TabView in a window that is not using it does not steal these accelerators.
+            Event::KeyPress { key, modifiers }
+                if self.base.focus_reason().is_some() && self.keyboard_navigation_enabled =>
+            {
+                use crate::shortcut::Modifiers;
+                let mods = Modifiers::from_event_bits(*modifiers);
+                let ctrl = mods.contains(Modifiers::CTRL) || mods.contains(Modifiers::PRIMARY);
+                if ctrl && self.tabs.len() > 1 {
+                    let shift = mods.contains(Modifiers::SHIFT);
+                    let forward = match *key {
+                        crate::event::key_codes::PAGE_DOWN => true,
+                        crate::event::key_codes::PAGE_UP => false,
+                        // Ctrl+Tab advances and Ctrl+Shift+Tab retreats, the convention every
+                        // tabbed editor uses.
+                        crate::event::key_codes::TAB => !shift,
+                        crate::event::key_codes::HOME => {
+                            self.set_current_index(0);
+                            return;
+                        }
+                        crate::event::key_codes::END => {
+                            self.set_current_index(self.tabs.len() - 1);
+                            return;
+                        }
+                        _ => {
+                            self.base.handle_event(event);
+                            return;
+                        }
+                    };
+                    let next = if forward {
+                        (self.selected_index + 1) % self.tabs.len()
+                    } else {
+                        (self.selected_index + self.tabs.len() - 1) % self.tabs.len()
+                    };
+                    self.set_current_index(next);
+                }
             }
             _ => {
                 self.base.handle_event(event);

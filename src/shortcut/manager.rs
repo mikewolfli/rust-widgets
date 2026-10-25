@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::{Key, Modifiers, PlatformShortcutStyle, Shortcut, ShortcutEntry};
-use crate::compat::{HashMap, String, Vec};
+use crate::compat::{format, HashMap, String, Vec};
 use crate::event::Event;
 use crate::signal::Signal1;
 /// Global shortcut manager for registering and dispatching shortcuts.
@@ -95,46 +95,74 @@ impl ShortcutManager {
     /// deliberately left alone on macOS: there Command and Control are different
     /// keys, and collapsing them would fire `⌘C` for a `Control+C` binding.
     pub fn handle_key_event(&mut self, key: Key, modifiers: Modifiers) -> bool {
-        let Some(action_id) = self.lookup(key, modifiers) else {
+        let Some(action_id) = self.action_for_key(key, modifiers) else {
             return false;
         };
-        let Some(entry) = self.entries.get(&action_id) else {
-            return false;
-        };
-        if !entry.enabled {
-            return false;
-        }
         self.shortcut_triggered.emit(action_id);
         true
     }
 
-    /// Resolves the action registered for a key press, applying the matching
-    /// rule documented on [`ShortcutManager::handle_key_event`].
-    fn lookup(&self, key: Key, modifiers: Modifiers) -> Option<String> {
-        // Ask the backend which convention this host uses, rather than testing
-        // `target_os` here (principles #35/#36/#37). The question is about
-        // *behaviour on the host that is running*, not about which OS this was
-        // compiled for — a macOS-style replay on a Linux CI host must resolve the
-        // way the backend says, and a new platform must not have to edit a list
-        // of OS names in this file.
+    /// Resolves the action registered for a key press.
+    ///
+    /// This is the public query the rest of the crate uses instead of re-implementing the
+    /// platform modifier rule. `None` means no **enabled** action owns this chord; a disabled
+    /// entry is deliberately indistinguishable from an absent one, because dispatching either
+    /// would be wrong.
+    pub fn action_for_key(&self, key: Key, modifiers: Modifiers) -> Option<String> {
+        let action_id = self.lookup(key, modifiers)?;
+        let entry = self.entries.get(&action_id)?;
+        entry.enabled.then_some(action_id)
+    }
+
+    /// Whether a typed binding matches a key press, using the same rule as [`Self::lookup`].
+    ///
+    /// # Why this is the single decision point
+    ///
+    /// Three callers need the answer — the global registry, a menu item's registered binding,
+    /// and a standalone `Action` widget — and they used to each carry a copy of the platform
+    /// normalisation. Copies drift, so a binding could fire on one path and not another. This
+    /// function is the one implementation; the others delegate to it.
+    pub fn matches_binding(shortcut: &Shortcut, key: Key, modifiers: Modifiers) -> bool {
+        if shortcut.key != key {
+            return false;
+        }
         let style = crate::platform::platform_facts().shortcut_style();
         let normalized = Self::normalize_event_modifiers(modifiers, style);
-        if let Some(action_id) = self.shortcuts.get(&Shortcut::new(key, normalized)) {
-            return Some(action_id.clone());
+        if shortcut.modifiers == normalized {
+            return true;
         }
-        // Windows/Linux: the OS shortcut convention is Control, so a
-        // `Shortcut::primary` binding resolves against a Control press there.
-        if style == PlatformShortcutStyle::Desktop
+        // Windows/Linux: Control is the platform accelerator, so a `primary` binding answers
+        // to a Control press. This is the same lift `lookup` applies to the registry key.
+        style == PlatformShortcutStyle::Desktop
             && normalized.contains(Modifiers::CTRL)
             && !normalized.contains(Modifiers::PRIMARY)
-        {
-            let as_primary =
-                Shortcut::new(key, normalized.without(Modifiers::CTRL) | Modifiers::PRIMARY);
-            if let Some(action_id) = self.shortcuts.get(&as_primary) {
-                return Some(action_id.clone());
-            }
-        }
-        None
+            && shortcut.modifiers == normalized.without(Modifiers::CTRL) | Modifiers::PRIMARY
+    }
+
+    /// Dispatches a key press through the registry, returning the action id that fired.
+    ///
+    /// This is the host entry point shared by `Action` widgets and native menu items: a host
+    /// calls it once per key press and routes the returned id to [`crate::action::ActionManager`].
+    /// Keeping it here means conflict detection and matching see every binding, including the
+    /// menu accelerators that used to be handled only inside the menu code.
+    pub fn dispatch_shortcut(&mut self, key: Key, modifiers: Modifiers) -> Option<String> {
+        let action_id = self.action_for_key(key, modifiers)?;
+        self.shortcut_triggered.emit(action_id.clone());
+        Some(action_id)
+    }
+
+    /// Resolves the action registered for a key press, applying the matching
+    /// rule documented on [`ShortcutManager::matches_binding`].
+    ///
+    /// The lookup is a linear scan over the entries **on purpose**: the hash map is still the
+    /// reverse index (`get_action`), but a second matching path would be a second rule. Every
+    /// entry is judged by the one function, so registry dispatch and an unregistered widget
+    /// action cannot disagree about a chord.
+    fn lookup(&self, key: Key, modifiers: Modifiers) -> Option<String> {
+        self.entries
+            .values()
+            .find(|entry| Self::matches_binding(&entry.shortcut, key, modifiers))
+            .map(|entry| entry.action_id.clone())
     }
 
     /// Removes the Control bit that macOS reports alongside Command.
@@ -221,3 +249,68 @@ impl ShortcutManager {
     }
 }
 crate::impl_default_via_new!(ShortcutManager);
+
+impl Shortcut {
+    /// Serializes this binding as a stable, single-key JSON object.
+    ///
+    /// The value is the same canonical spelling [`Shortcut::format_shortcut`] produces, which
+    /// [`Shortcut::from_string`] parses back. A stable single field is enough because a shortcut
+    /// has exactly one fact; the field name is the versioning seam, not a second schema.
+    pub fn to_json(&self) -> String {
+        format!("{{\"shortcut\":\"{}\"}}", json_escape(&self.format_shortcut()))
+    }
+
+    /// Reads the binding written by [`Shortcut::to_json`].
+    ///
+    /// Unknown keys are ignored (an older reader must not fail on a newer document), but a
+    /// missing or unparsable `shortcut` is an error rather than a silently empty binding.
+    pub fn from_json(text: &str) -> Result<Self, String> {
+        let spelling = json_string_field(text, "shortcut")
+            .ok_or_else(|| String::from("shortcut JSON has no `shortcut` string field"))?;
+        Self::from_string(&spelling)
+            .ok_or_else(|| format!("`{spelling}` is not a shortcut this build understands"))
+    }
+}
+
+/// Escapes the four characters a JSON string may not carry raw.
+fn json_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Reads one flat string field from a single-level JSON object.
+///
+/// Deliberately small: the caller's schema is flat and versioned by field name, so a full JSON
+/// parser would be more machinery than the one fact being read.
+fn json_string_field(text: &str, field: &str) -> Option<String> {
+    let key = format!("\"{}\"", field);
+    let start = text.find(&key)? + key.len();
+    let rest = &text[start..];
+    let colon = rest.find(':')? + 1;
+    let after_colon = rest[colon..].trim_start();
+    let mut chars = after_colon.strip_prefix('"')?.chars();
+    let mut out = String::new();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                other => out.push(other),
+            },
+            other => out.push(other),
+        }
+    }
+    None
+}

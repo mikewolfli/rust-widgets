@@ -71,13 +71,31 @@ pub struct WizardField {
 }
 
 /// One action in the navigation row.
+///
+/// Public so [`WizardDialog::set_button_text`] / [`WizardDialog::button_text`] can name the
+/// action whose label a caller wants to replace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NavAction {
+pub enum NavAction {
+    /// The Cancel action.
     Cancel,
+    /// The Back action.
     Back,
+    /// Next, or Finish when the current step is the last.
     Next,
+    /// The Help action.
     Help,
+    /// The caller-added action at this index.
     Custom(usize),
+}
+
+/// How the wizard presents its steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WizardStyle {
+    /// The original top strip of numbered circles.
+    #[default]
+    TopStrip,
+    /// A clickable list of step titles down the left side.
+    Sidebar,
 }
 
 /// A single step in the wizard.
@@ -122,6 +140,14 @@ pub struct WizardDialog {
     banner_color: Option<Color>,
     /// Optional tint for the content well.
     watermark_color: Option<Color>,
+    /// An optional picture painted in the content well behind the step heading.
+    watermark_pixmap: Option<crate::image::Image>,
+    /// How the steps are presented.
+    style: WizardStyle,
+    /// Per-action label overrides; an absent action keeps its localised default.
+    button_texts: Vec<(NavAction, String)>,
+    /// Emitted when the user activates a step in the sidebar.
+    pub sidebar_page_activated: Signal1<usize>,
     /// Emitted when the user clicks Finish on the last step.
     pub finished: GenericSignal,
     /// Emitted when the user clicks Cancel (or presses Escape).
@@ -162,6 +188,10 @@ impl WizardDialog {
             subtitle: String::new(),
             banner_color: None,
             watermark_color: None,
+            watermark_pixmap: None,
+            style: WizardStyle::TopStrip,
+            button_texts: Vec::new(),
+            sidebar_page_activated: Signal1::new(),
             finished: GenericSignal::new(),
             cancelled: GenericSignal::new(),
             step_changed: Signal1::new(),
@@ -343,6 +373,90 @@ impl WizardDialog {
         }
         self.watermark_color = color;
         self.base.request_redraw();
+    }
+
+    /// The picture painted in the content well, if one was installed.
+    pub fn watermark_pixmap(&self) -> Option<&crate::image::Image> {
+        self.watermark_pixmap.as_ref()
+    }
+
+    /// Installs the content-well watermark picture and repaints.
+    ///
+    /// The picture is fitted inside the content well preserving its aspect ratio, so a caller
+    /// does not have to know the wizard's current size. It is painted behind the heading, which
+    /// keeps the step title readable over it.
+    pub fn set_watermark_pixmap(&mut self, pixmap: crate::image::Image) {
+        if self
+            .watermark_pixmap
+            .as_ref()
+            .is_some_and(|current| current.rgba8_data() == pixmap.rgba8_data())
+        {
+            return;
+        }
+        self.watermark_pixmap = Some(pixmap);
+        self.base.request_redraw();
+    }
+
+    /// Removes the watermark picture; `None` restores the plain content well.
+    pub fn clear_watermark_pixmap(&mut self) {
+        if self.watermark_pixmap.is_none() {
+            return;
+        }
+        self.watermark_pixmap = None;
+        self.base.request_redraw();
+    }
+
+    /// How the steps are presented.
+    pub fn wizard_style(&self) -> WizardStyle {
+        self.style
+    }
+
+    /// Selects the top-strip or sidebar presentation and repaints when it changes.
+    pub fn set_style(&mut self, style: WizardStyle) {
+        if self.style == style {
+            return;
+        }
+        self.style = style;
+        self.base.request_redraw();
+    }
+
+    /// Whether the clickable sidebar of step titles is shown.
+    pub fn is_sidebar_visible(&self) -> bool {
+        self.style == WizardStyle::Sidebar
+    }
+
+    /// Shows or hides the sidebar.
+    ///
+    /// This is the boolean spelling of [`WizardDialog::set_style`]: one field decides the
+    /// presentation, so the two setters can never disagree about which one is in effect.
+    pub fn set_sidebar_visible(&mut self, visible: bool) {
+        self.set_style(if visible { WizardStyle::Sidebar } else { WizardStyle::TopStrip });
+    }
+
+    /// Replaces the label a navigation action paints.
+    ///
+    /// An empty string removes the override and restores the localised default. Custom actions
+    /// can be renamed the same way, by their index.
+    pub fn set_button_text(&mut self, action: NavAction, text: impl Into<String>) {
+        let text = text.into();
+        if text.is_empty() {
+            self.button_texts.retain(|(candidate, _)| *candidate != action);
+        } else if let Some((_, current)) =
+            self.button_texts.iter_mut().find(|(candidate, _)| *candidate == action)
+        {
+            if *current == text {
+                return;
+            }
+            *current = text;
+        } else {
+            self.button_texts.push((action, text));
+        }
+        self.base.request_redraw();
+    }
+
+    /// The label `action` paints: the caller's override or the localised default.
+    pub fn button_text(&self, action: NavAction) -> String {
+        self.label_of_action(action)
     }
 
     /// Adds a custom action to the navigation row and returns its index.
@@ -529,6 +643,49 @@ impl WizardDialog {
     /// Widest a navigation button may become, so three of them stay distinguishable.
     const NAV_MAX_BUTTON_WIDTH: u32 = 80;
 
+    /// Widest the sidebar may become, in logical pixels.
+    const SIDEBAR_MAX_WIDTH: u32 = 140;
+    /// Height of one sidebar step row.
+    const SIDEBAR_ROW_HEIGHT: i32 = 34;
+
+    /// The sidebar's width: zero when the top strip is in effect.
+    fn sidebar_width(&self, rect: Rect) -> u32 {
+        if self.style == WizardStyle::Sidebar && !self.steps.is_empty() {
+            Self::SIDEBAR_MAX_WIDTH.min(rect.width / 3)
+        } else {
+            0
+        }
+    }
+
+    /// The sidebar rectangle, when the sidebar presentation is in effect.
+    fn sidebar_rect(&self, rect: Rect) -> Option<Rect> {
+        let width = self.sidebar_width(rect);
+        (width > 0).then(|| Rect::new(rect.x, rect.y, width, rect.height))
+    }
+
+    /// The band the navigation row may occupy: the frame less the sidebar.
+    fn nav_area(&self, rect: Rect) -> Rect {
+        let width = self.sidebar_width(rect);
+        Rect::new(rect.x + width as i32, rect.y, rect.width.saturating_sub(width), rect.height)
+    }
+
+    /// The step whose sidebar row contains `pos`.
+    fn sidebar_row_at(&self, pos: Point) -> Option<usize> {
+        let rect = self.sidebar_rect(self.geometry())?;
+        if !rect.contains_point(pos) {
+            return None;
+        }
+        let top = rect.y + 8;
+        if pos.y < top {
+            return None;
+        }
+        let index = ((pos.y - top) / Self::SIDEBAR_ROW_HEIGHT) as usize;
+        let row_y = top + index as i32 * Self::SIDEBAR_ROW_HEIGHT;
+        (index < self.steps.len()
+            && row_y + Self::SIDEBAR_ROW_HEIGHT <= rect.y + rect.height as i32)
+            .then_some(index)
+    }
+
     /// The three navigation buttons, in visual order: `[Cancel, Back, Next]`.
     ///
     /// # Why this is one function rather than two
@@ -573,7 +730,8 @@ impl WizardDialog {
     /// The same rectangles are painted and hit-tested, so the press, the release and the
     /// picture all agree about which button is under the pointer.
     fn nav_button_at(&self, pos: Point) -> Option<NavAction> {
-        self.nav_slots(self.geometry())
+        let rect = self.nav_area(self.geometry());
+        self.nav_slots(rect)
             .into_iter()
             .find(|(_, rect)| rect.contains_point(pos))
             .map(|(action, _)| action)
@@ -661,20 +819,32 @@ impl WizardDialog {
     }
 
     /// The label a navigation action paints.
-    fn label_of_action(&self, action: NavAction) -> &str {
+    ///
+    /// A caller override wins; otherwise the label goes through the same
+    /// [`localized_label`](super::localized_label) resolution every other dialog uses, so the
+    /// wizard is no longer the one dialog whose buttons ignore the catalogue.
+    fn label_of_action(&self, action: NavAction) -> String {
+        if let Some((_, text)) =
+            self.button_texts.iter().find(|(candidate, _)| *candidate == action)
+        {
+            return text.clone();
+        }
         match action {
-            NavAction::Cancel => "Cancel",
-            NavAction::Back => "Back",
-            NavAction::Next if self.is_last() => "Finish",
-            NavAction::Next => "Next",
-            NavAction::Help => "Help",
-            NavAction::Custom(index) => self.custom_buttons.get(index).map_or("", String::as_str),
+            NavAction::Cancel => super::localized_label("common.button.cancel", "Cancel"),
+            NavAction::Back => super::localized_label("dialog.wizard.back", "Back"),
+            NavAction::Next if self.is_last() => {
+                super::localized_label("dialog.wizard.finish", "Finish")
+            }
+            NavAction::Next => super::localized_label("dialog.wizard.next", "Next"),
+            NavAction::Help => super::localized_label("dialog.wizard.help", "Help"),
+            NavAction::Custom(index) => self.custom_buttons.get(index).cloned().unwrap_or_default(),
         }
     }
 
     /// Moves the keyboard focus across the actions that are actually present.
     fn move_focus(&mut self, forward: bool) {
-        let slots = self.nav_slots(self.geometry());
+        let rect = self.nav_area(self.geometry());
+        let slots = self.nav_slots(rect);
         if slots.is_empty() {
             return;
         }
@@ -752,6 +922,11 @@ impl Widget for WizardDialog {
             "custom_button_clicked" => Some(EventSignalRef::mapped(
                 "custom_button_clicked",
                 &self.custom_button_clicked,
+                |v| CapabilityValue::UInt(*v as u64),
+            )),
+            "sidebar_page_activated" => Some(EventSignalRef::mapped(
+                "sidebar_page_activated",
+                &self.sidebar_page_activated,
                 |v| CapabilityValue::UInt(*v as u64),
             )),
             _ => None,
@@ -932,7 +1107,12 @@ impl Draw for WizardDialog {
         // so the content band is what shrinks; and when the frame itself is shorter than the
         // chrome, only the indicator is drawn, because a truncated step indicator still
         // reads as a wizard while an overlapping button row does not.
-        let step_indicator_height = Self::STEP_INDICATOR_HEIGHT;
+        // The sidebar presentation replaces the numbered strip with a clickable list down the
+        // left side. Selecting it zeroes the strip's height so the content well starts at the
+        // frame's top edge on that side; the top-strip presentation keeps the audited layout.
+        let sidebar = self.sidebar_rect(rect);
+        let sidebar_width = sidebar.map_or(0, |band| band.width);
+        let step_indicator_height = if sidebar.is_some() { 0 } else { Self::STEP_INDICATOR_HEIGHT };
         let nav_button_height = Self::NAV_BUTTON_HEIGHT;
         let nav_area_height = nav_button_height + 12; // 12 padding
         let chrome_height = step_indicator_height + nav_area_height;
@@ -945,16 +1125,19 @@ impl Draw for WizardDialog {
         };
 
         // A banner tint sits behind the step indicator. It is opt-in, so an untinted wizard
-        // keeps the frame it has always painted.
+        // keeps the frame it has always painted. With the sidebar in effect there is no strip
+        // to tint, and the content well's watermark colour is the band that owns that job.
         if let Some(banner) = self.banner_color {
-            context.fill_rect(
-                Rect::new(rect.x, rect.y, rect.width, step_indicator_height.min(rect.height)),
-                banner,
-            );
+            if sidebar.is_none() {
+                context.fill_rect(
+                    Rect::new(rect.x, rect.y, rect.width, step_indicator_height.min(rect.height)),
+                    banner,
+                );
+            }
         }
 
         // ── Step Indicator ──────────────────────────────────────────────
-        if !self.steps.is_empty() {
+        if sidebar.is_none() && !self.steps.is_empty() {
             let total_steps = self.steps.len();
             let circle_radius = 12u32;
             let spacing = (rect.width / total_steps as u32).min(120u32);
@@ -1069,7 +1252,7 @@ impl Draw for WizardDialog {
                     );
                 }
             }
-        } else {
+        } else if sidebar.is_none() {
             // No steps — draw placeholder. Confined to the band above the separator, which
             // is also where the navigation row begins when the frame is short.
             let empty_font = role_font(style, 14.0);
@@ -1091,7 +1274,7 @@ impl Draw for WizardDialog {
 
         // ── Step indicator separator line ───────────────────────────────
         let sep_y = rect.y + step_indicator_height as i32;
-        if sep_y <= rect.y + rect.height as i32 {
+        if sidebar.is_none() && sep_y <= rect.y + rect.height as i32 {
             context.draw_line(
                 Point::new(rect.x, sep_y),
                 Point::new(rect.x + rect.width as i32, sep_y),
@@ -1099,12 +1282,77 @@ impl Draw for WizardDialog {
             );
         }
 
+        // ── Sidebar ─────────────────────────────────────────────────────
+        if let Some(band) = sidebar {
+            context.fill_rect(band, surface.blend(&ink, 0.04));
+            context.draw_line(
+                Point::new(band.x + band.width as i32, band.y),
+                Point::new(band.x + band.width as i32, band.y + band.height as i32),
+                border,
+            );
+            context.push_clip(band.x, band.y, band.width, band.height);
+            let row_font = role_font(style, 11.0);
+            let active_font = role_font(style, 11.0).with_bold(true);
+            let top = band.y + 8;
+            for (index, step) in self.steps.iter().enumerate() {
+                let row_y = top + index as i32 * Self::SIDEBAR_ROW_HEIGHT;
+                if row_y + Self::SIDEBAR_ROW_HEIGHT > band.y + band.height as i32 {
+                    break;
+                }
+                let row = Rect::new(band.x, row_y, band.width, Self::SIDEBAR_ROW_HEIGHT as u32);
+                let is_active = index == self.current_step;
+                if is_active {
+                    context.fill_rect(row, primary.with_alpha_f32(0.16));
+                }
+                let band_inset =
+                    Rect::new(row.x + 10, row.y, row.width.saturating_sub(20), row.height);
+                let font = if is_active { &active_font } else { &row_font };
+                let color = if !is_enabled {
+                    self.base.disabled_ink_on(ink, surface)
+                } else if is_active {
+                    primary
+                } else {
+                    ink
+                };
+                context.draw_text_fitted_cow(
+                    band_inset,
+                    &step.title,
+                    font,
+                    color,
+                    HorizontalAlignment::Left,
+                );
+            }
+            context.pop_clip();
+        }
+
         // ── Content Area ────────────────────────────────────────────────
         // The well is the region between the indicator and the navigation band. When the
         // frame is too short to hold both it is painted behind the buttons rather than
         // claiming a band of its own, so the two never overlap.
-        let content_rect = Rect::new(rect.x, content_y, rect.width, content_height);
+        let content_rect = Rect::new(
+            rect.x + sidebar_width as i32,
+            content_y,
+            rect.width.saturating_sub(sidebar_width),
+            content_height,
+        );
         context.fill_rect(content_rect, content_fill);
+        // A caller-supplied watermark picture is fitted inside the well, preserving its
+        // aspect ratio, and painted before the heading so the text stays readable over it.
+        if let Some(pixmap) = self.watermark_pixmap.as_ref() {
+            let source_width = pixmap.width().max(1);
+            let source_height = pixmap.height().max(1);
+            let max_width = content_rect.width.max(1);
+            let max_height = content_rect.height.max(1);
+            let scale = (max_width as f32 / source_width as f32)
+                .min(max_height as f32 / source_height as f32);
+            let width = ((source_width as f32 * scale) as u32).clamp(1, max_width);
+            let height = ((source_height as f32 * scale) as u32).clamp(1, max_height);
+            if let Some(pixels) = super::message_box::pixmap_pixels(pixmap, width, height) {
+                let x = content_rect.x + (content_rect.width.saturating_sub(width) / 2) as i32;
+                let y = content_rect.y + (content_rect.height.saturating_sub(height) / 2) as i32;
+                context.draw_image(x, y, width, height, &pixels);
+            }
+        }
         if !self.steps.is_empty() {
             // The well can be shorter than the text the current step asks for: a 120 px
             // wizard reserves 50 px for the indicator and ~40 px for the navigation row, and a
@@ -1240,9 +1488,10 @@ impl Draw for WizardDialog {
             return;
         }
         let nav_sep_y = content_y + content_height as i32;
+        let nav_band = self.nav_area(rect);
         context.draw_line(
-            Point::new(rect.x, nav_sep_y),
-            Point::new(rect.x + rect.width as i32, nav_sep_y),
+            Point::new(nav_band.x, nav_sep_y),
+            Point::new(nav_band.x + nav_band.width as i32, nav_sep_y),
             border,
         );
 
@@ -1290,14 +1539,14 @@ impl Draw for WizardDialog {
         };
         let next_font = role_font(style, 12.0).with_bold(true);
 
-        let slots = self.nav_slots(rect);
+        let slots = self.nav_slots(self.nav_area(rect));
         for (action, button) in slots {
             match action {
                 NavAction::Next => {
                     context.fill_rounded_rect(button, 4, btn_color);
                     context.draw_text_fitted_cow(
                         label_of(button),
-                        self.label_of_action(action),
+                        &self.label_of_action(action),
                         &next_font,
                         btn_text_color,
                         HorizontalAlignment::Center,
@@ -1308,7 +1557,7 @@ impl Draw for WizardDialog {
                     context.draw_rounded_rect_stroke(button, 4, border, 1);
                     context.draw_text_fitted_cow(
                         label_of(button),
-                        self.label_of_action(action),
+                        &self.label_of_action(action),
                         &nav_font,
                         back_text_color,
                         HorizontalAlignment::Center,
@@ -1319,7 +1568,7 @@ impl Draw for WizardDialog {
                     context.draw_rounded_rect_stroke(button, 4, border, 1);
                     context.draw_text_fitted_cow(
                         label_of(button),
-                        self.label_of_action(action),
+                        &self.label_of_action(action),
                         &nav_font,
                         button_ink,
                         HorizontalAlignment::Center,
@@ -1342,6 +1591,13 @@ impl EventHandler for WizardDialog {
             // A press arms the button under the pointer and nothing else. The action is
             // committed by the release, so one click reports one step change.
             Event::MousePress { pos, .. } => {
+                // A sidebar row is a navigation target of its own: activating it jumps to that
+                // step and reports the jump distinctly from `step_changed`.
+                if let Some(index) = self.sidebar_row_at(*pos) {
+                    self.go_to_step(index);
+                    self.sidebar_page_activated.emit(index);
+                    return;
+                }
                 let target = self.nav_button_at(*pos);
                 if self.pressed_button != target {
                     self.pressed_button = target;
@@ -1829,5 +2085,71 @@ mod tests {
 
         plain.set_subtitle("");
         assert_eq!(plain_svg, crate::widget::svg::render_to_svg(&mut plain));
+    }
+
+    #[test]
+    fn button_text_overrides_win_and_empty_restores_the_localised_default() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        wiz.add_step("A", false);
+        wiz.add_step("B", false);
+        assert_eq!(wiz.button_text(NavAction::Next), "Next");
+        let default_svg = crate::widget::svg::render_to_svg(&mut wiz);
+        wiz.set_button_text(NavAction::Next, "Continue");
+        assert_eq!(wiz.button_text(NavAction::Next), "Continue");
+        assert_ne!(
+            default_svg,
+            crate::widget::svg::render_to_svg(&mut wiz),
+            "the override must reach the pixels"
+        );
+        wiz.set_button_text(NavAction::Next, "");
+        assert_eq!(wiz.button_text(NavAction::Next), "Next");
+    }
+
+    #[test]
+    fn the_sidebar_lists_steps_and_reports_page_activation() {
+        use std::sync::Mutex;
+
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 480, 320));
+        wiz.add_step("One", false);
+        wiz.add_step("Two", false);
+        assert_eq!(wiz.wizard_style(), WizardStyle::TopStrip);
+        let strip = crate::widget::svg::render_to_svg(&mut wiz);
+        wiz.set_sidebar_visible(true);
+        assert!(wiz.is_sidebar_visible());
+        assert_eq!(wiz.wizard_style(), WizardStyle::Sidebar);
+
+        let band = wiz.sidebar_rect(wiz.geometry()).expect("a sidebar has a rectangle");
+        let sidebar = crate::widget::svg::render_to_svg(&mut wiz);
+        assert_ne!(strip, sidebar, "the sidebar presentation reaches the pixels");
+
+        let activated = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = Arc::clone(&activated);
+        wiz.sidebar_page_activated.connect(move |index| {
+            sink.lock().expect("lock").push(*index);
+        });
+        // The second row starts one row below the first.
+        let row_y = band.y + 8 + WizardDialog::SIDEBAR_ROW_HEIGHT + 2;
+        wiz.handle_event(&Event::mouse_press(band.x + 4, row_y, 1));
+        assert_eq!(wiz.current_step(), 1);
+        assert_eq!(*activated.lock().expect("lock"), vec![1]);
+    }
+
+    #[test]
+    fn a_watermark_pixmap_reaches_the_content_well() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        wiz.add_step("Configure", false);
+        let plain = crate::widget::svg::render_to_svg(&mut wiz);
+        let image = crate::image::Image::try_from_rgba(
+            vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255],
+            2,
+            2,
+        )
+        .expect("a 2x2 RGBA image is valid");
+        wiz.set_watermark_pixmap(image);
+        assert!(wiz.watermark_pixmap().is_some());
+        let marked = crate::widget::svg::render_to_svg(&mut wiz);
+        assert_ne!(plain, marked, "the watermark must reach the pixels");
+        wiz.clear_watermark_pixmap();
+        assert_eq!(plain, crate::widget::svg::render_to_svg(&mut wiz));
     }
 }

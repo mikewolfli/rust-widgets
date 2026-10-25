@@ -20,6 +20,8 @@
 #[cfg(not(feature = "chart"))]
 use core::fmt::Write as _;
 
+#[cfg(feature = "chart")]
+use crate::core::Font;
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -69,17 +71,29 @@ pub struct LineSeries {
     pub points: Vec<(f64, f64)>,
     /// The caller's stroke colour, or `None` to follow the chart's palette.
     pub color: Option<Color>,
+    /// Whether this series fills the area under its line.
+    ///
+    /// Per series, because a multi-line chart usually wants one emphasised series and several
+    /// plain ones. The chart-level [`LineChart::set_fill_area`] remains the default for series
+    /// that do not state their own choice.
+    pub fill: Option<bool>,
 }
 
 impl LineSeries {
     /// Creates a named series from `points`.
     pub fn new(name: impl Into<String>, points: Vec<(f64, f64)>) -> Self {
-        Self { name: name.into(), points, color: None }
+        Self { name: name.into(), points, color: None, fill: None }
     }
 
     /// Sets the series colour, replacing the palette entry.
     pub fn with_color(mut self, color: Color) -> Self {
         self.color = Some(color);
+        self
+    }
+
+    /// Enables or disables the area fill for this series only.
+    pub fn with_fill(mut self, fill: bool) -> Self {
+        self.fill = Some(fill);
         self
     }
 }
@@ -130,12 +144,41 @@ pub struct LineChart {
     /// The last pointer position seen, used to anchor wheel zoom (the wheel event carries
     /// no position of its own).
     last_pointer: Option<Point>,
-    /// Emitted with the data index under the pointer when hover enters a point.
-    pub point_hovered: Signal1<usize>,
-    /// Emitted with the data index when the pointer leaves the last hovered point.
-    pub point_unhovered: Signal1<usize>,
-    /// Emitted with the data index of a clicked point.
-    pub point_clicked: Signal1<usize>,
+    /// Cached y-axis label width; `None` until the first measured paint.
+    #[cfg(feature = "chart")]
+    y_label_cache: Option<YAxisLabelCache>,
+    /// Emitted with `(series, point)` under the pointer when hover enters a point.
+    pub point_hovered: Signal1<(usize, usize)>,
+    /// Emitted with `(series, point)` when the pointer leaves the last hovered point.
+    pub point_unhovered: Signal1<(usize, usize)>,
+    /// Emitted with the `(series, point)` of a clicked point.
+    pub point_clicked: Signal1<(usize, usize)>,
+}
+
+/// Cached width of the widest y-axis tick label.
+///
+/// The measurement depends only on the tick values (which the y range fixes), the
+/// control width, the font, and the backend's DPI scale, so those form the key.
+#[cfg(feature = "chart")]
+struct YAxisLabelCache {
+    y_min_bits: u64,
+    y_max_bits: u64,
+    width: u32,
+    dpi_bits: u32,
+    font: Font,
+    widest: u32,
+}
+
+#[cfg(feature = "chart")]
+impl YAxisLabelCache {
+    /// Whether this cache still describes the requested measurement.
+    fn matches(&self, y_min: f64, y_max: f64, width: u32, dpi_scale: f32, font: &Font) -> bool {
+        self.y_min_bits == y_min.to_bits()
+            && self.y_max_bits == y_max.to_bits()
+            && self.width == width
+            && self.dpi_bits == dpi_scale.to_bits()
+            && &self.font == font
+    }
 }
 
 impl LineChart {
@@ -166,6 +209,8 @@ impl LineChart {
             pan_origin: None,
             last_plot_area: None,
             last_pointer: None,
+            #[cfg(feature = "chart")]
+            y_label_cache: None,
             point_hovered: Signal1::new(),
             point_unhovered: Signal1::new(),
             point_clicked: Signal1::new(),
@@ -243,8 +288,8 @@ impl LineChart {
             self.series.get(series).is_some_and(|item| index < item.points.len())
         });
         if !still_valid {
-            if let Some((_, index)) = self.hovered.take() {
-                self.point_unhovered.emit(index);
+            if let Some((series, index)) = self.hovered.take() {
+                self.point_unhovered.emit((series, index));
             }
         }
     }
@@ -519,6 +564,42 @@ impl LineChart {
         }
     }
 
+    /// Width of the widest y-axis tick label.
+    ///
+    /// Measures only when the y range, the control width, the font or the DPI scale
+    /// changes; every other paint reuses the width the previous one measured.
+    #[cfg(feature = "chart")]
+    fn widest_y_label(
+        &mut self,
+        context: &RenderContext,
+        y_min: f64,
+        y_max: f64,
+        width: u32,
+        font: Font,
+    ) -> f32 {
+        let dpi_scale = context.dpi_scale();
+        if let Some(cache) = self.y_label_cache.as_ref() {
+            if cache.matches(y_min, y_max, width, dpi_scale, &font) {
+                return cache.widest as f32;
+            }
+        }
+        let mut widest = 0u32;
+        for step in 0..=4 {
+            let value = y_min + (y_max - y_min) * f64::from(step) / 4.0;
+            let label = format!("{value:.1}");
+            widest = widest.max(context.measure_text(&label, &font).width);
+        }
+        self.y_label_cache = Some(YAxisLabelCache {
+            y_min_bits: y_min.to_bits(),
+            y_max_bits: y_max.to_bits(),
+            width,
+            dpi_bits: dpi_scale.to_bits(),
+            font,
+            widest,
+        });
+        widest as f32
+    }
+
     /// Resolves Y-axis range across every series.
     fn resolve_y_range(&self) -> (f64, f64) {
         match (self.y_min, self.y_max) {
@@ -614,6 +695,44 @@ impl Widget for LineChart {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(400, 300)
     }
+
+    /// Resolves a published event name to the signal this chart actually emits.
+    ///
+    /// Each name carries the data index as a `UInt`, which is the payload kind the
+    /// capability declares; the control stores that index as a `usize`, so the
+    /// conversion is the widening that preserves the emitted value. The `point_*`
+    /// names would otherwise be accepted by `connect_event` and dropped silently.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "point_clicked" => {
+                Some(EventSignalRef::mapped("point_clicked", &self.point_clicked, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
+            "point_hovered" => {
+                Some(EventSignalRef::mapped("point_hovered", &self.point_hovered, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
+            "point_unhovered" => {
+                Some(EventSignalRef::mapped("point_unhovered", &self.point_unhovered, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
+            _ => None,
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -668,13 +787,7 @@ impl Draw for LineChart {
             // normal chart's geometry byte-identical.
             let widest_y_label = if self.show_labels {
                 let font = crate::widget::metrics::role_font(self.base.style(), 10.0);
-                let mut widest = 0u32;
-                for step in 0..=4 {
-                    let value = y_min + (y_max - y_min) * f64::from(step) / 4.0;
-                    let label = format!("{value:.1}");
-                    widest = widest.max(context.measure_text(&label, &font).width);
-                }
-                widest as f32
+                self.widest_y_label(context, y_min, y_max, rect.width, font)
             } else {
                 0.0
             };
@@ -746,12 +859,16 @@ impl Draw for LineChart {
             let mapped = self.mapped_points(series_index, x_min, x_max, y_min, y_max, plot_area);
 
             // ── Filled area under the line ──
-            if self.fill_area && series_index == 0 {
-                // The disabled fill is the same disabled ink the line uses, held at the fill's
-                // own alpha — a fixed grey here was a third grey in the picture and did not
-                // track the disabled ink on either appearance.
+            if self.series[series_index].fill.unwrap_or(self.fill_area) {
+                // A per-series fill takes the series' own colour so two filled series stay
+                // distinguishable; the chart-level colour remains the first series' default.
+                let fill_color = if series_index == 0 && self.series[0].fill.is_none() {
+                    self.fill_color
+                } else {
+                    series_color.with_alpha(60)
+                };
                 let fill_color =
-                    if is_enabled { self.fill_color } else { disabled_color.with_alpha(60) };
+                    if is_enabled { fill_color } else { disabled_color.with_alpha(60) };
                 let baseline_y = plot_area.y + plot_area.height as i32;
                 for pair in mapped.windows(2) {
                     let strip_width = (pair[1].x - pair[0].x).max(1) as u32;
@@ -1014,20 +1131,20 @@ impl EventHandler for LineChart {
                 }
                 let next = self.nearest_point(*pos, plot_area);
                 if next != self.hovered {
-                    if let Some((_, index)) = self.hovered {
-                        self.point_unhovered.emit(index);
+                    if let Some((series, index)) = self.hovered {
+                        self.point_unhovered.emit((series, index));
                     }
                     self.hovered = next;
-                    if let Some((_, index)) = next {
-                        self.point_hovered.emit(index);
+                    if let Some((series, index)) = next {
+                        self.point_hovered.emit((series, index));
                     }
                     self.base.request_redraw();
                 }
             }
             Event::MouseLeave { .. } => {
                 self.pan_origin = None;
-                if let Some((_, index)) = self.hovered.take() {
-                    self.point_unhovered.emit(index);
+                if let Some((series, index)) = self.hovered.take() {
+                    self.point_unhovered.emit((series, index));
                     self.base.request_redraw();
                 }
             }
@@ -1035,8 +1152,8 @@ impl EventHandler for LineChart {
                 let hit = self.nearest_point(*pos, plot_area);
                 if self.zoom_enabled {
                     self.pan_origin = Some((*pos, self.resolve_x_range()));
-                } else if let Some((_, index)) = hit {
-                    self.point_clicked.emit(index);
+                } else if let Some((series, index)) = hit {
+                    self.point_clicked.emit((series, index));
                 }
                 self.base.set_mouse_pressed(true);
             }
@@ -1075,6 +1192,17 @@ impl EventHandler for LineChart {
 mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
+
+    /// Every name the capability publishes must resolve, and a name it does not
+    /// publish must stay unresolved — a dead arm reads as support it does not have.
+    #[test]
+    fn published_point_events_resolve_to_signals() {
+        let chart = LineChart::new(Rect::new(0, 0, 300, 200));
+        for name in ["point_clicked", "point_hovered", "point_unhovered"] {
+            assert!(chart.event_signal_dyn(name).is_some(), "{name} must resolve");
+        }
+        assert!(chart.event_signal_dyn("no_such_event").is_none());
+    }
 
     /// One ink box per text run, in document order.
     ///
@@ -1401,13 +1529,13 @@ mod tests {
         lc.set_data(vec![(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)]);
         // Paint once so the hit-test uses the measured plot area.
         let _ = render_to_svg(&mut lc);
-        let seen = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let seen = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
         let sink = Arc::clone(&seen);
         lc.point_hovered.connect(move |index| sink.lock().unwrap().push(*index));
         let points = lc.mapped_points(0, -0.2, 2.2, -0.2, 2.2, lc.last_plot_area.unwrap());
         lc.handle_event(&Event::MouseMove { pos: points[2] });
         assert_eq!(lc.hovered_point(), Some((0, 2)));
-        assert_eq!(*seen.lock().unwrap(), vec![2]);
+        assert_eq!(*seen.lock().unwrap(), vec![(0, 2)]);
         lc.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
         assert!(lc.hovered_point().is_none());
     }

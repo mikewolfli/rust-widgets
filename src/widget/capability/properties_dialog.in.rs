@@ -20,6 +20,8 @@ macro_rules! impl_properties_dialog {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("presets", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("hue_degrees", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -84,6 +86,8 @@ macro_rules! impl_properties_dialog {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated("view_mode", true, true, &["list", "details"]),
+            PropertySchema::new("sidebar_urls", PropertyValueKind::StringList, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -160,6 +164,7 @@ macro_rules! impl_properties_dialog {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("resizable", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]

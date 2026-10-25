@@ -8,7 +8,7 @@ use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
-use crate::signal::GenericSignal;
+use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -61,6 +61,17 @@ pub struct ProgressDialog {
     /// alone. Connect through [`Widget::connection_scope`] so the slot is
     /// disconnected when the dialog is dropped.
     pub canceled: GenericSignal,
+    /// Emitted with the new progress value whenever [`ProgressDialog::set_value`]
+    /// actually moves it.
+    pub value_changed: Signal1<i32>,
+    /// Emitted with the new label whenever [`ProgressDialog::set_label_text`] changes it.
+    pub label_changed: Signal1<String>,
+    /// Emitted once when the value first reaches the maximum.
+    ///
+    /// Whether the dialog then hides is [`ProgressDialog::auto_close`]'s decision; this
+    /// signal reports completion itself, which is what lets a host chain the next step or
+    /// record the result without polling [`ProgressDialog::value`].
+    pub finished: GenericSignal,
 }
 impl ProgressDialog {
     /// Creates a dialog with an empty title and label, a range of `0..=100`, a
@@ -89,6 +100,9 @@ impl ProgressDialog {
             displayed: PropertyDriver::at(0.0, MotionSlot::Normal),
             accent_fill: false,
             canceled: GenericSignal::new(),
+            value_changed: Signal1::new(),
+            label_changed: Signal1::new(),
+            finished: GenericSignal::new(),
         }
     }
     /// Returns the dialog title, drawn in the title bar. Empty by default.
@@ -148,6 +162,7 @@ impl ProgressDialog {
             return;
         }
         self.label_text = t;
+        self.label_changed.emit(self.label_text.clone());
         self.base.request_redraw();
     }
     /// Sets the lower bound of the progress range.
@@ -339,8 +354,15 @@ impl ProgressDialog {
         if self.value == value {
             return;
         }
+        let previous = self.value;
         self.value = value;
         self.sync_displayed();
+        self.value_changed.emit(self.value);
+        // Completion is a transition, not a state: reporting it on every write at the
+        // maximum would make a host's "advance to the next step" handler fire repeatedly.
+        if self.value >= self.maximum && previous < self.maximum {
+            self.finished.emit();
+        }
         if self.auto_close && self.value >= self.maximum {
             self.hide();
         }
@@ -454,6 +476,17 @@ impl Widget for ProgressDialog {
         use crate::signal::EventSignalRef;
         match name {
             "canceled" => Some(EventSignalRef::unit("canceled", &self.canceled)),
+            "finished" => Some(EventSignalRef::unit("finished", &self.finished)),
+            "value_changed" => {
+                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |value| {
+                    CapabilityValue::Int(*value as i64)
+                }))
+            }
+            "label_changed" => {
+                Some(EventSignalRef::mapped("label_changed", &self.label_changed, |value| {
+                    CapabilityValue::String(value.clone())
+                }))
+            }
             _ => None,
         }
     }
@@ -1057,5 +1090,59 @@ mod tests {
         let accent = crate::widget::svg::render_to_svg(&mut dialog);
         assert!(accent.contains(&primary_fill), "the accent fill is the theme's action colour");
         assert_ne!(semantic, accent);
+    }
+
+    /// Progress and label changes are observable without polling the widget.
+    #[test]
+    fn value_and_label_changes_emit_their_signals() {
+        use std::sync::{Arc, Mutex};
+
+        let mut dialog = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        let values = Arc::new(Mutex::new(Vec::new()));
+        let labels = Arc::new(Mutex::new(Vec::new()));
+        {
+            let sink = Arc::clone(&values);
+            dialog.value_changed.connect(move |value| sink.lock().unwrap().push(*value));
+        }
+        {
+            let sink = Arc::clone(&labels);
+            dialog
+                .label_changed
+                .connect(move |label| sink.lock().unwrap().push(label.as_ref().clone()));
+        }
+
+        dialog.set_value(20);
+        dialog.set_value(20);
+        dialog.set_value(500);
+        dialog.set_label_text("Copying");
+        dialog.set_label_text("Copying");
+
+        assert_eq!(*values.lock().unwrap(), vec![20, 100], "only real moves are reported");
+        assert_eq!(*labels.lock().unwrap(), vec!["Copying".to_string()]);
+    }
+
+    /// Completion is reported once per arrival at the maximum, before auto-close hides.
+    #[test]
+    fn finishing_emits_finished_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut dialog = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        let finished = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&finished);
+        dialog.finished.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        dialog.set_value(99);
+        assert_eq!(finished.load(Ordering::SeqCst), 0);
+        dialog.set_value(100);
+        assert_eq!(finished.load(Ordering::SeqCst), 1);
+        assert!(!dialog.is_visible(), "auto-close still hides at the maximum");
+
+        // Already at the maximum: a write that changes nothing is not a second completion.
+        dialog.show();
+        dialog.set_value(100);
+        assert_eq!(finished.load(Ordering::SeqCst), 1);
     }
 }

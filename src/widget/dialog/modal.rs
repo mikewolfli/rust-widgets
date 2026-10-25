@@ -27,6 +27,8 @@ const DIALOG_RESOURCE_FALLBACKS: &[(&str, &str)] = &[
     ("common.button.close", "Close"),
     ("dialog.ok", "OK"),
     ("dialog.cancel", "Cancel"),
+    ("dialog.message_box.show_details", "Show Details..."),
+    ("dialog.message_box.hide_details", "Hide Details..."),
 ];
 
 /// The English label this module ships for `key`, if it has one.
@@ -72,6 +74,46 @@ pub(crate) fn localized_label(key: &str, english: &str) -> crate::compat::String
         let _ = key;
         crate::compat::String::from(resource_fallback(key).unwrap_or(english))
     }
+}
+
+/// The focus targets of a dialog, in tab order.
+///
+/// # Why a shared iterator and not a per-dialog loop
+///
+/// Six self-drawn dialogs move a focus ring across their own controls with the same rule:
+/// Tab advances, Shift+Tab retreats, and the first/last target wraps. Spelling that rule in
+/// each `handle_event` is how the dialogs came to disagree about whether Tab moves forward or
+/// whether it wraps at all (issue DLG-10), so the chain and the step live here once.
+pub(crate) fn focus_chain(count: usize) -> core::ops::Range<usize> {
+    0..count
+}
+
+/// The focus index `forward` steps from `current` within a chain of `count` targets.
+///
+/// Returns `None` when there is nothing to focus. A `current` that is out of range is treated
+/// as "before the first" when moving forward and "after the last" when moving back, so a chain
+/// that shrank (a hidden button) cannot leave the ring on an index that no longer exists.
+pub(crate) fn move_focus(current: Option<usize>, count: usize, forward: bool) -> Option<usize> {
+    // `focus_chain` is the one declaration of "which indices are focusable", so a caller that
+    // needs the list and this helper cannot disagree about its length.
+    let count = focus_chain(count).count();
+    if count == 0 {
+        return None;
+    }
+    let next = match current {
+        Some(index) if index < count => {
+            if forward {
+                (index + 1) % count
+            } else {
+                (index + count - 1) % count
+            }
+        }
+        Some(_) if forward => 0,
+        Some(_) => count - 1,
+        None if forward => 0,
+        None => count - 1,
+    };
+    Some(next)
 }
 
 /// Paints the modal scrim over the control's whole rectangle.

@@ -52,6 +52,18 @@ pub struct EmptyState {
     pressed: bool,
     /// Emitted when the action button is clicked.
     pub action_pressed: GenericSignal,
+    /// The wrapped message and each line's measured width, rebuilt only when the message,
+    /// the face, the available width or the device scale changes.
+    message_wrap: Option<MessageWrapCache>,
+}
+
+/// Cached message layout: the wrapped lines and the width each one was measured at.
+struct MessageWrapCache {
+    message: String,
+    font: Font,
+    available_width: u32,
+    dpi_scale_bits: u32,
+    lines: Vec<(String, u32)>,
 }
 
 impl EmptyState {
@@ -71,6 +83,7 @@ impl EmptyState {
             action_text: String::new(),
             pressed: false,
             action_pressed: GenericSignal::new(),
+            message_wrap: None,
         }
     }
 
@@ -116,6 +129,37 @@ impl EmptyState {
     /// Returns the current message text.
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Wraps the message and measures each line, reusing the previous result while the
+    /// text, the face, the available width and the device scale all stay the same.
+    fn refresh_message_wrap(&mut self, context: &RenderContext, font: &Font, available_width: u32) {
+        let dpi_scale_bits = context.dpi_scale().to_bits();
+        let unchanged = self.message_wrap.as_ref().is_some_and(|cache| {
+            cache.message == self.message
+                && cache.font == *font
+                && cache.available_width == available_width
+                && cache.dpi_scale_bits == dpi_scale_bits
+        });
+        if unchanged {
+            return;
+        }
+
+        let lines: Vec<(String, u32)> =
+            wrap_text(context, &self.message, font, available_width as usize)
+                .into_iter()
+                .map(|line| {
+                    let width = context.measure_text(&line, font).width;
+                    (line, width)
+                })
+                .collect();
+        self.message_wrap = Some(MessageWrapCache {
+            message: self.message.clone(),
+            font: font.clone(),
+            available_width,
+            dpi_scale_bits,
+            lines,
+        });
     }
 
     /// Sets the action button label text.
@@ -316,6 +360,9 @@ impl Draw for EmptyState {
         let title_font = role_font(style, title_font_size as f32).with_weight_value(600);
         let icon_font = role_font(style, icon_size as f32).with_weight_value(400);
         let message_font = role_font(style, message_font_size as f32).with_weight_value(400);
+        // Resolved here, while the style borrow is live: `refresh_message_wrap` below needs
+        // `&mut self`, so every style-derived value has to be computed first.
+        let action_font = role_font(style, 14.0).with_weight_value(600);
         let icon_height = context.measure_text("M", &icon_font).height.max(1) as i32;
         let title_height = context.measure_text("M", &title_font).height.max(1) as i32;
         let line_height = context.measure_text("M", &message_font).height.max(1) as i32;
@@ -384,22 +431,22 @@ impl Draw for EmptyState {
         // above plus this explicit stop, which keeps the block inside the control on a
         // short box and leaves the normal case unchanged.
         let available_width = rect.width.max(50) - 20;
-        let wrapped_lines =
-            wrap_text(context, &self.message, &message_font, available_width as usize);
-        for (i, line) in wrapped_lines.iter().enumerate() {
-            if i >= message_line_capacity {
-                break;
+        self.refresh_message_wrap(context, &message_font, available_width);
+        if let Some(cache) = self.message_wrap.as_ref() {
+            for (i, (line, line_width)) in cache.lines.iter().enumerate() {
+                if i >= message_line_capacity {
+                    break;
+                }
+                let line_y = message_y + i as i32 * line_step;
+                let line_origin = Point::new(center_x - (*line_width as i32 / 2), line_y);
+                context.draw_text(
+                    line_origin,
+                    line,
+                    &message_font,
+                    message_color,
+                    HorizontalAlignment::Left,
+                );
             }
-            let line_y = message_y + i as i32 * line_step;
-            let line_metrics = context.measure_text(line, &message_font);
-            let line_origin = Point::new(center_x - (line_metrics.width as i32 / 2), line_y);
-            context.draw_text(
-                line_origin,
-                line,
-                &message_font,
-                message_color,
-                HorizontalAlignment::Left,
-            );
         }
 
         // ── Action Button ──
@@ -427,7 +474,7 @@ impl Draw for EmptyState {
             } else {
                 btn_bg.contrast_color()
             };
-            let btn_font = role_font(style, 14.0).with_weight_value(600);
+            let btn_font = action_font.clone();
             // Horizontal centring is measured; vertical centring comes from the shared line
             // box. The previous `btn_rect.y + btn_rect.height / 2` put the glyph box's top edge
             // on the button's middle line and drew the label half a line low.

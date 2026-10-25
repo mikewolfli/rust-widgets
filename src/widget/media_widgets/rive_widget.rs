@@ -3,21 +3,32 @@
 
 //! RiveWidget — a Rive-inspired animation runtime widget.
 //!
-//! The widget consumes a **Rive-inspired JSON** document (not the binary `.riv`
-//! format) through [`RiveWidget::load_animation_from_json`]. It provides
-//! play/pause/stop controls, loop counts, and state machine inputs, and emits a
-//! signal when the animation finishes. Animated shapes are rendered from the
-//! parsed JSON at the current playhead position.
+//! # Capability boundary
+//!
+//! **This control does not decode the binary `.riv` format.**
+//! [`RiveWidget::load_animation`] can only record a name, so it returns an explicit error and
+//! leaves the widget in the honest "not loaded" state instead of fabricating an animation. A host
+//! that owns a `.riv` decoder can flatten the artboard to the Rive-inspired JSON this widget
+//! renders and call [`RiveWidget::load_animation_from_json`]. There is no `riv` cargo feature: a
+//! decoder is a separate dependency, not a compile switch on this file.
+//!
+//! The widget consumes a **Rive-inspired JSON** document through
+//! [`RiveWidget::load_animation_from_json`]. It provides play/pause/stop controls, loop counts,
+//! state machine inputs, and emits a signal when the animation finishes. Animated shapes are
+//! rendered from the parsed JSON at the current playhead position.
 //!
 //! # State machine input contract
 //!
-//! The inputs are a small documented convention layered on the parsed JSON, not
-//! a real Rive state machine:
+//! The inputs are a small documented convention layered on the parsed JSON, not a real Rive state
+//! machine:
 //!
 //! - a numeric input named `"progress"` pins the playhead to that value, clamped
 //!   to `0.0..=1.0`, so a host can scrub the animation;
 //! - a boolean input named `"playing"` set to `false` pauses advancement for as
-//!   long as it stays `false`.
+//!   long as it stays `false`;
+//! - a trigger input is fired with [`RiveWidget::fire_input`], which reports the edge through
+//!   `input_fired` and maps the lifecycle names `play`, `pause`, `stop` and `reset` onto the
+//!   corresponding control method.
 //!
 //! Other names are stored and reported but do not affect playback.
 
@@ -26,7 +37,7 @@ use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
-use crate::signal::GenericSignal;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -52,6 +63,36 @@ pub struct RiveInput {
     pub name: String,
     /// The current value of the input.
     pub value: RiveInputValue,
+}
+
+/// The lifecycle state this control's lightweight state machine is in.
+///
+/// Rive's own state graphs are not decoded, so the state is the animation's own lifecycle. It is a
+/// real, observable state rather than a copy of the inputs: every transition emits
+/// [`RiveWidget::state_changed`] with the state name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RiveState {
+    /// No animation is loaded.
+    #[default]
+    Idle,
+    /// The animation is advancing.
+    Playing,
+    /// The animation is loaded and paused.
+    Paused,
+    /// A finite loop count was exhausted.
+    Completed,
+}
+
+impl RiveState {
+    /// The published spelling of this state.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Playing => "playing",
+            Self::Paused => "paused",
+            Self::Completed => "completed",
+        }
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -146,9 +187,9 @@ struct RiveAnimationData {
     /// Name of the animation.
     _name: String,
     /// Duration of the animation in frames.
-    _duration_frames: u32,
-    /// Frame rate.
-    _frame_rate: f32,
+    duration_frames: u32,
+    /// Frame rate declared by the document.
+    frame_rate: f32,
     /// Shapes in this animation.
     shapes: Vec<RiveAnimatedShape>,
 }
@@ -156,8 +197,8 @@ struct RiveAnimationData {
 impl RiveAnimationData {
     /// Parse from a JSON value that describes the animation.
     fn from_json(name: &str, val: &serde_json::Value) -> Self {
-        let _duration_frames = val.get("duration").and_then(|v| v.as_u64()).unwrap_or(60) as u32;
-        let _frame_rate = val.get("fr").and_then(|v| v.as_f64()).unwrap_or(60.0) as f32;
+        let duration_frames = val.get("duration").and_then(|v| v.as_u64()).unwrap_or(60) as u32;
+        let frame_rate = val.get("fr").and_then(|v| v.as_f64()).unwrap_or(60.0) as f32;
 
         let shapes = if let Some(shapes_arr) = val.get("shapes").and_then(|v| v.as_array()) {
             shapes_arr
@@ -240,7 +281,7 @@ impl RiveAnimationData {
             ]
         };
 
-        Self { _name: name.to_string(), _duration_frames, _frame_rate, shapes }
+        Self { _name: name.to_string(), duration_frames, frame_rate, shapes }
     }
 }
 
@@ -261,6 +302,14 @@ pub struct RiveWidget {
     animation_progress: f32,
     /// Emitted when the animation finishes (all loops completed).
     pub animation_finished: GenericSignal,
+    /// Emitted with the new state name whenever the lifecycle state changes.
+    pub state_changed: Signal1<String>,
+    /// Emitted with the input name when a Trigger input is fired.
+    pub input_fired: Signal1<String>,
+    /// The lifecycle state of the lightweight state machine.
+    state: RiveState,
+    /// Completed repetitions, kept separately from the configured loop count.
+    loops_completed: i32,
     /// Parsed animation data with shapes to render.
     ///
     /// The raw JSON source is deliberately **not** kept: parsing happens once, here, and
@@ -282,6 +331,10 @@ impl RiveWidget {
             frame_timer: 0,
             animation_progress: 0.0,
             animation_finished: GenericSignal::new(),
+            state_changed: Signal1::new(),
+            input_fired: Signal1::new(),
+            state: RiveState::Idle,
+            loops_completed: 0,
             animation_data: None,
         }
     }
@@ -300,6 +353,7 @@ impl RiveWidget {
         self.frame_timer = 0;
         self.is_playing = false;
         self.animation_data = None;
+        self.set_state(RiveState::Idle);
         self.base.request_redraw();
         Err(format!(
             "Rive animation \"{name}\" has no animation data; this widget loads the \
@@ -325,6 +379,8 @@ impl RiveWidget {
         self.frame_timer = 0;
         self.is_playing = false;
         self.animation_data = Some(RiveAnimationData::from_json(name, &parsed));
+        self.loops_completed = 0;
+        self.set_state(RiveState::Paused);
         self.base.request_redraw();
         Ok(())
     }
@@ -344,12 +400,16 @@ impl RiveWidget {
             return;
         }
         self.is_playing = true;
+        self.set_state(RiveState::Playing);
         self.base.request_redraw();
     }
 
     /// Pauses playback, keeping the current animation state.
     pub fn pause(&mut self) {
         self.is_playing = false;
+        if self.animation_data.is_some() {
+            self.set_state(RiveState::Paused);
+        }
         self.base.request_redraw();
     }
 
@@ -358,7 +418,58 @@ impl RiveWidget {
         self.is_playing = false;
         self.animation_progress = 0.0;
         self.frame_timer = 0;
+        self.set_state(if self.animation_data.is_some() {
+            RiveState::Paused
+        } else {
+            RiveState::Idle
+        });
         self.base.request_redraw();
+    }
+
+    /// The lifecycle state of this control's lightweight state machine.
+    pub fn state(&self) -> RiveState {
+        self.state
+    }
+
+    /// Changes the state, emitting `state_changed` only on a real transition.
+    fn set_state(&mut self, state: RiveState) {
+        if self.state == state {
+            return;
+        }
+        self.state = state;
+        self.state_changed.emit(state.as_str().to_string());
+    }
+
+    /// The names this control's state machine exposes: every stored input name.
+    ///
+    /// Rive state machine definitions are not decoded from the source, so this is the set of
+    /// names a host can address with [`Self::set_input`] / [`Self::fire_input`], not a list of
+    /// artboard state machines.
+    pub fn state_machine_names(&self) -> Vec<String> {
+        self.state_machine_inputs.iter().map(|input| input.name.clone()).collect()
+    }
+
+    /// Fires the Trigger input named `name`.
+    ///
+    /// Returns `false` when the input does not exist or is not a Trigger: a boolean or number
+    /// input has a value, not an edge, so "firing" it would have no defined meaning. A fired
+    /// Trigger is announced through `input_fired`, and the lifecycle names `play`, `pause`,
+    /// `stop` and `reset` also drive the matching control method.
+    pub fn fire_input(&mut self, name: &str) -> bool {
+        let Some(input) = self.state_machine_inputs.iter().find(|input| input.name == name) else {
+            return false;
+        };
+        if !matches!(&input.value, RiveInputValue::Trigger) {
+            return false;
+        }
+        self.input_fired.emit(name.to_string());
+        match name {
+            "play" => self.play(),
+            "pause" => self.pause(),
+            "stop" | "reset" => self.stop(),
+            _ => {}
+        }
+        true
     }
 
     /// Returns whether the animation is currently playing.
@@ -423,14 +534,24 @@ impl RiveWidget {
         self.loop_count
     }
 
+    /// The number of finite loops completed so far.
+    pub fn loops_completed(&self) -> i32 {
+        self.loops_completed
+    }
+
     /// Returns the current animation progress (0.0 – 1.0).
     pub fn animation_progress(&self) -> f32 {
         self.animation_progress
     }
 
-    /// Advances the animation state by the given number of milliseconds.
-    /// This simulates frame advancement based on a fixed 60fps rate.
-    /// Returns true if the animation completed a loop.
+    /// Advances the animation state by the given number of milliseconds using the frame rate and
+    /// duration the document declared.
+    ///
+    /// A fixed 60 fps used to be assumed, so an animation authored at 24 or 30 fps played fast and
+    /// one with a non-60-frame duration finished at the wrong time. The declared `fr` and
+    /// `duration` drive the step now; a document with no usable frame rate falls back to 60.
+    ///
+    /// Returns true if the animation completed a finite loop.
     ///
     /// # State machine inputs
     ///
@@ -464,8 +585,17 @@ impl RiveWidget {
             return false;
         }
 
-        // Assume 60fps for the Rive animation, 16.67ms per tick.
-        let frame_delay = 16u64;
+        let (declared_rate, duration_frames) = match self.animation_data.as_ref() {
+            Some(data) => (data.frame_rate, data.duration_frames),
+            None => (60.0, 60),
+        };
+        let fps = if declared_rate.is_finite() && declared_rate > 0.0 {
+            declared_rate as f64
+        } else {
+            60.0
+        };
+        let frame_delay = (1000.0 / fps).floor().max(1.0) as u64;
+        let step = 1.0 / duration_frames.max(1) as f32;
         // `saturating_add`: `frame_timer` is a `u64` fed by a public `tick(delta_ms)`. A plain `+=`
         // could overflow and wrap to a *small* value, and the `while` below would then run for the
         // wrapped remainder — potentially billions of iterations.
@@ -483,7 +613,6 @@ impl RiveWidget {
         // (the animation is caught up, not replayed frame by frame).
         const MAX_FRAMES_PER_TICK: u64 = 600;
         let frames_to_advance = elapsed_frames.min(MAX_FRAMES_PER_TICK);
-        let step = 1.0 / 60.0; // 1 frame at 60fps as progress fraction
         for _ in 0..frames_to_advance {
             self.animation_progress += step;
 
@@ -492,11 +621,12 @@ impl RiveWidget {
                     // Infinite looping: wrap around.
                     self.animation_progress = 0.0;
                 } else {
-                    self.loop_count -= 1;
-                    if self.loop_count == 0 {
-                        // All loops completed, stop.
+                    self.loops_completed += 1;
+                    if self.loops_completed >= self.loop_count {
+                        // All loops completed, stop. The configured `loop_count` is untouched.
                         self.is_playing = false;
                         self.animation_progress = 1.0;
+                        self.set_state(RiveState::Completed);
                         self.animation_finished.emit();
                         completed = true;
                         break;
@@ -626,6 +756,14 @@ impl Widget for RiveWidget {
             "animation_finished" => {
                 Some(EventSignalRef::unit("animation_finished", &self.animation_finished))
             }
+            "state_changed" => {
+                Some(EventSignalRef::mapped("state_changed", &self.state_changed, |v| {
+                    CapabilityValue::String((*v).clone())
+                }))
+            }
+            "input_fired" => Some(EventSignalRef::mapped("input_fired", &self.input_fired, |v| {
+                CapabilityValue::String((*v).clone())
+            })),
             _ => None,
         }
     }
@@ -640,6 +778,9 @@ impl WidgetProperties for RiveWidget {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "is_playing" => Ok(CapabilityValue::Bool(self.is_playing())),
+            "loop_count" => Ok(CapabilityValue::Int(self.loop_count() as i64)),
+            "loops_completed" => Ok(CapabilityValue::Int(self.loops_completed() as i64)),
+            "state" => Ok(CapabilityValue::String(self.state().as_str().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -654,12 +795,28 @@ impl WidgetProperties for RiveWidget {
                 }
                 Ok(())
             }
+            "loop_count" => {
+                let count = match value {
+                    CapabilityValue::Int(value) => value as i32,
+                    CapabilityValue::UInt(value) => value as i32,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_loop_count(count);
+                Ok(())
+            }
+            "loops_completed" | "state" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["is_playing", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "is_playing",
+            "loop_count",
+            "loops_completed",
+            "state",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -1272,5 +1429,54 @@ mod tests {
         rive.set_input("progress", RiveInputValue::Number(2.0));
         rive.tick(16);
         assert_eq!(rive.animation_progress(), 1.0, "an out-of-range progress is clamped");
+    }
+
+    #[test]
+    fn declared_frame_rate_and_duration_drive_the_timeline() {
+        let json = r#"{"duration":24,"fr":24,"shapes":[]}"#;
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        rive.load_animation_from_json("fast", json).unwrap();
+        rive.set_loop_count(1);
+        rive.play();
+        // 24 frames at 24 fps is one second, so one 1000 ms tick completes the loop.
+        assert!(rive.tick(1000));
+        assert!((rive.animation_progress() - 1.0).abs() < 1e-6);
+        assert_eq!(rive.loop_count(), 1, "the configured count is not consumed");
+        assert_eq!(rive.loops_completed(), 1);
+    }
+
+    #[test]
+    fn the_lifecycle_state_is_observable_and_triggers_fire_edges() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        assert_eq!(rive.state(), RiveState::Idle);
+        rive.load_animation_from_json("run", &make_rive_json()).unwrap();
+        assert_eq!(rive.state(), RiveState::Paused);
+
+        let states = Arc::new(Mutex::new(Vec::new()));
+        let s = states.clone();
+        rive.state_changed.connect(move |value: Arc<String>| {
+            s.lock().unwrap().push((*value).clone());
+        });
+        let fired = Arc::new(Mutex::new(Vec::new()));
+        let f = fired.clone();
+        rive.input_fired.connect(move |value: Arc<String>| {
+            f.lock().unwrap().push((*value).clone());
+        });
+
+        rive.set_input("play", RiveInputValue::Trigger);
+        rive.set_input("ping", RiveInputValue::Trigger);
+        assert_eq!(rive.state_machine_names(), vec!["play".to_string(), "ping".to_string()]);
+
+        assert!(rive.fire_input("play"));
+        assert_eq!(rive.state(), RiveState::Playing);
+        assert!(rive.fire_input("ping"), "an unrelated trigger still reports its edge");
+        assert_eq!(rive.state(), RiveState::Playing, "an unrelated trigger does not move state");
+        assert!(!rive.fire_input("missing"));
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec!["playing".to_string()],
+            "only a real transition is announced"
+        );
+        assert_eq!(*fired.lock().unwrap(), vec!["play".to_string(), "ping".to_string()]);
     }
 }

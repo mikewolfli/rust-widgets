@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 //! ImageView widget — displays an Image as a widget (BLUE13 R2.12).
+use crate::compat::String;
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::image::{Image, ImageFormat};
 use crate::render::RenderContext;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -209,6 +211,12 @@ pub struct ImageView {
     /// party that knows both sizes, so it produces a buffer of exactly the destination size. The
     /// cache is keyed by `(source pixels, destination size)` so a still control resamples once.
     scaled_image: Option<(usize, u32, u32, crate::compat::Vec<u8>)>,
+    /// Emitted after [`ImageView::set_image`] installs a new picture.
+    pub image_changed: GenericSignal,
+    /// Emitted with the decoder's message when a bytes/file load fails.
+    pub load_failed: Signal1<String>,
+    /// Emitted when the picture is double-clicked inside the control.
+    pub double_clicked: GenericSignal,
 }
 
 impl ImageView {
@@ -223,6 +231,9 @@ impl ImageView {
             margin: 0,
             background: None,
             scaled_image: None,
+            image_changed: GenericSignal::new(),
+            load_failed: Signal1::new(),
+            double_clicked: GenericSignal::new(),
         }
     }
 
@@ -233,6 +244,26 @@ impl ImageView {
         // not enough: two images of the same size have different pixels.
         self.scaled_image = None;
         self.base.request_redraw();
+        self.image_changed.emit();
+    }
+
+    /// Decodes `data` and installs it as the displayed picture.
+    ///
+    /// This is the failure-reporting counterpart of [`Self::set_image`]: a decode error is emitted
+    /// through [`Self::load_failed`] *and* returned, so a host that connects the signal and a
+    /// caller that inspects the result both see it. A successful decode emits
+    /// [`Self::image_changed`] through `set_image`.
+    pub fn set_image_from_bytes(&mut self, data: &[u8]) -> Result<(), String> {
+        match Image::from_bytes(data) {
+            Ok(image) => {
+                self.set_image(image);
+                Ok(())
+            }
+            Err(error) => {
+                self.load_failed.emit(error.clone());
+                Err(error)
+            }
+        }
     }
 
     /// Returns a reference to the current image.
@@ -448,6 +479,22 @@ impl Widget for ImageView {
             Size::new(100, 100)
         }
     }
+
+    /// Resolves a published event name to the signal the view emits.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "image_changed" => Some(EventSignalRef::unit("image_changed", &self.image_changed)),
+            "load_failed" => Some(EventSignalRef::mapped(
+                "load_failed",
+                &self.load_failed,
+                |message: &String| CapabilityValue::String(message.clone()),
+            )),
+            "double_clicked" => Some(EventSignalRef::unit("double_clicked", &self.double_clicked)),
+            _ => None,
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -511,6 +558,13 @@ impl WidgetProperties for ImageView {
 impl EventHandler for ImageView {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // A double click is the gesture a host uses to open a viewer or replace the picture. It
+        // is reported only when it lands on the control and the control is enabled.
+        if let Event::MouseDoubleClick { pos, button: 1 } = event {
+            if self.base.is_enabled() && self.geometry().contains_point(*pos) {
+                self.double_clicked.emit();
+            }
+        }
     }
 }
 

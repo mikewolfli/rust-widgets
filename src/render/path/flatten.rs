@@ -39,7 +39,6 @@
 //! The path data stays a verbatim copy of upstream's `d` under this mapping (see `NOTICE`): the
 //! translation is a property of the axes, not a rewrite of the outline.
 
-use crate::compat::Vec;
 use crate::core::Point;
 
 use super::parser::{parse, Segment, Subpath};
@@ -150,6 +149,78 @@ impl From<super::parser::PathError> for FlattenError {
     }
 }
 
+/// One parsed dynamic path, kept for reuse across frames.
+///
+/// The key carries the text itself, not just its address and length. A `&str` handed to
+/// [`flatten_paths`] may be owned by the caller (the Lottie path is), so an address can be reused
+/// by a different string after the first one is freed. Comparing the stored text prevents a stale
+/// outline from being served for the new contents; the address and length are only a cheap
+/// pre-filter.
+struct CachedDynamicPath {
+    address: usize,
+    length: usize,
+    text: crate::compat::Arc<str>,
+    subpaths: crate::compat::Arc<[Subpath]>,
+}
+
+/// Parses `path`, reusing an earlier parse of the same text.
+///
+/// # Why a cache is safe here
+///
+/// The key includes the contents, so a dynamic path that is mutated in place is detected and
+/// re-parsed. The cache is thread-local (every caller flattens on the thread that paints) and
+/// bounded, so a control that generates a new path every frame replaces entries rather than
+/// growing memory without limit (G-34).
+fn parse_dynamic_cached(
+    path: &str,
+) -> Result<crate::compat::Arc<[Subpath]>, super::parser::PathError> {
+    use crate::compat::{RefCell, VecDeque};
+
+    const CACHE_CAPACITY: usize = 128;
+    thread_local! {
+        static CACHE: RefCell<VecDeque<CachedDynamicPath>> = RefCell::new(VecDeque::new());
+    }
+
+    let address = path.as_ptr() as usize;
+    let length = path.len();
+    let hit = CACHE.with(|cache| {
+        cache
+            .borrow()
+            .iter()
+            .find(|entry| {
+                entry.address == address && entry.length == length && &*entry.text == path
+            })
+            .map(|entry| entry.subpaths.clone())
+    });
+    if let Some(subpaths) = hit {
+        return Ok(subpaths);
+    }
+
+    let parsed: crate::compat::Arc<[Subpath]> = parse(path)?.into();
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        // The same address with different text means the caller reused an allocation. Replace that
+        // entry rather than keeping both, so the lookup cannot serve the old outline.
+        if let Some(entry) =
+            cache.iter_mut().find(|entry| entry.address == address && entry.length == length)
+        {
+            entry.text = crate::compat::Arc::from(path);
+            entry.subpaths = parsed.clone();
+        } else {
+            if cache.len() >= CACHE_CAPACITY {
+                cache.pop_front();
+            }
+            cache.push_back(CachedDynamicPath {
+                address,
+                length,
+                text: crate::compat::Arc::from(path),
+                subpaths: parsed.clone(),
+            });
+        }
+    });
+    Ok(parsed)
+}
+
 /// Flattens every `d` in `paths` into one packed device-space polygon list.
 ///
 /// # What "packed" means, and why the caller sizes the buffers
@@ -179,7 +250,7 @@ pub fn flatten_paths(
     let mut cursor = 0usize;
 
     for d in paths {
-        let subpaths: Vec<Subpath> = parse(d)?;
+        let subpaths = parse_dynamic_cached(d)?;
         flatten_subpaths(&subpaths, placement, points, contours, &mut cursor, &mut contour_count)?;
     }
 
@@ -465,6 +536,28 @@ mod tests {
         .expect("a cubic and an arc must flatten");
         assert_eq!(count, 1);
         assert!(contours[0].1 - contours[0].0 > 3);
+    }
+
+    #[test]
+    fn a_mutated_path_is_reparsed_rather_than_served_from_the_cache() {
+        let placement = placement(24.0);
+        // Same length before and after, so a heap string normally keeps its address: this is the
+        // exact shape a cache keyed only by (address, length) would get wrong.
+        let mut path = crate::compat::String::from("M0 0L480 0L480 480Z");
+        let original_len = path.len();
+        let mut points = [Point::new(0, 0); MAX_OUTLINE_POINTS];
+        let mut contours = [(0usize, 0usize); MAX_OUTLINE_CONTOURS];
+        let first = flatten_paths(&[path.as_str()], placement, &mut points, &mut contours)
+            .expect("the first path parses");
+        assert_eq!(first, 1);
+        let first_end = points[1];
+
+        path.replace_range(5..8, "720");
+        assert_eq!(path.len(), original_len, "an in-place edit keeps the allocation");
+        let second = flatten_paths(&[path.as_str()], placement, &mut points, &mut contours)
+            .expect("the changed path parses");
+        assert_eq!(second, 1);
+        assert_ne!(points[1], first_end, "the cached outline must not outlive its text");
     }
 
     #[test]

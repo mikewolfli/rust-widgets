@@ -15,6 +15,7 @@ use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -56,6 +57,88 @@ pub struct DiffLine {
     pub right: Option<String>,
     /// How the two sides relate; see [`DiffKind`].
     pub kind: DiffKind,
+    /// Whether a `Changed` pair differs only in whitespace.
+    ///
+    /// Precomputed with the row so the paint path can dim it without re-scanning the text: a
+    /// whitespace-only change is common in reformatting commits and is not the same event as a
+    /// semantic edit, which is the distinction this flag lets the view show.
+    pub blank_only: bool,
+    /// The byte spans that differ, as `(left_span, right_span)`, for a `Changed` row.
+    ///
+    /// Computed once when the row list is built. The paint path used to call
+    /// [`differing_spans`] for every visible changed row on every frame, allocating two `Vec`s
+    /// per row per frame; this carries the answer instead.
+    pub changed_spans: Option<((usize, usize), (usize, usize))>,
+}
+
+impl DiffLine {
+    /// Builds one compared row, deriving `changed_spans` and `blank_only`.
+    fn new(left: Option<String>, right: Option<String>, kind: DiffKind) -> Self {
+        let changed_spans = match (&left, &right, kind) {
+            (Some(left), Some(right), DiffKind::Changed) => Some(differing_spans(left, right)),
+            _ => None,
+        };
+        let blank_only = match (&left, &right, kind) {
+            (Some(left), Some(right), DiffKind::Changed) => {
+                left != right && collapse_whitespace(left) == collapse_whitespace(right)
+            }
+            _ => false,
+        };
+        Self { left, right, kind, blank_only, changed_spans }
+    }
+}
+
+/// How whitespace differences are judged when comparing the two snapshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WhitespaceMode {
+    /// Every byte counts; the default.
+    #[default]
+    Show,
+    /// Trailing whitespace is ignored, so an end-of-line reformat is not a change.
+    IgnoreEol,
+    /// All whitespace is ignored, so a re-indent is not a change.
+    IgnoreAll,
+    /// All whitespace is ignored for *matching*, but a row that differs only in whitespace is
+    /// still reported as `Changed` with [`DiffLine::blank_only`] set, so a reader can see that a
+    /// re-indent happened without it masquerading as an edit.
+    MarkBlankChanges,
+}
+
+impl WhitespaceMode {
+    /// The token spelling published as the `whitespace_mode` property.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Show => "show",
+            Self::IgnoreEol => "ignore_eol",
+            Self::IgnoreAll => "ignore_all",
+            Self::MarkBlankChanges => "mark_blank_changes",
+        }
+    }
+
+    /// Parses a published token spelling.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "show" | "exact" => Some(Self::Show),
+            "ignore_eol" | "ignore_trailing" => Some(Self::IgnoreEol),
+            "ignore_all" | "ignore_whitespace" => Some(Self::IgnoreAll),
+            "mark_blank_changes" | "mark_blank" => Some(Self::MarkBlankChanges),
+            _ => None,
+        }
+    }
+
+    /// The comparison key for one line.
+    fn key_for(self, line: &str) -> String {
+        match self {
+            Self::Show => line.to_string(),
+            Self::IgnoreEol => line.trim_end().to_string(),
+            Self::IgnoreAll | Self::MarkBlankChanges => collapse_whitespace(line),
+        }
+    }
+
+    /// Whether whitespace-only pairs are kept as `blank_only` rows.
+    fn marks_blank_changes(self) -> bool {
+        matches!(self, Self::MarkBlankChanges)
+    }
 }
 
 /// How the two sides are presented.
@@ -68,6 +151,25 @@ pub enum DiffViewMode {
     Unified,
 }
 
+impl DiffViewMode {
+    /// The token spelling published in `view_mode_changed`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SideBySide => "side_by_side",
+            Self::Unified => "unified",
+        }
+    }
+
+    /// Parses a published token spelling.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "side_by_side" | "split" => Some(Self::SideBySide),
+            "unified" | "patch" => Some(Self::Unified),
+            _ => None,
+        }
+    }
+}
+
 /// Side-by-side diff viewer for text snapshots.
 pub struct DiffViewer {
     base: BaseWidget,
@@ -75,17 +177,74 @@ pub struct DiffViewer {
     right: String,
     lines: Vec<DiffLine>,
     selected_index: Option<usize>,
-    /// The first diff row the viewport paints.
+    /// The first painted row the viewport shows.
     ///
     /// The paint path used to stop at a fixed twelve rows, so a longer comparison was not
-    /// reachable. This is the scroll state the wheel drives.
+    /// reachable. This is the scroll state the wheel drives; it indexes [`Self::display_rows`],
+    /// not [`Self::lines`], because one line can occupy two rows in unified mode and a folded run
+    /// occupies one.
     first_visible_line: usize,
     /// How the two sides are presented.
     view_mode: DiffViewMode,
     /// Whether long unchanged runs are collapsed to one marker row.
     fold_unchanged: bool,
+    /// How whitespace differences are judged.
+    whitespace_mode: WhitespaceMode,
+    /// The shortest unchanged run that is folded away.
+    fold_threshold: usize,
+    /// How many unchanged rows are kept visible at each end of a folded run.
+    fold_context_lines: usize,
+    /// Whether a `Changed` row is painted as a `-` row and a `+` row in unified mode.
+    unified_changed_pair: bool,
+    /// The start line of every folded run the reader expanded.
+    ///
+    /// Keyed by the **whole** unchanged run, not by the marker's position inside it: with context
+    /// rows kept visible, one expanded run is painted from several positions and a per-marker key
+    /// would fold the remainder again.
+    expanded_hunks: Vec<(usize, usize)>,
+    /// The painted rows derived from `lines`, `view_mode`, the fold settings and the expansions.
+    display_rows: Vec<DisplayRow>,
+    /// Whether `display_rows` needs rebuilding before the next use.
+    display_dirty: bool,
     /// Emitted after compare. Payload is changed-lines count.
     pub compared: Signal1<usize>,
+    /// Emitted when the selected row changes, with the selected line index.
+    pub selection_changed: Signal1<Option<usize>>,
+    /// Emitted when the presentation mode changes, with its token spelling.
+    pub view_mode_changed: Signal1<String>,
+    /// Emitted when folding is enabled or disabled.
+    pub fold_changed: Signal1<bool>,
+    /// Emitted when a folded hunk is expanded, with the line index the run starts at.
+    pub hunk_expanded: Signal1<usize>,
+}
+
+/// Which side of a row is painted by one display row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowSide {
+    /// Both columns (side-by-side).
+    Both,
+    /// The left column only (a unified `-` row).
+    Left,
+    /// The right column only (a unified `+`, `~` or context row).
+    Right,
+}
+
+/// What one painted row shows.
+#[derive(Debug, Clone, Copy)]
+enum RowSource {
+    /// One compared line, painted on `side`.
+    Line { index: usize, side: RowSide },
+    /// A folded run of unchanged lines. `run` is the whole unchanged range (the expansion key)
+    /// and `hidden` is the part the marker stands for.
+    Fold { run: (usize, usize), hidden: (usize, usize) },
+}
+
+/// One painted row, with the gutter numbers it shows precomputed.
+#[derive(Debug, Clone, Copy)]
+struct DisplayRow {
+    source: RowSource,
+    left_number: Option<usize>,
+    right_number: Option<usize>,
 }
 
 impl DiffViewer {
@@ -100,7 +259,18 @@ impl DiffViewer {
             first_visible_line: 0,
             view_mode: DiffViewMode::SideBySide,
             fold_unchanged: false,
+            whitespace_mode: WhitespaceMode::default(),
+            fold_threshold: 8,
+            fold_context_lines: 0,
+            unified_changed_pair: true,
+            expanded_hunks: Vec::new(),
+            display_rows: Vec::new(),
+            display_dirty: true,
             compared: Signal1::new(),
+            selection_changed: Signal1::new(),
+            view_mode_changed: Signal1::new(),
+            fold_changed: Signal1::new(),
+            hunk_expanded: Signal1::new(),
         }
     }
 
@@ -109,6 +279,7 @@ impl DiffViewer {
         self.left = left.into();
         self.right = right.into();
         self.first_visible_line = 0;
+        self.expanded_hunks.clear();
         self.recompute();
     }
 
@@ -127,9 +298,18 @@ impl DiffViewer {
         if index >= self.lines.len() {
             return false;
         }
-        self.selected_index = Some(index);
+        self.set_selection(Some(index));
         self.base.request_redraw();
         true
+    }
+
+    /// Stores a selection and reports the change.
+    fn set_selection(&mut self, next: Option<usize>) {
+        if self.selected_index == next {
+            return;
+        }
+        self.selected_index = next;
+        self.selection_changed.emit(next);
     }
 
     /// Returns count of non-equal lines.
@@ -148,6 +328,8 @@ impl DiffViewer {
             return;
         }
         self.view_mode = mode;
+        self.display_dirty = true;
+        self.view_mode_changed.emit(mode.as_str().to_string());
         self.base.request_redraw();
     }
 
@@ -158,12 +340,108 @@ impl DiffViewer {
         }
         self.fold_unchanged = fold;
         self.first_visible_line = 0;
+        self.display_dirty = true;
+        self.fold_changed.emit(fold);
         self.base.request_redraw();
     }
 
     /// Returns whether unchanged runs are folded.
     pub fn fold_unchanged(&self) -> bool {
         self.fold_unchanged
+    }
+
+    /// How whitespace differences are judged.
+    pub fn whitespace_mode(&self) -> WhitespaceMode {
+        self.whitespace_mode
+    }
+
+    /// Sets how whitespace differences are judged, recomputing the comparison.
+    pub fn set_whitespace_mode(&mut self, mode: WhitespaceMode) {
+        if self.whitespace_mode == mode {
+            return;
+        }
+        self.whitespace_mode = mode;
+        self.expanded_hunks.clear();
+        self.recompute();
+    }
+
+    /// The shortest unchanged run that is folded away.
+    pub fn fold_threshold(&self) -> usize {
+        self.fold_threshold
+    }
+
+    /// Sets the shortest unchanged run that is folded away.
+    pub fn set_fold_threshold(&mut self, threshold: usize) {
+        let threshold = threshold.max(1);
+        if self.fold_threshold == threshold {
+            return;
+        }
+        self.fold_threshold = threshold;
+        self.first_visible_line = 0;
+        self.display_dirty = true;
+        self.base.request_redraw();
+    }
+
+    /// How many unchanged rows are kept visible at each end of a folded run.
+    pub fn fold_context_lines(&self) -> usize {
+        self.fold_context_lines
+    }
+
+    /// Sets how many unchanged rows are kept visible at each end of a folded run.
+    pub fn set_fold_context_lines(&mut self, lines: usize) {
+        if self.fold_context_lines == lines {
+            return;
+        }
+        self.fold_context_lines = lines;
+        self.first_visible_line = 0;
+        self.display_dirty = true;
+        self.base.request_redraw();
+    }
+
+    /// Whether unified mode paints a changed row as a `-` row and a `+` row.
+    pub fn unified_changed_pair(&self) -> bool {
+        self.unified_changed_pair
+    }
+
+    /// Sets whether unified mode paints a changed row as a `-` row and a `+` row.
+    ///
+    /// With the pair disabled the row is painted as a single `~` line carrying only the new
+    /// text, which is what the viewer used to do and what lost the old text entirely.
+    pub fn set_unified_changed_pair(&mut self, pair: bool) {
+        if self.unified_changed_pair == pair {
+            return;
+        }
+        self.unified_changed_pair = pair;
+        self.first_visible_line = 0;
+        self.display_dirty = true;
+        self.base.request_redraw();
+    }
+
+    /// Expands the folded hunk at display row `row`.
+    ///
+    /// Returns `false` when the row is not a fold marker. Expanding emits `hunk_expanded` with
+    /// the line index the run starts at, which is what a host needs to restore the same view.
+    pub fn expand_hunk(&mut self, row: usize) -> bool {
+        self.ensure_display_rows();
+        let Some(DisplayRow { source: RowSource::Fold { run, .. }, .. }) =
+            self.display_rows.get(row).copied()
+        else {
+            return false;
+        };
+        if self.expanded_hunks.contains(&run) {
+            return false;
+        }
+        self.expanded_hunks.push(run);
+        self.display_dirty = true;
+        self.hunk_expanded.emit(run.0);
+        self.base.request_redraw();
+        true
+    }
+
+    /// The number of painted rows.
+    pub fn display_row_count(&mut self) -> usize {
+        self.ensure_display_rows();
+        self.display_rows.len()
     }
 
     /// Selects the next changed row after the current selection.
@@ -195,13 +473,25 @@ impl DiffViewer {
 
     /// Scrolls `index` into view.
     fn reveal_line(&mut self, index: usize) {
+        self.ensure_display_rows();
+        let Some(row) = self.display_row_of_line(index) else {
+            return;
+        };
         let visible = self.visible_line_count();
-        if index < self.first_visible_line {
-            self.first_visible_line = index;
-        } else if index >= self.first_visible_line + visible {
-            self.first_visible_line = index + 1 - visible;
+        if row < self.first_visible_line {
+            self.first_visible_line = row;
+        } else if row >= self.first_visible_line + visible {
+            self.first_visible_line = row + 1 - visible;
         }
         self.base.request_redraw();
+    }
+
+    /// The display row that paints line `index`, if the line is not folded away.
+    fn display_row_of_line(&self, index: usize) -> Option<usize> {
+        self.display_rows.iter().position(|row| match row.source {
+            RowSource::Line { index: painted, .. } => painted == index,
+            RowSource::Fold { run, .. } => index >= run.0 && index < run.1,
+        })
     }
 
     /// The selected row as patch text, for copying.
@@ -237,7 +527,7 @@ impl DiffViewer {
 
     /// The first row the viewport actually starts at, clamped to the last full window.
     fn visible_start(&self) -> usize {
-        let max_first = self.lines.len().saturating_sub(self.visible_line_count());
+        let max_first = self.display_rows.len().saturating_sub(self.visible_line_count());
         self.first_visible_line.min(max_first)
     }
 
@@ -249,7 +539,8 @@ impl DiffViewer {
         if lines == 0 {
             return false;
         }
-        let max_first = self.lines.len().saturating_sub(self.visible_line_count());
+        self.ensure_display_rows();
+        let max_first = self.display_rows.len().saturating_sub(self.visible_line_count());
         let next =
             (self.first_visible_line as i64 + lines as i64).clamp(0, max_first as i64) as usize;
         if next == self.first_visible_line {
@@ -259,44 +550,197 @@ impl DiffViewer {
         true
     }
 
+    /// Rebuilds the display rows when the inputs changed.
+    fn ensure_display_rows(&mut self) {
+        if !self.display_dirty {
+            return;
+        }
+        self.display_dirty = false;
+        self.display_rows.clear();
+        let mut left_number = 1usize;
+        let mut right_number = 1usize;
+        let mut index = 0usize;
+        while index < self.lines.len() {
+            let line = &self.lines[index];
+            if self.fold_unchanged && line.kind == DiffKind::Equal {
+                let start = index;
+                let mut end = index;
+                while end < self.lines.len() && self.lines[end].kind == DiffKind::Equal {
+                    end += 1;
+                }
+                let run = end - start;
+                let context = self.fold_context_lines.min(run / 2);
+                let expanded =
+                    self.expanded_hunks.iter().any(|(first, last)| *first <= start && end <= *last);
+                let folded = run > self.fold_threshold && run > context * 2 && !expanded;
+                if folded {
+                    for offset in 0..context {
+                        self.push_line_row(
+                            start + offset,
+                            RowSide::Both,
+                            false,
+                            &mut left_number,
+                            &mut right_number,
+                        );
+                    }
+                    let fold_start = start + context;
+                    let fold_end = end - context;
+                    self.display_rows.push(DisplayRow {
+                        source: RowSource::Fold {
+                            run: (start, end),
+                            hidden: (fold_start, fold_end),
+                        },
+                        left_number: None,
+                        right_number: None,
+                    });
+                    // The numbers are skipped, not reset: the rows the marker stands for are
+                    // still part of each snapshot's line count.
+                    left_number += fold_end.saturating_sub(fold_start);
+                    right_number += fold_end.saturating_sub(fold_start);
+                    for offset in (end - context)..end {
+                        self.push_line_row(
+                            offset,
+                            RowSide::Both,
+                            false,
+                            &mut left_number,
+                            &mut right_number,
+                        );
+                    }
+                    index = end;
+                    continue;
+                }
+            }
+            match self.view_mode {
+                DiffViewMode::SideBySide => {
+                    self.push_line_row(
+                        index,
+                        RowSide::Both,
+                        false,
+                        &mut left_number,
+                        &mut right_number,
+                    );
+                }
+                DiffViewMode::Unified => {
+                    let paired = self.unified_changed_pair
+                        && line.kind == DiffKind::Changed
+                        && line.left.is_some()
+                        && line.right.is_some();
+                    if paired {
+                        self.push_line_row(
+                            index,
+                            RowSide::Left,
+                            true,
+                            &mut left_number,
+                            &mut right_number,
+                        );
+                        self.push_line_row(
+                            index,
+                            RowSide::Right,
+                            true,
+                            &mut left_number,
+                            &mut right_number,
+                        );
+                    } else {
+                        self.push_line_row(
+                            index,
+                            RowSide::Right,
+                            false,
+                            &mut left_number,
+                            &mut right_number,
+                        );
+                    }
+                }
+            }
+            index += 1;
+        }
+    }
+
+    /// Pushes the display row for `index` on `side`, advancing the gutter counters.
+    fn push_line_row(
+        &mut self,
+        index: usize,
+        side: RowSide,
+        defer_left: bool,
+        left_number: &mut usize,
+        right_number: &mut usize,
+    ) {
+        let line = &self.lines[index];
+        let left_number_for_row = line.left.as_ref().map(|_| *left_number);
+        let right_number_for_row = line.right.as_ref().map(|_| *right_number);
+        self.display_rows.push(DisplayRow {
+            source: RowSource::Line { index, side },
+            left_number: left_number_for_row,
+            right_number: right_number_for_row,
+        });
+        // In a unified pair the left row is followed by the right row, so only the row that owns
+        // each side advances that side's counter.
+        let advance_left = !defer_left || side == RowSide::Left;
+        let advance_right = !defer_left || side == RowSide::Right;
+        if line.left.is_some() && advance_left {
+            *left_number += 1;
+        }
+        if line.right.is_some() && advance_right {
+            *right_number += 1;
+        }
+    }
+
     fn recompute(&mut self) {
         let left_lines: Vec<&str> = self.left.lines().collect();
         let right_lines: Vec<&str> = self.right.lines().collect();
+        // Comparison keys: what the algorithm judges, while the rows keep showing the raw text.
+        // Normalizing once per snapshot is what makes an "ignore whitespace" mode a comparison
+        // rule rather than a rewrite of what the reader sees.
+        let mode = self.whitespace_mode;
+        let left_keys: Vec<String> = left_lines.iter().map(|line| mode.key_for(line)).collect();
+        let right_keys: Vec<String> = right_lines.iter().map(|line| mode.key_for(line)).collect();
+        let left_refs: Vec<&str> = left_keys.iter().map(String::as_str).collect();
+        let right_refs: Vec<&str> = right_keys.iter().map(String::as_str).collect();
 
         self.lines.clear();
 
         // # Size guard
         //
         // The Myers trace keeps one `V` snapshot per edit distance `D`, so its memory is
-        // O((N + M) * D) and a pair of large, entirely different documents would spend it
-        // without bound. When the line grid exceeds this budget the previous positional
-        // comparison is kept: it misreports insertions as changes, but it is linear, never
-        // allocates a trace, and still produces a usable row list. The full-clone of both
-        // inputs below is a separate, pre-existing cost and is deliberately not addressed
-        // here.
+        // O((N + M) * D). The depth is bounded inside `myers_diff` by a byte budget; this guard
+        // covers the other axis, a line grid so large that even a shallow trace would be
+        // expensive. Both fall back to the positional comparison, which misreports insertions as
+        // changes but is linear and never allocates a trace.
         if (left_lines.len() + 1).saturating_mul(right_lines.len() + 1) > 4_000_000 {
             let max_len = left_lines.len().max(right_lines.len());
             for idx in 0..max_len {
                 let l = left_lines.get(idx).copied();
                 let r = right_lines.get(idx).copied();
+                let same = match (l, r) {
+                    (Some(_), Some(_)) => left_refs[idx] == right_refs[idx],
+                    _ => false,
+                };
                 let kind = match (l, r) {
-                    (Some(a), Some(b)) if a == b => DiffKind::Equal,
+                    (Some(_), Some(_)) if same => DiffKind::Equal,
                     (Some(_), Some(_)) => DiffKind::Changed,
                     (Some(_), None) => DiffKind::Removed,
                     (None, Some(_)) => DiffKind::Added,
                     (None, None) => DiffKind::Equal,
                 };
-                self.lines.push(DiffLine {
-                    left: l.map(|s| s.to_string()),
-                    right: r.map(|s| s.to_string()),
+                self.lines.push(DiffLine::new(
+                    l.map(|s| s.to_string()),
+                    r.map(|s| s.to_string()),
                     kind,
-                });
+                ));
             }
         } else {
-            self.lines = build_diff_lines(&left_lines, &right_lines);
+            self.lines = build_diff_lines_with(
+                &left_lines,
+                &right_lines,
+                &left_refs,
+                &right_refs,
+                mode.marks_blank_changes(),
+            );
         }
 
-        self.selected_index = if self.lines.is_empty() { None } else { Some(0) };
+        let next_selection = if self.lines.is_empty() { None } else { Some(0) };
+        self.set_selection(next_selection);
+        self.display_dirty = true;
+        self.ensure_display_rows();
         self.compared.emit(self.change_count());
         self.base.request_layout();
         self.base.request_redraw();
@@ -323,7 +767,17 @@ enum EditOp {
 /// `V[k]` tracks the furthest `x` reached on diagonal `k = x - y`; one snapshot of
 /// `V` is saved per round `d`, which is what the linear backtrack needs to recover
 /// the steps. The script is assembled backwards from the end and then reversed.
-fn myers_diff(a: &[&str], b: &[&str]) -> Vec<EditOp> {
+///
+/// # Memory bound
+///
+/// One `V` snapshot per round makes the trace O((N + M) * D), which for two large and wholly
+/// different documents is unbounded in practice: at the 4-million-cell grid guard a 2 000-line
+/// pair can still ask for hundreds of megabytes. The depth is therefore capped by a byte budget
+/// ([`MYERS_TRACE_BUDGET_BYTES`]); when the edit distance does not fit, `None` is returned and the
+/// caller falls back to the linear positional comparison rather than paying an unbounded cost.
+const MYERS_TRACE_BUDGET_BYTES: usize = 8 * 1024 * 1024;
+
+fn myers_diff(a: &[&str], b: &[&str]) -> Option<Vec<EditOp>> {
     let n = a.len();
     let m = b.len();
     let max = n + m;
@@ -332,12 +786,21 @@ fn myers_diff(a: &[&str], b: &[&str]) -> Vec<EditOp> {
     // `k - 1` / `k + 1` probes at the widest round and keep the empty-input case
     // (`max == 0`) in bounds.
     let offset = max + 1;
-    let mut v = vec![0isize; 2 * max + 3];
+    let width = 2 * max + 3;
+    let mut v = vec![0isize; width];
+    let per_snapshot = width.saturating_mul(core::mem::size_of::<isize>()).max(1);
+    let max_depth = (MYERS_TRACE_BUDGET_BYTES / per_snapshot).max(1);
     let mut trace: Vec<Vec<isize>> = Vec::new();
     let mut reached = false;
+    let mut rounds = 0usize;
 
     for d in 0..=max {
+        if rounds >= max_depth {
+            // The edit distance outgrew the trace budget; reporting that is the honest answer.
+            return None;
+        }
         trace.push(v.clone());
+        rounds += 1;
         let d = d as isize;
         let mut k = -d;
         while k <= d {
@@ -398,7 +861,7 @@ fn myers_diff(a: &[&str], b: &[&str]) -> Vec<EditOp> {
         d -= 1;
     }
     ops.reverse();
-    ops
+    Some(ops)
 }
 
 /// Turns an edit script into display rows.
@@ -407,40 +870,71 @@ fn myers_diff(a: &[&str], b: &[&str]) -> Vec<EditOp> {
 /// region. Its deletions and insertions are paired positionally into `Changed` rows
 /// (the existing side-by-side meaning) and any leftovers become `Removed` / `Added`
 /// rows, which is exactly the `left`/`right: Option<String>` shape of [`DiffLine`].
-fn build_diff_lines(a: &[&str], b: &[&str]) -> Vec<DiffLine> {
+///
+/// `a_cmp` / `b_cmp` are the comparison keys (the same lines under the active
+/// [`WhitespaceMode`]) while `a` / `b` are the text the rows display. Keeping the two apart is
+/// what lets an ignore-whitespace mode change what counts as a change without changing what the
+/// reader sees.
+fn build_diff_lines_with(
+    a: &[&str],
+    b: &[&str],
+    a_cmp: &[&str],
+    b_cmp: &[&str],
+    mark_blank: bool,
+) -> Vec<DiffLine> {
     // The unchanged head and tail are already known to match, so Myers runs only over
     // the middle that can actually differ. Without this trim, editing one line near the
     // top of a long document made the edit script (and its trace) span the whole file.
-    let prefix = a.iter().zip(b.iter()).take_while(|(left, right)| left == right).count();
+    let prefix = a_cmp.iter().zip(b_cmp.iter()).take_while(|(left, right)| left == right).count();
     let mut suffix = 0usize;
-    while suffix < a.len().saturating_sub(prefix)
-        && suffix < b.len().saturating_sub(prefix)
-        && a[a.len() - 1 - suffix] == b[b.len() - 1 - suffix]
+    while suffix < a_cmp.len().saturating_sub(prefix)
+        && suffix < b_cmp.len().saturating_sub(prefix)
+        && a_cmp[a_cmp.len() - 1 - suffix] == b_cmp[b_cmp.len() - 1 - suffix]
     {
         suffix += 1;
     }
     let a_middle = &a[prefix..a.len() - suffix];
     let b_middle = &b[prefix..b.len() - suffix];
+    let a_cmp_middle = &a_cmp[prefix..a_cmp.len() - suffix];
+    let b_cmp_middle = &b_cmp[prefix..b_cmp.len() - suffix];
 
     let mut lines = Vec::with_capacity(prefix + a_middle.len().max(b_middle.len()) + suffix);
     for index in 0..prefix {
-        lines.push(DiffLine {
-            left: Some(a[index].to_string()),
-            right: Some(b[index].to_string()),
-            kind: DiffKind::Equal,
-        });
+        let kind =
+            if mark_blank && a[index] != b[index] { DiffKind::Changed } else { DiffKind::Equal };
+        lines.push(DiffLine::new(Some(a[index].to_string()), Some(b[index].to_string()), kind));
     }
 
-    let ops = myers_diff(a_middle, b_middle);
+    // A trace that outgrew its byte budget is reported as `None`; the positional fallback keeps
+    // the comparison linear at the cost of reporting insertions as changes.
+    let ops = myers_diff(a_cmp_middle, b_cmp_middle).unwrap_or_else(|| {
+        (0..a_cmp_middle.len().max(b_cmp_middle.len()))
+            .flat_map(|index| {
+                let mut pair = Vec::new();
+                if index < a_cmp_middle.len() {
+                    pair.push(EditOp::Delete(index));
+                }
+                if index < b_cmp_middle.len() {
+                    pair.push(EditOp::Insert(index));
+                }
+                pair
+            })
+            .collect()
+    });
     let mut idx = 0usize;
     while idx < ops.len() {
         match ops[idx] {
             EditOp::Equal(l, r) => {
-                lines.push(DiffLine {
-                    left: Some(a_middle[l].to_string()),
-                    right: Some(b_middle[r].to_string()),
-                    kind: DiffKind::Equal,
-                });
+                let kind = if mark_blank && a_middle[l] != b_middle[r] {
+                    DiffKind::Changed
+                } else {
+                    DiffKind::Equal
+                };
+                lines.push(DiffLine::new(
+                    Some(a_middle[l].to_string()),
+                    Some(b_middle[r].to_string()),
+                    kind,
+                ));
                 idx += 1;
             }
             EditOp::Delete(_) | EditOp::Insert(_) => {
@@ -456,25 +950,21 @@ fn build_diff_lines(a: &[&str], b: &[&str]) -> Vec<DiffLine> {
                 }
                 let paired = deletes.len().min(inserts.len());
                 for (&l, &r) in deletes.iter().zip(inserts.iter()).take(paired) {
-                    lines.push(DiffLine {
-                        left: Some(a_middle[l].to_string()),
-                        right: Some(b_middle[r].to_string()),
-                        kind: DiffKind::Changed,
-                    });
+                    lines.push(DiffLine::new(
+                        Some(a_middle[l].to_string()),
+                        Some(b_middle[r].to_string()),
+                        DiffKind::Changed,
+                    ));
                 }
                 for &l in &deletes[paired..] {
-                    lines.push(DiffLine {
-                        left: Some(a_middle[l].to_string()),
-                        right: None,
-                        kind: DiffKind::Removed,
-                    });
+                    lines.push(DiffLine::new(
+                        Some(a_middle[l].to_string()),
+                        None,
+                        DiffKind::Removed,
+                    ));
                 }
                 for &r in &inserts[paired..] {
-                    lines.push(DiffLine {
-                        left: None,
-                        right: Some(b_middle[r].to_string()),
-                        kind: DiffKind::Added,
-                    });
+                    lines.push(DiffLine::new(None, Some(b_middle[r].to_string()), DiffKind::Added));
                 }
             }
         }
@@ -482,11 +972,9 @@ fn build_diff_lines(a: &[&str], b: &[&str]) -> Vec<DiffLine> {
     for offset in 0..suffix {
         let left = a.len() - suffix + offset;
         let right = b.len() - suffix + offset;
-        lines.push(DiffLine {
-            left: Some(a[left].to_string()),
-            right: Some(b[right].to_string()),
-            kind: DiffKind::Equal,
-        });
+        let kind =
+            if mark_blank && a[left] != b[right] { DiffKind::Changed } else { DiffKind::Equal };
+        lines.push(DiffLine::new(Some(a[left].to_string()), Some(b[right].to_string()), kind));
     }
     lines
 }
@@ -523,6 +1011,29 @@ impl Widget for DiffViewer {
             "compared" => Some(EventSignalRef::mapped("compared", &self.compared, |v| {
                 CapabilityValue::UInt(*v as u64)
             })),
+            "selection_changed" => {
+                Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
+                    match v {
+                        Some(index) => CapabilityValue::UInt(*index as u64),
+                        None => CapabilityValue::Null,
+                    }
+                }))
+            }
+            "view_mode_changed" => {
+                Some(EventSignalRef::mapped("view_mode_changed", &self.view_mode_changed, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
+            "fold_changed" => {
+                Some(EventSignalRef::mapped("fold_changed", &self.fold_changed, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "hunk_expanded" => {
+                Some(EventSignalRef::mapped("hunk_expanded", &self.hunk_expanded, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
             _ => None,
         }
     }
@@ -545,6 +1056,14 @@ impl WidgetProperties for DiffViewer {
                 Some(index) => Ok(CapabilityValue::UInt(index as u64)),
                 None => Ok(CapabilityValue::Null),
             },
+            "view_mode" => Ok(CapabilityValue::String(self.view_mode.as_str().to_string())),
+            "fold_unchanged" => Ok(CapabilityValue::Bool(self.fold_unchanged)),
+            "fold_threshold" => Ok(CapabilityValue::UInt(self.fold_threshold as u64)),
+            "fold_context_lines" => Ok(CapabilityValue::UInt(self.fold_context_lines as u64)),
+            "unified_changed_pair" => Ok(CapabilityValue::Bool(self.unified_changed_pair)),
+            "whitespace_mode" => {
+                Ok(CapabilityValue::String(self.whitespace_mode.as_str().to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -570,6 +1089,36 @@ impl WidgetProperties for DiffViewer {
             "line_count" | "change_count" | "selected_index" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
+            "view_mode" => {
+                let token = expect_string(value)?;
+                let mode =
+                    DiffViewMode::from_token(&token).ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_view_mode(mode);
+                Ok(())
+            }
+            "fold_unchanged" => {
+                self.set_fold_unchanged(expect_bool(value)?);
+                Ok(())
+            }
+            "fold_threshold" => {
+                self.set_fold_threshold(expect_usize(value)?);
+                Ok(())
+            }
+            "fold_context_lines" => {
+                self.set_fold_context_lines(expect_usize(value)?);
+                Ok(())
+            }
+            "unified_changed_pair" => {
+                self.set_unified_changed_pair(expect_bool(value)?);
+                Ok(())
+            }
+            "whitespace_mode" => {
+                let token = expect_string(value)?;
+                let mode = WhitespaceMode::from_token(&token)
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_whitespace_mode(mode);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -581,6 +1130,12 @@ impl WidgetProperties for DiffViewer {
             "line_count",
             "change_count",
             "selected_index",
+            "view_mode",
+            "fold_unchanged",
+            "fold_threshold",
+            "fold_context_lines",
+            "unified_changed_pair",
+            "whitespace_mode",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -648,13 +1203,22 @@ impl EventHandler for DiffViewer {
             }
         }
         if let Event::MousePress { pos, button: 1, .. } = event {
-            // A click selects the row under it; the row index is derived from the same
-            // constants the paint uses.
+            // A click selects the row under it, or expands the fold marker under it. Rows, not
+            // lines: a unified changed pair and a folded run both break the one-to-one mapping.
             let rect = self.geometry();
             let row = (pos.y - rect.y - ROW_TOP + 10) / ROW_HEIGHT;
             if row >= 0 {
-                let index = self.visible_start() + row as usize;
-                let _ = self.select_index(index);
+                self.ensure_display_rows();
+                let display_row = self.visible_start() + row as usize;
+                match self.display_rows.get(display_row).map(|row| row.source) {
+                    Some(RowSource::Fold { .. }) => {
+                        self.expand_hunk(display_row);
+                    }
+                    Some(RowSource::Line { index, .. }) => {
+                        let _ = self.select_index(index);
+                    }
+                    None => {}
+                }
             }
         }
         // Wheel: positive `delta.y` moves the content down, so the viewport moves toward the
@@ -671,6 +1235,10 @@ impl EventHandler for DiffViewer {
 impl Draw for DiffViewer {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        // Rows are derived from the comparison and the fold state, so they are rebuilt once per
+        // change rather than per frame. Done before the style borrow is taken because it needs
+        // `&mut self`.
+        self.ensure_display_rows();
 
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
@@ -759,26 +1327,26 @@ impl Draw for DiffViewer {
             );
         }
 
-        // Line numbers are counted from the beginning of the comparison, so the gutter shows
-        // the line's position in its own snapshot rather than its row in the diff.
-        let mut left_number =
-            self.lines[..self.visible_start()].iter().filter(|line| line.left.is_some()).count();
-        let mut right_number =
-            self.lines[..self.visible_start()].iter().filter(|line| line.right.is_some()).count();
-        let mut row = 0usize;
-        let mut idx = self.visible_start();
+        // Rows are built once per comparison / fold / expansion change, so the paint path does no
+        // layout of its own: a changed row in unified mode is already two rows here and a folded
+        // run is already one marker.
+        let start = self.visible_start();
+        let visible = self.visible_line_count();
         let font = effective_font(style);
-        while idx < self.lines.len() && row < self.visible_line_count() {
-            // Fold a long unchanged run into one marker row. Folding is opt-in and only affects
-            // what is painted, so the line indices a caller reads are unchanged.
-            if self.fold_unchanged && self.lines[idx].kind == DiffKind::Equal {
-                let mut end = idx;
-                while end < self.lines.len() && self.lines[end].kind == DiffKind::Equal {
-                    end += 1;
-                }
-                if end - idx > 8 {
-                    let y = rect.y + ROW_TOP + (row as i32) * ROW_HEIGHT;
-                    let marker = format!("… {} unchanged lines", end - idx);
+        let rows = &self.display_rows;
+        for (offset, display) in rows.iter().enumerate().skip(start).take(visible) {
+            let y = rect.y + ROW_TOP + ((offset - start) as i32) * ROW_HEIGHT;
+            if y + ROW_BOTTOM_INSET > rect.y + rect.height as i32 {
+                break;
+            }
+            let (index, side) = match display.source {
+                RowSource::Fold { hidden: (start, end), .. } => {
+                    // The marker is a control, not a decoration: clicking it restores the rows.
+                    let marker = if self.fold_unchanged {
+                        format!("⋯ {} unchanged lines — click to expand", end - start)
+                    } else {
+                        format!("⋯ {} unchanged lines", end - start)
+                    };
                     context.draw_text(
                         Point::new(rect.x + 8, y),
                         &marker,
@@ -786,18 +1354,18 @@ impl Draw for DiffViewer {
                         text_color.blend(&background, 0.4),
                         HorizontalAlignment::Left,
                     );
-                    left_number += end - idx;
-                    right_number += end - idx;
-                    idx = end;
-                    row += 1;
+                    context.draw_line(
+                        Point::new(rect.x + 2, y + 7),
+                        Point::new(rect.x + rect.width as i32 - 2, y + 7),
+                        row_rule,
+                    );
                     continue;
                 }
-            }
-            let line = &self.lines[idx];
-            let y = rect.y + ROW_TOP + (row as i32) * ROW_HEIGHT;
-            if y + ROW_BOTTOM_INSET > rect.y + rect.height as i32 {
-                break;
-            }
+                RowSource::Line { index, side } => (index, side),
+            };
+            let Some(line) = self.lines.get(index) else {
+                continue;
+            };
             let bg = match line.kind {
                 DiffKind::Equal => None,
                 DiffKind::Added => added.or_else(|| Some(background.blend(&Color::GREEN, 0.12))),
@@ -812,17 +1380,21 @@ impl Draw for DiffViewer {
                     color,
                 );
             }
-            if self.selected_index == Some(idx) {
+            if self.selected_index == Some(index) {
                 context.draw_rect(
                     Rect::new(rect.x + 2, y - 11, rect.width.saturating_sub(4), 16),
                     selection,
                 );
             }
+            // A whitespace-only change is real but peripheral, so its ink is weakened rather
+            // than presented as an edit of the same weight as a semantic one.
+            let row_ink =
+                if line.blank_only { text_color.blend(&background, 0.45) } else { text_color };
 
-            match self.view_mode {
-                DiffViewMode::SideBySide => {
-                    if let Some(text) = &line.left {
-                        let gutter = format!("{left_number:>4}");
+            match side {
+                RowSide::Both => {
+                    if let (Some(text), Some(number)) = (&line.left, display.left_number) {
+                        let gutter = format!("{number:>4}");
                         context.draw_text(
                             Point::new(rect.x + 4, y),
                             &gutter,
@@ -834,12 +1406,12 @@ impl Draw for DiffViewer {
                             Point::new(rect.x + 34, y),
                             text,
                             font,
-                            text_color,
+                            row_ink,
                             HorizontalAlignment::Left,
                         );
                     }
-                    if let Some(text) = &line.right {
-                        let gutter = format!("{right_number:>4}");
+                    if let (Some(text), Some(number)) = (&line.right, display.right_number) {
+                        let gutter = format!("{number:>4}");
                         context.draw_text(
                             Point::new(mid_x + 4, y),
                             &gutter,
@@ -851,22 +1423,16 @@ impl Draw for DiffViewer {
                             Point::new(mid_x + 34, y),
                             text,
                             font,
-                            text_color,
+                            row_ink,
                             HorizontalAlignment::Left,
                         );
                     }
                 }
-                DiffViewMode::Unified => {
-                    let (prefix, text, gutter) = match line.kind {
-                        DiffKind::Added => ("+", line.right.as_deref(), right_number),
-                        DiffKind::Removed => ("-", line.left.as_deref(), left_number),
-                        DiffKind::Changed => ("~", line.right.as_deref(), right_number),
-                        DiffKind::Equal => (" ", line.right.as_deref(), right_number),
-                    };
-                    if let Some(text) = text {
+                RowSide::Left => {
+                    if let (Some(text), Some(number)) = (&line.left, display.left_number) {
                         context.draw_text(
                             Point::new(rect.x + 4, y),
-                            &format!("{gutter:>4} {prefix}"),
+                            &format!("{number:>4} -"),
                             font,
                             text_color.blend(&background, 0.5),
                             HorizontalAlignment::Left,
@@ -875,59 +1441,90 @@ impl Draw for DiffViewer {
                             Point::new(rect.x + 38, y),
                             text,
                             font,
-                            text_color,
+                            row_ink,
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                }
+                RowSide::Right => {
+                    let (prefix, text, number) = match line.kind {
+                        DiffKind::Added => ("+", line.right.as_deref(), display.right_number),
+                        DiffKind::Removed => ("-", line.left.as_deref(), display.left_number),
+                        DiffKind::Changed => {
+                            // With the pair enabled a `Changed` row is a `+` row and its old text
+                            // was the sibling `-` row; without it the row stays the single `~`
+                            // line that lost the old text.
+                            let prefix = if self.unified_changed_pair { "+" } else { "~" };
+                            (prefix, line.right.as_deref(), display.right_number)
+                        }
+                        DiffKind::Equal => (" ", line.right.as_deref(), display.right_number),
+                    };
+                    if let (Some(text), Some(number)) = (text, number) {
+                        context.draw_text(
+                            Point::new(rect.x + 4, y),
+                            &format!("{number:>4} {prefix}"),
+                            font,
+                            text_color.blend(&background, 0.5),
+                            HorizontalAlignment::Left,
+                        );
+                        context.draw_text(
+                            Point::new(rect.x + 38, y),
+                            text,
+                            font,
+                            row_ink,
                             HorizontalAlignment::Left,
                         );
                     }
                 }
             }
 
-            // Word-level highlight: only the run that differs is tinted, so a changed line shows
-            // *what* changed rather than only that something did.
-            if line.kind == DiffKind::Changed {
-                if let (Some(left), Some(right)) = (&line.left, &line.right) {
-                    let (left_span, right_span) = differing_spans(left, right);
-                    let x_base = if self.view_mode == DiffViewMode::Unified {
-                        rect.x + 38
-                    } else {
-                        rect.x + 34
-                    };
+            // Word-level highlight: the spans were resolved when the rows were built, so a still
+            // frame measures the prefix and the run and nothing else.
+            if let (DiffKind::Changed, Some((left_span, right_span))) =
+                (line.kind, line.changed_spans)
+            {
+                let (Some(left), Some(right)) = (&line.left, &line.right) else {
+                    continue;
+                };
+                let tint = changed.unwrap_or(background).with_alpha(90);
+                let draw_left = matches!(side, RowSide::Both | RowSide::Left);
+                let draw_right = matches!(side, RowSide::Both | RowSide::Right);
+                if draw_left {
                     let prefix_width =
                         context.measure_text(&left[..left_span.0], font).width as i32;
                     let span_width =
                         context.measure_text(&left[left_span.0..left_span.1], font).width;
+                    let x_base = if side == RowSide::Both { rect.x + 34 } else { rect.x + 38 };
                     context.fill_rect(
                         Rect::new(x_base + prefix_width, y - 1, span_width.max(1), 14),
-                        changed.unwrap_or(background).with_alpha(90),
+                        tint,
                     );
-                    if self.view_mode == DiffViewMode::SideBySide {
-                        let prefix_width =
-                            context.measure_text(&right[..right_span.0], font).width as i32;
-                        let span_width =
-                            context.measure_text(&right[right_span.0..right_span.1], font).width;
-                        context.fill_rect(
-                            Rect::new(mid_x + 34 + prefix_width, y - 1, span_width.max(1), 14),
-                            changed.unwrap_or(background).with_alpha(90),
-                        );
-                    }
+                }
+                if draw_right {
+                    let prefix_width =
+                        context.measure_text(&right[..right_span.0], font).width as i32;
+                    let span_width =
+                        context.measure_text(&right[right_span.0..right_span.1], font).width;
+                    let x_base = if side == RowSide::Both { mid_x + 34 } else { rect.x + 38 };
+                    context.fill_rect(
+                        Rect::new(x_base + prefix_width, y - 1, span_width.max(1), 14),
+                        tint,
+                    );
                 }
             }
 
-            if line.left.is_some() {
-                left_number += 1;
-            }
-            if line.right.is_some() {
-                right_number += 1;
-            }
             context.draw_line(
                 Point::new(rect.x + 2, y + 7),
                 Point::new(rect.x + rect.width as i32 - 2, y + 7),
                 row_rule,
             );
-            idx += 1;
-            row += 1;
         }
     }
+}
+
+/// Removes every whitespace character from a line, for whitespace-insensitive comparison.
+fn collapse_whitespace(line: &str) -> String {
+    line.chars().filter(|ch| !ch.is_whitespace()).collect()
 }
 
 /// The byte spans that differ between two lines.
@@ -968,6 +1565,12 @@ fn differing_spans(left: &str, right: &str) -> ((usize, usize), (usize, usize)) 
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// The exact-comparison entry point, for tests that pin the algorithm without a whitespace
+    /// policy; the widget itself goes through `build_diff_lines_with`.
+    fn build_diff_lines(a: &[&str], b: &[&str]) -> Vec<DiffLine> {
+        build_diff_lines_with(a, b, a, b, false)
+    }
 
     #[test]
     fn recompute_detects_changes() {
@@ -1100,5 +1703,193 @@ mod tests {
             1,
             "the unchanged head and tail must not be reported as changes"
         );
+    }
+
+    /// Unified mode paints a changed row as a removal and an addition, so the old text survives.
+    ///
+    /// The viewer used to paint only the new text with a `~` prefix, which is a diff that cannot
+    /// answer "what changed".
+    #[test]
+    fn unified_mode_shows_the_old_text_of_a_changed_row() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_texts("a\nold\nb", "a\nnew\nb");
+        viewer.set_view_mode(DiffViewMode::Unified);
+        assert_eq!(viewer.display_row_count(), 4, "the changed row takes two painted rows");
+
+        assert!(matches!(
+            viewer.display_rows[1].source,
+            RowSource::Line { index: 1, side: RowSide::Left }
+        ));
+        assert!(matches!(
+            viewer.display_rows[2].source,
+            RowSource::Line { index: 1, side: RowSide::Right }
+        ));
+        assert_eq!(viewer.display_rows[1].left_number, Some(2));
+        assert_eq!(viewer.display_rows[2].right_number, Some(2));
+        assert_eq!(viewer.lines()[1].left.as_deref(), Some("old"));
+    }
+
+    /// The pair expansion is optional, and disabling it restores the single `~` row.
+    #[test]
+    fn unified_changed_pair_can_be_disabled() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_texts("a\nold\nb", "a\nnew\nb");
+        viewer.set_view_mode(DiffViewMode::Unified);
+        viewer.set_unified_changed_pair(false);
+        assert_eq!(viewer.display_row_count(), 3);
+        assert!(matches!(
+            viewer.display_rows[1].source,
+            RowSource::Line { index: 1, side: RowSide::Right }
+        ));
+    }
+
+    /// Selection, view-mode and fold changes are published.
+    #[test]
+    fn view_state_signals_are_emitted() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        let selections = Arc::new(Mutex::new(Vec::<Option<usize>>::new()));
+        let sink = selections.clone();
+        viewer.selection_changed.connect(move |index| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*index);
+            }
+        });
+        let modes = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = modes.clone();
+        viewer.view_mode_changed.connect(move |mode| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(mode.as_ref().clone());
+            }
+        });
+        let folds = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let sink = folds.clone();
+        viewer.fold_changed.connect(move |fold| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*fold);
+            }
+        });
+
+        viewer.set_texts("a\nb", "a\nb\nc");
+        assert!(viewer.select_index(1));
+        assert!(viewer.select_index(1), "re-selecting the same row is not a change");
+        viewer.set_view_mode(DiffViewMode::Unified);
+        viewer.set_fold_unchanged(true);
+
+        let selections = selections.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(selections, vec![Some(0), Some(1)], "the reset and the click are both reported");
+        let modes = modes.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(modes, vec!["unified".to_string()]);
+        let folds = folds.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(folds, vec![true]);
+    }
+
+    /// A fold marker is clickable and expands the run it stands for.
+    #[test]
+    fn clicking_the_fold_marker_expands_the_hunk() {
+        let text: Vec<String> = (0..30).map(|n| format!("line{n}")).collect();
+        let mut changed = text.clone();
+        changed[25] = "line twenty-five".to_string();
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 400));
+        viewer.set_texts(text.join("\n"), changed.join("\n"));
+        viewer.set_fold_unchanged(true);
+
+        let expanded = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = expanded.clone();
+        viewer.hunk_expanded.connect(move |start| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*start);
+            }
+        });
+
+        assert_eq!(viewer.display_row_count(), 6, "one marker + the change + the tail");
+        assert!(matches!(
+            viewer.display_rows[0].source,
+            RowSource::Fold { run: (0, 25), hidden: (0, 25) }
+        ));
+
+        // The click row is derived from the same constants the paint uses.
+        viewer.handle_event(&Event::mouse_press(10, ROW_TOP + 2, 1));
+        assert_eq!(viewer.display_row_count(), 30, "expanding restores every row");
+        let expanded = expanded.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(expanded, vec![0]);
+    }
+
+    /// Whitespace policy changes what counts as a change without rewriting the visible text.
+    #[test]
+    fn whitespace_modes_change_what_counts_as_a_change() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_texts("a", "a ");
+        assert_eq!(viewer.change_count(), 1);
+        assert!(viewer.lines()[0].blank_only, "a trailing space is a blank-only change");
+
+        viewer.set_whitespace_mode(WhitespaceMode::IgnoreEol);
+        assert_eq!(viewer.change_count(), 0, "trailing whitespace is ignored");
+        assert_eq!(viewer.lines()[0].left.as_deref(), Some("a"), "the display text is raw");
+        assert_eq!(viewer.lines()[0].right.as_deref(), Some("a "));
+
+        viewer.set_whitespace_mode(WhitespaceMode::IgnoreAll);
+        viewer.set_texts("a b", "ab");
+        assert_eq!(viewer.change_count(), 0, "all whitespace is ignored");
+
+        viewer.set_whitespace_mode(WhitespaceMode::MarkBlankChanges);
+        viewer.set_texts("a", "a ");
+        assert_eq!(viewer.change_count(), 1, "blank-only rows are still reported");
+        assert!(viewer.lines()[0].blank_only);
+    }
+
+    /// The differing spans are resolved when the row is built, not per frame.
+    #[test]
+    fn changed_spans_are_precomputed() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_texts("x = 1", "x = 2");
+        let line = &viewer.lines()[0];
+        assert_eq!(line.kind, DiffKind::Changed);
+        assert_eq!(line.changed_spans, Some(differing_spans("x = 1", "x = 2")));
+        assert!(viewer
+            .lines()
+            .iter()
+            .all(|line| line.kind == DiffKind::Changed || line.changed_spans.is_none()));
+    }
+
+    /// The Myers trace is bounded by bytes, and an over-deep comparison is reported as such.
+    #[test]
+    fn the_myers_trace_is_bounded() {
+        let left: Vec<String> = (0..2000).map(|n| format!("left{n}")).collect();
+        let right: Vec<String> = (0..2000).map(|n| format!("right{n}")).collect();
+        let left_refs: Vec<&str> = left.iter().map(String::as_str).collect();
+        let right_refs: Vec<&str> = right.iter().map(String::as_str).collect();
+        assert!(
+            myers_diff(&left_refs, &right_refs).is_none(),
+            "a full-distance comparison must be refused rather than allocating the trace"
+        );
+        // The caller still gets a usable row list from the positional fallback.
+        let lines = build_diff_lines(&left_refs, &right_refs);
+        assert_eq!(lines.len(), 2000);
+        assert!(lines.iter().all(|line| line.kind != DiffKind::Equal));
+    }
+
+    /// The fold threshold and the context kept around a marker are configurable.
+    #[test]
+    fn fold_threshold_and_context_lines_are_configurable() {
+        let text: Vec<String> = (0..20).map(|n| format!("line{n}")).collect();
+        let mut changed = text.clone();
+        changed[15] = "line fifteen".to_string();
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 400));
+        viewer.set_texts(text.join("\n"), changed.join("\n"));
+        assert_eq!(viewer.fold_threshold(), 8);
+        assert_eq!(viewer.fold_context_lines(), 0);
+
+        viewer.set_fold_unchanged(true);
+        viewer.set_fold_threshold(30);
+        assert_eq!(viewer.display_row_count(), 20, "a threshold above the run keeps every row");
+
+        viewer.set_fold_threshold(4);
+        viewer.set_fold_context_lines(2);
+        viewer.display_dirty = true;
+        let rows = viewer.display_row_count();
+        assert!(rows < 20, "the run is folded with context around it");
+        assert!(matches!(viewer.display_rows[2].source, RowSource::Fold { .. }));
+        assert!(matches!(viewer.display_rows[0].source, RowSource::Line { index: 0, .. }));
+        assert!(matches!(viewer.display_rows[1].source, RowSource::Line { index: 1, .. }));
     }
 }

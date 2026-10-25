@@ -88,6 +88,14 @@ pub struct Pagination {
     page_size_menu_open: bool,
     /// Index of the option under the pointer while the popup is open.
     page_size_hover: Option<usize>,
+    /// The page cell the pointer is over, for the hover highlight and its signal.
+    hovered_page: Option<usize>,
+    /// Whether the wheel steps the page when it is not consumed elsewhere.
+    wheel_paging_enabled: bool,
+    /// Emitted with the zero-based page a cell activation landed on.
+    pub clicked: Signal1<usize>,
+    /// Emitted when the page cell under the pointer changes.
+    pub page_hover_changed: Signal1<Option<usize>>,
     /// Emitted with the new zero-based page whenever it changes.
     pub page_changed: Signal1<usize>,
 }
@@ -129,6 +137,10 @@ impl Pagination {
             page_size_options: Vec::new(),
             page_size_menu_open: false,
             page_size_hover: None,
+            hovered_page: None,
+            wheel_paging_enabled: true,
+            clicked: Signal1::new(),
+            page_hover_changed: Signal1::new(),
             page_changed: Signal1::new(),
         }
     }
@@ -368,11 +380,26 @@ impl Pagination {
         self.base.request_redraw();
     }
 
+    /// Whether the wheel steps the page.
+    pub fn wheel_paging_enabled(&self) -> bool {
+        self.wheel_paging_enabled
+    }
+
+    /// Enables or disables wheel paging.
+    pub fn set_wheel_paging_enabled(&mut self, enabled: bool) {
+        if self.wheel_paging_enabled == enabled {
+            return;
+        }
+        self.wheel_paging_enabled = enabled;
+        self.base.request_redraw();
+    }
+
+    /// The page cell under the pointer, when there is one.
+    pub fn hovered_page(&self) -> Option<usize> {
+        self.hovered_page
+    }
+
     /// Serialises the user's paging preference: the page size and the current page.
-    ///
-    /// The item `total` is **not** stored: it is the host's data model, not user state, and a
-    /// restored total would contradict whatever the host fetched this session. Only the two
-    /// numbers a user chose are kept.
     pub fn save_state(&self) -> Vec<u8> {
         let mut state = Vec::with_capacity(17);
         state.push(PAGINATION_STATE_VERSION);
@@ -848,6 +875,9 @@ impl Pagination {
                 }
             }
         }
+        // The click reports the page it landed on, whether or not the page moved (a click on
+        // the current page is still an activation the host may want to observe).
+        self.clicked.emit(self.page);
     }
 }
 
@@ -899,6 +929,17 @@ impl Widget for Pagination {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "clicked" => Some(EventSignalRef::mapped("clicked", &self.clicked, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
+            "page_hover_changed" => {
+                Some(EventSignalRef::mapped("page_hover_changed", &self.page_hover_changed, |v| {
+                    match v {
+                        Some(page) => CapabilityValue::UInt(*page as u64),
+                        None => CapabilityValue::Null,
+                    }
+                }))
+            }
             _ => None,
         }
     }
@@ -934,6 +975,7 @@ impl WidgetProperties for Pagination {
             "last_page" => Ok(CapabilityValue::UInt(self.last_page() as u64)),
             "sibling_count" => Ok(CapabilityValue::UInt(self.sibling_count() as u64)),
             "show_nav_buttons" => Ok(CapabilityValue::Bool(self.show_nav_buttons())),
+            "wheel_paging_enabled" => Ok(CapabilityValue::Bool(self.wheel_paging_enabled())),
             _ => base_property_get(self, name),
         }
     }
@@ -960,6 +1002,10 @@ impl WidgetProperties for Pagination {
                 self.set_show_nav_buttons(expect_bool(value)?);
                 Ok(())
             }
+            "wheel_paging_enabled" => {
+                self.set_wheel_paging_enabled(expect_bool(value)?);
+                Ok(())
+            }
             // Derived from `total` / `page_size`.
             "page_count" | "last_page" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -975,6 +1021,7 @@ impl WidgetProperties for Pagination {
             "last_page",
             "sibling_count",
             "show_nav_buttons",
+            "wheel_paging_enabled",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1027,8 +1074,47 @@ impl EventHandler for Pagination {
                         self.base.request_redraw();
                     }
                 }
+                // Hovering a page number is the pager's only "where will this take me"
+                // affordance before the click; the tint and the signal come from the same
+                // `cell_at` the press uses.
+                let hovered = match self.cell_at(*pos) {
+                    Some(Cell::Page(page)) => Some(page),
+                    _ => None,
+                };
+                if hovered != self.hovered_page {
+                    self.hovered_page = hovered;
+                    self.page_hover_changed.emit(hovered);
+                    self.base.request_redraw();
+                }
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            Event::MouseLeave { .. } => {
+                if self.hovered_page.take().is_some() {
+                    self.page_hover_changed.emit(None);
+                    self.base.request_redraw();
+                }
+            }
+            Event::Wheel { delta, .. } => {
+                // An open popup or an in-progress jump owns the wheel/keys; otherwise one notch
+                // moves one page, which is what a pager under a table expects.
+                if self.wheel_paging_enabled
+                    && !self.page_size_menu_open
+                    && !self.jump_editing
+                    && delta.y != 0
+                {
+                    if delta.y < 0 {
+                        self.next_page();
+                    } else {
+                        self.previous_page();
+                    }
+                }
+            }
+            // The key handler used to eat every key in the window. Focus (or a jump cell the
+            // user explicitly clicked, or an open popup that must accept Escape) is the gate.
+            Event::KeyPress { key, modifiers: _ }
+                if self.base.focus_reason().is_some()
+                    || self.jump_editing
+                    || self.page_size_menu_open =>
+            {
                 self.handle_key(*key);
             }
             _ => {}
@@ -1096,6 +1182,10 @@ impl Draw for Pagination {
 
             if is_current {
                 context.fill_rect(cell_rect, selected_background);
+            } else if matches!(cell, Cell::Page(page) if self.hovered_page == Some(*page)) {
+                // A hovered page number previews the selection: the same accent at a lower
+                // weight than the current page's fill, so the two states stay ordered.
+                context.fill_rect(cell_rect, background.blend(&selected_background, 0.12));
             }
 
             // The previous/next ends are `ChevronLeft`/`ChevronRight` **icon outlines**, not the
@@ -1389,6 +1479,8 @@ mod tests {
         bar.set_total(30);
         bar.set_page_size(10);
 
+        // Keyboard navigation is focus-gated: the bar only consumes keys while focused.
+        bar.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         bar.handle_event(&Event::key_press(39, 0));
         assert_eq!(bar.page(), 1, "Right advances");
         bar.handle_event(&Event::key_press(37, 0));
@@ -1472,6 +1564,8 @@ mod tests {
         let mut bar = bar();
         bar.set_total(95);
         bar.set_page(4);
+        // Keyboard paging is focus-gated: an unfocused pager must not eat the window's keys.
+        bar.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         bar.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
         assert_eq!(bar.page(), 9, "Page Down goes to the last page");
         bar.handle_event(&Event::KeyPress { key: 33, modifiers: 0 });

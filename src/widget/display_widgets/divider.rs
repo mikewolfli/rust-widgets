@@ -76,6 +76,16 @@ impl Divider {
         self.base.request_redraw();
     }
 
+    /// The colour the line is drawn in.
+    ///
+    /// This is the **painted** colour rather than the stored literal: an explicit
+    /// [`Divider::set_color`] wins, then the theme's resolved border colour, then the
+    /// constructor's neutral grey. Reading it through the property route therefore reports
+    /// what the divider actually shows.
+    pub fn color(&self) -> Color {
+        self.line_color()
+    }
+
     /// Sets the divider line color.
     ///
     /// An explicit colour wins over the active theme, so this overrides the
@@ -133,7 +143,15 @@ impl Widget for Divider {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(100, 2)
+        // A vertical divider is the horizontal one with its axes swapped: the length is the
+        // hint's long side and the line's own thickness is the short one. Reporting the
+        // horizontal shape for a vertical line left a layout no way to reserve its column.
+        let short = self.thickness.max(2);
+        if self.vertical {
+            crate::core::Size::new(short, 100)
+        } else {
+            crate::core::Size::new(100, short)
+        }
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -153,6 +171,7 @@ impl WidgetProperties for Divider {
                 if self.is_vertical() { "vertical" } else { "horizontal" }.to_string(),
             )),
             "thickness" => Ok(CapabilityValue::Float(self.thickness() as f64)),
+            "color" => Ok(CapabilityValue::Color(self.color())),
             _ => base_property_get(self, name),
         }
     }
@@ -176,24 +195,41 @@ impl WidgetProperties for Divider {
                 self.set_thickness(thickness as u32);
                 Ok(())
             }
+            "color" => {
+                // The declared kind is `Color`; a CSS string is still accepted because the
+                // JSON and C surfaces carry colours as text (the same allowance every other
+                // colour property makes).
+                let color = match value {
+                    CapabilityValue::Color(color) => color,
+                    CapabilityValue::String(raw) => match crate::core::Color::parse_hex(&raw) {
+                        Some(color) => color,
+                        None => return Err(CapabilityAccessError::TypeMismatch),
+                    },
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_color(color);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["orientation", "thickness", BASE_PROPERTY_NAMES]
+        property_names_of!["orientation", "thickness", "color", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `divider` publishes.
     ///
-    /// `set_orientation` takes an orientation token and `set_thickness` a pixel count,
-    /// so both assign state through the property path rather than performing an
-    /// action. They are refused as [`CapabilityAccessError::OutOfRange`] so a caller
-    /// discovers the names are valid and the invocation needs a payload, not
+    /// `set_orientation` takes an orientation token, `set_thickness` a pixel count and
+    /// `set_color` a colour, so all three assign state through the property path rather than
+    /// performing an action. They are refused as [`CapabilityAccessError::OutOfRange`] so a
+    /// caller discovers the names are valid and the invocation needs a payload, not
     /// [`CapabilityAccessError::UnknownCommand`].
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
-            "set_orientation" | "set_thickness" => Err(CapabilityAccessError::OutOfRange),
+            "set_orientation" | "set_thickness" | "set_color" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }

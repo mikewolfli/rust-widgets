@@ -72,6 +72,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::enumerated("mode", true, true, &["exclusive", "non_exclusive", "popup"]),
         ];
 
         pub(crate) const SCROLL_AREA_PROPERTIES: &[PropertySchema] = &[
@@ -142,6 +144,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("document_mode", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -220,6 +224,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("item_spacing", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -279,6 +285,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -292,6 +300,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -319,6 +329,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -332,6 +344,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -347,6 +361,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -359,6 +375,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -372,6 +390,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -383,6 +403,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -396,6 +418,8 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]

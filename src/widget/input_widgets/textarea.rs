@@ -173,6 +173,24 @@ pub struct TextArea {
     /// decide which items are meaningful, because that policy belongs to the application
     /// that owns the cut/copy/paste implementation.
     pub context_menu_requested: Signal1<Point>,
+    /// Emitted when the selected range changes.
+    ///
+    /// The range is read back through [`Self::selection_range`], the same derivation the paint
+    /// and edit paths use, so a host never has to reconstruct it from two offsets.
+    pub selection_changed: GenericSignal,
+    /// Emitted with the new caret byte offset whenever it moves.
+    pub cursor_position_changed: Signal1<usize>,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
+    /// Last caret offset announced, so the signal is edge-triggered.
+    caret_cursor_announced: usize,
+    /// Last selected range announced, so the signal is edge-triggered.
+    caret_selection_announced: Option<(usize, usize)>,
+    /// Last undo/redo availability announced.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
@@ -213,7 +231,7 @@ pub struct TextArea {
     /// full text measurements per visible line per paint. The cached values are the *same*
     /// measurements — an entry is only reused while the document is unchanged — so the band's
     /// pixels do not move.
-    band_width_cache: RefCell<(u64, Vec<(usize, usize, i32)>)>,
+    band_width_cache: RefCell<Option<BandWidthCache>>,
 }
 
 /// One display row: the byte range of the value it paints.
@@ -234,8 +252,20 @@ struct DisplayRowCache {
     width: u32,
     soft_wrap: bool,
     margin: i32,
-    font_size_bits: u32,
+    /// The full font the rows were wrapped with, not only its size.
+    ///
+    /// Wrapping is a width measurement, so a face or weight change at the same point size moves
+    /// every row boundary. Keying the cache on `size().to_bits()` alone left it answering from the
+    /// previous face (I-07).
+    font: Font,
     rows: Rc<Vec<DisplayRow>>,
+}
+
+/// Memoised selection-band advances, keyed by the document revision and the full font.
+struct BandWidthCache {
+    revision: u64,
+    font: Font,
+    entries: Vec<(usize, usize, i32)>,
 }
 
 impl TextArea {
@@ -256,6 +286,14 @@ impl TextArea {
             focused: false,
             changed: GenericSignal::new(),
             context_menu_requested: Signal1::new(),
+            selection_changed: GenericSignal::new(),
+            cursor_position_changed: Signal1::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
+            caret_cursor_announced: cursor_pos,
+            caret_selection_announced: None,
+            undo_available_announced: false,
+            redo_available_announced: false,
             undo_stack: UndoStack::new(),
             history_target,
             restoring_history: false,
@@ -266,7 +304,7 @@ impl TextArea {
             scroll_x: 0,
             revision: 0,
             display_rows_cache: RefCell::new(None),
-            band_width_cache: RefCell::new((0, Vec::new())),
+            band_width_cache: RefCell::new(None),
         }
     }
 
@@ -316,6 +354,7 @@ impl TextArea {
     /// Drops any selection, leaving the caret where it is.
     pub fn clear_selection(&mut self) {
         if self.selection_anchor.take().is_some() {
+            self.notify_caret_change();
             self.base.request_redraw();
         }
     }
@@ -324,6 +363,7 @@ impl TextArea {
     pub fn select_all(&mut self) {
         self.selection_anchor = Some(0);
         self.cursor_pos = self.text.len();
+        self.notify_caret_change();
         self.base.request_redraw();
     }
 
@@ -346,8 +386,41 @@ impl TextArea {
         };
         self.selection_anchor = Some(start);
         self.cursor_pos = end;
+        self.notify_caret_change();
         self.base.request_redraw();
         true
+    }
+
+    /// Reports a caret/selection change and the availability signals derived from it.
+    ///
+    /// Each signal is edge-triggered against the value last announced, so the many entry points
+    /// that move the caret (keyboard, pointer, programmatic writes, history restore) can call this
+    /// unconditionally without a changed position producing a second event.
+    fn notify_caret_change(&mut self) {
+        let selection = self.selection_range();
+        if self.cursor_pos != self.caret_cursor_announced {
+            self.caret_cursor_announced = self.cursor_pos;
+            self.cursor_position_changed.emit(self.cursor_pos);
+        }
+        if selection != self.caret_selection_announced {
+            self.caret_selection_announced = selection;
+            self.selection_changed.emit();
+        }
+        self.refresh_edit_capabilities();
+    }
+
+    /// Emits the undo/redo availability signals when their answers have changed.
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
     }
 
     /// The half-open byte range of one logical line, including its terminator, or `None` when the
@@ -470,6 +543,7 @@ impl TextArea {
         // symptom (typing into a row the user cannot see) is invisible in a snapshot test.
         self.scroll_caret_into_view();
         self.changed.emit();
+        self.notify_caret_change();
     }
 
     /// Replaces the entire text content.
@@ -509,7 +583,22 @@ impl TextArea {
         }
         self.cursor_pos = self.text.len();
         self.changed.emit();
+        self.notify_caret_change();
         self.base.request_redraw();
+    }
+
+    /// Appends `text` to the end of the document.
+    ///
+    /// The log-pane counterpart of [`Self::set_text`]: the existing value is kept and the new run
+    /// is added at its end, as one undo step. Like `TextEdit::append` the caret ends at the end of
+    /// the value, so the next keystroke continues from what was just appended.
+    pub fn append(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let mut next = self.text.clone();
+        next.push_str(text);
+        self.set_text(next);
     }
 
     /// Inserts a single character at the current cursor position.
@@ -534,6 +623,7 @@ impl TextArea {
         let new_cursor_pos = self.cursor_pos + ch.len_utf8();
         self.set_text(next);
         self.cursor_pos = new_cursor_pos.min(self.text.len());
+        self.notify_caret_change();
     }
 
     /// Inserts a single character.
@@ -574,6 +664,7 @@ impl TextArea {
             next.replace_range(start..start + len, "");
             self.set_text(next);
             self.cursor_pos = start;
+            self.notify_caret_change();
         }
     }
 
@@ -604,6 +695,7 @@ impl TextArea {
         } else if self.selection_anchor.take().is_some() {
             self.base.request_redraw();
         }
+        self.notify_caret_change();
     }
 
     /// Moves the caret to `target` (a byte offset), honouring the modifier keys held.
@@ -638,6 +730,7 @@ impl TextArea {
         }
         self.normalize_selection();
         self.scroll_caret_into_view();
+        self.notify_caret_change();
         self.base.request_redraw();
     }
 
@@ -769,6 +862,8 @@ impl TextArea {
         self.max_block_count = max;
         if self.enforce_max_block_count() {
             self.changed.emit();
+            // Dropping the oldest lines clamps the caret and the anchor, so report the move.
+            self.notify_caret_change();
         }
         self.base.request_redraw();
     }
@@ -812,13 +907,13 @@ impl TextArea {
     /// than the document text, so a hit is an integer comparison.
     fn display_rows(&self) -> Rc<Vec<DisplayRow>> {
         let width = self.content_width();
-        let font_size_bits = self.text_font().size().to_bits();
+        let font = self.text_font().clone();
         if let Some(cache) = self.display_rows_cache.borrow().as_ref() {
             if cache.revision == self.revision
                 && cache.width == width
                 && cache.soft_wrap == self.soft_wrap
                 && cache.margin == self.content_margin
-                && cache.font_size_bits == font_size_bits
+                && cache.font == font
             {
                 return Rc::clone(&cache.rows);
             }
@@ -829,7 +924,7 @@ impl TextArea {
             width,
             soft_wrap: self.soft_wrap,
             margin: self.content_margin,
-            font_size_bits,
+            font,
             rows: Rc::clone(&rows),
         });
         rows
@@ -1049,6 +1144,9 @@ impl TextArea {
             *self.history_target.borrow_mut() = self.text.clone();
             self.undo_stack.clear();
             self.changed.emit();
+            // The caret may have been clamped and the history cleared: report both.
+            self.notify_caret_change();
+            self.refresh_edit_capabilities();
             self.base.request_redraw();
         } else if previous != max {
             self.base.request_redraw();
@@ -1247,6 +1345,7 @@ impl TextArea {
             self.cursor_pos = index;
         }
         self.dragging_selection = true;
+        self.notify_caret_change();
         self.base.request_redraw();
     }
 
@@ -1260,6 +1359,7 @@ impl TextArea {
         }
         self.cursor_pos = floor_char_boundary(&self.text, index.min(self.text.len()));
         self.normalize_selection();
+        self.notify_caret_change();
         self.base.request_redraw();
     }
 
@@ -1269,6 +1369,7 @@ impl TextArea {
         let was_dragging = core::mem::replace(&mut self.dragging_selection, false);
         if was_dragging {
             self.normalize_selection();
+            self.notify_caret_change();
         }
         was_dragging
     }
@@ -1357,6 +1458,7 @@ impl TextArea {
         self.cursor_pos = self.cursor_pos.min(self.text.len());
         self.restoring_history = false;
         self.changed.emit();
+        self.notify_caret_change();
         self.base.request_redraw();
     }
 }
@@ -1435,6 +1537,24 @@ impl Widget for TextArea {
         use crate::signal::EventSignalRef;
         match name {
             "changed" => Some(EventSignalRef::unit("changed", &self.changed)),
+            "selection_changed" => {
+                Some(EventSignalRef::unit("selection_changed", &self.selection_changed))
+            }
+            "cursor_position_changed" => Some(EventSignalRef::mapped(
+                "cursor_position_changed",
+                &self.cursor_position_changed,
+                |v| CapabilityValue::UInt(*v as u64),
+            )),
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
             "context_menu_requested" => Some(EventSignalRef::mapped(
                 "context_menu_requested",
                 &self.context_menu_requested,
@@ -1827,6 +1947,7 @@ impl EventHandler for TextArea {
                 self.cursor_pos = end;
                 self.dragging_selection = false;
                 self.scroll_caret_into_view();
+                self.notify_caret_change();
                 self.base.request_redraw();
             }
             // A release anywhere ends the gesture, including outside the control: the anchor stays
@@ -2056,25 +2177,37 @@ impl TextArea {
             + self.advance_of_caret_prefix(self.cursor_pos)
     }
 
-    /// The advance of `text[from..to]`, memoised for the current revision.
+    /// The advance of `text[from..to]`, memoised for the current revision and font.
     fn band_advance(&self, from: usize, to: usize) -> i32 {
+        let font = self.text_font();
         {
             let cache = self.band_width_cache.borrow();
-            if cache.0 == self.revision {
-                if let Some((_, _, width)) =
-                    cache.1.iter().find(|(start, end, _)| *start == from && *end == to)
-                {
-                    return *width;
+            if let Some(cache) = cache.as_ref() {
+                if cache.revision == self.revision && cache.font == *font {
+                    if let Some((_, _, width)) =
+                        cache.entries.iter().find(|(start, end, _)| *start == from && *end == to)
+                    {
+                        return *width;
+                    }
                 }
             }
         }
         let width = if from < to { self.text_advance(&self.text[from..to]) } else { 0 };
         let mut cache = self.band_width_cache.borrow_mut();
-        if cache.0 != self.revision {
-            cache.0 = self.revision;
-            cache.1.clear();
+        let stale = match cache.as_ref() {
+            Some(entry) => entry.revision != self.revision || entry.font != *font,
+            None => true,
+        };
+        if stale {
+            *cache = Some(BandWidthCache {
+                revision: self.revision,
+                font: font.clone(),
+                entries: Vec::new(),
+            });
         }
-        cache.1.push((from, to, width));
+        if let Some(entry) = cache.as_mut() {
+            entry.entries.push((from, to, width));
+        }
         width
     }
 
@@ -3554,12 +3687,20 @@ mod tests {
     fn the_band_width_cache_is_scoped_to_the_revision() {
         let mut ta = TextArea::new("measured".to_string(), Rect::new(0, 0, 200, 80));
         let width = ta.band_advance(0, 4);
-        assert_eq!(ta.band_width_cache.borrow().1.len(), 1);
+        assert_eq!(ta.band_width_cache.borrow().as_ref().map_or(0, |c| c.entries.len()), 1);
         assert_eq!(ta.band_advance(0, 4), width);
-        assert_eq!(ta.band_width_cache.borrow().1.len(), 1, "a hit must not append");
+        assert_eq!(
+            ta.band_width_cache.borrow().as_ref().map_or(0, |c| c.entries.len()),
+            1,
+            "a hit must not append"
+        );
         ta.insert_str("x");
         let _ = ta.band_advance(0, 4);
-        assert_eq!(ta.band_width_cache.borrow().1.len(), 1, "the new revision starts clean");
+        assert_eq!(
+            ta.band_width_cache.borrow().as_ref().map_or(0, |c| c.entries.len()),
+            1,
+            "the new revision starts clean"
+        );
     }
 
     /// Undo records only the changed run, not a snapshot of the whole document.

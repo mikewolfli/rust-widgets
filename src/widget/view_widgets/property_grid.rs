@@ -21,6 +21,83 @@ use crate::widget::metrics::ControlMetrics;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// The editor a property row uses.
+///
+/// [`PropertyItem`] used to carry only `name`/`value`/`editable`, so every row — including one
+/// that holds a flag or a colour — opened as a plain text field. The kind is additive: a row
+/// built with [`PropertyItem::new`] is [`PropertyItemKind::Text`] and behaves exactly as before.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum PropertyItemKind {
+    /// Free-form text.
+    #[default]
+    Text,
+    /// A floating-point number.
+    Number,
+    /// A checkbox-style flag.
+    Bool,
+    /// A `#RRGGBB` colour spelling.
+    Color,
+    /// One of a fixed option list; clicking cycles to the next one.
+    Choice(Vec<String>),
+    /// A filesystem path.
+    File,
+}
+
+/// The open editor of one grid row: which row, its buffer and the caret's character index.
+#[derive(Debug, Clone)]
+struct GridEdit {
+    row: usize,
+    buffer: String,
+    cursor: usize,
+}
+
+impl GridEdit {
+    fn new(row: usize, text: String) -> Self {
+        let cursor = text.chars().count();
+        Self { row, buffer: text, cursor }
+    }
+
+    fn byte_offset(&self) -> usize {
+        self.buffer.char_indices().nth(self.cursor).map_or(self.buffer.len(), |(offset, _)| offset)
+    }
+
+    /// The buffer with a caret at the cursor, for the single-run fitted draw.
+    fn with_caret(&self) -> String {
+        let offset = self.byte_offset();
+        let mut rendered = String::with_capacity(self.buffer.len() + 1);
+        rendered.push_str(&self.buffer[..offset]);
+        rendered.push('|');
+        rendered.push_str(&self.buffer[offset..]);
+        rendered
+    }
+
+    fn insert(&mut self, text: &str) {
+        let offset = self.byte_offset();
+        self.buffer.insert_str(offset, text);
+        self.cursor += text.chars().count();
+    }
+
+    fn backspace(&mut self) -> bool {
+        if self.cursor == 0 {
+            return false;
+        }
+        let end = self.byte_offset();
+        let start = self.buffer.char_indices().nth(self.cursor - 1).map_or(0, |(offset, _)| offset);
+        self.buffer.replace_range(start..end, "");
+        self.cursor -= 1;
+        true
+    }
+
+    fn delete(&mut self) -> bool {
+        let start = self.byte_offset();
+        let Some((_, next)) = self.buffer[start..].char_indices().next() else {
+            return false;
+        };
+        self.buffer.replace_range(start..start + next.len_utf8(), "");
+        true
+    }
+}
+
 /// A single property row in the grid.
 #[derive(Debug, Clone)]
 pub struct PropertyItem {
@@ -30,12 +107,20 @@ pub struct PropertyItem {
     pub value: String,
     /// Whether the value can be edited by the user.
     pub editable: bool,
+    /// The editor this row uses.
+    pub kind: PropertyItemKind,
 }
 
 impl PropertyItem {
-    /// Creates a new property item.
+    /// Creates a new text property item.
     pub fn new(name: impl Into<String>, value: impl Into<String>, editable: bool) -> Self {
-        Self { name: name.into(), value: value.into(), editable }
+        Self { name: name.into(), value: value.into(), editable, kind: PropertyItemKind::Text }
+    }
+
+    /// Replaces the row's editor kind.
+    pub fn with_kind(mut self, kind: PropertyItemKind) -> Self {
+        self.kind = kind;
+        self
     }
 }
 
@@ -72,8 +157,8 @@ pub struct PropertyGrid {
     scroll_offset: u32,
     /// Emitted when a property row is selected via click.
     pub selected: Signal1<usize>,
-    /// The row being edited and its scratch buffer.
-    editing: Option<(usize, String)>,
+    /// The row being edited, its scratch buffer and the caret.
+    editing: Option<GridEdit>,
     /// Emitted when an edit commits `(row, text)`.
     pub cell_changed: Signal1<(usize, String)>,
     /// Emitted when the context menu is requested at a point.
@@ -218,7 +303,111 @@ impl PropertyGrid {
 
     /// The row whose editor is open, if any.
     pub fn editing_entry(&self) -> Option<usize> {
-        self.editing.as_ref().map(|(index, _)| *index)
+        self.editing.as_ref().map(|edit| edit.row)
+    }
+
+    /// Adds a typed property item.
+    pub fn add_property_item(&mut self, item: PropertyItem) {
+        self.properties.push(item);
+        self.base.request_redraw();
+    }
+
+    /// The editor kind of `index`, when the row exists.
+    pub fn property_kind(&self, index: usize) -> Option<&PropertyItemKind> {
+        self.properties.get(index).map(|item| &item.kind)
+    }
+
+    /// Replaces the editor kind of `index`, returning whether the row exists.
+    pub fn set_property_kind(&mut self, index: usize, kind: PropertyItemKind) -> bool {
+        let Some(item) = self.properties.get_mut(index) else {
+            return false;
+        };
+        item.kind = kind;
+        self.base.request_redraw();
+        true
+    }
+
+    /// Opens the editor for `index`, dispatching on its kind.
+    ///
+    /// A flag or a choice is edited in place; every string-shaped kind opens the text
+    /// editor seeded with its current display value.
+    fn begin_grid_edit(&mut self, index: usize) -> bool {
+        let Some(item) = self.properties.get(index).cloned() else {
+            return false;
+        };
+        if !item.editable {
+            return false;
+        }
+        match item.kind {
+            PropertyItemKind::Bool => {
+                let next = if item.value.eq_ignore_ascii_case("true") { "false" } else { "true" };
+                self.commit_edit_value(index, next.to_string());
+                true
+            }
+            PropertyItemKind::Choice(options) if !options.is_empty() => {
+                let current = options.iter().position(|option| *option == item.value).unwrap_or(0);
+                let next = options[(current + 1) % options.len()].clone();
+                self.commit_edit_value(index, next);
+                true
+            }
+            _ => {
+                self.editing = Some(GridEdit::new(index, item.value.clone()));
+                self.selected_index = Some(index);
+                self.base.request_redraw();
+                true
+            }
+        }
+    }
+
+    /// Writes a committed value into row `index` and reports it.
+    fn commit_edit_value(&mut self, index: usize, value: String) {
+        if let Some(item) = self.properties.get_mut(index) {
+            item.value = value.clone();
+        }
+        self.cell_changed.emit((index, value));
+        self.base.request_redraw();
+    }
+
+    /// Validates a text buffer against the row's kind and returns the value to store.
+    ///
+    /// A buffer that cannot be parsed keeps the row's previous value rather than writing an
+    /// invalid one; that is the grid's equivalent of `PropertiesPanel::commit_edit` refusing a
+    /// malformed number.
+    fn coerce_edit_value(&self, index: usize, text: &str) -> String {
+        let Some(item) = self.properties.get(index) else {
+            return text.to_string();
+        };
+        match &item.kind {
+            PropertyItemKind::Number => text.trim().parse::<f64>().map_or_else(
+                |_| item.value.clone(),
+                |number| {
+                    if number.fract() == 0.0 && number.is_finite() {
+                        format!("{}", number as i64)
+                    } else {
+                        format!("{number}")
+                    }
+                },
+            ),
+            PropertyItemKind::Color => Color::parse_hex(text)
+                .map_or_else(|| item.value.clone(), |color| color.to_hex_rgb()),
+            PropertyItemKind::Choice(options) => {
+                if options.iter().any(|option| option == text) {
+                    text.to_string()
+                } else {
+                    item.value.clone()
+                }
+            }
+            PropertyItemKind::Bool => {
+                if text.eq_ignore_ascii_case("true") {
+                    "true".to_string()
+                } else if text.eq_ignore_ascii_case("false") {
+                    "false".to_string()
+                } else {
+                    item.value.clone()
+                }
+            }
+            PropertyItemKind::Text | PropertyItemKind::File => text.to_string(),
+        }
     }
 
     /// Returns a mutable reference to the properties slice.
@@ -532,9 +721,7 @@ impl Draw for PropertyGrid {
                 ink
             };
             let value_text = match self.editing.as_ref() {
-                Some((editing, buffer)) if *editing == i => {
-                    std::borrow::Cow::Owned(std::format!("{buffer}|"))
-                }
+                Some(edit) if edit.row == i => std::borrow::Cow::Owned(edit.with_caret()),
                 _ => std::borrow::Cow::Borrowed(self.properties[i].value.as_str()),
             };
             context.draw_text_fitted_cow(
@@ -651,13 +838,7 @@ impl EventHandler for PropertyGrid {
             }
             Event::MouseDoubleClick { pos, button: 1 } => {
                 if let Some(row) = self.row_index_at(*pos) {
-                    if let Some(property) = self.properties.get(row) {
-                        if property.editable {
-                            self.editing = Some((row, property.value.clone()));
-                            self.selected_index = Some(row);
-                            self.base.request_redraw();
-                        }
-                    }
+                    let _ = self.begin_grid_edit(row);
                 }
             }
             Event::ContextMenu { pos } => self.context_menu_requested.emit(*pos),
@@ -677,27 +858,61 @@ impl EventHandler for PropertyGrid {
                 self.scroll_offset = self.scroll_offset.min(max_scroll);
                 self.base.request_redraw();
             }
+            // IME / keyboard-layout committed text, rather than raw ASCII key codes.
+            Event::TextInput { text }
+                if self.editing.is_some() && text.chars().all(|ch| !ch.is_control()) =>
+            {
+                if let Some(edit) = self.editing.as_mut() {
+                    edit.insert(text);
+                }
+                self.base.request_redraw();
+            }
             Event::KeyPress { key, .. } => {
-                if let Some((row, buffer)) = self.editing.as_mut() {
-                    match *key {
+                if self.editing.is_some() {
+                    let redraw = match *key {
                         crate::event::key_codes::ENTER => {
-                            let text = buffer.clone();
-                            let row = *row;
+                            let edit = self.editing.take();
+                            if let Some(edit) = edit {
+                                let (row, text) = (edit.row, edit.buffer);
+                                let value = self.coerce_edit_value(row, &text);
+                                self.commit_edit_value(row, value);
+                            }
+                            false
+                        }
+                        crate::event::key_codes::ESCAPE => {
                             self.editing = None;
-                            self.cell_changed.emit((row, text));
+                            true
                         }
-                        crate::event::key_codes::ESCAPE => self.editing = None,
-                        crate::event::key_codes::BACKSPACE => {
-                            buffer.pop();
-                        }
-                        32..=126 => {
-                            if let Some(character) = char::from_u32(*key) {
-                                buffer.push(character);
+                        _ => {
+                            let Some(edit) = self.editing.as_mut() else { return };
+                            match *key {
+                                crate::event::key_codes::BACKSPACE => edit.backspace(),
+                                crate::event::key_codes::DELETE => edit.delete(),
+                                crate::event::key_codes::LEFT => {
+                                    edit.cursor = edit.cursor.saturating_sub(1);
+                                    true
+                                }
+                                crate::event::key_codes::RIGHT => {
+                                    if edit.cursor < edit.buffer.chars().count() {
+                                        edit.cursor += 1;
+                                    }
+                                    true
+                                }
+                                crate::event::key_codes::HOME => {
+                                    edit.cursor = 0;
+                                    true
+                                }
+                                crate::event::key_codes::END => {
+                                    edit.cursor = edit.buffer.chars().count();
+                                    true
+                                }
+                                _ => false,
                             }
                         }
-                        _ => {}
+                    };
+                    if redraw {
+                        self.base.request_redraw();
                     }
-                    self.base.request_redraw();
                     return;
                 }
                 let max_scroll = self.max_scroll();
@@ -1290,7 +1505,7 @@ mod tests {
         let row = grid.content_rect().y + FIRST_ROW_TOP as i32 + 12;
         grid.handle_event(&Event::MouseDoubleClick { pos: Point::new(200, row), button: 1 });
         assert_eq!(grid.editing_entry(), Some(0));
-        grid.handle_event(&Event::KeyPress { key: 120, modifiers: 0 });
+        grid.handle_event(&Event::text_input("x"));
         let changed = std::sync::Arc::new(std::sync::Mutex::new(None));
         let sink = std::sync::Arc::clone(&changed);
         grid.cell_changed.connect(move |cell| {

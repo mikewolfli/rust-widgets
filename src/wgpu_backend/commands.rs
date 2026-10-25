@@ -3,6 +3,7 @@
 
 //! WGPU draw commands.
 use super::types::{PixelRect, Rgba8};
+use crate::compat::Arc;
 /// Feature-gated GPU draw command list.
 ///
 /// A `Vec<WgpuDrawCommand>` is an ordered, retained frame description rather
@@ -102,8 +103,9 @@ pub enum WgpuDrawCommand {
     DrawText {
         /// Text box in physical pixels; also the layout grid's origin.
         rect: PixelRect,
-        /// The string to render, one glyph per grid cell.
-        text: String,
+        /// The string to render, one glyph per grid cell. Shared so cloning a command does not
+        /// copy the text (G-10).
+        text: Arc<str>,
         /// Colour of every set bitmap dot, drawn without blending.
         color: Rgba8,
         /// Optional clip that further restricts the text box.
@@ -130,8 +132,9 @@ pub enum WgpuDrawCommand {
         /// Destination rectangle in physical pixels.
         rect: PixelRect,
         /// Source pixels, RGBA8, row-major, top row first; must be exactly
-        /// `image_width * image_height * 4` bytes.
-        rgba8: Vec<u8>,
+        /// `image_width * image_height * 4` bytes. Shared so cloning a command does not copy the
+        /// image (G-10).
+        rgba8: Arc<[u8]>,
         /// Source width in pixels, used to compute the 4-bytes-per-pixel
         /// stride of `rgba8`.
         image_width: u32,
@@ -315,8 +318,8 @@ pub enum WgpuDrawCommand {
     /// than being wound out.
     DrawPath {
         /// Vertices in physical pixels, connected in list order. Fewer than two
-        /// points skips the command.
-        points: Vec<(i32, i32)>,
+        /// points skips the command. Shared so cloning a command does not copy the path (G-10).
+        points: Arc<[(i32, i32)]>,
         /// Adds a closing segment from the last point back to the first when
         /// stroking. Ignored when `filled` is true, because a fill is
         /// implicitly closed.
@@ -337,10 +340,11 @@ pub enum WgpuDrawCommand {
     /// Contours are half-open ranges in `points`; opposite winding directions form holes. Invalid
     /// ranges are rejected by `rasterize_draw_commands_rgba8`.
     FillPathNonZero {
-        /// Vertices in physical pixels.
-        points: Vec<(i32, i32)>,
+        /// Vertices in physical pixels. Shared so cloning a command does not copy the geometry
+        /// (G-10).
+        points: Arc<[(i32, i32)]>,
         /// Half-open vertex ranges, one per closed contour.
-        contours: Vec<(usize, usize)>,
+        contours: Arc<[(usize, usize)]>,
         /// Fill colour.
         color: Rgba8,
         /// Optional clip that tightens the framebuffer and path bounds.
@@ -372,8 +376,8 @@ pub enum WgpuDrawCommand {
         /// rectangle's top edge and the ramp's bottom edge its bottom edge.
         rect: PixelRect,
         /// Evenly spaced colour stops, four bytes each, in the framebuffer's
-        /// top-to-bottom order.
-        gradient_data: Vec<u8>,
+        /// top-to-bottom order. Shared so cloning a command does not copy the table (G-10).
+        gradient_data: Arc<[u8]>,
         /// Optional clip that further restricts the rectangle without altering
         /// the ramp.
         clip: Option<PixelRect>,
@@ -410,8 +414,9 @@ pub enum WgpuDrawCommand {
     FillLinearGradient {
         /// Region to fill, in physical pixels.
         rect: PixelRect,
-        /// Colour-stop table, `[r,g,b,a, …]` per stop, interpolated across `rect`.
-        gradient_data: Vec<u8>,
+        /// Colour-stop table, `[r,g,b,a, …]` per stop, interpolated across `rect`. Shared so
+        /// cloning a command does not copy the table (G-10).
+        gradient_data: Arc<[u8]>,
         /// Optional clip that further restricts the fill.
         clip: Option<PixelRect>,
     },
@@ -429,7 +434,8 @@ pub enum WgpuDrawCommand {
         /// Region to fill, in physical pixels; also defines the gradient geometry.
         rect: PixelRect,
         /// Colour-stop table, `[r,g,b,a, …]` per stop, indexed by distance from the centre.
-        gradient_data: Vec<u8>,
+        /// Shared so cloning a command does not copy the table (G-10).
+        gradient_data: Arc<[u8]>,
         /// Optional clip that further restricts the fill.
         clip: Option<PixelRect>,
     },

@@ -17,11 +17,53 @@
 //! assert!(!sheet.rules().is_empty());
 //! ```
 
-use crate::compat::{format, vec, Box, MiniToString, String, Vec};
+use core::cell::RefCell;
+
+use crate::compat::{format, vec, Box, HashMap, MiniToString, Rc, String, Vec};
 use crate::core::Color;
 use crate::style::selector::ElementRef;
 use crate::style::{PseudoState, Selector, StyleRule, StyleSheet, WidgetStyle};
 use crate::widget::WidgetKind;
+
+/// A declaration value already converted from its source text.
+///
+/// Stored only in a thread-local cache keyed by the declaration's exact text (G-21): applying the
+/// same sheet to every control used to re-run the lexer and the colour/length/gradient parsers for
+/// every declaration of every match.
+#[derive(Debug, Clone)]
+enum CachedDeclValue {
+    Color(Color),
+    Length(u32),
+    Lengths(Vec<u32>),
+    Float(f32),
+    Gradient(crate::style::Gradient),
+    Shadow(crate::style::Shadow),
+}
+
+// The most recently parsed declaration values, keyed by kind and a hash of the source text.
+// The stored text is compared on a hit, so a hash collision is a miss rather than a wrong value.
+thread_local! {
+    static DECL_CACHE: RefCell<HashMap<(u8, u64), (String, CachedDeclValue)>> =
+        RefCell::new(HashMap::new());
+    /// Parsed semicolon-separated declaration lists (the inline-CSS form), keyed by text hash.
+    static INLINE_DECL_CACHE: RefCell<HashMap<u64, (String, Rc<Vec<(String, String)>>)>> =
+        RefCell::new(HashMap::new());
+}
+
+/// How many converted declaration values one thread keeps.
+const DECL_CACHE_LIMIT: usize = 512;
+/// How many inline declaration lists one thread keeps.
+const INLINE_DECL_CACHE_LIMIT: usize = 64;
+
+/// FNV-1a over declaration text. Cheap (linear in the value) and allocation-free.
+fn declaration_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
 
 /// The two CSS combinators the selector grammar supports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -695,10 +737,7 @@ impl CssParser {
             return Self::apply_declarations_text(text, style);
         }
         let (property, value) = Self::split_declaration(text)?;
-        Self::apply_one(
-            &CssDeclaration { property: property.to_string(), value: value.to_string() },
-            style,
-        )?;
+        Self::apply_value(property, value, style)?;
         // The single-declaration path reconciles too, so a programmatic write behaves exactly
         // like the same line inside a stylesheet.
         style.reconcile_shadow_into_surface();
@@ -710,14 +749,52 @@ impl CssParser {
     /// Empty segments (a trailing `;`, a blank line) are skipped rather than reported: a
     /// declaration list written as CSS ends with one by convention.
     pub fn apply_declarations_text(text: &str, style: &mut WidgetStyle) -> Result<(), String> {
+        let Ok(declarations) = Self::cached_inline_declarations(text) else {
+            // Preserve the old prefix-then-error behaviour: an invalid segment reports the same
+            // error after the valid declarations before it have been applied.
+            for segment in text.split(';') {
+                let segment = segment.trim();
+                if segment.is_empty() {
+                    continue;
+                }
+                Self::apply_declaration_text(segment, style)?;
+            }
+            return Ok(());
+        };
+        for (property, value) in declarations.iter() {
+            Self::apply_value(property, value, style)?;
+            style.reconcile_shadow_into_surface();
+        }
+        Ok(())
+    }
+
+    /// Splits and trims an inline declaration list once per distinct text (G-21).
+    fn cached_inline_declarations(text: &str) -> Result<Rc<Vec<(String, String)>>, String> {
+        let hash = declaration_hash(text);
+        if let Some(hit) = INLINE_DECL_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            cache.get(&hash).cloned().filter(|(stored, _)| stored == text).map(|(_, list)| list)
+        }) {
+            return Ok(hit);
+        }
+        let mut declarations = Vec::new();
         for segment in text.split(';') {
             let segment = segment.trim();
             if segment.is_empty() {
                 continue;
             }
-            Self::apply_declaration_text(segment, style)?;
+            let (property, value) = Self::split_declaration(segment)?;
+            declarations.push((String::from(property), String::from(value)));
         }
-        Ok(())
+        let declarations = Rc::new(declarations);
+        INLINE_DECL_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= INLINE_DECL_CACHE_LIMIT {
+                cache.clear();
+            }
+            cache.insert(hash, (String::from(text), Rc::clone(&declarations)));
+        });
+        Ok(declarations)
     }
 
     /// Splits `"property: value"`, rejecting the shapes that cannot be a declaration.
@@ -778,46 +855,155 @@ impl CssParser {
         KNOWN.iter().any(|known| known.eq_ignore_ascii_case(property))
     }
 
+    /// Returns one already-converted declaration value, parsing it at most once per exact text.
+    ///
+    /// The key is `(kind, hash)` and the stored source text is compared on a hit, so a collision
+    /// misses instead of returning a value for different text (G-21).
+    fn cached_decl<T: Clone>(
+        kind: u8,
+        value: &str,
+        parse: impl Fn(&str) -> Result<CachedDeclValue, String>,
+        extract: impl Fn(&CachedDeclValue) -> Option<T>,
+    ) -> Result<T, String> {
+        let key = (kind, declaration_hash(value));
+        let hit = DECL_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            cache.get(&key).cloned().filter(|(stored, _)| stored == value)
+        });
+        if let Some((_, parsed)) = hit {
+            if let Some(value) = extract(&parsed) {
+                return Ok(value);
+            }
+        }
+        let parsed = parse(value)?;
+        let extracted = extract(&parsed).ok_or_else(|| {
+            format!("internal: declaration {value:?} did not produce its expected value kind")
+        })?;
+        DECL_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= DECL_CACHE_LIMIT {
+                cache.clear();
+            }
+            cache.insert(key, (String::from(value), parsed));
+        });
+        Ok(extracted)
+    }
+
+    fn cached_color(value: &str) -> Result<Color, String> {
+        Self::cached_decl(
+            0,
+            value,
+            |value| Self::parse_color(value).map(CachedDeclValue::Color),
+            |parsed| match parsed {
+                CachedDeclValue::Color(color) => Some(*color),
+                _ => None,
+            },
+        )
+    }
+
+    fn cached_length(value: &str) -> Result<u32, String> {
+        Self::cached_decl(
+            1,
+            value,
+            |value| Self::parse_length(value).map(CachedDeclValue::Length),
+            |parsed| match parsed {
+                CachedDeclValue::Length(length) => Some(*length),
+                _ => None,
+            },
+        )
+    }
+
+    fn cached_lengths(value: &str, count: usize) -> Result<Vec<u32>, String> {
+        Self::cached_decl(
+            2 + count as u8,
+            value,
+            |value| Self::parse_space_separated_lengths(value, count).map(CachedDeclValue::Lengths),
+            |parsed| match parsed {
+                CachedDeclValue::Lengths(lengths) => Some(lengths.clone()),
+                _ => None,
+            },
+        )
+    }
+
+    fn cached_float(value: &str) -> Result<f32, String> {
+        Self::cached_decl(
+            8,
+            value.trim(),
+            |value| Self::parse_float(value).map(CachedDeclValue::Float),
+            |parsed| match parsed {
+                CachedDeclValue::Float(number) => Some(*number),
+                _ => None,
+            },
+        )
+    }
+
+    fn cached_gradient(value: &str) -> Result<crate::style::Gradient, String> {
+        Self::cached_decl(
+            9,
+            value,
+            |value| Self::parse_gradient(value).map(CachedDeclValue::Gradient),
+            |parsed| match parsed {
+                CachedDeclValue::Gradient(gradient) => Some(gradient.clone()),
+                _ => None,
+            },
+        )
+    }
+
+    fn cached_shadow(value: &str) -> Result<crate::style::Shadow, String> {
+        Self::cached_decl(
+            10,
+            value,
+            |value| Self::parse_shadow(value).map(CachedDeclValue::Shadow),
+            |parsed| match parsed {
+                CachedDeclValue::Shadow(shadow) => Some(shadow.clone()),
+                _ => None,
+            },
+        )
+    }
+
     /// Apply a single CSS declaration to a WidgetStyle.
     fn apply_one(decl: &CssDeclaration, style: &mut WidgetStyle) -> Result<(), String> {
-        match decl.property.as_str() {
+        Self::apply_value(&decl.property, &decl.value, style)
+    }
+
+    /// Applies one already-split declaration. Borrowing the halves is what lets the inline-list
+    /// cache apply on a hit without cloning the property and value strings (G-21).
+    fn apply_value(property: &str, value: &str, style: &mut WidgetStyle) -> Result<(), String> {
+        match property {
             "color" | "text-color" | "foreground" => {
-                style.text_color = Some(Self::parse_color(&decl.value)?);
+                style.text_color = Some(Self::cached_color(value)?);
             }
             "background" | "background-color" => {
-                style.background_color = Some(Self::parse_color(&decl.value)?);
+                style.background_color = Some(Self::cached_color(value)?);
             }
             "border-color" => {
-                style.border_color = Some(Self::parse_color(&decl.value)?);
+                style.border_color = Some(Self::cached_color(value)?);
             }
             "border-width" => {
-                style.border_width = Some(Self::parse_length(&decl.value)?);
+                style.border_width = Some(Self::cached_length(value)?);
             }
             "border-radius" => {
-                style.border_radius = Some(Self::parse_length(&decl.value)?);
+                style.border_radius = Some(Self::cached_length(value)?);
             }
             "padding" => {
-                let vals = Self::parse_space_separated_lengths(&decl.value, 4)?;
+                let vals = Self::cached_lengths(value, 4)?;
                 style.padding = crate::style::Padding::new(vals[0], vals[1], vals[2], vals[3]);
             }
-            "padding-top" => style.padding.top = Self::parse_length(&decl.value)?,
-            "padding-right" => style.padding.right = Self::parse_length(&decl.value)?,
-            "padding-bottom" => style.padding.bottom = Self::parse_length(&decl.value)?,
-            "padding-left" => style.padding.left = Self::parse_length(&decl.value)?,
+            "padding-top" => style.padding.top = Self::cached_length(value)?,
+            "padding-right" => style.padding.right = Self::cached_length(value)?,
+            "padding-bottom" => style.padding.bottom = Self::cached_length(value)?,
+            "padding-left" => style.padding.left = Self::cached_length(value)?,
             "margin" => {
-                let vals = Self::parse_space_separated_lengths(&decl.value, 4)?;
+                let vals = Self::cached_lengths(value, 4)?;
                 style.margin = crate::style::Margin::new(vals[0], vals[1], vals[2], vals[3]);
             }
-            "margin-top" => style.margin.top = Self::parse_length(&decl.value)?,
-            "margin-right" => style.margin.right = Self::parse_length(&decl.value)?,
-            "margin-bottom" => style.margin.bottom = Self::parse_length(&decl.value)?,
-            "margin-left" => style.margin.left = Self::parse_length(&decl.value)?,
+            "margin-top" => style.margin.top = Self::cached_length(value)?,
+            "margin-right" => style.margin.right = Self::cached_length(value)?,
+            "margin-bottom" => style.margin.bottom = Self::cached_length(value)?,
+            "margin-left" => style.margin.left = Self::cached_length(value)?,
             "opacity" => {
-                let val: f32 = decl
-                    .value
-                    .trim()
-                    .parse()
-                    .map_err(|_| format!("Invalid opacity: {}", decl.value))?;
+                let val =
+                    Self::parse_float(value).map_err(|_| format!("Invalid opacity: {value}"))?;
                 // D09-STYLE-04: `f32::clamp` alone leaves `NaN` in the style state; the shared
                 // policy (`NaN` -> opaque, `±∞` -> endpoints) keeps it in `0.0..=1.0`.
                 let val = crate::style::normalized_opacity(val);
@@ -825,11 +1011,12 @@ impl CssParser {
                 style.opacity = Some(val);
             }
             "font-size" => {
+                let size = Self::cached_float(value)?;
                 if let Some(font) = &mut style.font {
-                    font.set_size(Self::parse_float(&decl.value)?);
+                    font.set_size(size);
                 } else {
                     let mut font = crate::core::Font::default_ui();
-                    font.set_size(Self::parse_float(&decl.value)?);
+                    font.set_size(size);
                     style.font = Some(font);
                 }
             }
@@ -838,25 +1025,25 @@ impl CssParser {
             // so a stylesheet could not express the whole style record. Covered here
             // so the CSS surface and the style type agree on what is settable.
             "background-gradient" => {
-                style.background_gradient = Some(Self::parse_gradient(&decl.value)?);
+                style.background_gradient = Some(Self::cached_gradient(value)?);
             }
             "shadow" => {
                 // `none` is a meaningful value, not an omission: it clears a shadow
                 // the theme or a lower-priority sheet supplied.
-                if decl.value.trim().eq_ignore_ascii_case("none") {
+                if value.trim().eq_ignore_ascii_case("none") {
                     style.shadow = None;
                 } else {
-                    style.shadow = Some(Self::parse_shadow(&decl.value)?);
+                    style.shadow = Some(Self::cached_shadow(value)?);
                 }
             }
             "touch-target" | "touch-target-size" => {
                 // Order is `width height`, matching the two-value CSS shorthand the
                 // spacing properties already use.
-                let vals = Self::parse_space_separated_lengths(&decl.value, 2)?;
+                let vals = Self::cached_lengths(value, 2)?;
                 style.touch_target = Some(crate::core::Size::new(vals[0], vals[1]));
             }
             "font-family" => {
-                let family = decl.value.trim().trim_matches('"').trim_matches('\'').to_string();
+                let family = value.trim().trim_matches('"').trim_matches('\'').to_string();
                 if let Some(font) = &mut style.font {
                     font.set_family(family);
                 } else {
@@ -1388,6 +1575,24 @@ mod tests {
     fn test_parse_spacing_shorthand_4() {
         let vals = CssParser::parse_space_separated_lengths("1px 2px 3px 4px", 4).unwrap();
         assert_eq!(vals, vec![1, 2, 3, 4]);
+    }
+
+    /// The same declaration text is converted once, and an inline list is split once (G-21).
+    #[test]
+    fn declaration_values_are_converted_once_per_distinct_text() {
+        DECL_CACHE.with(|cache| cache.borrow_mut().clear());
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declarations_text("background: #123456; padding: 4px 8px", &mut style)
+            .expect("valid inline CSS");
+        let first = DECL_CACHE.with(|cache| cache.borrow().len());
+        CssParser::apply_declarations_text("background: #123456; padding: 4px 8px", &mut style)
+            .expect("same inline CSS");
+        assert_eq!(
+            DECL_CACHE.with(|cache| cache.borrow().len()),
+            first,
+            "a repeated apply must reuse the converted values"
+        );
+        assert_eq!(style.background_color, Some(Color::rgba(0x12, 0x34, 0x56, 255)));
     }
 
     #[test]

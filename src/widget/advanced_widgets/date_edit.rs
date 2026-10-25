@@ -224,9 +224,14 @@ impl std::fmt::Display for Date {
 /// | `d` | day without padding |
 /// | `HH` | two-digit 24-hour, `00`–`23` |
 /// | `H` | hour without padding |
+/// | `hh` | two-digit 12-hour, `01`–`12` |
+/// | `h` | 12-hour without padding |
+/// | `AP` | `AM` / `PM` |
+/// | `ap` | `am` / `pm` |
 /// | `mm` | two-digit minute |
 /// | `ss` | two-digit second |
 /// | `SSS` | milliseconds, three digits |
+/// | `zzz` | milliseconds, three digits (the usual pattern spelling) |
 ///
 /// Longest-first is **not enough on its own**. A single-letter token still matches inside a word, and a
 /// scan with no lookaround turned the literal `"Today: yyyy"` into `"To8ay: 2026"` — the `d` of
@@ -264,7 +269,45 @@ pub(crate) fn format_with_pattern_into(
     /// pattern is a mistake to swallow, not a literal to display.
     type Token = (&'static str, fn(&DateTimeComponents, &mut String) -> bool);
     // Longest first, so a two-character token is never eaten by its one-character prefix.
-    const TOKENS: [Token; 11] = [
+    const TOKENS: [Token; 16] = [
+        // 12-hour clock: `0` and `12` both read as 12, the way a wall clock does.
+        ("hh", |c, out| match c.hour {
+            Some(h) => {
+                let hour12 = if h % 12 == 0 { 12 } else { h % 12 };
+                let _ = write!(out, "{hour12:02}");
+                true
+            }
+            None => false,
+        }),
+        ("h", |c, out| match c.hour {
+            Some(h) => {
+                let hour12 = if h % 12 == 0 { 12 } else { h % 12 };
+                let _ = write!(out, "{hour12}");
+                true
+            }
+            None => false,
+        }),
+        ("zzz", |c, out| match c.millisecond {
+            Some(ms) => {
+                let _ = write!(out, "{ms:03}");
+                true
+            }
+            None => false,
+        }),
+        ("AP", |c, out| match c.hour {
+            Some(h) => {
+                out.push_str(if h < 12 { "AM" } else { "PM" });
+                true
+            }
+            None => false,
+        }),
+        ("ap", |c, out| match c.hour {
+            Some(h) => {
+                out.push_str(if h < 12 { "am" } else { "pm" });
+                true
+            }
+            None => false,
+        }),
         ("yyyy", |c, out| match c.year {
             Some(y) => {
                 let _ = write!(out, "{y:04}");
@@ -586,8 +629,9 @@ impl DateEdit {
     }
     /// Returns the stored display-format pattern.
     ///
-    /// This is a plain string; it is currently stored and round-tripped but not
-    /// interpreted when the widget paints (painting always uses `YYYY-MM-DD`).
+    /// The pattern is interpreted when the widget paints, through the shared
+    /// [`format_with_pattern_into`] substituter. A pattern with no recognised token still paints
+    /// the field's fixed `YYYY-MM-DD` spelling.
     pub fn display_format(&self) -> &str {
         &self.display_format
     }
@@ -687,8 +731,8 @@ impl DateEdit {
     }
     /// Stores the display-format pattern.
     ///
-    /// The string is kept verbatim; no validation is performed. See
-    /// [`DateEdit::display_format`] for the current limits on its use.
+    /// The pattern is applied by the next paint; see [`DateEdit::display_format`] for the
+    /// supported tokens.
     pub fn set_display_format(&mut self, fmt: String) {
         if self.display_format == fmt {
             return;

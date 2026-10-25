@@ -23,6 +23,21 @@ list below is the declaration of which controls wire themselves dynamically, and
 published name must resolve. Adding a control to the list is a commitment, not a formality, and
 removing one is a visible regression rather than a silent one.
 
+# Alias identity
+
+A control row can be a second spelling of another control: `email_input`, `password_edit` and
+`phone_input` are `LineEdit` in a validator or echo mode, `context_menu` is `Menu`,
+`split_layout` is `Splitter`, `time_picker` is `TimeEdit`. The rows are separate capabilities and
+must stay separate, but the *arms* belong to the struct, so a comparison that read an alias row
+against its own narrower name set would report the canonical row's live arms as dead code — and
+the remedy this gate prints would delete them.
+
+The identity is therefore not restated here. It is read from `ALIAS_OF` in
+`src/widget/capability.rs`, which is the one table (`AliasRow`: alias / canonical / struct /
+file) the crate's own readers (`canonical_of` / `aliases_of`) use. Every alias in that table
+must also be in `CONVERTED`, must agree with it on file and struct, and its published names are
+compared against everything the rows sharing its struct publish.
+
 # Reverse injection
 
 `--inject=<control>.<event>` pretends one arm is missing and requires a failure, so a check that
@@ -66,8 +81,11 @@ SRC = REPO / "src"
 # turns it into a checked fact, so the gap cannot quietly grow and a control cannot be
 # *mistaken* for converted.
 CONVERTED: dict[str, str] = {
+    "about_dialog": "src/widget/dialog/alert_dialogs.rs",
+    "accordion": "src/widget/container_widgets/accordion.rs",
     "action": "src/widget/menu_toolbar/action.rs",
     "adaptive_scaffold": "src/widget/nav_widgets/adaptive_scaffold.rs",
+    "alert_dialog": "src/widget/dialog/alert_dialogs.rs",
     "animated_image": "src/widget/media_widgets/animated_image.rs",
     "app_bar": "src/widget/nav_widgets/app_bar.rs",
     "arc": "src/widget/display_widgets/arc.rs",
@@ -96,6 +114,8 @@ CONVERTED: dict[str, str] = {
     "combo_box": "src/widget/input_widgets/combobox.rs",
     "command_link": "src/widget/input_widgets/command_link.rs",
     "command_palette": "src/widget/special_widgets/command_palette.rs",
+    "confirm_dialog": "src/widget/dialog/alert_dialogs.rs",
+    "context_menu": "src/widget/menu_toolbar/menu.rs",
     "cupertino_alert_dialog": "src/widget/cupertino/core.rs",
     "cupertino_date_picker": "src/widget/cupertino/date_picker.rs",
     "cupertino_navigation_bar": "src/widget/cupertino/nav_bar.rs",
@@ -116,6 +136,7 @@ CONVERTED: dict[str, str] = {
     "dropdown": "src/widget/input_widgets/dropdown.rs",
     "dropdown_menu": "src/widget/menu_toolbar/dropdown_menu.rs",
     "editable_combo_box": "src/widget/input_widgets/editable_combo_box.rs",
+    "email_input": "src/widget/input_widgets/lineedit.rs",
     "emoji_picker": "src/widget/display_widgets/emoji_picker.rs",
     "empty_state": "src/widget/display_widgets/empty_state.rs",
     "fab": "src/widget/overlay_widgets/fab.rs",
@@ -172,6 +193,8 @@ CONVERTED: dict[str, str] = {
     "otp_input": "src/widget/input_widgets/otp_input.rs",
     "pagination": "src/widget/nav_widgets/pagination.rs",
     "panel": "src/widget/container_widgets/groupbox.rs",
+    "password_edit": "src/widget/input_widgets/lineedit.rs",
+    "phone_input": "src/widget/input_widgets/lineedit.rs",
     "pie_menu": "src/widget/advanced_widgets/pie_menu.rs",
     "popup_window": "src/widget/dialog/popup_window.rs",
     "progress_bar": "src/widget/display_widgets/progressbar.rs",
@@ -202,6 +225,7 @@ CONVERTED: dict[str, str] = {
     "spin_box": "src/widget/input_widgets/spinbox.rs",
     "splash_screen": "src/widget/overlay_widgets/splash_screen.rs",
     "split_button": "src/widget/special_widgets/split_button.rs",
+    "split_layout": "src/widget/container_widgets/splitter.rs",
     "splitter": "src/widget/container_widgets/splitter.rs",
     "stacked_widget": "src/widget/container_widgets/stackedwidget.rs",
     "status_bar": "src/widget/menu_toolbar/status_bar.rs",
@@ -213,11 +237,13 @@ CONVERTED: dict[str, str] = {
     "tab_widget": "src/widget/container_widgets/tabwidget.rs",
     "table": "src/widget/view_widgets/table_widget.rs",
     "table_widget": "src/widget/view_widgets/table_widget.rs",
+    "tag": "src/widget/display_widgets/tag.rs",
     "tag_input": "src/widget/input_widgets/tag_input.rs",
     "terminal_view": "src/widget/special_widgets/terminal_view.rs",
     "text_area": "src/widget/input_widgets/textarea.rs",
     "text_edit": "src/widget/input_widgets/textedit.rs",
     "time_edit": "src/widget/advanced_widgets/time_edit.rs",
+    "time_picker": "src/widget/advanced_widgets/time_edit.rs",
     "timeline_widget": "src/widget/special_widgets/timeline_widget.rs",
     "toast": "src/widget/special_widgets/toast/single.rs",
     "toast_stack": "src/widget/special_widgets/toast/stack.rs",
@@ -237,8 +263,11 @@ CONVERTED: dict[str, str] = {
 }
 
 STRUCT_IMPL: dict[str, str] = {
+    "about_dialog": "AboutDialog",
+    "accordion": "Accordion",
     "action": "Action",
     "adaptive_scaffold": "AdaptiveScaffold",
+    "alert_dialog": "AlertDialog",
     "animated_image": "AnimatedImage",
     "app_bar": "AppBar",
     "arc": "Arc",
@@ -267,6 +296,8 @@ STRUCT_IMPL: dict[str, str] = {
     "combo_box": "ComboBox",
     "command_link": "CommandLink",
     "command_palette": "CommandPalette",
+    "confirm_dialog": "ConfirmDialog",
+    "context_menu": "Menu",
     "cupertino_alert_dialog": "CupertinoAlertDialog",
     "cupertino_date_picker": "CupertinoDatePicker",
     "cupertino_navigation_bar": "CupertinoNavigationBar",
@@ -287,6 +318,7 @@ STRUCT_IMPL: dict[str, str] = {
     "dropdown": "Dropdown",
     "dropdown_menu": "DropdownMenu",
     "editable_combo_box": "EditableComboBox",
+    "email_input": "LineEdit",
     "emoji_picker": "EmojiPicker",
     "empty_state": "EmptyState",
     "fab": "FAB",
@@ -343,6 +375,8 @@ STRUCT_IMPL: dict[str, str] = {
     "otp_input": "OtpInput",
     "pagination": "Pagination",
     "panel": "GroupBox",
+    "password_edit": "LineEdit",
+    "phone_input": "LineEdit",
     "pie_menu": "PieMenu",
     "popup_window": "PopupWindow",
     "progress_bar": "ProgressBar",
@@ -373,6 +407,7 @@ STRUCT_IMPL: dict[str, str] = {
     "spin_box": "SpinBox",
     "splash_screen": "SplashScreen",
     "split_button": "SplitButton",
+    "split_layout": "Splitter",
     "splitter": "Splitter",
     "stacked_widget": "StackedWidget",
     "status_bar": "StatusBar",
@@ -384,11 +419,13 @@ STRUCT_IMPL: dict[str, str] = {
     "tab_widget": "TabWidget",
     "table": "TableWidget",
     "table_widget": "TableWidget",
+    "tag": "Tag",
     "tag_input": "TagInput",
     "terminal_view": "TerminalView",
     "text_area": "TextArea",
     "text_edit": "TextEdit",
     "time_edit": "TimeEdit",
+    "time_picker": "TimeEdit",
     "timeline_widget": "TimelineWidget",
     "toast": "Toast",
     "toast_stack": "ToastStack",
@@ -437,6 +474,16 @@ NOT_YET_CONVERTED_REASON = (
 
 CENSUS = REPO / "tools/event_published_census.txt"
 
+# The one table of alias identity, read out of the crate instead of restated here.
+#
+# A gate that keeps its own copy of an alias proves the copy, not the crate. `capability.rs` holds
+# `ALIAS_OF` (rows of alias / canonical / struct / file) as the single source, and the crate reads
+# it through `canonical_of` / `aliases_of`; this parser is the tooling side of the same table.
+ALIAS_SOURCE = REPO / "src/widget/capability.rs"
+ALIAS_MARKER = "ALIAS_OF: &[AliasRow]"
+ALIAS_ROW_RE = re.compile(r"AliasRow\s*\{(.*?)\}", re.S)
+ALIAS_FIELD_RE = re.compile(r'(\w+)\s*:\s*"([^"]*)"')
+
 
 def read_census() -> dict[str, list[str]]:
     """control -> published event names, from the same file the payload table is derived from."""
@@ -447,6 +494,41 @@ def read_census() -> dict[str, list[str]]:
         control, _, rest = line.partition(":")
         published[control.strip()] = [name.strip() for name in rest.split(",") if name.strip()]
     return published
+
+
+def read_alias_registry() -> dict[str, dict[str, str]]:
+    """alias -> {canonical, implementation, file}, from `ALIAS_OF` in `capability.rs`.
+
+    The block is read up to its closing `];` first, so an `AliasRow` quoted in a doc comment
+    elsewhere in the file cannot be mistaken for a row.
+
+    Every failure here is raised rather than tolerated, because each one would make the alias
+    checks below vacuous — and a vacuous check prints the same green line as a passing one. A
+    missing table, a row without all four fields, a duplicated alias and an empty result are all
+    reported by name.
+    """
+    source = ALIAS_SOURCE.read_text()
+    start = source.find(ALIAS_MARKER)
+    if start == -1:
+        raise ValueError(f"{ALIAS_SOURCE.name}: no `{ALIAS_MARKER}` table to read")
+    end = source.find("];", start)
+    if end == -1:
+        raise ValueError(f"{ALIAS_SOURCE.name}: `{ALIAS_MARKER}` is not closed by `];`")
+    rows: dict[str, dict[str, str]] = {}
+    for body in ALIAS_ROW_RE.findall(source[start:end]):
+        fields = dict(ALIAS_FIELD_RE.findall(body))
+        missing = {"alias", "canonical", "implementation", "file"} - fields.keys()
+        if missing:
+            raise ValueError(
+                f"{ALIAS_SOURCE.name}: an AliasRow is missing {', '.join(sorted(missing))}"
+            )
+        alias = fields["alias"]
+        if alias in rows:
+            raise ValueError(f"{ALIAS_SOURCE.name}: `{alias}` appears in two AliasRows")
+        rows[alias] = fields
+    if not rows:
+        raise ValueError(f"{ALIAS_SOURCE.name}: `{ALIAS_MARKER}` yielded no parsable row")
+    return rows
 
 
 def _struct_impl_body(source: str, struct_name: str) -> str | None:
@@ -523,6 +605,12 @@ def main() -> int:
         if argument.startswith("--inject="):
             inject = argument.split("=", 1)[1]
 
+    try:
+        aliases = read_alias_registry()
+    except ValueError as error:
+        print(f"❌ {error}")
+        return 1
+
     published = read_census()
     failures: list[str] = []
     checked = 0
@@ -532,6 +620,57 @@ def main() -> int:
         for control, names in published.items()
         if names and control not in CONVERTED
     )
+
+    # Direction 0: the alias registry and this table must name one identity each.
+    #
+    # Checked before the arms for two reasons. An alias whose canonical row is not converted has
+    # no arm set to compare against, and an alias missing from `CONVERTED` would land in direction
+    # 2 below — reported as a control nobody decided about, which is the exact gap W-08 recorded.
+    for alias, row in sorted(aliases.items()):
+        canonical = row["canonical"]
+        if canonical not in CONVERTED:
+            failures.append(
+                f"{alias}: the alias registry names `{canonical}` as its control, which is not "
+                "converted — the alias has no arms to resolve against"
+            )
+            continue
+        if alias not in CONVERTED:
+            failures.append(
+                f"{alias}: `capability.rs` names it an alias of `{canonical}` but it is not in "
+                "CONVERTED, so nothing checks that its published names resolve"
+            )
+            continue
+        if CONVERTED[alias] != row["file"]:
+            failures.append(
+                f"{alias}: CONVERTED says `{CONVERTED[alias]}`, the alias registry says "
+                f"`{row['file']}`"
+            )
+        if CONVERTED[canonical] != row["file"]:
+            failures.append(
+                f"{alias}: the alias registry implements it in `{row['file']}`, but `{canonical}` "
+                f"is recorded in `{CONVERTED[canonical]}`"
+            )
+        if STRUCT_IMPL.get(alias) != row["implementation"]:
+            failures.append(
+                f"{alias}: the alias registry names the struct `{row['implementation']}`, "
+                f"STRUCT_IMPL names `{STRUCT_IMPL.get(alias, '<none>')}`"
+            )
+        if STRUCT_IMPL.get(canonical) != row["implementation"]:
+            failures.append(
+                f"{alias}: the alias registry says it shares `{row['implementation']}` with "
+                f"`{canonical}`, whose STRUCT_IMPL row is "
+                f"`{STRUCT_IMPL.get(canonical, '<none>')}`"
+            )
+
+    # The arms belong to the struct, not to the row. `LineEdit::event_signal_dyn` resolves
+    # `text_changed`, which `line_edit` publishes and `email_input` does not; comparing an alias
+    # row against its own names alone would report four dead arms and print a remedy ("withdraw
+    # the name") that would delete the canonical row's live ones. What a struct may resolve is
+    # therefore everything the rows sharing it publish.
+    published_by_impl: dict[tuple[str, str | None], set[str]] = {}
+    for control, relative in CONVERTED.items():
+        key = (relative, STRUCT_IMPL.get(control))
+        published_by_impl.setdefault(key, set()).update(published.get(control, []))
 
     for control, relative in sorted(CONVERTED.items()):
         path = REPO / relative
@@ -590,10 +729,10 @@ def main() -> int:
             failures.append(
                 f"{control}: `{name}` is published but `event_signal_dyn` does not resolve it"
             )
-        for name in sorted(resolved - declared):
+        for name in sorted(resolved - published_by_impl[(relative, STRUCT_IMPL.get(control))]):
             failures.append(
-                f"{control}: `event_signal_dyn` resolves `{name}`, which the capability does not "
-                "publish — nothing can subscribe to it"
+                f"{control}: `event_signal_dyn` resolves `{name}`, which neither this control nor "
+                "any control sharing its struct publishes — nothing can subscribe to it"
             )
 
     # Direction 2: the gap must be named, so it is a fact rather than an impression. A control
@@ -613,6 +752,9 @@ def main() -> int:
     print(f"converted controls checked: {checked}")
     for control in converted:
         print(f"  {control}: {len(published.get(control, []))} published names")
+    print(f"alias identities checked: {len(aliases)}")
+    for alias in sorted(aliases):
+        print(f"  {alias} -> {aliases[alias]['canonical']} ({aliases[alias]['implementation']})")
 
     if failures:
         print()

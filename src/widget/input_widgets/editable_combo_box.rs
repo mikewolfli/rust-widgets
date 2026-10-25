@@ -23,7 +23,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
@@ -111,6 +111,17 @@ pub struct EditableComboBox {
     pub text_changed: Signal1<String>,
     /// Emitted when a dropdown item is selected (by index).
     pub item_selected: Signal1<usize>,
+    /// Emitted when editing ends — Enter is pressed or the field loses focus.
+    ///
+    /// Carries no payload because the committed value is read back through [`Self::text`];
+    /// this is the notification a form waits for before validating, and the counterpart of the
+    /// same signal on [`crate::widget::LineEdit`].
+    pub editing_finished: GenericSignal,
+    /// Emitted when Enter is pressed in the field, after any highlighted row is selected.
+    ///
+    /// A host that treats Enter as "go" must not have to infer it from `item_selected`: Enter
+    /// on a free-typed value selects nothing and would otherwise be silent.
+    pub return_pressed: GenericSignal,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
@@ -155,6 +166,8 @@ impl EditableComboBox {
             alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
             item_selected: Signal1::new(),
+            editing_finished: GenericSignal::new(),
+            return_pressed: GenericSignal::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
@@ -597,6 +610,10 @@ impl Widget for EditableComboBox {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "editing_finished" => {
+                Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
+            }
+            "return_pressed" => Some(EventSignalRef::unit("return_pressed", &self.return_pressed)),
             _ => None,
         }
     }
@@ -958,7 +975,9 @@ impl EventHandler for EditableComboBox {
                         return;
                     }
                     13 => {
-                        // Enter/Return
+                        // Enter/Return: commit the highlighted row when there is one, then report
+                        // the return and the end of the edit. A free-typed value selects nothing,
+                        // so the two notifications are emitted outside the selection branch.
                         if self.expanded && !self.items.is_empty() {
                             if let Some(idx) = self.selected_index {
                                 self.select_index(idx);
@@ -969,6 +988,8 @@ impl EventHandler for EditableComboBox {
                             }
                         }
                         self.expanded = false;
+                        self.return_pressed.emit();
+                        self.editing_finished.emit();
                         self.base.request_redraw();
                         return;
                     }
@@ -1036,6 +1057,16 @@ impl EventHandler for EditableComboBox {
             // key arm uses. The `is_enabled` guard above already ran.
             Event::TextInput { text } | Event::ImeCommit { text } => {
                 self.append_committed_text(text);
+            }
+            Event::FocusLost => {
+                // The field finishing an edit is the event a form validates on; the list also
+                // collapses so a focus change cannot leave a popup pinned open.
+                self.base.handle_event(event);
+                if self.expanded {
+                    self.expanded = false;
+                    self.base.request_redraw();
+                }
+                self.editing_finished.emit();
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();

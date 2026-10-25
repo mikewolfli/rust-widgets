@@ -114,24 +114,11 @@ impl CodeEditor {
             return;
         }
         if modifiers & Self::MODIFIER_CONTROL != 0 {
-            // Ctrl+wheel is the universal editor font-size gesture.
+            // Ctrl+wheel is the universal editor font-size gesture. It goes through
+            // the same path as `zoom_in`/`zoom_out`, so the signal, the cache
+            // invalidation and the clamp cannot drift between the two entry points.
             let step = if delta.y < 0 { 1.0 } else { -1.0 };
-            let size = (self.config.font_size + step).clamp(6.0, 48.0);
-            if size != self.config.font_size {
-                self.config.font_size = size;
-                // Clearing the explicit advance restores the derived
-                // `font_size * line_height_ratio`, so zooming keeps the leading
-                // ratio the configuration asked for instead of its own constant.
-                self.config.line_advance = 0.0;
-                // The cell width was measured in the *old* font size, and the
-                // measurement cache is keyed by geometry alone, so it has to be
-                // invalidated explicitly or zooming would change the glyph size
-                // while every column kept its old pitch.
-                self.measured_geometry = None;
-                self.refresh_visible_rows();
-                self.base.request_layout();
-                self.base.request_redraw();
-            }
+            self.apply_zoom(self.config.font_size + step);
             return;
         }
         if delta.y != 0 {

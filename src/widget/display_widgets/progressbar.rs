@@ -659,10 +659,11 @@ impl Draw for ProgressBar {
         // the control's whole purpose. A groove must be low-emphasis, so it is *derived*
         // from the resolved surface rather than read from a field that carries the accent.
         // The same derivation, for the same reason, is in `range_slider.rs`.
-        let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
-        };
+        // One shared palette read instead of a global theme-lock round trip per frame: the rest
+        // of this draw already resolves through the `_shared` helpers, and a host painting
+        // several bars concurrently no longer queues them on the manager mutex.
+        let window_fill =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let ink = style.text_color.unwrap_or_else(|| window_fill.contrast_color());
         // A caller-set background is the groove; a theme-derived one is the window fill
         // (or the accent) and is replaced by one visible step from the surface. The filter

@@ -3,6 +3,7 @@
 
 //! GanttWidget for timeline task planning.
 
+use crate::compat::HashMap;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -20,6 +21,39 @@ use crate::{impl_widget_property_hooks, property_names_of};
 const LINK_STUB: i32 = 4;
 /// The half-width of a dependency arrow head, in pixels.
 const LINK_HEAD: i32 = 4;
+
+/// The width of a bar's start/end resize handle, in pixels.
+const RESIZE_HANDLE: i32 = 5;
+
+/// The height of the strip along a bar's bottom edge that drags its progress.
+const PROGRESS_STRIP: i32 = 7;
+
+/// What a drag on a task row is editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GanttDragKind {
+    /// The whole bar (or milestone) moves.
+    Move,
+    /// The start edge moves; the end is pinned.
+    ResizeStart,
+    /// The end edge moves; the start is pinned.
+    ResizeEnd,
+    /// The completion percentage follows the pointer.
+    Progress,
+}
+
+/// A drag in progress.
+struct GanttDrag {
+    /// The task's index at press time.
+    task: usize,
+    /// The pointer position the drag started from.
+    origin: Point,
+    /// The task's start at press time.
+    start: i64,
+    /// The task's end at press time.
+    end: i64,
+    /// Which part of the bar is being edited.
+    kind: GanttDragKind,
+}
 
 /// One gantt task bar.
 ///
@@ -168,12 +202,24 @@ pub struct GanttWidget {
     show_time_axis: bool,
     /// The number of ticks on that axis.
     time_axis_ticks: u32,
-    /// An in-flight bar drag: `(task index, press origin, original start, original end)`.
-    drag: Option<(usize, Point, i64, i64)>,
+    /// Whether the critical path is highlighted.
+    show_critical_path: bool,
+    /// Whether the caller-supplied "now" line is drawn.
+    show_today: bool,
+    /// Task id to index, so a dependency is resolved in constant time.
+    id_index: HashMap<String, usize>,
+    /// A drag in progress.
+    drag: Option<GanttDrag>,
     /// Emitted when task selected. Payload is task id.
     pub task_selected: Signal1<String>,
     /// Emitted when a task's dates change through a drag. Payload is task id.
     pub task_rescheduled: Signal1<String>,
+    /// Emitted when a resize (or progress) drag starts. Payload is task id.
+    pub task_resize_started: Signal1<String>,
+    /// Emitted when a resize (or progress) drag ends. Payload is task id.
+    pub task_resize_finished: Signal1<String>,
+    /// Emitted when the visible axis range changes.
+    pub viewport_changed: Signal1<(i64, i64)>,
 }
 
 impl GanttWidget {
@@ -191,9 +237,15 @@ impl GanttWidget {
             scroll_offset: 0,
             show_time_axis: false,
             time_axis_ticks: 4,
+            show_critical_path: false,
+            show_today: true,
+            id_index: HashMap::new(),
             drag: None,
             task_selected: Signal1::new(),
             task_rescheduled: Signal1::new(),
+            task_resize_started: Signal1::new(),
+            task_resize_finished: Signal1::new(),
+            viewport_changed: Signal1::new(),
         }
     }
 
@@ -228,6 +280,152 @@ impl GanttWidget {
     /// Returns the number of time-axis ticks.
     pub fn time_axis_ticks(&self) -> u32 {
         self.time_axis_ticks
+    }
+
+    /// Sets the row height in pixels (floored at 8).
+    pub fn set_row_height(&mut self, row_height: u32) {
+        let row_height = row_height.max(8);
+        if self.row_height == row_height {
+            return;
+        }
+        self.row_height = row_height;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns the row height in pixels.
+    pub fn row_height(&self) -> u32 {
+        self.row_height
+    }
+
+    /// Whether the critical path is highlighted.
+    pub fn show_critical_path(&self) -> bool {
+        self.show_critical_path
+    }
+
+    /// Enables highlighting of the longest dependency chain.
+    pub fn set_show_critical_path(&mut self, show: bool) {
+        if self.show_critical_path == show {
+            return;
+        }
+        self.show_critical_path = show;
+        self.base.request_redraw();
+    }
+
+    /// Whether the "now" line is drawn when a position is set.
+    pub fn show_today(&self) -> bool {
+        self.show_today
+    }
+
+    /// Shows or hides the "now" line without discarding its position.
+    pub fn set_show_today(&mut self, show: bool) {
+        if self.show_today == show {
+            return;
+        }
+        self.show_today = show;
+        self.base.request_redraw();
+    }
+
+    /// The task ids on the longest dependency chain, in schedule order.
+    ///
+    /// A schedule's critical path is the chain of dependent tasks with the largest total duration:
+    /// every day it slips, the whole project slips by one. The chain is computed over the typed and
+    /// untyped dependency lists together, so both spellings contribute. Cyclic dependencies have no
+    /// longest chain; the nodes reachable from a cycle are omitted rather than reported as critical,
+    /// because a cycle is a caller error and inventing a path through it would hide that.
+    pub fn critical_path(&self) -> Vec<String> {
+        self.critical_path_indices()
+            .into_iter()
+            .filter_map(|index| self.tasks.get(index).map(|task| task.id.clone()))
+            .collect()
+    }
+
+    /// The task indices on the critical path.
+    fn critical_path_indices(&self) -> Vec<usize> {
+        let count = self.tasks.len();
+        if count == 0 {
+            return Vec::new();
+        }
+        let duration = |index: usize| -> i64 {
+            self.tasks.get(index).map_or(0, |task| (task.end - task.start).max(0))
+        };
+        // Kahn's topological order. `edges[pred]` lists the successors that wait on it.
+        let mut edges: Vec<Vec<usize>> = vec![Vec::new(); count];
+        let mut indegree = vec![0usize; count];
+        for successor in 0..count {
+            for predecessor in self.predecessor_indices(successor) {
+                edges[predecessor].push(successor);
+                indegree[successor] += 1;
+            }
+        }
+        let mut queue: Vec<usize> = (0..count).filter(|index| indegree[*index] == 0).collect();
+        let mut order = Vec::with_capacity(count);
+        let mut cursor = 0usize;
+        while cursor < queue.len() {
+            let node = queue[cursor];
+            cursor += 1;
+            order.push(node);
+            for successor in &edges[node] {
+                indegree[*successor] -= 1;
+                if indegree[*successor] == 0 {
+                    queue.push(*successor);
+                }
+            }
+        }
+        // `finish[i]` is the longest chain that **ends** at `i`; `previous[i]` is the predecessor
+        // that chain came through, which is what makes the answer a path rather than a number.
+        let mut finish = vec![0i64; count];
+        let mut previous: Vec<Option<usize>> = vec![None; count];
+        let mut ordered = vec![false; count];
+        for node in order {
+            ordered[node] = true;
+            let candidate = finish[node] + duration(node);
+            for successor in &edges[node] {
+                if candidate > finish[*successor] {
+                    finish[*successor] = candidate;
+                    previous[*successor] = Some(node);
+                }
+            }
+        }
+        // Only nodes that reached a topological position can be on a chain. A node inside a cycle
+        // never did, and reporting it as "critical" would invent a path through a schedule error.
+        let Some(end) = (0..count)
+            .filter(|index| ordered[*index])
+            .max_by_key(|index| finish[*index] + duration(*index))
+        else {
+            return Vec::new();
+        };
+        if finish[end] == 0 && previous[end].is_none() && duration(end) == 0 {
+            // Every task is a zero-length isolated node: there is no chain to mark, and naming an
+            // arbitrary one would be a claim the data does not support.
+            return Vec::new();
+        }
+        let mut path = Vec::new();
+        let mut node = Some(end);
+        while let Some(index) = node {
+            path.push(index);
+            node = previous[index];
+        }
+        path.reverse();
+        path
+    }
+
+    /// The indices of `index`'s predecessors, from both dependency spellings.
+    fn predecessor_indices(&self, index: usize) -> Vec<usize> {
+        let Some(task) = self.tasks.get(index) else {
+            return Vec::new();
+        };
+        let mut out: Vec<usize> = Vec::new();
+        let ids =
+            task.depends_on.iter().chain(task.dependencies.iter().map(|dependency| &dependency.id));
+        for id in ids {
+            if let Some(found) = self.id_index.get(id).copied() {
+                if found != index && !out.contains(&found) {
+                    out.push(found);
+                }
+            }
+        }
+        out
     }
 
     /// The header height the time axis reserves.
@@ -287,9 +485,71 @@ impl GanttWidget {
         self.viewport_start + (ratio * span as f64).round() as i64
     }
 
+    /// The time track's left edge and width.
+    ///
+    /// One derivation shared by the press hit test and the progress drag: the two used to respell
+    /// `CHART_LABEL_GUTTER`/`CHART_TRACK_MARGIN` and could drift apart.
+    fn track_geometry(&self) -> (i32, u32) {
+        let rect = self.geometry();
+        (
+            rect.x + dimensions::CHART_LABEL_GUTTER,
+            rect.width
+                .saturating_sub(
+                    dimensions::CHART_LABEL_GUTTER as u32 + dimensions::CHART_TRACK_MARGIN as u32,
+                )
+                .max(1),
+        )
+    }
+
+    /// Sets `index`'s progress from the pointer's x over the bar `start..end`.
+    ///
+    /// Shared by the press and the move so that a press inside the progress strip immediately
+    /// applies the value the user pointed at, instead of waiting for a move that may never come (a
+    /// click alone used to leave the old percentage in place).
+    fn set_progress_from_pointer(&mut self, index: usize, start: i64, end: i64, x: i32) {
+        let (track_x, track_w) = self.track_geometry();
+        let x0 = self.project_x(start, track_x, track_w);
+        let x1 = self.project_x(end, track_x, track_w).max(x0 + 2);
+        let ratio = ((x - x0) as f32 / (x1 - x0) as f32).clamp(0.0, 1.0);
+        if let Some(task) = self.tasks.get_mut(index) {
+            let progress = (ratio * 100.0).round() as u8;
+            if task.progress != progress {
+                task.progress = progress;
+                self.base.request_redraw();
+            }
+        }
+    }
+
+    /// Commits the drag in progress and reports what it changed.
+    fn finish_drag(&mut self) {
+        let Some(drag) = self.drag.take() else {
+            return;
+        };
+        let Some(task) = self.tasks.get(drag.task) else {
+            self.base.request_redraw();
+            return;
+        };
+        let id = task.id.clone();
+        if task.start != drag.start || task.end != drag.end {
+            self.task_rescheduled.emit(id.clone());
+        }
+        if drag.kind != GanttDragKind::Move {
+            self.task_resize_finished.emit(id);
+        }
+        self.base.request_redraw();
+    }
+
     /// Sets tasks.
     pub fn set_tasks(&mut self, tasks: Vec<GanttTask>) {
         self.tasks = tasks;
+        // The map is rebuilt with the list rather than maintained per lookup: a dependency arrow
+        // resolves its predecessor through it, and `tasks.iter().position` per arrow made one paint
+        // O(tasks × links). A duplicate id keeps the first row, matching the first-match rule the
+        // arrow drawing had before the map existed.
+        self.id_index.clear();
+        for (index, task) in self.tasks.iter().enumerate() {
+            self.id_index.entry(task.id.clone()).or_insert(index);
+        }
         self.selected_index = None;
         self.recompute_viewport();
         self.base.request_layout();
@@ -314,6 +574,10 @@ impl GanttWidget {
         }
         self.viewport_start = start;
         self.viewport_end = end;
+        // The range is what the axis header and every bar are projected through, so a zoom or a
+        // scroll changes the picture. It used to change silently, which left a host unable to keep a
+        // linked chart (the finance panes, a second gantt) in step.
+        self.viewport_changed.emit((start, end));
         self.base.request_redraw();
     }
 
@@ -366,20 +630,20 @@ impl GanttWidget {
     }
 
     fn recompute_viewport(&mut self) {
-        if self.tasks.is_empty() {
-            self.viewport_start = 0;
-            self.viewport_end = 100;
-            return;
-        }
-
-        let mut min_start = i64::MAX;
-        let mut max_end = i64::MIN;
-        for task in &self.tasks {
-            min_start = min_start.min(task.start);
-            max_end = max_end.max(task.end);
-        }
-        self.viewport_start = min_start;
-        self.viewport_end = max_end.max(min_start + 1);
+        let (start, end) = if self.tasks.is_empty() {
+            (0, 100)
+        } else {
+            let mut min_start = i64::MAX;
+            let mut max_end = i64::MIN;
+            for task in &self.tasks {
+                min_start = min_start.min(task.start);
+                max_end = max_end.max(task.end);
+            }
+            (min_start, max_end.max(min_start + 1))
+        };
+        self.viewport_start = start;
+        self.viewport_end = end;
+        self.viewport_changed.emit((start, end));
     }
 
     fn row_at(&self, pos: Point) -> Option<usize> {
@@ -455,6 +719,24 @@ impl Widget for GanttWidget {
                     crate::widget::capability::CapabilityValue::String(v.clone())
                 }))
             }
+            "task_resize_started" => Some(EventSignalRef::mapped(
+                "task_resize_started",
+                &self.task_resize_started,
+                |v| CapabilityValue::String(v.clone()),
+            )),
+            "task_resize_finished" => Some(EventSignalRef::mapped(
+                "task_resize_finished",
+                &self.task_resize_finished,
+                |v| CapabilityValue::String(v.clone()),
+            )),
+            "viewport_changed" => {
+                Some(EventSignalRef::mapped("viewport_changed", &self.viewport_changed, |v| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::Int(v.0),
+                        CapabilityValue::Int(v.1),
+                    ])
+                }))
+            }
             _ => None,
         }
     }
@@ -478,6 +760,9 @@ impl WidgetProperties for GanttWidget {
             },
             "viewport_start" => Ok(CapabilityValue::Int(self.viewport().0)),
             "viewport_end" => Ok(CapabilityValue::Int(self.viewport().1)),
+            "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            "show_critical_path" => Ok(CapabilityValue::Bool(self.show_critical_path())),
+            "show_today" => Ok(CapabilityValue::Bool(self.show_today())),
             _ => base_property_get(self, name),
         }
     }
@@ -496,6 +781,26 @@ impl WidgetProperties for GanttWidget {
                 self.set_viewport(start, end);
                 Ok(())
             }
+            "row_height" => {
+                let height = match value {
+                    CapabilityValue::UInt(height) => {
+                        u32::try_from(height).map_err(|_| CapabilityAccessError::TypeMismatch)?
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_row_height(height);
+                Ok(())
+            }
+            "show_critical_path" => {
+                self.set_show_critical_path(crate::widget::capability::coercion::expect_bool(
+                    value,
+                )?);
+                Ok(())
+            }
+            "show_today" => {
+                self.set_show_today(crate::widget::capability::coercion::expect_bool(value)?);
+                Ok(())
+            }
             // Derived counts and the selection identity are computed from the task
             // list, so they are refused as read-only rather than reported as names
             // this control does not know.
@@ -510,6 +815,9 @@ impl WidgetProperties for GanttWidget {
             "selected_id",
             "viewport_start",
             "viewport_end",
+            "row_height",
+            "show_critical_path",
+            "show_today",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -541,59 +849,104 @@ impl EventHandler for GanttWidget {
 
         match event {
             Event::MousePress { pos, button: 1, .. } => {
-                if let Some(index) = self.row_at(*pos) {
-                    let _ = self.select_index(index);
-                    let task = &self.tasks[index];
-                    let rect = self.geometry();
-                    let track_x = rect.x + dimensions::CHART_LABEL_GUTTER;
-                    let track_w = rect
-                        .width
-                        .saturating_sub(
-                            dimensions::CHART_LABEL_GUTTER as u32
-                                + dimensions::CHART_TRACK_MARGIN as u32,
-                        )
-                        .max(1);
-                    let x0 = self.project_x(task.start, track_x, track_w);
-                    let x1 = self.project_x(task.end, track_x, track_w).max(x0 + 2);
-                    if pos.x >= x0 && pos.x <= x1 && !task.milestone {
-                        self.drag = Some((index, *pos, task.start, task.end));
+                let Some(index) = self.row_at(*pos) else {
+                    return;
+                };
+                let _ = self.select_index(index);
+                let Some(task) = self.tasks.get(index) else {
+                    return;
+                };
+                let (start, end, milestone, id) =
+                    (task.start, task.end, task.milestone, task.id.clone());
+                let (track_x, track_w) = self.track_geometry();
+                let x0 = self.project_x(start, track_x, track_w);
+                let x1 = self.project_x(end, track_x, track_w).max(x0 + 2);
+                let lane_y = self.lane_rect(index - self.scroll_offset).y;
+                let bar_top = lane_y + 5;
+                let bar_bottom = lane_y + self.row_height as i32 - 5;
+                let kind = if milestone {
+                    // A milestone is a diamond, not a bar, so only the diamond itself is grabbable.
+                    // It used to be undraggable at all, which left the one point-shaped mark on the
+                    // chart as the only thing a user could not move.
+                    let half = (self.row_height.saturating_sub(10) / 2) as i32;
+                    if (pos.x - x0).abs() > half + 2 {
+                        return;
                     }
+                    GanttDragKind::Move
+                } else {
+                    if pos.x < x0 || pos.x > x1 || pos.y < bar_top || pos.y > bar_bottom {
+                        return;
+                    }
+                    // The edges resize, the bottom strip sets progress, and the rest moves the bar.
+                    // Before this the whole bar moved regardless of where it was grabbed, so a
+                    // schedule could not be adjusted without editing the task list.
+                    if pos.x <= x0 + RESIZE_HANDLE {
+                        GanttDragKind::ResizeStart
+                    } else if pos.x >= x1 - RESIZE_HANDLE {
+                        GanttDragKind::ResizeEnd
+                    } else if pos.y >= bar_bottom - PROGRESS_STRIP {
+                        GanttDragKind::Progress
+                    } else {
+                        GanttDragKind::Move
+                    }
+                };
+                self.drag = Some(GanttDrag { task: index, origin: *pos, start, end, kind });
+                if kind == GanttDragKind::Progress {
+                    self.set_progress_from_pointer(index, start, end, pos.x);
+                }
+                if kind != GanttDragKind::Move {
+                    self.task_resize_started.emit(id);
                 }
             }
             Event::MouseMove { pos } => {
-                let Some((index, origin, start, end)) = self.drag else {
+                let Some(drag) = self.drag.as_ref() else {
                     return;
                 };
+                let (index, origin, start, end, kind) =
+                    (drag.task, drag.origin, drag.start, drag.end, drag.kind);
                 if index >= self.tasks.len() {
                     return;
                 }
                 // The delta is converted through the axis rather than a pixels-per-unit
-                // constant, so the bar tracks the pointer at any zoom level.
-                let from = self.axis_value_at(origin.x);
-                let now = self.axis_value_at(pos.x);
-                let shift = now - from;
+                // constant, so the bar tracks the pointer at any zoom level. Both endpoints are
+                // recomputed from the **press** value, so a drag that reverses direction across the
+                // origin lands where the pointer is rather than drifting by the distance travelled.
+                let shift = self.axis_value_at(pos.x) - self.axis_value_at(origin.x);
+                if kind == GanttDragKind::Progress {
+                    self.set_progress_from_pointer(index, start, end, pos.x);
+                    return;
+                }
                 if shift == 0 {
                     return;
                 }
-                let task = &mut self.tasks[index];
-                if task.start + shift >= 0 || start + shift >= 0 {
-                    task.start = start + shift;
-                    task.end = end + shift;
-                    self.drag = Some((index, *pos, start, end));
-                    self.base.request_redraw();
-                }
-            }
-            Event::MouseRelease { button: 1, .. } => {
-                if let Some((index, _, start, end)) = self.drag.take() {
-                    if let Some(task) = self.tasks.get(index) {
-                        if task.start != start || task.end != end {
-                            let id = task.id.clone();
-                            self.task_rescheduled.emit(id);
+                let Some(task) = self.tasks.get_mut(index) else {
+                    return;
+                };
+                match kind {
+                    GanttDragKind::Move => {
+                        if start + shift >= 0 {
+                            task.start = start + shift;
+                            task.end = end + shift;
                         }
                     }
-                    self.base.request_redraw();
+                    // A resize keeps the opposite edge pinned and never crosses it: a reversed
+                    // range would paint a negative-width bar, which reads as a rendering fault.
+                    GanttDragKind::ResizeStart => {
+                        task.start = (start + shift).clamp(0, end - 1);
+                        task.end = end;
+                    }
+                    GanttDragKind::ResizeEnd => {
+                        task.start = start;
+                        task.end = (end + shift).max(start + 1);
+                    }
+                    GanttDragKind::Progress => unreachable!("progress returned above"),
                 }
+                self.base.request_redraw();
             }
+            Event::MouseRelease { button: 1, .. } => self.finish_drag(),
+            // A drag that loses the pointer must not leave a bar following a pointer that is no
+            // longer there; the gesture is committed at its last position.
+            Event::MouseLeave { .. } => self.finish_drag(),
             Event::Wheel { delta, modifiers } => {
                 let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 if modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
@@ -679,6 +1032,22 @@ impl Draw for GanttWidget {
         // Dependencies are structure, not data: a line that connected bars in the accent colour would
         // compete with the bars themselves.
         let link_color = background.blend(&text_color, 0.45);
+        // The critical path is a *state* of the schedule ("this chain decides the finish date"), so
+        // it takes a semantic role rather than a fourth literal.
+        let critical_color = crate::style::semantic_color(crate::style::SemanticColor::Warning)
+            .map(|token| token.blend(&background, 0.25))
+            .unwrap_or_else(|| bar_color.blend(&progress_color, 0.5));
+        let critical_flags: Vec<bool> = {
+            let mut flags = vec![false; self.tasks.len()];
+            if self.show_critical_path {
+                for index in self.critical_path_indices() {
+                    if let Some(flag) = flags.get_mut(index) {
+                        *flag = true;
+                    }
+                }
+            }
+            flags
+        };
 
         context.face_with_gradient(
             rect,
@@ -778,10 +1147,15 @@ impl Draw for GanttWidget {
                     Point::new(x0, cy + half),
                     Point::new(x0 - half, cy),
                 ];
+                let fill = if critical_flags.get(index).copied().unwrap_or(false) {
+                    critical_color
+                } else {
+                    bar_color
+                };
                 context.execute_command(crate::render::RenderCommand::DrawPath {
                     points,
                     closed: true,
-                    color: bar_color,
+                    color: fill,
                     filled: true,
                     width: 1,
                 });
@@ -796,14 +1170,20 @@ impl Draw for GanttWidget {
             let x1 = self.project_x(task.end, track_x, track_w).max(x0 + 2);
             let bar_h = self.row_height.saturating_sub(10);
             let bar_rect = Rect::new(x0, y + 5, (x1 - x0) as u32, bar_h);
-            context.fill_rect(bar_rect, bar_color);
+            let fill = if critical_flags.get(index).copied().unwrap_or(false) {
+                critical_color
+            } else {
+                bar_color
+            };
+            let progress_fill = fill.blend(&text_color, 0.18);
+            context.fill_rect(bar_rect, fill);
 
             let progress_w =
                 ((bar_rect.width as f32) * (task.progress as f32 / 100.0)).round() as u32;
             if progress_w > 0 {
                 context.fill_rect(
                     Rect::new(bar_rect.x, bar_rect.y, progress_w, bar_rect.height),
-                    progress_color,
+                    progress_fill,
                 );
             }
 
@@ -840,18 +1220,27 @@ impl Draw for GanttWidget {
                         .map(|dependency| (dependency.id.as_str(), dependency.kind)),
                 );
             for (predecessor_id, kind) in predecessors {
-                let Some(pred_index) = self.tasks.iter().position(|t| t.id == predecessor_id)
-                else {
+                // Constant-time id resolution. The per-arrow `tasks.iter().position` made one paint
+                // quadratic in the schedule's size; the map is built and maintained by `set_tasks`.
+                let Some(pred_index) = self.id_index.get(predecessor_id).copied() else {
                     // A dangling id is skipped rather than reported: a caller editing a schedule
                     // transiently holds them, and a chart is not the place to complain.
                     continue;
                 };
-                if pred_index < first_visible || pred_index >= first_visible + visible_rows {
-                    // The predecessor's lane is not on screen, so its bar's right edge is unknown.
+                let Some(pred) = self.tasks.get(pred_index) else {
                     continue;
-                }
-                let pred = &self.tasks[pred_index];
-                let pred_y = self.lane_rect(pred_index - first_visible).y;
+                };
+                // A predecessor scrolled out of view still has a known **axis** position — only its
+                // lane is off screen. The elbow is clipped to the visible band instead of dropped,
+                // which is what keeps a dependency visible when the task it comes from is above or
+                // below the viewport. Dropping it made the link silently disappear on scroll.
+                let pred_visible_row = pred_index as i64 - first_visible as i64;
+                let pred_offset = pred_visible_row
+                    .clamp(-(self.tasks.len() as i64), self.tasks.len() as i64)
+                    as i32;
+                let pred_y = rect.y
+                    + self.axis_height()
+                    + pred_offset.saturating_mul(self.row_height as i32);
                 // The three relationship kinds differ in which edges the elbow joins: a
                 // finish-to-start link leaves the predecessor's end and enters the successor's
                 // start, start-to-start joins the two left edges, finish-to-finish the two right
@@ -871,7 +1260,8 @@ impl Draw for GanttWidget {
                         self.project_x(task.end.max(task.start + 1), track_x, track_w),
                     ),
                 };
-                let from_y = pred_y + self.row_height as i32 / 2;
+                let from_y = (pred_y + self.row_height as i32 / 2)
+                    .clamp(rect.y, rect.y + rect.height as i32 - 1);
                 let to_y = y + self.row_height as i32 / 2;
                 // The elbow's vertical segment sits a short step past the predecessor's right edge,
                 // so a forward link and a backward one both read as an elbow rather than as a
@@ -907,7 +1297,7 @@ impl Draw for GanttWidget {
         // Painted only when it falls inside the viewport, because `project_x` extrapolates linearly
         // and would otherwise draw a confident line at a position off the plot.
         if let Some(today) = self.today {
-            if (self.viewport_start..=self.viewport_end).contains(&today) {
+            if self.show_today && (self.viewport_start..=self.viewport_end).contains(&today) {
                 let x = self.project_x(today, track_x, track_w);
                 let top = rect.y;
                 let bottom = rect.y + rect.height as i32;
@@ -1251,5 +1641,143 @@ mod tests {
             dangling_svg, bare_svg,
             "a dependency that names no task must paint nothing rather than a line to nowhere"
         );
+    }
+
+    #[test]
+    fn critical_path_is_the_longest_duration_chain() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(vec![
+            // 0..10 (10 units) → 10..40 (30) → 40..45 (5): total 45.
+            GanttTask::new("a", "Design", 0, 10, 100),
+            GanttTask::new("b", "Build", 10, 40, 0).depends_on(["a"]),
+            GanttTask::new("c", "Ship", 40, 45, 0).depends_on(["b"]),
+            // A short side branch: 2 units, not critical.
+            GanttTask::new("x", "Side", 0, 2, 0),
+        ]);
+
+        assert_eq!(gantt.critical_path(), vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+
+        // The property is what turns the highlight on; reading it is the switch's own state.
+        gantt.set("show_critical_path", CapabilityValue::Bool(true)).expect("bool accepted");
+        assert!(gantt.show_critical_path());
+    }
+
+    #[test]
+    fn critical_path_names_nothing_when_every_task_is_zero_length_and_isolated() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(vec![GanttTask::milestone("m", "Start", 5)]);
+        assert!(
+            gantt.critical_path().is_empty(),
+            "one instant is not a chain, and naming it would be an invented claim"
+        );
+    }
+
+    #[test]
+    fn a_dependency_cycle_has_no_critical_path() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(vec![
+            GanttTask::new("a", "A", 0, 10, 0).depends_on(["b"]),
+            GanttTask::new("b", "B", 10, 20, 0).depends_on(["a"]),
+        ]);
+        assert!(
+            gantt.critical_path().is_empty(),
+            "a cycle has no longest chain; reporting one would hide the caller's error"
+        );
+    }
+
+    #[test]
+    fn viewport_changed_fires_on_zoom_and_on_task_replacement() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        let ranges = Arc::new(Mutex::new(Vec::<(i64, i64)>::new()));
+        let sink = ranges.clone();
+        gantt.viewport_changed.connect(move |range| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*range);
+            }
+        });
+
+        gantt.handle_event(&Event::wheel(0, -120, 0));
+        gantt.set_tasks(sample_tasks());
+
+        let got = ranges.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert!(got.len() >= 2, "both changes must be reported, got {got:?}");
+        assert!(got[0].1 - got[0].0 < 30, "the zoom must shrink the range: {:?}", got[0]);
+    }
+
+    #[test]
+    fn dragging_a_bars_right_edge_resizes_and_reports_start_and_finish() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        let started = Arc::new(Mutex::new(Vec::<String>::new()));
+        let finished = Arc::new(Mutex::new(Vec::<String>::new()));
+        let start_sink = started.clone();
+        let finish_sink = finished.clone();
+        gantt.task_resize_started.connect(move |id| {
+            if let Ok(mut guard) = start_sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+        gantt.task_resize_finished.connect(move |id| {
+            if let Ok(mut guard) = finish_sink.lock() {
+                guard.push(id.as_ref().clone());
+            }
+        });
+
+        let (track_x, track_w) = gantt.track_geometry();
+        let task = &gantt.tasks()[0];
+        let x1 = gantt.project_x(task.end, track_x, track_w);
+        let y = gantt.lane_rect(0).y + 10;
+        gantt.handle_event(&Event::mouse_press(x1 - 1, y, 1));
+        gantt.handle_event(&Event::mouse_move(x1 + 20, y));
+        gantt.handle_event(&Event::mouse_release(x1 + 20, y, 1));
+
+        assert!(
+            gantt.tasks()[0].end > 10,
+            "the end edge must move: end is {}",
+            gantt.tasks()[0].end
+        );
+        assert_eq!(gantt.tasks()[0].start, 0, "resizing the end pins the start");
+        assert_eq!(
+            started.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec!["t1".to_string()]
+        );
+        assert_eq!(
+            finished.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec!["t1".to_string()]
+        );
+    }
+
+    #[test]
+    fn dragging_the_progress_strip_changes_progress_without_moving_the_bar() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        let (track_x, track_w) = gantt.track_geometry();
+        let (start, end) = {
+            let task = &gantt.tasks()[0];
+            (task.start, task.end)
+        };
+        let x0 = gantt.project_x(start, track_x, track_w);
+        let x1 = gantt.project_x(end, track_x, track_w);
+        let lane_y = gantt.lane_rect(0).y;
+        let bar_bottom = lane_y + gantt.row_height() as i32 - 6;
+        // Halfway across the bottom strip: the bar's 100 % becomes 50 %.
+        let mid = x0 + (x1 - x0) / 2;
+        gantt.handle_event(&Event::mouse_press(mid, bar_bottom, 1));
+        gantt.handle_event(&Event::mouse_release(mid, bar_bottom, 1));
+
+        let task = &gantt.tasks()[0];
+        assert_eq!((task.start, task.end), (start, end), "progress must not move the bar");
+        assert!((task.progress as i32 - 50).abs() <= 1, "progress was {}", task.progress);
+    }
+
+    #[test]
+    fn dependency_lookup_is_indexed_and_survives_task_replacement() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        assert_eq!(gantt.id_index.get("t3").copied(), Some(2));
+        gantt.set_tasks(vec![GanttTask::new("only", "Only", 0, 5, 0)]);
+        assert_eq!(gantt.id_index.get("t3"), None);
+        assert_eq!(gantt.id_index.get("only").copied(), Some(0));
     }
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Software rendering surface: back buffer, surface, and configuration.
+use crate::compat::Arc;
 use crate::compat::Rc;
 use crate::compat::{lock, vec, Cow, MiniToString, Mutex, OnceLock, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
@@ -59,8 +60,9 @@ pub(crate) struct LayerCapture {
     ///
     /// When this is `Some` the commands between push and pop were suppressed, because the caller
     /// asserted the subtree is unchanged, and the pop composites these pixels instead of whatever
-    /// the (cleared) region contains.
-    pub(crate) cached_foreground: Option<Vec<u8>>,
+    /// the (cleared) region contains. The buffer is shared with the cache entry (`Arc`), so a hit is
+    /// a refcount bump rather than a copy of the whole region (G-01).
+    pub(crate) cached_foreground: Option<Arc<Vec<u8>>>,
 }
 
 /// One cached layer foreground, keyed by the caller's cache identity.
@@ -71,7 +73,11 @@ pub(crate) struct CachedLayer {
     /// Opacity the foreground was captured with. A change invalidates the entry.
     pub(crate) opacity: f32,
     /// The layer's foreground pixels, row-major RGBA, `width * height * 4` bytes.
-    pub(crate) foreground: Vec<u8>,
+    ///
+    /// Shared rather than owned: a cache hit hands the same pixels to the pop instead of copying
+    /// the whole region, and the captured foreground is stored by refcount as well (G-01). `Arc`
+    /// rather than `Rc` because `BackBuffer` is reachable from a `Sync` process-wide slot.
+    pub(crate) foreground: Arc<Vec<u8>>,
 }
 
 /// Double-buffered 8-bit RGBA pixel storage used by software rendering.
@@ -224,13 +230,44 @@ impl BackBuffer {
     /// off-screen rectangle and still get a damage list that every consumer can index safely.
     /// Zero-area and fully off-screen rectangles are dropped.
     pub fn mark_damage(&mut self, rect: crate::core::Rect) {
-        let Some(region) = clipped_damage(rect, self.size) else { return };
+        let Some(mut region) = clipped_damage(rect, self.size) else { return };
         // Containment is the common case: a control repaints inside a region an ancestor already
         // reported. Dropping it keeps the list small without changing which pixels are published.
         if self.damage.iter().any(|existing| contains_region(*existing, region)) {
             return;
         }
+        // Fold this report into the existing list. Present used to copy every rectangle in the
+        // list individually, so a frame that reported many overlapping small regions paid one
+        // row copy per rectangle for the same pixels (G-29). The scan restarts after each union
+        // because a union can grow to overlap a region already passed; the list is bounded by
+        // `MAX_DAMAGE_REGIONS`, so that restart is cheap in absolute terms.
+        let mut index = 0;
+        while index < self.damage.len() {
+            let existing = self.damage[index];
+            if contains_region(region, existing) {
+                self.damage.swap_remove(index);
+                continue;
+            }
+            if regions_intersect(region, existing) {
+                region = union_region(region, existing);
+                self.damage.swap_remove(index);
+                index = 0;
+                continue;
+            }
+            index += 1;
+        }
         self.damage.push(region);
+        // An unbounded list would turn an input storm into an unbounded amount of present work.
+        // Past the bound, one rectangle covering everything keeps every damaged pixel published
+        // (the same trade `DirtyRegionTracker::add_coalescing_beyond_capacity` makes).
+        if self.damage.len() > MAX_DAMAGE_REGIONS {
+            let mut covering = self.damage[0];
+            for region in &self.damage[1..] {
+                covering = union_region(covering, *region);
+            }
+            self.damage.clear();
+            self.damage.push(covering);
+        }
     }
 
     /// The damaged rectangles reported since the last present, clipped to the buffer.
@@ -298,6 +335,35 @@ fn contains_region(outer: (i32, i32, u32, u32), inner: (i32, i32, u32, u32)) -> 
         && iy >= oy
         && (ix as i64 + iw as i64) <= (ox as i64 + ow as i64)
         && (iy as i64 + ih as i64) <= (oy as i64 + oh as i64)
+}
+
+/// How many damage rectangles a surface keeps before collapsing them into one.
+///
+/// The list is already folded on overlap, so this only bounds the scattered case. Collapsing to
+/// the bounding rectangle can cover pixels that did not change, but it never loses damage, and
+/// the alternative — an unbounded number of per-rectangle copies — is the worse trade (G-29).
+const MAX_DAMAGE_REGIONS: usize = 32;
+
+/// Whether two device-space regions share at least one pixel.
+///
+/// Rectangles that merely touch do not overlap: the end coordinate is exclusive, so an empty
+/// intersection is not damage.
+fn regions_intersect(a: (i32, i32, u32, u32), b: (i32, i32, u32, u32)) -> bool {
+    let (ax, ay, aw, ah) = a;
+    let (bx, by, bw, bh) = b;
+    (ax as i64) < (bx as i64 + bw as i64)
+        && (bx as i64) < (ax as i64 + aw as i64)
+        && (ay as i64) < (by as i64 + bh as i64)
+        && (by as i64) < (ay as i64 + ah as i64)
+}
+
+/// The smallest region covering both inputs, in device-space coordinates.
+fn union_region(a: (i32, i32, u32, u32), b: (i32, i32, u32, u32)) -> (i32, i32, u32, u32) {
+    let left = (a.0 as i64).min(b.0 as i64);
+    let top = (a.1 as i64).min(b.1 as i64);
+    let right = (a.0 as i64 + a.2 as i64).max(b.0 as i64 + b.2 as i64);
+    let bottom = (a.1 as i64 + a.3 as i64).max(b.1 as i64 + b.3 as i64);
+    (left as i32, top as i32, (right - left) as u32, (bottom - top) as u32)
 }
 /// Software raster surface with quality controls and RGBA frame output.
 ///
@@ -632,13 +698,17 @@ fn fit_text_to_width<'a>(
     }
 
     // True measure of a prefix of `length` clusters, matching `measure_text`'s contract.
-    let prefix_fits = |length: usize| -> bool {
+    //
+    // The buffer is reused across candidates: collecting a fresh `String` per candidate turned a
+    // two-cluster confirmation into a per-candidate allocation (G-20).
+    let mut prefix_buffer = crate::compat::String::new();
+    let mut prefix_fits = |length: usize| -> bool {
         if length == 0 {
             return true;
         }
-        let prefix: crate::compat::String =
-            clusters[..length].iter().flat_map(|cluster| cluster.text.chars()).collect();
-        backend.measure_text(&prefix, font).width as f32 <= budget
+        prefix_buffer.clear();
+        prefix_buffer.extend(clusters[..length].iter().flat_map(|cluster| cluster.text.chars()));
+        backend.measure_text(&prefix_buffer, font).width as f32 <= budget
     };
 
     // Confirm the estimate by finding the **first** prefix that does not fit, which is exactly
@@ -697,16 +767,17 @@ fn fit_text_to_width_by_prefix(
     ellipsis: char,
 ) -> crate::compat::String {
     let mut kept = crate::compat::String::new();
+    // One candidate buffer, swapped with `kept` on success instead of cloning the kept prefix for
+    // every character (G-20). The measured string is byte-identical to the old per-character clone.
+    let mut candidate = crate::compat::String::new();
     for ch in text.chars() {
-        let candidate = {
-            let mut next = kept.clone();
-            next.push(ch);
-            next
-        };
+        candidate.clear();
+        candidate.push_str(&kept);
+        candidate.push(ch);
         if backend.measure_text(&candidate, font).width as f32 > budget {
             break;
         }
-        kept = candidate;
+        core::mem::swap(&mut kept, &mut candidate);
     }
     kept.push(ellipsis);
     kept
@@ -1563,6 +1634,44 @@ mod tests {
             &[(0, 0, 2, 2)],
             "the clipped region survives, its contained duplicate and the off-screen region do not"
         );
+    }
+
+    /// Overlapping damage reports fold into one covering region, so a present copies one band
+    /// instead of every report; touching edges stay separate. (G-29)
+    #[test]
+    fn mark_damage_merges_overlapping_regions() {
+        let mut buffer = BackBuffer::new(Size::new(8, 8), 1.0);
+        buffer.mark_damage(Rect::new(0, 0, 2, 2));
+        buffer.mark_damage(Rect::new(1, 1, 2, 2));
+        assert_eq!(
+            buffer.damage_regions(),
+            &[(0, 0, 3, 3)],
+            "overlapping reports become their union"
+        );
+
+        buffer.clear_damage();
+        buffer.mark_damage(Rect::new(0, 0, 2, 2));
+        buffer.mark_damage(Rect::new(2, 0, 2, 2));
+        assert_eq!(
+            buffer.damage_regions(),
+            &[(0, 0, 2, 2), (2, 0, 2, 2)],
+            "rectangles that only touch do not overlap"
+        );
+    }
+
+    /// The damage list is bounded: many scattered reports collapse to one covering region.
+    #[test]
+    fn mark_damage_is_bounded() {
+        let mut buffer = BackBuffer::new(Size::new(64, 64), 1.0);
+        for index in 0..(MAX_DAMAGE_REGIONS + 1) {
+            let x = (index % 8) as i32 * 8;
+            let y = (index / 8) as i32 * 8;
+            buffer.mark_damage(Rect::new(x, y, 1, 1));
+        }
+        assert_eq!(buffer.damage_regions().len(), 1, "the list collapses at the bound");
+        let (x, y, width, height) = buffer.damage_regions()[0];
+        assert_eq!((x, y), (0, 0));
+        assert!(width >= 8 && height >= 8, "the covering region keeps every report");
     }
 
     /// A full-surface damage region takes the cheaper swap path and still publishes.
@@ -2970,7 +3079,7 @@ mod tests {
             y: 3,
             width: 2,
             height: 2,
-            data: data.to_vec(),
+            data: Arc::from(data),
         });
         reference.end_frame();
         let expected = reference.frame_rgba().to_vec();

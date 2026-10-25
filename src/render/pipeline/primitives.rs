@@ -1017,8 +1017,11 @@ impl SoftwareSurface {
                     color,
                     clip,
                     // The line above measured its clusters at this weight, so the glyph must be
-                    // painted at it too — a variable face is one face with a `wght` axis.
+                    // painted at it too — a variable face is one face with a `wght` axis. Italic
+                    // has no axis in the rasteriser, so the paint path applies a synthetic
+                    // oblique (G-18).
                     weight: font.weight(),
+                    italic: font.is_italic(),
                 };
                 // Colour ink needs the four-byte scratch, and the two calls are mutually exclusive
                 // by what each one's buffer means: `blend_color_glyph` refuses coverage ink and

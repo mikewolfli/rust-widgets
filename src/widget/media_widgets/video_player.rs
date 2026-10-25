@@ -9,6 +9,7 @@
 //! seek only move the simulated position, which advances when `tick` is called.
 //! It emits signals for playback state changes and time updates.
 
+use core::cell::Cell;
 use core::fmt::Write as _;
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
@@ -39,6 +40,97 @@ impl SubtitleCue {
     /// A cue covering `[start, end)` with `text`.
     pub fn new(start: f64, end: f64, text: impl Into<String>) -> Self {
         Self { start, end, text: text.into() }
+    }
+}
+
+/// A decoded frame supplied by the host.
+///
+/// The data is tightly packed RGBA, row-major, with no padding between rows. The control does
+/// not demux or decode anything itself; it presents what the host hands it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoFrame {
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Presentation timestamp in milliseconds.
+    pub pts_ms: u64,
+    /// RGBA bytes, `width * height * 4` long.
+    pub data: Vec<u8>,
+}
+
+/// What the host-driven pipeline is currently doing.
+///
+/// The control owns no demuxer or decoder; this enum records which stage of a host pipeline
+/// last reported activity, so a caller can observe the difference between "nothing loaded",
+/// "waiting for a decoded frame" and "a frame is on screen".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VideoPipelineState {
+    /// No source is loaded.
+    #[default]
+    Idle,
+    /// A source was handed over and the control is waiting for the host's stream.
+    Demuxing,
+    /// The host is decoding; no frame has been injected yet.
+    Decoding,
+    /// A host frame is available for presentation.
+    Presenting,
+    /// Playback reached the end of the timeline.
+    Ended,
+}
+
+/// One selectable audio track.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioTrack {
+    /// Stable track identifier, as the host names it.
+    pub id: String,
+    /// Human-readable label.
+    pub label: String,
+    /// BCP-47 language tag, when the container declares one.
+    pub language: Option<String>,
+}
+
+impl AudioTrack {
+    /// A track with an identifier and a label.
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self { id: id.into(), label: label.into(), language: None }
+    }
+
+    /// The same track with a language tag attached.
+    pub fn with_language(mut self, language: impl Into<String>) -> Self {
+        self.language = Some(language.into());
+        self
+    }
+}
+
+/// Metadata the host read from the container.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VideoMetadata {
+    /// Title, when the container declares one.
+    pub title: String,
+    /// Author or artist, when the container declares one.
+    pub artist: String,
+    /// Cover art as encoded image bytes, when the container carries it.
+    pub artwork: Option<Vec<u8>>,
+}
+
+/// One selectable subtitle track.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubtitleTrack {
+    /// Stable track identifier, as the host names it.
+    pub id: String,
+    /// Human-readable label.
+    pub label: String,
+    /// BCP-47 language tag, when the container declares one.
+    pub language: Option<String>,
+    /// The cues belonging to this track.
+    pub cues: Vec<SubtitleCue>,
+}
+
+impl SubtitleTrack {
+    /// A track with an identifier, a label and its cues.
+    pub fn new(id: impl Into<String>, label: impl Into<String>, cues: Vec<SubtitleCue>) -> Self {
+        Self { id: id.into(), label: label.into(), language: None, cues }
     }
 }
 
@@ -116,6 +208,32 @@ pub struct VideoPlayer {
     pub mute_changed: Signal1<bool>,
     /// Emitted when the playback rate changes.
     pub playback_rate_changed: Signal1<f32>,
+    /// Emitted when the duration changes, with the new duration in seconds.
+    pub duration_changed: Signal1<f64>,
+    /// Emitted with the presentation timestamp when the host injects a decoded frame.
+    pub frame_available: Signal1<u64>,
+    /// Emitted with the presentation timestamp when a frame is presented on screen.
+    pub frame_presented: Signal1<u64>,
+    /// Emitted when the host replaces the container metadata.
+    pub metadata_changed: GenericSignal,
+    /// Whether playback loops at the end instead of stopping.
+    looping: bool,
+    /// The most recent host-supplied frame, if any.
+    frame: Option<VideoFrame>,
+    /// The reported pipeline stage.
+    pipeline: VideoPipelineState,
+    /// Host-supplied audio tracks.
+    audio_tracks: Vec<AudioTrack>,
+    /// Index of the selected audio track in [`Self::audio_tracks`].
+    active_audio_track: Option<usize>,
+    /// Host-supplied subtitle tracks.
+    subtitle_tracks: Vec<SubtitleTrack>,
+    /// Index of the selected subtitle track in [`Self::subtitle_tracks`].
+    active_subtitle_track: Option<usize>,
+    /// Container metadata reported by the host.
+    metadata: VideoMetadata,
+    /// Cached cue index for [`Self::subtitle_at`], so a forward-playing clock is O(1).
+    subtitle_cursor: Cell<usize>,
 }
 
 impl VideoPlayer {
@@ -147,6 +265,19 @@ impl VideoPlayer {
             volume_changed: Signal1::new(),
             mute_changed: Signal1::new(),
             playback_rate_changed: Signal1::new(),
+            duration_changed: Signal1::new(),
+            frame_available: Signal1::new(),
+            frame_presented: Signal1::new(),
+            metadata_changed: GenericSignal::new(),
+            looping: false,
+            frame: None,
+            pipeline: VideoPipelineState::Idle,
+            audio_tracks: Vec::new(),
+            active_audio_track: None,
+            subtitle_tracks: Vec::new(),
+            active_subtitle_track: None,
+            metadata: VideoMetadata::default(),
+            subtitle_cursor: Cell::new(0),
         }
     }
 
@@ -158,7 +289,183 @@ impl VideoPlayer {
         self.source = source.to_string();
         self.current_time = 0.0;
         self.is_playing = false;
+        self.frame = None;
+        self.subtitle_cursor.set(0);
+        self.pipeline =
+            if source.is_empty() { VideoPipelineState::Idle } else { VideoPipelineState::Demuxing };
         self.set_status(if source.is_empty() { MediaStatus::Idle } else { MediaStatus::Paused });
+        self.base.request_redraw();
+    }
+
+    /// Accepts a decoded frame from the host's pipeline.
+    ///
+    /// The control has no demuxer or decoder, so this is the only way pixels reach it. The
+    /// frame is validated (non-empty dimensions, exactly `width * height * 4` RGBA bytes) before
+    /// it is stored, so a malformed buffer cannot be painted. The pipeline moves to
+    /// [`VideoPipelineState::Presenting`] and `frame_available` announces the timestamp.
+    pub fn set_video_frame(&mut self, frame: VideoFrame) -> Result<(), String> {
+        if frame.width == 0 || frame.height == 0 {
+            return Err("a video frame needs non-zero dimensions".to_string());
+        }
+        let expected = (frame.width as usize) * (frame.height as usize) * 4;
+        if frame.data.len() != expected {
+            return Err(format!(
+                "a {}x{} RGBA frame needs {expected} bytes, got {}",
+                frame.width,
+                frame.height,
+                frame.data.len()
+            ));
+        }
+        let pts = frame.pts_ms;
+        self.frame = Some(frame);
+        self.pipeline = VideoPipelineState::Presenting;
+        self.frame_available.emit(pts);
+        self.base.request_redraw();
+        Ok(())
+    }
+
+    /// Presents the most recent host frame, announcing it as `frame_presented`.
+    ///
+    /// Returns `false` when the host has not supplied a frame, which is a statement about the
+    /// pipeline rather than an error: a player may legitimately be waiting for its first frame.
+    pub fn present_frame(&mut self) -> bool {
+        let Some(frame) = self.frame.as_ref() else {
+            return false;
+        };
+        let pts = frame.pts_ms;
+        self.pipeline = VideoPipelineState::Presenting;
+        self.frame_presented.emit(pts);
+        self.base.request_redraw();
+        true
+    }
+
+    /// The most recent host frame, if any.
+    pub fn video_frame(&self) -> Option<&VideoFrame> {
+        self.frame.as_ref()
+    }
+
+    /// The reported pipeline stage.
+    pub fn pipeline(&self) -> VideoPipelineState {
+        self.pipeline
+    }
+
+    /// Whether playback loops at the end of the timeline.
+    pub fn is_looping(&self) -> bool {
+        self.looping
+    }
+
+    /// Turns end-of-timeline looping on or off.
+    pub fn set_looping(&mut self, looping: bool) {
+        if self.looping == looping {
+            return;
+        }
+        self.looping = looping;
+    }
+
+    /// Stops playback and rewinds to the start, leaving the source loaded.
+    pub fn stop(&mut self) {
+        let was_active = self.is_playing;
+        self.is_playing = false;
+        self.current_time = 0.0;
+        self.subtitle_cursor.set(0);
+        self.pipeline = if self.source.is_empty() {
+            VideoPipelineState::Idle
+        } else {
+            VideoPipelineState::Demuxing
+        };
+        self.set_status(if self.source.is_empty() {
+            MediaStatus::Idle
+        } else {
+            MediaStatus::Paused
+        });
+        if was_active {
+            self.playback_paused.emit();
+        }
+        self.time_updated.emit(0.0);
+        self.base.request_redraw();
+    }
+
+    /// Replaces the host-supplied audio track list.
+    pub fn set_audio_tracks(&mut self, tracks: Vec<AudioTrack>) {
+        self.audio_tracks = tracks;
+        self.active_audio_track =
+            self.active_audio_track.filter(|index| *index < self.audio_tracks.len());
+        self.base.request_redraw();
+    }
+
+    /// The host-supplied audio tracks.
+    pub fn audio_tracks(&self) -> &[AudioTrack] {
+        &self.audio_tracks
+    }
+
+    /// Selects the audio track at `index`.
+    ///
+    /// Returns `Err` for an index the host never supplied rather than silently selecting
+    /// nothing, which would make a caller believe the switch happened.
+    pub fn set_audio_track(&mut self, index: usize) -> Result<(), String> {
+        if index >= self.audio_tracks.len() {
+            return Err(format!(
+                "audio track {index} is out of range; the host supplied {} track(s)",
+                self.audio_tracks.len()
+            ));
+        }
+        if self.active_audio_track == Some(index) {
+            return Ok(());
+        }
+        self.active_audio_track = Some(index);
+        self.base.request_redraw();
+        Ok(())
+    }
+
+    /// The selected audio track index, when one is selected.
+    pub fn audio_track(&self) -> Option<usize> {
+        self.active_audio_track
+    }
+
+    /// Replaces the host-supplied subtitle tracks, keeping the active track when it still exists.
+    pub fn set_subtitle_tracks(&mut self, tracks: Vec<SubtitleTrack>) {
+        self.subtitle_tracks = tracks;
+        self.active_subtitle_track =
+            self.active_subtitle_track.filter(|index| *index < self.subtitle_tracks.len());
+        if let Some(index) = self.active_subtitle_track {
+            self.set_subtitles(self.subtitle_tracks[index].cues.clone());
+        }
+        self.base.request_redraw();
+    }
+
+    /// The host-supplied subtitle tracks.
+    pub fn subtitle_tracks(&self) -> &[SubtitleTrack] {
+        &self.subtitle_tracks
+    }
+
+    /// Selects the subtitle track at `index`, replacing the active cue list with its cues.
+    pub fn set_subtitle_track(&mut self, index: usize) -> Result<(), String> {
+        if index >= self.subtitle_tracks.len() {
+            return Err(format!(
+                "subtitle track {index} is out of range; the host supplied {} track(s)",
+                self.subtitle_tracks.len()
+            ));
+        }
+        self.active_subtitle_track = Some(index);
+        let cues = self.subtitle_tracks[index].cues.clone();
+        self.set_subtitles(cues);
+        Ok(())
+    }
+
+    /// The selected subtitle track index, when one is selected.
+    pub fn subtitle_track(&self) -> Option<usize> {
+        self.active_subtitle_track
+    }
+
+    /// The container metadata reported by the host.
+    pub fn metadata(&self) -> &VideoMetadata {
+        &self.metadata
+    }
+
+    /// Replaces the container metadata and announces it through `metadata_changed`.
+    pub fn set_metadata(&mut self, metadata: VideoMetadata) {
+        self.metadata = metadata;
+        self.metadata_changed.emit();
         self.base.request_redraw();
     }
 
@@ -182,6 +489,7 @@ impl VideoPlayer {
     pub fn set_subtitles(&mut self, mut cues: Vec<SubtitleCue>) {
         cues.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(core::cmp::Ordering::Equal));
         self.subtitles = cues;
+        self.subtitle_cursor.set(0);
         self.base.request_redraw();
     }
 
@@ -190,6 +498,7 @@ impl VideoPlayer {
         self.subtitles.push(cue);
         self.subtitles
             .sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(core::cmp::Ordering::Equal));
+        self.subtitle_cursor.set(0);
         self.base.request_redraw();
     }
 
@@ -199,12 +508,48 @@ impl VideoPlayer {
             return;
         }
         self.subtitles.clear();
+        self.subtitle_cursor.set(0);
         self.base.request_redraw();
     }
 
     /// Returns the cue visible at `time`, if any.
+    ///
+    /// # Why this is not a linear scan
+    ///
+    /// `draw` calls this every frame, so a full `iter().find` made the cost grow with the length
+    /// of the subtitle track. The cues are sorted by start here, so a monotonically advancing
+    /// clock keeps a cursor and answers in one comparison; a backwards seek binary-searches for
+    /// the first cue that could contain `time` instead of walking the whole list. Overlapping
+    /// cues are still handled by walking back over any earlier cue whose end is past `time`.
     pub fn subtitle_at(&self, time: f64) -> Option<&SubtitleCue> {
-        self.subtitles.iter().find(|cue| time >= cue.start && time < cue.end)
+        if self.subtitles.is_empty() {
+            return None;
+        }
+        let mut index = self.subtitle_cursor.get().min(self.subtitles.len() - 1);
+        if index >= self.subtitles.len() || self.subtitles[index].start > time {
+            // The clock moved backwards: find the last cue whose start is at or before `time`.
+            index = self.subtitles.partition_point(|cue| cue.start <= time).saturating_sub(1);
+        } else {
+            while index + 1 < self.subtitles.len() && self.subtitles[index + 1].start <= time {
+                index += 1;
+            }
+        }
+        self.subtitle_cursor.set(index);
+        // At most one cue normally contains a given time. Walking back past an earlier cue whose
+        // end is still ahead of `time` keeps overlapping tracks correct without making the common
+        // (non-overlapping) case anything but O(1).
+        let mut probe = index + 1;
+        while probe > 0 {
+            probe -= 1;
+            let cue = &self.subtitles[probe];
+            if time >= cue.start && time < cue.end {
+                return Some(cue);
+            }
+            if cue.end <= time {
+                break;
+            }
+        }
+        None
     }
 
     /// Whether subtitle cues are painted.
@@ -297,6 +642,7 @@ impl VideoPlayer {
             return;
         }
         self.duration = duration;
+        self.duration_changed.emit(duration);
         let clamped_time = self.current_time.clamp(0.0, self.duration);
         if clamped_time != self.current_time {
             self.current_time = clamped_time;
@@ -315,6 +661,7 @@ impl VideoPlayer {
         }
         if !self.is_playing {
             self.is_playing = true;
+            self.pipeline = VideoPipelineState::Decoding;
             self.set_status(MediaStatus::Playing);
             self.playback_started.emit();
             self.base.request_redraw();
@@ -355,6 +702,7 @@ impl VideoPlayer {
             return;
         }
         self.current_time = time.clamp(0.0, self.duration.max(0.0));
+        self.subtitle_cursor.set(0);
         self.time_updated.emit(self.current_time);
         self.base.request_redraw();
     }
@@ -457,8 +805,19 @@ impl VideoPlayer {
         self.current_time = (self.current_time + effective_delta).clamp(0.0, self.duration);
 
         if self.current_time >= self.duration {
+            if self.looping {
+                // A looping timeline wraps without reporting the end: a listener that tears down
+                // its state on `playback_ended` must not be told the clip finished.
+                self.current_time = 0.0;
+                self.subtitle_cursor.set(0);
+                self.pipeline = VideoPipelineState::Decoding;
+                self.time_updated.emit(self.current_time);
+                self.base.request_redraw();
+                return false;
+            }
             self.current_time = self.duration;
             self.is_playing = false;
+            self.pipeline = VideoPipelineState::Ended;
             self.set_status(MediaStatus::Ended);
             self.playback_ended.emit();
             self.time_updated.emit(self.current_time);
@@ -575,6 +934,24 @@ impl Widget for VideoPlayer {
                     crate::widget::capability::CapabilityValue::Float(*v as f64)
                 }))
             }
+            "duration_changed" => {
+                Some(EventSignalRef::mapped("duration_changed", &self.duration_changed, |v| {
+                    crate::widget::capability::CapabilityValue::Float(*v)
+                }))
+            }
+            "frame_available" => {
+                Some(EventSignalRef::mapped("frame_available", &self.frame_available, |v| {
+                    crate::widget::capability::CapabilityValue::UInt(*v)
+                }))
+            }
+            "frame_presented" => {
+                Some(EventSignalRef::mapped("frame_presented", &self.frame_presented, |v| {
+                    crate::widget::capability::CapabilityValue::UInt(*v)
+                }))
+            }
+            "metadata_changed" => {
+                Some(EventSignalRef::unit("metadata_changed", &self.metadata_changed))
+            }
             _ => None,
         }
     }
@@ -592,6 +969,8 @@ impl WidgetProperties for VideoPlayer {
             "muted" => Ok(CapabilityValue::Bool(self.is_muted())),
             "playback_rate" => Ok(CapabilityValue::Float(self.playback_rate() as f64)),
             "controls_visible" => Ok(CapabilityValue::Bool(self.controls_visible())),
+            "looping" => Ok(CapabilityValue::Bool(self.is_looping())),
+            "pipeline" => Ok(CapabilityValue::String(format!("{:?}", self.pipeline()))),
             _ => base_property_get(self, name),
         }
     }
@@ -626,6 +1005,12 @@ impl WidgetProperties for VideoPlayer {
                 }
                 Ok(())
             }
+            "looping" => {
+                self.set_looping(expect_bool(value)?);
+                Ok(())
+            }
+            // The pipeline stage is reported by the host-driven lifecycle, not assigned.
+            "pipeline" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -637,6 +1022,8 @@ impl WidgetProperties for VideoPlayer {
             "muted",
             "playback_rate",
             "controls_visible",
+            "looping",
+            "pipeline",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -722,6 +1109,19 @@ impl Draw for VideoPlayer {
                 HorizontalAlignment::Center,
             );
             return;
+        }
+
+        // ── Host-decoded frame ──
+        //
+        // The control owns no decoder, so the picture is exactly the buffer the host injected.
+        // It is centred at its native pixel size and clipped to the player: scaling here would
+        // invent a resampling policy the pipeline did not ask for.
+        if let Some(frame) = self.frame.as_ref() {
+            let dx = rect.x + (rect.width as i32 - frame.width as i32) / 2;
+            let dy = rect.y + (rect.height as i32 - frame.height as i32) / 2;
+            context.push_clip(rect.x, rect.y, rect.width, rect.height);
+            context.draw_image(dx, dy, frame.width, frame.height, &frame.data);
+            context.pop_clip();
         }
 
         // Play icon overlay in center when paused — the `Play` **icon outline**, not the `▶`
@@ -1377,5 +1777,150 @@ mod tests {
         });
         vp.set_muted(true);
         assert!(muted.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_host_frame_is_validated_announced_and_painted() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("movie.mp4");
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+        let s = seen.clone();
+        vp.frame_available.connect(move |pts: std::sync::Arc<u64>| {
+            s.store(*pts, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        assert!(
+            vp.set_video_frame(VideoFrame { width: 2, height: 2, pts_ms: 42, data: vec![9u8; 8] })
+                .is_err(),
+            "a wrong byte count must be refused"
+        );
+        assert!(vp.video_frame().is_none());
+
+        vp.set_video_frame(VideoFrame { width: 2, height: 2, pts_ms: 42, data: vec![9u8; 16] })
+            .expect("a matching frame is accepted");
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 42);
+        assert_eq!(vp.pipeline(), VideoPipelineState::Presenting);
+
+        let presented = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+        let p = presented.clone();
+        vp.frame_presented.connect(move |pts: std::sync::Arc<u64>| {
+            p.store(*pts, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert!(vp.present_frame());
+        assert_eq!(presented.load(std::sync::atomic::Ordering::SeqCst), 42);
+    }
+
+    #[test]
+    fn looping_wraps_instead_of_reporting_the_end() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("loop.mp4");
+        vp.set_duration(10.0);
+        vp.set_looping(true);
+        vp.play();
+        let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let e = ended.clone();
+        vp.playback_ended.connect(move || {
+            e.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert!(!vp.tick(15.0), "a looping clip does not finish");
+        assert_eq!(vp.current_time(), 0.0);
+        assert!(vp.is_playing());
+        assert!(!ended.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stop_rewinds_and_pauses() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("clip.mp4");
+        vp.set_duration(20.0);
+        vp.seek(5.0);
+        vp.play();
+        vp.stop();
+        assert!(!vp.is_playing());
+        assert_eq!(vp.current_time(), 0.0);
+        assert_eq!(vp.media_status(), MediaStatus::Paused);
+    }
+
+    #[test]
+    fn duration_changes_are_announced_even_without_a_clock_clamp() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(0.0f64));
+        let s = seen.clone();
+        vp.duration_changed.connect(move |value: std::sync::Arc<f64>| {
+            *s.lock().unwrap() = *value;
+        });
+        vp.set_duration(30.0);
+        assert_eq!(*seen.lock().unwrap(), 30.0);
+    }
+
+    #[test]
+    fn subtitle_lookup_handles_long_tracks_and_backwards_seeks() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        let cues: Vec<SubtitleCue> = (0..500)
+            .map(|index| {
+                let start = index as f64 * 2.0;
+                SubtitleCue::new(start, start + 1.0, format!("cue {index}"))
+            })
+            .collect();
+        vp.set_subtitles(cues);
+        for index in [0usize, 10, 100, 499] {
+            let start = index as f64 * 2.0;
+            let expected = format!("cue {index}");
+            assert_eq!(
+                vp.subtitle_at(start + 0.5).map(|cue| cue.text.as_str()),
+                Some(expected.as_str())
+            );
+        }
+        // A backwards seek must find an earlier cue rather than staying on the cursor.
+        assert_eq!(vp.subtitle_at(0.5).map(|cue| cue.text.as_str()), Some("cue 0"));
+        assert!(vp.subtitle_at(1.5).is_none(), "the gap between cues holds no cue");
+    }
+
+    #[test]
+    fn audio_subtitle_tracks_and_metadata_are_selectable() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.set_audio_tracks(vec![
+            AudioTrack::new("a1", "English"),
+            AudioTrack::new("a2", "Deutsch"),
+        ]);
+        assert_eq!(vp.audio_tracks().len(), 2);
+        assert!(vp.set_audio_track(2).is_err());
+        vp.set_audio_track(1).expect("the second track exists");
+        assert_eq!(vp.audio_track(), Some(1));
+
+        vp.set_subtitle_tracks(vec![
+            SubtitleTrack::new("s1", "English", vec![SubtitleCue::new(0.0, 1.0, "hello")]),
+            SubtitleTrack::new("s2", "Deutsch", vec![SubtitleCue::new(0.0, 1.0, "hallo")]),
+        ]);
+        vp.set_subtitle_track(1).expect("the second track exists");
+        assert_eq!(vp.subtitle_track(), Some(1));
+        assert_eq!(vp.subtitle_at(0.5).map(|cue| cue.text.as_str()), Some("hallo"));
+
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let s = seen.clone();
+        vp.metadata_changed.connect(move || {
+            s.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        vp.set_metadata(VideoMetadata {
+            title: "Arrival".to_string(),
+            artist: "Villeneuve".to_string(),
+            artwork: None,
+        });
+        assert_eq!(vp.metadata().title, "Arrival");
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_new_events_resolve_and_loop_is_published() {
+        use crate::widget::capability::WidgetProperties;
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        for name in ["duration_changed", "frame_available", "frame_presented", "metadata_changed"] {
+            assert!(vp.event_signal_dyn(name).is_some(), "{name} must resolve");
+        }
+        assert!(vp.property_names().contains(&"looping"));
+        assert!(vp.property_names().contains(&"pipeline"));
+        vp.set("looping", CapabilityValue::Bool(true)).unwrap();
+        assert!(vp.is_looping());
+        assert_eq!(vp.get("pipeline").unwrap(), CapabilityValue::String("Idle".to_string()));
     }
 }

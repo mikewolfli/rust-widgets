@@ -34,6 +34,12 @@ pub enum NavigationEvent {
 /// Height of the navigation bar in logical pixels.
 const NAV_BAR_HEIGHT: u32 = 44;
 
+/// Width of one trailing action cell in the navigation bar.
+const NAV_ACTION_WIDTH: u32 = 64;
+
+/// Gap between the last action cell and the bar's trailing edge.
+const NAV_ACTION_MARGIN: i32 = 8;
+
 /// NavigationStack widget — a page-based navigation container.
 ///
 /// Manages a stack of pages where only the topmost page is visible.
@@ -57,6 +63,14 @@ pub struct NavigationStack {
     direction: TextDirection,
     /// An in-flight interactive pop gesture: `(start_x, start_slide)`.
     edge_drag: Option<(f32, f32)>,
+    /// Per-page titles, addressed like `pages`; `None` falls back to the global title.
+    page_titles: Vec<Option<String>>,
+    /// Trailing action labels painted at the bar's end.
+    actions: Vec<String>,
+    /// Whether the back affordance is painted and hit-tested at all.
+    back_visible: bool,
+    /// Emitted with the index of a trailing action when it is pressed.
+    pub action_index_pressed: Signal1<usize>,
     /// Emitted when the navigation state changes.
     pub navigation_changed: Signal1<NavigationEvent>,
 }
@@ -71,6 +85,10 @@ impl NavigationStack {
             slide: PropertyDriver::at(0.0, MotionSlot::Normal),
             direction: TextDirection::default(),
             edge_drag: None,
+            page_titles: Vec::new(),
+            actions: Vec::new(),
+            back_visible: true,
+            action_index_pressed: Signal1::new(),
             navigation_changed: Signal1::new(),
         }
     }
@@ -79,6 +97,9 @@ impl NavigationStack {
     /// The new page becomes the visible topmost page.
     pub fn push(&mut self, page: Box<dyn Widget>) {
         self.pages.push(page);
+        // A pushed page starts with no title of its own and inherits the global one, which is
+        // what a stack that never calls `set_page_title` has always shown.
+        self.page_titles.push(None);
         // The new page arrives from the trailing edge, then settles. `jump_to` sets the starting
         // offset so the next frame is the first frame of the movement rather than a snap.
         self.slide.jump_to(1.0);
@@ -100,6 +121,9 @@ impl NavigationStack {
             return None;
         }
         let popped = self.pages.pop();
+        if self.page_titles.len() > self.pages.len() {
+            self.page_titles.truncate(self.pages.len());
+        }
         // A pop arrives from the *leading* edge, which is the opposite of a push: that difference
         // is the whole information content of the transition, and a single direction would make a
         // back gesture look identical to a forward one.
@@ -137,6 +161,7 @@ impl NavigationStack {
         }
         let changed = self.pages.len() > 1;
         self.pages.drain(1..);
+        self.page_titles.truncate(self.pages.len());
         if changed {
             // A pop-to-root is a pop: it arrives from the same leading edge, over frames.
             self.slide.jump_to(-1.0);
@@ -181,6 +206,91 @@ impl NavigationStack {
         self.base.request_redraw();
     }
 
+    /// Sets the title of the page at `index`.
+    ///
+    /// A per-page title is the only thing that makes a navigation bar describe the page it sits
+    /// on: the single global title stayed on screen while the stack moved beneath it. A page
+    /// without its own title keeps falling back to the global one.
+    pub fn set_page_title(&mut self, index: usize, title: &str) -> bool {
+        if index >= self.pages.len() {
+            return false;
+        }
+        if self.page_titles.len() <= index {
+            self.page_titles.resize(index + 1, None);
+        }
+        self.page_titles[index] = Some(title.to_string());
+        self.base.request_redraw();
+        true
+    }
+
+    /// The title set for the page at `index`, when it has its own.
+    pub fn page_title(&self, index: usize) -> Option<&str> {
+        self.page_titles.get(index).and_then(|title| title.as_deref())
+    }
+
+    /// Replaces the trailing action labels.
+    ///
+    /// The labels use the same contract as `AppBar::set_actions`, so a host configures both bars
+    /// the same way; the crate has no `AppBarAction` type, so a label slice is the family's
+    /// existing vocabulary.
+    pub fn set_actions(&mut self, actions: Vec<String>) {
+        if self.actions == actions {
+            return;
+        }
+        self.actions = actions;
+        self.base.request_redraw();
+    }
+
+    /// The trailing action labels.
+    pub fn actions(&self) -> &[String] {
+        &self.actions
+    }
+
+    /// Whether the back affordance is shown when the stack can pop.
+    pub fn back_visible(&self) -> bool {
+        self.back_visible
+    }
+
+    /// Shows or hides the back affordance.
+    pub fn set_back_visible(&mut self, visible: bool) {
+        if self.back_visible == visible {
+            return;
+        }
+        self.back_visible = visible;
+        self.base.request_redraw();
+    }
+
+    /// The trailing action boxes, ordered from the bar's trailing edge inward.
+    ///
+    /// Both the paint path and the press arm read this one derivation, so a label cannot be
+    /// painted where it cannot be tapped.
+    fn action_boxes(&self) -> Vec<(usize, Rect)> {
+        let bar = self.nav_bar_rect();
+        if self.actions.is_empty() || bar.width == 0 {
+            return Vec::new();
+        }
+        let mut right = bar.right() - NAV_ACTION_MARGIN;
+        let mut boxes = Vec::with_capacity(self.actions.len());
+        for index in 0..self.actions.len() {
+            let left = (right - NAV_ACTION_WIDTH as i32).max(bar.x);
+            let width = (right - left).max(0) as u32;
+            if width == 0 {
+                break;
+            }
+            boxes.push((index, Rect::new(left, bar.y, width, bar.height)));
+            right = left - 2;
+        }
+        boxes
+    }
+
+    /// The action index whose box covers `pos`.
+    fn action_at(&self, pos: crate::core::Point) -> Option<usize> {
+        self.action_boxes()
+            .into_iter()
+            .find(|(_, rect)| rect.contains_point(pos))
+            .map(|(index, _)| index)
+    }
+
     /// Returns the content area rect (below the navigation bar).
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
@@ -200,6 +310,13 @@ impl NavigationStack {
 
     /// Returns the title to display in the navigation bar.
     fn display_title(&self) -> String {
+        if let Some(title) = self
+            .current_page_index()
+            .and_then(|index| self.page_title(index))
+            .filter(|title| !title.is_empty())
+        {
+            return title.to_string();
+        }
         if !self.navigation_bar_title.is_empty() {
             self.navigation_bar_title.clone()
         } else if let Some(page) = self.current_page() {
@@ -262,6 +379,11 @@ impl Widget for NavigationStack {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
             }
+            "action_index_pressed" => Some(EventSignalRef::mapped(
+                "action_index_pressed",
+                &self.action_index_pressed,
+                |v| CapabilityValue::UInt(*v as u64),
+            )),
             _ => None,
         }
     }
@@ -281,6 +403,7 @@ impl WidgetProperties for NavigationStack {
                 Some(index) => Ok(CapabilityValue::UInt(index as u64)),
                 None => Ok(CapabilityValue::Null),
             },
+            "back_visible" => Ok(CapabilityValue::Bool(self.back_visible())),
             _ => base_property_get(self, name),
         }
     }
@@ -312,12 +435,20 @@ impl WidgetProperties for NavigationStack {
                 }
             },
             "page_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "back_visible" => {
+                let visible = match value {
+                    CapabilityValue::Bool(visible) => visible,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_back_visible(visible);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["page_count", "current_page", BASE_PROPERTY_NAMES]
+        property_names_of!["page_count", "current_page", "back_visible", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `navigation_stack` publishes.
@@ -409,8 +540,8 @@ impl Draw for NavigationStack {
             separator,
         );
 
-        // Back button (if can_pop)
-        if self.can_pop() {
+        // Back button (if can_pop and the host still wants it)
+        if self.can_pop() && self.back_visible {
             let back = self.back_rect();
             let back_text = if self.direction.is_right_to_left() { "Back >" } else { "< Back" };
             // The **effective font** — the resolved theme/caller font — for the back label and the
@@ -438,15 +569,39 @@ impl Draw for NavigationStack {
         let title = self.display_title();
         let text_color = self.base.disabled_ink_on(ink, surface);
         let metrics = context.measure_text(&title, title_font);
-        let title_x = nav_rect.x + (nav_rect.width as i32 - metrics.width as i32) / 2;
+        // The title is centred in the space the trailing actions leave, so a label cannot paint
+        // over an action on a narrow bar.
+        let actions_reserve = self.actions.len() as i32 * (NAV_ACTION_WIDTH as i32 + 2);
+        let title_centre = nav_rect.x + (nav_rect.width as i32 - actions_reserve) / 2;
+        let title_x = title_centre - metrics.width as i32 / 2;
         let title_line = context.text_line(nav_rect, title_font);
-        context.draw_text(
-            Point::new(title_x.max(nav_rect.x + 4), title_line.y),
+        context.draw_text_fitted_cow(
+            Rect::new(
+                title_x.max(nav_rect.x + 4),
+                title_line.y,
+                (nav_rect.width as i32 - actions_reserve - 8).max(1) as u32,
+                title_line.height,
+            ),
             &title,
             title_font,
             text_color,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
+
+        // ── Trailing actions ──
+        //
+        // The boxes come from `action_boxes`, the same derivation `action_at` hit-tests, so a
+        // button is tappable exactly where it is painted.
+        for (index, box_rect) in self.action_boxes() {
+            let Some(label) = self.actions.get(index) else { continue };
+            context.draw_text_fitted_cow(
+                context.text_line(box_rect, title_font),
+                label,
+                title_font,
+                accent,
+                HorizontalAlignment::Center,
+            );
+        }
 
         // ── Draw content area background and pages ──
         //
@@ -506,8 +661,14 @@ impl EventHandler for NavigationStack {
         match event {
             Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
+                    // A trailing action is an affordance of this bar, so it is checked before
+                    // forwarding anything to a page beneath it.
+                    if let Some(index) = self.action_at(*pos) {
+                        self.action_index_pressed.emit(index);
+                        return;
+                    }
                     // Check if the back button was clicked
-                    if self.can_pop() {
+                    if self.can_pop() && self.back_visible {
                         let back_rect = self.back_rect();
                         if back_rect.contains_point(*pos) {
                             self.pop();
@@ -528,7 +689,7 @@ impl EventHandler for NavigationStack {
                     } else {
                         Rect::new(content.x, content.y, 24.min(content.width), content.height)
                     };
-                    if self.can_pop() && edge.contains_point(*pos) {
+                    if self.can_pop() && self.back_visible && edge.contains_point(*pos) {
                         // An edge drag always begins at the fully-popped end and follows the
                         // pointer toward the settled end; it never starts from a half-settled
                         // transition, which belongs to a previous gesture.

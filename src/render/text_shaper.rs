@@ -41,6 +41,16 @@ pub trait TextShaper: Send + Sync {
     /// Measure the height of text at the given font size.
     fn measure_height(&self, text: &str, font_size: f32) -> f32;
 
+    /// Identifies this shaper for measurement-result caching.
+    ///
+    /// `RichText::measure` memoises the result of the last call, keyed by the spans and this
+    /// value. Return a non-zero value only when every call with the same `(text, font_size)`
+    /// returns the same answer; a stateful shaper must override it with a value that covers that
+    /// state. The default (`0`) disables the cache, which is always correct (G-17).
+    fn cache_identity(&self) -> u64 {
+        0
+    }
+
     /// Get the advance width of a single character.
     fn char_advance(&self, c: char, font_size: f32) -> f32;
 }
@@ -88,6 +98,11 @@ impl TextShaper for SimpleTextShaper {
 
     fn measure_height(&self, _text: &str, font_size: f32) -> f32 {
         font_size * 1.2
+    }
+
+    fn cache_identity(&self) -> u64 {
+        // Stateless: same inputs always produce the same metrics.
+        0x5349_4d50_4c45_0001
     }
 
     fn char_advance(&self, c: char, font_size: f32) -> f32 {

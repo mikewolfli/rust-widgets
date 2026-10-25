@@ -21,7 +21,7 @@
 //!
 //! A host that mounts the dialog and then only reads it has a box that can never be filled — which
 //! is why the selection has a reachable write path from an `ObjectId`.
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -90,12 +90,95 @@ pub struct FileEntry {
     pub name: String,
     /// Whether the entry is a directory.
     pub is_directory: bool,
+    /// The entry's size in bytes, when the host knows it.
+    ///
+    /// `None` is kept distinct from `Some(0)`: a directory, or a source that does not
+    /// report sizes, has no size rather than a zero one. The details view sorts `None`
+    /// after every reported size and paints an empty cell instead of inventing a number.
+    pub size: Option<u64>,
+    /// The entry's modification time as seconds since the Unix epoch, when known.
+    pub modified: Option<u64>,
 }
 
 impl FileEntry {
-    /// Builds a listing row.
+    /// Builds a listing row with no size or modification time.
     pub fn new(name: impl Into<String>, is_directory: bool) -> Self {
-        Self { name: name.into(), is_directory }
+        Self { name: name.into(), is_directory, size: None, modified: None }
+    }
+
+    /// Adds the metadata a details view paints, leaving the name and type unchanged.
+    pub fn with_metadata(mut self, size: Option<u64>, modified: Option<u64>) -> Self {
+        self.size = size;
+        self.modified = modified;
+        self
+    }
+}
+
+/// How the listing is painted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    /// One name per row, the original view.
+    List,
+    /// Name, size, modification time and type columns.
+    Details,
+}
+
+impl ViewMode {
+    /// The stable property spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ViewMode::List => "list",
+            ViewMode::Details => "details",
+        }
+    }
+
+    /// Parses the property spelling; `None` for an unrecognised token so a write is refused
+    /// rather than silently choosing a view the caller did not ask for.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "list" => Some(ViewMode::List),
+            "details" => Some(ViewMode::Details),
+            _ => None,
+        }
+    }
+}
+
+/// The column `FileDialog::sort_by` orders the listing by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortColumn {
+    /// The entry name.
+    Name,
+    /// The reported size; entries with no size sort last.
+    Size,
+    /// The reported modification time; entries with none sort last.
+    Modified,
+    /// Directory before file, then by name.
+    Type,
+}
+
+/// How a pointer press combines with the existing selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectionModifier {
+    /// Replace the selection with the pressed row.
+    #[default]
+    Replace,
+    /// Add the pressed row, or remove it when it was already selected.
+    Ctrl,
+    /// Select the inclusive range from the anchor to the pressed row.
+    Shift,
+}
+
+impl SelectionModifier {
+    /// Reads the modifier a press was made under.
+    pub fn from_event_bits(bits: u32) -> Self {
+        let modifiers = crate::shortcut::Modifiers::from_event_bits(bits);
+        if modifiers.contains(crate::shortcut::Modifiers::CTRL) {
+            SelectionModifier::Ctrl
+        } else if modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
+            SelectionModifier::Shift
+        } else {
+            SelectionModifier::Replace
+        }
     }
 }
 
@@ -156,12 +239,28 @@ pub struct FileDialog {
     pub overwrite_requested: Signal1<String>,
     /// Emitted on a double-click of a non-directory row, so a host can open a preview.
     pub quick_look_requested: Signal1<String>,
+    /// Emitted whenever the multi-row selection changes, with the full path list.
+    pub selection_changed: Signal1<Vec<String>>,
+    /// Emitted by [`FileDialog::navigate_to`] (and the history moves) with the directory
+    /// that was entered.
+    pub directory_entered: Signal1<String>,
+    /// Emitted when a sidebar favourite is activated.
+    pub url_selected: Signal1<String>,
+    /// Emitted when Tab moves the focus ring; the payload is this dialog's own object id
+    /// (the dialog is one `ObjectId`; its self-drawn buttons are not separate objects).
+    pub focus_changed: Signal1<ObjectId>,
     /// The host's directory listing, if one was installed.
     source: Option<Box<dyn FileEntrySource>>,
     /// The listing last read from `source`.
     entries: Vec<FileEntry>,
-    /// The selected row, indexing `entries`.
-    selected_row: Option<usize>,
+    /// The selected row indices, in selection order.
+    selected_rows: Vec<usize>,
+    /// How the next pointer press combines with the selection.
+    selection_modifier: SelectionModifier,
+    /// How the listing is painted.
+    view_mode: ViewMode,
+    /// The action button the keyboard focus ring is on, indexing the action row.
+    focus: Option<usize>,
     /// The first visible row.
     scroll: usize,
     /// A caller-supplied label for the file-name strip; empty uses the catalogue string.
@@ -201,9 +300,16 @@ impl FileDialog {
             rejected: GenericSignal::new(),
             overwrite_requested: Signal1::new(),
             quick_look_requested: Signal1::new(),
+            selection_changed: Signal1::new(),
+            directory_entered: Signal1::new(),
+            url_selected: Signal1::new(),
+            focus_changed: Signal1::new(),
             source: None,
             entries: Vec::new(),
-            selected_row: None,
+            selected_rows: Vec::new(),
+            selection_modifier: SelectionModifier::Replace,
+            view_mode: ViewMode::List,
+            focus: None,
             scroll: 0,
             label_text: String::new(),
             default_suffix: String::new(),
@@ -343,14 +449,71 @@ impl FileDialog {
         &self.entries
     }
 
+    /// The selected row indices, in selection order.
+    pub fn selected_rows(&self) -> &[usize] {
+        &self.selected_rows
+    }
+
     /// The selected row, if one is selected.
+    ///
+    /// The cursor row for the single-selection modes. For
+    /// [`FileDialogMode::OpenFiles`] read [`FileDialog::selected_rows`] /
+    /// [`FileDialog::selected_files`], which keep every chosen row.
     pub fn selected_row(&self) -> Option<usize> {
-        self.selected_row
+        self.selected_rows.first().copied()
+    }
+
+    /// How the listing is painted.
+    pub fn view_mode(&self) -> ViewMode {
+        self.view_mode
+    }
+
+    /// Switches the listing between names only and the details columns.
+    pub fn set_view_mode(&mut self, mode: ViewMode) {
+        if self.view_mode == mode {
+            return;
+        }
+        self.view_mode = mode;
+        self.base.request_redraw();
+    }
+
+    /// The modifier the next host-driven press applies. The event path derives it from the
+    /// press itself; this setter exists for a host that synthesises a row selection.
+    pub fn set_selection_modifier(&mut self, modifier: SelectionModifier) {
+        self.selection_modifier = modifier;
     }
 
     /// The first visible row.
     pub fn scroll_offset(&self) -> usize {
         self.scroll
+    }
+
+    /// Orders the listing by `column` and repaints.
+    ///
+    /// Directories sort before files for every column so the two groups stay together no
+    /// matter which field the caller asked for; within a group the ordering is ascending.
+    pub fn sort_by(&mut self, column: SortColumn) {
+        // Row indices address the pre-sort vector, so the selected paths are the stable
+        // identity to re-resolve after the order changes.
+        let selected_paths = self.selected_files.clone();
+        self.entries.sort_by(|a, b| {
+            let by_directory = b.is_directory.cmp(&a.is_directory);
+            if by_directory != core::cmp::Ordering::Equal {
+                return by_directory;
+            }
+            match column {
+                SortColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                // `None` sorts after every reported value rather than comparing equal to 0.
+                SortColumn::Size => a.size.unwrap_or(u64::MAX).cmp(&b.size.unwrap_or(u64::MAX)),
+                SortColumn::Modified => {
+                    a.modified.unwrap_or(u64::MAX).cmp(&b.modified.unwrap_or(u64::MAX))
+                }
+                SortColumn::Type => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            }
+        });
+        self.selected_rows =
+            selected_paths.iter().filter_map(|path| self.row_for_path(path)).collect();
+        self.base.request_redraw();
     }
 
     /// Re-reads the listing and resets the selection and scroll.
@@ -359,7 +522,7 @@ impl FileDialog {
             Some(source) => source.entries(&self.directory),
             None => Vec::new(),
         };
-        self.selected_row = None;
+        self.selected_rows.clear();
         self.scroll = 0;
     }
 
@@ -421,6 +584,21 @@ impl FileDialog {
         self.base.request_redraw();
     }
 
+    /// Replaces the visited-directory list.
+    ///
+    /// The write path that makes a session's recent directories restorable: the list is
+    /// replaced and the history cursor moves to the most recent entry (the last one). The
+    /// current directory is not changed, so a caller that also wants to return there calls
+    /// [`FileDialog::go_back`] or [`FileDialog::set_directory`] afterwards.
+    pub fn set_history(&mut self, history: Vec<String>) {
+        if self.history == history {
+            return;
+        }
+        self.history = history;
+        self.history_index = self.history.len().saturating_sub(1);
+        self.base.request_redraw();
+    }
+
     /// The visited directories, oldest first.
     pub fn history(&self) -> &[String] {
         &self.history
@@ -452,8 +630,9 @@ impl FileDialog {
         self.history.truncate(self.history_index + 1);
         self.history.push(directory.clone());
         self.history_index = self.history.len() - 1;
-        self.directory = directory;
+        self.directory = directory.clone();
         self.refresh_entries();
+        self.directory_entered.emit(directory);
         self.base.request_redraw();
     }
 
@@ -465,6 +644,7 @@ impl FileDialog {
         self.history_index -= 1;
         self.directory = self.history[self.history_index].clone();
         self.refresh_entries();
+        self.directory_entered.emit(self.directory.clone());
         self.base.request_redraw();
     }
 
@@ -476,7 +656,58 @@ impl FileDialog {
         self.history_index += 1;
         self.directory = self.history[self.history_index].clone();
         self.refresh_entries();
+        self.directory_entered.emit(self.directory.clone());
         self.base.request_redraw();
+    }
+
+    /// Replaces the selection with `paths` and announces it once.
+    ///
+    /// This is the multi-selection counterpart of [`FileDialog::select_file`]: rows are
+    /// resolved against the current listing by name so [`FileDialog::selected_rows`] stays
+    /// consistent, and `selection_changed` carries the full list.
+    pub fn select_files(&mut self, paths: Vec<String>) {
+        self.selected_files = paths;
+        self.selected_rows =
+            self.selected_files.iter().filter_map(|path| self.row_for_path(path)).collect();
+        self.selection_changed.emit(self.selected_files.clone());
+        self.base.request_redraw();
+    }
+
+    /// Adds `path` to the selection, or removes it when it is already selected.
+    ///
+    /// The append path [`FileDialogMode::OpenFiles`] needs: [`FileDialog::select_file`] is a
+    /// setter, so it can never build a multi-row selection. Returns whether the selection
+    /// changed; `selection_changed` is emitted only when it did.
+    pub fn add_selected_file(&mut self, path: impl Into<String>) -> bool {
+        let path = path.into();
+        if let Some(position) = self.selected_files.iter().position(|existing| *existing == path) {
+            self.selected_files.remove(position);
+            if let Some(row) = self.row_for_path(&path) {
+                self.selected_rows.retain(|selected| *selected != row);
+            }
+            self.selection_changed.emit(self.selected_files.clone());
+            self.base.request_redraw();
+            return true;
+        }
+        self.selected_files.push(path.clone());
+        if let Some(row) = self.row_for_path(&path) {
+            if !self.selected_rows.contains(&row) {
+                self.selected_rows.push(row);
+            }
+        }
+        self.selection_changed.emit(self.selected_files.clone());
+        self.base.request_redraw();
+        true
+    }
+
+    /// The listing row whose name addresses `path`.
+    ///
+    /// A host may hand back either a bare name or a full path, so both spellings are
+    /// accepted; anything that addresses no row simply has no index.
+    fn row_for_path(&self, path: &str) -> Option<usize> {
+        self.entries.iter().position(|entry| {
+            entry.name == path || path.rsplit(['/', '\\']).next() == Some(entry.name.as_str())
+        })
     }
 
     /// Confirms a pending overwrite and completes the save.
@@ -515,8 +746,10 @@ impl FileDialog {
     /// [`FileDialogMode::OpenFiles`]. No repaint is requested.
     pub fn select_file(&mut self, path: impl Into<String>) {
         let path = path.into();
+        self.selected_rows = self.row_for_path(&path).into_iter().collect();
         self.selected_files = vec![path.clone()];
         self.file_selected.emit(path);
+        self.selection_changed.emit(self.selected_files.clone());
     }
     /// Clears the pending selection without closing the dialog.
     ///
@@ -527,10 +760,12 @@ impl FileDialog {
     /// Repaints when there was something to clear, because the selected-file strip is drawn from
     /// this field.
     pub fn clear_selection(&mut self) {
-        if self.selected_files.is_empty() {
+        if self.selected_files.is_empty() && self.selected_rows.is_empty() {
             return;
         }
         self.selected_files.clear();
+        self.selected_rows.clear();
+        self.selection_changed.emit(Vec::new());
         self.base.request_redraw();
     }
     /// Reports that the host's file cursor moved onto `path`, emitting
@@ -593,7 +828,12 @@ impl FileDialog {
     /// Unlike [`FileDialog::accept`] the selection is discarded, so it cannot be
     /// read back afterwards. Pressing Escape (key code 27) has the same effect.
     pub fn reject(&mut self) {
+        let had_selection = !self.selected_files.is_empty() || !self.selected_rows.is_empty();
         self.selected_files.clear();
+        self.selected_rows.clear();
+        if had_selection {
+            self.selection_changed.emit(Vec::new());
+        }
         self.rejected.emit();
         self.hide();
     }
@@ -674,6 +914,30 @@ impl Widget for FileDialog {
                 &self.quick_look_requested,
                 |v| crate::widget::capability::CapabilityValue::String(v.clone()),
             )),
+            "selection_changed" => {
+                Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
+                    let mut items = crate::compat::Vec::with_capacity(v.len());
+                    for path in v.iter() {
+                        items.push(CapabilityValue::String(path.clone()));
+                    }
+                    CapabilityValue::Tuple(items)
+                }))
+            }
+            "directory_entered" => {
+                Some(EventSignalRef::mapped("directory_entered", &self.directory_entered, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
+            "url_selected" => {
+                Some(EventSignalRef::mapped("url_selected", &self.url_selected, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
+            "focus_changed" => {
+                Some(EventSignalRef::mapped("focus_changed", &self.focus_changed, |v| {
+                    CapabilityValue::UInt(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -705,6 +969,13 @@ impl WidgetProperties for FileDialog {
             "file_count" => Ok(CapabilityValue::UInt(self.entries.len() as u64)),
             "can_go_back" => Ok(CapabilityValue::Bool(self.can_go_back())),
             "can_go_forward" => Ok(CapabilityValue::Bool(self.can_go_forward())),
+            "view_mode" => Ok(CapabilityValue::String(self.view_mode.as_str().to_string())),
+            "sidebar_urls" => Ok(CapabilityValue::Tuple(
+                self.favorites
+                    .iter()
+                    .map(|favorite| CapabilityValue::String(favorite.clone()))
+                    .collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -772,6 +1043,20 @@ impl WidgetProperties for FileDialog {
                 self.set_default_suffix(expect_string(value)?);
                 Ok(())
             }
+            "view_mode" => {
+                let token = expect_string(value)?;
+                let mode = ViewMode::from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_view_mode(mode);
+                Ok(())
+            }
+            // The sidebar is the persisted recent-URL list: a session can write it back,
+            // and the read arm returns the same `Tuple` of strings so the round trip is
+            // lossless.
+            "sidebar_urls" => {
+                let urls = crate::widget::capability::coercion::expect_string_list(value)?;
+                self.set_sidebar(urls);
+                Ok(())
+            }
             "file_count" | "can_go_back" | "can_go_forward" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
@@ -791,6 +1076,8 @@ impl WidgetProperties for FileDialog {
             "file_count",
             "can_go_back",
             "can_go_forward",
+            "view_mode",
+            "sidebar_urls",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -798,6 +1085,7 @@ impl WidgetProperties for FileDialog {
     fn property_tokens(&self, name: &str) -> &'static [&'static str] {
         match name {
             "mode" => FILE_DIALOG_MODE_TOKENS,
+            "view_mode" => FILE_DIALOG_VIEW_MODE_TOKENS,
             _ => &[],
         }
     }
@@ -826,8 +1114,16 @@ impl EventHandler for FileDialog {
             return;
         }
         match event {
-            Event::MousePress { pos, button: 1, .. } => {
+            Event::MousePress { pos, button: 1, modifiers } => {
+                // A press's own Ctrl/Shift wins; a plain press leaves a modifier a host set
+                // through `set_selection_modifier` in place for the row interaction that
+                // follows. The row handler consumes it and restores `Replace`.
+                let pressed = SelectionModifier::from_event_bits(*modifiers);
+                if pressed != SelectionModifier::Replace {
+                    self.selection_modifier = pressed;
+                }
                 if let Some(index) = self.button_at(*pos) {
+                    self.focus = Some(index);
                     if index == 0 {
                         self.accept();
                     } else {
@@ -837,6 +1133,7 @@ impl EventHandler for FileDialog {
                 }
                 if let Some(index) = self.sidebar_row_at(*pos) {
                     if let Some(favorite) = self.favorites.get(index).cloned() {
+                        self.url_selected.emit(favorite.clone());
                         self.navigate_to(favorite);
                     }
                     return;
@@ -873,17 +1170,23 @@ impl EventHandler for FileDialog {
                     self.accept();
                 } else if *key == key_codes::ESCAPE {
                     self.reject();
-                } else if *key == key_codes::UP && self.selected_row.is_some() {
-                    let next = self.selected_row.unwrap_or(0).saturating_sub(1);
-                    self.selected_row = Some(next);
+                } else if *key == key_codes::TAB {
+                    self.move_focus();
+                } else if *key == key_codes::UP && self.selected_row().is_some() {
+                    let next = self.selected_row().unwrap_or(0).saturating_sub(1);
+                    self.selected_rows = vec![next];
+                    self.selected_files = self.row_name(next).into_iter().collect();
+                    self.selection_changed.emit(self.selected_files.clone());
                     if next < self.scroll {
                         self.scroll = next;
                     }
                     self.base.request_redraw();
-                } else if *key == key_codes::DOWN && self.selected_row.is_some() {
-                    let next = (self.selected_row.unwrap_or(0) + 1)
+                } else if *key == key_codes::DOWN && self.selected_row().is_some() {
+                    let next = (self.selected_row().unwrap_or(0) + 1)
                         .min(self.entries.len().saturating_sub(1));
-                    self.selected_row = Some(next);
+                    self.selected_rows = vec![next];
+                    self.selected_files = self.row_name(next).into_iter().collect();
+                    self.selection_changed.emit(self.selected_files.clone());
                     let row_h = self.list_row_height().max(1);
                     let visible = (self.list_rect().height / row_h) as usize;
                     if next >= self.scroll + visible.max(1) {
@@ -906,6 +1209,9 @@ impl EventHandler for FileDialog {
 /// so it cannot drift from the control's parser.
 const FILE_DIALOG_MODE_TOKENS: &[&str] =
     &["open_file", "open_files", "save_file", "select_directory"];
+
+/// The accepted spellings of the `view_mode` property.
+const FILE_DIALOG_VIEW_MODE_TOKENS: &[&str] = &["list", "details"];
 
 /// The token for a [`FileDialogMode`], the inverse of [`file_dialog_mode_from_token`].
 fn file_dialog_mode_token(mode: FileDialogMode) -> &'static str {
@@ -1044,21 +1350,100 @@ impl FileDialog {
         else {
             return;
         };
-        self.selected_row = Some(index);
         let Some(entry) = self.entries.get(index).cloned() else { return };
         if double_click {
+            self.selected_rows = vec![index];
+            self.selected_files = vec![entry.name.clone()];
+            self.selection_changed.emit(self.selected_files.clone());
+            self.selection_modifier = SelectionModifier::Replace;
             if entry.is_directory {
                 let base = self.directory.trim_end_matches(['/', '\\']);
                 let separator = if base.is_empty() { "" } else { "/" };
                 self.navigate_to(format!("{base}{separator}{}", entry.name));
             } else {
-                self.select_file(entry.name.clone());
+                self.file_selected.emit(entry.name.clone());
                 self.quick_look_requested.emit(entry.name);
             }
         } else {
-            self.select_file(entry.name);
+            self.apply_row_selection(index);
         }
         self.base.request_redraw();
+    }
+
+    /// Combines a row press with the current selection using the active modifier.
+    fn apply_row_selection(&mut self, index: usize) {
+        let Some(name) = self.row_name(index) else { return };
+        match self.selection_modifier {
+            SelectionModifier::Replace => {
+                self.selected_rows = vec![index];
+                self.selected_files = vec![name];
+            }
+            SelectionModifier::Ctrl => {
+                if let Some(position) = self.selected_rows.iter().position(|row| *row == index) {
+                    self.selected_rows.remove(position);
+                    self.selected_files.retain(|path| *path != name);
+                } else {
+                    self.selected_rows.push(index);
+                    if !self.selected_files.contains(&name) {
+                        self.selected_files.push(name);
+                    }
+                }
+            }
+            SelectionModifier::Shift => {
+                let anchor = self.selected_rows.last().copied().unwrap_or(index);
+                let (low, high) = if anchor <= index { (anchor, index) } else { (index, anchor) };
+                self.selected_rows = (low..=high).collect();
+                self.selected_files =
+                    self.selected_rows.iter().filter_map(|row| self.row_name(*row)).collect();
+            }
+        }
+        self.selection_changed.emit(self.selected_files.clone());
+        // The modifier applies to one interaction; the next plain press must replace.
+        self.selection_modifier = SelectionModifier::Replace;
+    }
+
+    /// The name of the entry at `index`, when the index addresses a row.
+    fn row_name(&self, index: usize) -> Option<String> {
+        self.entries.get(index).map(|entry| entry.name.clone())
+    }
+
+    /// The four column rectangles of a details row, or `None` when the well is too narrow.
+    ///
+    /// Fixed trailing widths keep the size and date columns aligned across rows; the name
+    /// takes whatever is left. Returning `None` rather than squeezing is deliberate: four
+    /// two-character columns would be less informative than one readable name.
+    fn detail_columns(row: Rect) -> Option<(Rect, Rect, Rect, Rect)> {
+        const GAP: u32 = 2;
+        const SIZE_W: u32 = 44;
+        const MODIFIED_W: u32 = 88;
+        const TYPE_W: u32 = 48;
+        let x = row.x + 6;
+        let width = row.width.saturating_sub(12);
+        let trailing = SIZE_W + MODIFIED_W + TYPE_W + GAP * 3;
+        let name_width = width.checked_sub(trailing)?;
+        if name_width < 48 {
+            return None;
+        }
+        let size_x = x + name_width as i32 + GAP as i32;
+        let modified_x = size_x + SIZE_W as i32 + GAP as i32;
+        let type_x = modified_x + MODIFIED_W as i32 + GAP as i32;
+        Some((
+            Rect::new(x, row.y, name_width, row.height),
+            Rect::new(size_x, row.y, SIZE_W, row.height),
+            Rect::new(modified_x, row.y, MODIFIED_W, row.height),
+            Rect::new(type_x, row.y, TYPE_W, row.height),
+        ))
+    }
+
+    /// Moves the focus ring across the action row and announces it.
+    fn move_focus(&mut self) {
+        let count = self.action_labels().len();
+        let next = super::move_focus(self.focus, count, true);
+        if next != self.focus {
+            self.focus = next;
+            self.focus_changed.emit(self.id());
+            self.base.request_redraw();
+        }
     }
 
     /// The action labels this dialog paints, in row order.
@@ -1258,19 +1643,95 @@ impl Draw for FileDialog {
             // the rows on screen, not the rows in the model.
             context.push_clip(list_rect.x, list_rect.y, list_rect.width, list_rect.height);
             for (index, row) in self.visible_rows() {
-                if self.selected_row == Some(index) {
+                if self.selected_rows.contains(&index) {
                     context.fill_rect(row, accent.with_alpha_f32(0.18));
                 }
                 let Some(entry) = self.entries.get(index) else { continue };
                 let band = Rect::new(row.x + 6, row.y, row.width.saturating_sub(12), row.height);
                 let line = context.text_line(band, font);
-                context.draw_text_fitted_cow(
-                    Rect::new(band.x, line.y, band.width.max(1), line.height.max(1)),
-                    &entry.name,
-                    font,
-                    if entry.is_directory { accent } else { ink },
-                    HorizontalAlignment::Left,
-                );
+                let text_band = Rect::new(band.x, line.y, band.width.max(1), line.height.max(1));
+                match self.view_mode {
+                    ViewMode::List => {
+                        context.draw_text_fitted_cow(
+                            text_band,
+                            &entry.name,
+                            font,
+                            if entry.is_directory { accent } else { ink },
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                    ViewMode::Details => {
+                        // Three columns after the name. They are omitted (and the name keeps
+                        // the whole row) when the well is too narrow to hold them without
+                        // eliding every one to nothing.
+                        let columns = Self::detail_columns(row);
+                        match columns {
+                            Some((name_col, size_col, modified_col, type_col)) => {
+                                context.draw_text_fitted_cow(
+                                    Rect::new(
+                                        name_col.x,
+                                        line.y,
+                                        name_col.width.max(1),
+                                        line.height.max(1),
+                                    ),
+                                    &entry.name,
+                                    font,
+                                    if entry.is_directory { accent } else { ink },
+                                    HorizontalAlignment::Left,
+                                );
+                                let size = entry.size.map(format_size).unwrap_or_default();
+                                let modified =
+                                    entry.modified.map(format_modified).unwrap_or_default();
+                                let kind = if entry.is_directory { "Folder" } else { "File" };
+                                context.draw_text_fitted_cow(
+                                    Rect::new(
+                                        size_col.x,
+                                        line.y,
+                                        size_col.width.max(1),
+                                        line.height.max(1),
+                                    ),
+                                    &size,
+                                    font,
+                                    ink.with_alpha_f32(0.75),
+                                    HorizontalAlignment::Right,
+                                );
+                                context.draw_text_fitted_cow(
+                                    Rect::new(
+                                        modified_col.x,
+                                        line.y,
+                                        modified_col.width.max(1),
+                                        line.height.max(1),
+                                    ),
+                                    &modified,
+                                    font,
+                                    ink.with_alpha_f32(0.75),
+                                    HorizontalAlignment::Left,
+                                );
+                                context.draw_text_fitted_cow(
+                                    Rect::new(
+                                        type_col.x,
+                                        line.y,
+                                        type_col.width.max(1),
+                                        line.height.max(1),
+                                    ),
+                                    kind,
+                                    font,
+                                    ink.with_alpha_f32(0.75),
+                                    HorizontalAlignment::Left,
+                                );
+                            }
+                            None => {
+                                context.draw_text_fitted_cow(
+                                    text_band,
+                                    &entry.name,
+                                    font,
+                                    if entry.is_directory { accent } else { ink },
+                                    HorizontalAlignment::Left,
+                                );
+                            }
+                        }
+                    }
+                }
             }
             context.pop_clip();
         } else if self.entries.is_empty() {
@@ -1404,7 +1865,61 @@ impl Draw for FileDialog {
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
         context.draw_text_line_cow(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
+        if let Some(focused) = self.focus.and_then(|index| row.buttons.get(index)) {
+            context.draw_rounded_rect_stroke(*focused, 2, accent, 2);
+        }
     }
+}
+
+/// A byte count in the shortest unit that keeps it readable.
+fn format_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// A Unix timestamp as `YYYY-MM-DD` in UTC.
+///
+/// The details view only needs a stable, legible rendering of the host's number. A local-time
+/// conversion would need the platform's zone database, which this library deliberately does not
+/// read from a widget; UTC is the honest spelling of the value the host supplied. The date alone
+/// is what fits the dialog's 280 px frame — a full time of day would be elided mid-string and
+/// therefore less informative than the day it belongs to.
+fn format_modified(seconds: u64) -> String {
+    let days = (seconds / 86_400) as i64;
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Converts days since 1970-01-01 to a Gregorian `(year, month, day)`.
+///
+/// Howard Hinnant's `civil_from_days`, the standard branch-free inverse of the day-count
+/// algorithm. It is here rather than in a date module because the dialog is the only caller
+/// and pulling in a calendar dependency for one cell would be disproportionate.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097; // [0, 146096]
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_prime + 2) / 5 + 1) as u32;
+    let month = (if month_prime < 10 { month_prime + 3 } else { month_prime - 9 }) as u32;
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month, day)
 }
 
 #[cfg(test)]
@@ -1672,5 +2187,153 @@ mod tests {
         let list_y = rect.y + dimensions::DIALOG_TITLE_BAR_HEIGHT as i32 + LIST_TOP_GAP;
         dialog.handle_event(&Event::mouse_press(rect.x + 14, list_y + 2, 1));
         assert_eq!(dialog.directory(), "/docs");
+    }
+
+    #[test]
+    fn a_control_click_adds_to_the_selection_and_announces_it() {
+        let mut dialog = dialog_with_source();
+        let seen = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let sink = Arc::clone(&seen);
+        dialog.selection_changed.connect(move |paths| {
+            sink.lock().expect("lock").push(paths.as_ref().clone());
+        });
+        let list = dialog.list_rect();
+        // Row 1 is `a.txt`, row 2 is `b.txt`.
+        let row_y = list.y + dialog.list_row_height() as i32;
+        dialog.handle_event(&Event::mouse_press_with(
+            list.x + 4,
+            row_y,
+            1,
+            crate::shortcut::Modifiers::CTRL.bits() as u32,
+        ));
+        assert_eq!(dialog.selected_rows(), &[1]);
+        dialog.handle_event(&Event::mouse_press_with(
+            list.x + 4,
+            list.y + 2 * dialog.list_row_height() as i32,
+            1,
+            crate::shortcut::Modifiers::CTRL.bits() as u32,
+        ));
+        assert_eq!(dialog.selected_files(), ["a.txt".to_string(), "b.txt".to_string()]);
+        assert_eq!(
+            *seen.lock().expect("lock"),
+            vec![vec!["a.txt".to_string()], vec!["a.txt".to_string(), "b.txt".to_string()]]
+        );
+
+        dialog.select_files(vec!["b.txt".to_string()]);
+        assert!(dialog.add_selected_file("src"), "the append path accepts a second row");
+        assert_eq!(
+            dialog.selected_files(),
+            ["b.txt".to_string(), "src".to_string()],
+            "the append path builds a multi-row selection"
+        );
+    }
+
+    #[test]
+    fn the_details_view_and_sorting_are_reachable_through_the_property_route() {
+        use crate::widget::capability::types::CapabilityValue;
+        use crate::widget::capability::WidgetProperties;
+
+        struct SizedSource;
+        impl FileEntrySource for SizedSource {
+            fn entries(&self, _directory: &str) -> Vec<FileEntry> {
+                vec![
+                    FileEntry::new("big.bin", false).with_metadata(Some(2048), Some(0)),
+                    FileEntry::new("small.txt", false).with_metadata(Some(512), Some(0)),
+                    FileEntry::new("dir", true),
+                ]
+            }
+        }
+
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 320));
+        dialog.set_source(Box::new(SizedSource));
+        assert_eq!(dialog.view_mode(), ViewMode::List);
+        dialog.set("view_mode", CapabilityValue::String("details".to_string())).expect("writable");
+        assert_eq!(dialog.view_mode(), ViewMode::Details);
+        assert_eq!(
+            dialog.get("view_mode").expect("readable"),
+            CapabilityValue::String("details".to_string())
+        );
+        assert_eq!(
+            dialog.set("view_mode", CapabilityValue::String("nope".to_string())),
+            Err(crate::widget::capability::CapabilityAccessError::OutOfRange)
+        );
+
+        dialog.sort_by(SortColumn::Size);
+        let names: Vec<&str> = dialog.entries().iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, ["dir", "small.txt", "big.bin"]);
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_modified(0), "1970-01-01");
+        let columns = FileDialog::detail_columns(Rect::new(0, 0, 260, 18))
+            .expect("the census-width well holds the four columns");
+        assert!(columns.3.width > 0, "the type column keeps a visible width");
+
+        let list_svg = {
+            dialog.set_view_mode(ViewMode::List);
+            crate::widget::svg::render_to_svg(&mut dialog)
+        };
+        dialog.set_view_mode(ViewMode::Details);
+        let details_svg = crate::widget::svg::render_to_svg(&mut dialog);
+        assert!(
+            details_svg.matches("data-text").count() > list_svg.matches("data-text").count(),
+            "the details view paints its metadata columns as extra text runs"
+        );
+    }
+
+    #[test]
+    fn navigating_reports_the_directory_and_history_can_be_restored() {
+        let mut dialog = dialog_with_source();
+        let entered = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&entered);
+        dialog.directory_entered.connect(move |directory| {
+            sink.lock().expect("lock").push(directory.as_ref().clone());
+        });
+        dialog.navigate_to("/docs");
+        assert_eq!(*entered.lock().expect("lock"), vec!["/docs".to_string()]);
+
+        dialog.set_history(vec!["/a".to_string(), "/b".to_string()]);
+        assert_eq!(dialog.history(), ["/a".to_string(), "/b".to_string()]);
+        assert!(dialog.can_go_back(), "the restored cursor sits at the most recent entry");
+        dialog.go_back();
+        assert_eq!(dialog.directory(), "/a");
+
+        dialog.set_sidebar(vec!["/docs".to_string()]);
+        let urls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&urls);
+        dialog.url_selected.connect(move |url| {
+            sink.lock().expect("lock").push(url.as_ref().clone());
+        });
+        let rect = dialog.frame_rect();
+        let list_y = rect.y + dimensions::DIALOG_TITLE_BAR_HEIGHT as i32 + LIST_TOP_GAP;
+        dialog.handle_event(&Event::mouse_press(rect.x + 14, list_y + 2, 1));
+        assert_eq!(*urls.lock().expect("lock"), vec!["/docs".to_string()]);
+    }
+
+    #[test]
+    fn sidebar_urls_round_trip_through_the_property_route() {
+        use crate::widget::capability::types::CapabilityValue;
+        use crate::widget::capability::WidgetProperties;
+
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 280));
+        let urls = vec!["/one".to_string(), "/two".to_string()];
+        let list =
+            CapabilityValue::Tuple(urls.iter().cloned().map(CapabilityValue::String).collect());
+        dialog.set("sidebar_urls", list).expect("the sidebar is writable");
+        assert_eq!(dialog.sidebar(), urls.as_slice());
+        assert_eq!(
+            dialog.get("sidebar_urls").expect("readable"),
+            CapabilityValue::Tuple(urls.into_iter().map(CapabilityValue::String).collect())
+        );
+    }
+
+    #[test]
+    fn tab_moves_the_focus_ring_and_announces_it() {
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 280));
+        let seen = Arc::new(Mutex::new(Vec::<u64>::new()));
+        let sink = Arc::clone(&seen);
+        dialog.focus_changed.connect(move |id| {
+            sink.lock().expect("lock").push(*id);
+        });
+        dialog.handle_event(&Event::key_press(key_codes::TAB, 0));
+        assert_eq!(seen.lock().expect("lock").len(), 1, "Tab must move the ring");
     }
 }

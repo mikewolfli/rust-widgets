@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 //! Label widget implementation.
-use crate::compat::{Cow, String, ToString, Vec};
+use crate::compat::{format, Cow, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TEXT_FIT_MARGIN};
+use crate::signal::Signal1;
 
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
@@ -42,6 +43,114 @@ const LABEL_PADDING: EdgeOffsets = EdgeOffsets { left: 2, top: 2, right: 2, bott
 /// which is the same derivation the renderer's own `TextMetrics::height` uses — so a label sized
 /// against this agrees with the line its draw path measures.
 const LABEL_MIN_WIDTH: u32 = 16;
+
+/// How far the ink of a link moves toward the accent when the pointer is over that link.
+///
+/// A label's link is text, so it cannot swap its whole palette the way a button does; it leans
+/// toward the theme accent, and at rest it is painted exactly as the surrounding text.
+const LABEL_LINK_TINT: f32 = 0.55;
+
+/// Whether a label's text is painted literally or interpreted as inline markup.
+///
+/// The two values are the reference toolkit's `Qt::PlainText` and `Qt::RichText`, narrowed to the
+/// markup this crate actually implements. [`TextFormat::PlainText`] is the default and paints
+/// `text` byte-for-byte, which is what every existing label does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextFormat {
+    /// Paint the text as written.
+    #[default]
+    PlainText,
+    /// Interpret the text as inline markup.
+    ///
+    /// # Supported subset
+    ///
+    /// `<b>`, `<i>` and `<a href="…">` (with their closing tags, nestable), plus the five named
+    /// entities `&amp;`, `&lt;`, `&gt;`, `&quot;` and `&apos;`. Any other tag is dropped and its
+    /// text kept, which is the honest behaviour for a subset: text is never lost, only the
+    /// attribute the crate does not implement. A `<a>` run also becomes a link, so a rich label's
+    /// links may be declared by the text instead of by [`Label::add_link`].
+    ///
+    /// Rich runs are laid out on **one** line, aligned as a whole and elided at the content edge;
+    /// `word_wrap` applies to plain text. That is a stated limit of this subset rather than a
+    /// silent one: a multi-line styled paragraph needs a paragraph engine the crate does not
+    /// have, and pretending to wrap it would lose the run boundaries the caller asked for.
+    RichText,
+}
+
+impl TextFormat {
+    /// The token this format is published and parsed as.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            TextFormat::PlainText => "plain",
+            TextFormat::RichText => "rich",
+        }
+    }
+
+    /// Parses a published token.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "plain" => TextFormat::PlainText,
+            "rich" => TextFormat::RichText,
+            _ => return None,
+        })
+    }
+}
+
+/// An inline link: a byte range of a label's **displayed** text plus its target.
+///
+/// Displayed text means what the label actually paints: `text` itself for
+/// [`TextFormat::PlainText`], and the tag-stripped, entity-decoded runs for
+/// [`TextFormat::RichText`]. Using one coordinate space for both formats is what lets hit testing
+/// and markup links share the same table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineLink {
+    /// Start byte offset, inclusive.
+    pub start: usize,
+    /// End byte offset, exclusive.
+    pub end: usize,
+    /// The target the link points at.
+    pub href: String,
+}
+
+/// One styled run of a rich-text label.
+#[derive(Debug, Clone, PartialEq)]
+struct RichTextRun {
+    text: String,
+    bold: bool,
+    italic: bool,
+    /// The target this run links to, when it came from an `<a>` tag.
+    link: Option<String>,
+}
+
+/// The rich-text state carried across a run.
+#[derive(Debug, Clone, Default)]
+struct RichTextStyle {
+    bold: bool,
+    italic: bool,
+    link: Option<String>,
+}
+
+/// One wrapped line, with the byte range of the source text it was split from.
+///
+/// The range is what makes link hit testing work on wrapped text: the painted line is a
+/// re-normalised copy, but a link is declared against the source, so the line has to remember
+/// where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LabelLine {
+    text: String,
+    start: usize,
+    end: usize,
+}
+
+/// A cached wrap result, valid for one (text revision, width, font) triple.
+#[derive(Debug, Clone)]
+struct LineLayout {
+    text_revision: u32,
+    width: u32,
+    font: Font,
+    line_height: u32,
+    lines: Vec<LabelLine>,
+}
 
 /// How text that does not fit its box is shortened.
 ///
@@ -152,42 +261,329 @@ pub(crate) fn elide_in_mode<'a>(
 /// inside a paragraph has always been painted as a single space, and leading/trailing
 /// whitespace has never been painted at all. Normalising before the shared split keeps that
 /// byte-for-byte while dropping the duplicated greedy loop.
+///
+/// This is the string-only view of [`wrap_text_ranges`]; the painter uses the ranged form, so
+/// the two cannot state different wrapping rules.
+#[allow(dead_code)]
 pub(crate) fn wrap_text(
     text: &str,
     width: u32,
     measure: &mut dyn FnMut(&str) -> u32,
 ) -> Vec<String> {
+    wrap_text_ranges(text, width, measure).into_iter().map(|line| line.text).collect()
+}
+
+/// Splits `text` into lines that fit `width`, keeping each line's source byte range.
+///
+/// The wrap itself is [`wrap_text`]'s — this is the same split with the provenance recorded, so a
+/// caller that has to map a point back to a byte offset (link hit testing) does not need a second,
+/// subtly different wrapping rule. See [`collapse_whitespace_with_map`] for how the mapping
+/// survives the whitespace policy.
+fn wrap_text_ranges(
+    text: &str,
+    width: u32,
+    measure: &mut dyn FnMut(&str) -> u32,
+) -> Vec<LabelLine> {
     if width == 0 {
-        // Nothing can fit; report the text as one line rather than dropping it.
-        return vec![text.to_string()];
+        // Nothing can fit; report the text as one line rather than dropping it. The line is the
+        // raw text, not the normalised copy, which is the historical behaviour of this case.
+        return vec![LabelLine { text: text.to_string(), start: 0, end: text.len() }];
     }
-    let normalised = collapse_whitespace(text);
+    let (normalised, map) = collapse_whitespace_with_map(text);
     wrap_to_width(&normalised, width, measure)
         .into_iter()
-        .map(|range| normalised[range].to_string())
+        .map(|range| {
+            let start = map.get(range.start).copied().unwrap_or(text.len());
+            let end = if range.end > range.start {
+                // The last byte of the line maps to the first byte of the source character it
+                // was normalised from; adding that character's own length gives the source end.
+                // (Measuring the slice's length instead would be wrong for a multi-byte final
+                // character, and slicing a mid-character range would panic.)
+                map.get(range.end - 1)
+                    .copied()
+                    .map(|last| {
+                        let char_len = text[last..].chars().next().map_or(0, |ch| ch.len_utf8());
+                        last + char_len
+                    })
+                    .unwrap_or(text.len())
+            } else {
+                start
+            };
+            LabelLine { text: normalised[range].to_string(), start, end }
+        })
         .collect()
 }
 
 /// `text` with every whitespace run collapsed to one space inside each `\n`-separated
-/// paragraph, and leading/trailing whitespace dropped.
+/// paragraph, and leading/trailing whitespace dropped — with a byte map back to the source.
 ///
 /// This is exactly what `split_whitespace` did in the private wrap loop this helper replaced,
-/// restated per paragraph so explicit line breaks survive the normalisation.
-fn collapse_whitespace(text: &str) -> String {
+/// restated per paragraph so explicit line breaks survive the normalisation. The map answers "one
+/// byte of the normalised text came from which byte of the original": every byte of a multi-byte
+/// character maps to that character's first byte, and a collapsed space maps to the first byte of
+/// the whitespace run it replaced. It is what lets a wrapped line report a source range even
+/// though the painted line is a re-normalised copy.
+fn collapse_whitespace_with_map(text: &str) -> (String, Vec<usize>) {
     let mut out = String::with_capacity(text.len());
-    for (index, paragraph) in text.split('\n').enumerate() {
-        if index > 0 {
+    let mut map: Vec<usize> = Vec::with_capacity(text.len());
+    let mut paragraph_has_content = false;
+    let mut pending_space: Option<usize> = None;
+    let mut index = 0usize;
+    while index < text.len() {
+        let rest = &text[index..];
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
+        let len = ch.len_utf8();
+        if ch == '\n' {
+            // An explicit break is kept as its own byte and resets the paragraph's trimming.
+            pending_space = None;
             out.push('\n');
+            map.push(index);
+            paragraph_has_content = false;
+            index += len;
+            continue;
         }
-        let mut words = paragraph.split_whitespace();
-        if let Some(first) = words.next() {
-            out.push_str(first);
-            for word in words {
-                out.push(' ');
-                out.push_str(word);
+        if ch.is_whitespace() {
+            // Remember where the first byte of the run was; emit one space only if real content
+            // follows it in this paragraph.
+            if paragraph_has_content && pending_space.is_none() {
+                pending_space = Some(index);
             }
+            index += len;
+            continue;
+        }
+        if let Some(space_at) = pending_space.take() {
+            out.push(' ');
+            map.push(space_at);
+        }
+        out.push(ch);
+        for _ in 0..len {
+            map.push(index);
+        }
+        paragraph_has_content = true;
+        index += len;
+    }
+    (out, map)
+}
+
+/// The byte offset of the character in `text` whose advance contains `local_x`.
+///
+/// `local_x` is measured from `text`'s own origin. Characters are measured one at a time, which
+/// keeps the walk linear and gives a monotonic answer; the advance of a character is the same
+/// quantity the layout sums, so a hit and the paint agree at every boundary.
+fn offset_in_text(text: &str, local_x: i32, font: &Font) -> Option<usize> {
+    if local_x < 0 {
+        return None;
+    }
+    let mut x = 0i32;
+    for (index, ch) in text.char_indices() {
+        let mut buffer = [0u8; 4];
+        let advance = estimate_text_width(ch.encode_utf8(&mut buffer), font, 1.0) as i32;
+        if local_x < x + advance {
+            return Some(index);
+        }
+        x += advance;
+    }
+    None
+}
+
+/// Maps a byte offset in a wrapped line back to the source text it was normalised from.
+///
+/// `line.text` is the collapsed copy, so an offset in it is not an offset in the source. The walk
+/// applies the inverse of [`collapse_whitespace_with_map`]'s two rules: a whitespace run in the
+/// source is one space (or nothing) in the line, and every non-whitespace character is byte-identical
+/// in both views. That is enough to locate a link range declared against the source.
+fn map_line_offset(line: &LabelLine, within: usize, source: &str) -> usize {
+    if within == 0 || line.start >= line.end || line.end > source.len() {
+        return line.start;
+    }
+    let body = &source[line.start..line.end];
+    let mut line_at = 0usize;
+    let mut body_at = 0usize;
+    while line_at < within {
+        let Some(src_ch) = body[body_at..].chars().next() else {
+            break;
+        };
+        let src_len = src_ch.len_utf8();
+        if src_ch.is_whitespace() {
+            // Skip the whole source run, then consume the one space the normalisation kept.
+            body_at += src_len;
+            while body_at < body.len() {
+                let Some(next) = body[body_at..].chars().next() else {
+                    break;
+                };
+                if !next.is_whitespace() {
+                    break;
+                }
+                body_at += next.len_utf8();
+            }
+            if line.text.as_bytes().get(line_at) == Some(&b' ') {
+                line_at += 1;
+            }
+            continue;
+        }
+        if line.text[line_at..].starts_with(src_ch) {
+            line_at += src_len;
+        } else {
+            // The two views disagree, which the normalisation above cannot produce; stop at the
+            // last position both agree on rather than returning a wrong range.
+            break;
+        }
+        body_at += src_len;
+    }
+    line.start + body_at
+}
+
+/// Parses the supported rich-text subset into styled runs.
+///
+/// The subset is [`TextFormat::RichText`]'s: `<b>`, `<i>`, `<a href="…">` and the five named
+/// entities. The parser is deliberately a linear scan rather than an HTML parser: it accepts the
+/// tags it implements, drops any other well-formed tag while keeping its text, and treats a `<`
+/// that cannot begin a tag as literal text. That is the smallest rule set that is predictable for
+/// a caller and never loses content.
+fn parse_rich_runs(text: &str) -> Vec<RichTextRun> {
+    let mut runs: Vec<RichTextRun> = Vec::new();
+    let mut style = RichTextStyle::default();
+    let mut stack: Vec<(char, RichTextStyle)> = Vec::new();
+    let mut literal = String::new();
+    let mut index = 0usize;
+    while index < text.len() {
+        let rest = &text[index..];
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
+        if ch == '<' {
+            let begins_tag = matches!(rest[1..].chars().next(), Some(next) if next.is_ascii_alphabetic() || next == '/');
+            if begins_tag {
+                if let Some(close) = rest.find('>') {
+                    push_rich_text(&mut runs, &literal, &style);
+                    literal.clear();
+                    apply_rich_tag(&rest[1..close], &mut style, &mut stack);
+                    index += close + 1;
+                    continue;
+                }
+            }
+            literal.push('<');
+            index += 1;
+            continue;
+        }
+        literal.push(ch);
+        index += ch.len_utf8();
+    }
+    push_rich_text(&mut runs, &literal, &style);
+    runs
+}
+
+/// Appends `text` to `runs`, merging with the previous run when the style is unchanged.
+fn push_rich_text(runs: &mut Vec<RichTextRun>, text: &str, style: &RichTextStyle) {
+    if text.is_empty() {
+        return;
+    }
+    let decoded = decode_entities(text);
+    if decoded.is_empty() {
+        return;
+    }
+    if let Some(last) = runs.last_mut() {
+        if last.bold == style.bold && last.italic == style.italic && last.link == style.link {
+            last.text.push_str(&decoded);
+            return;
         }
     }
+    runs.push(RichTextRun {
+        text: decoded,
+        bold: style.bold,
+        italic: style.italic,
+        link: style.link.clone(),
+    });
+}
+
+/// Applies one tag to the running style, using a stack so nested tags restore correctly.
+fn apply_rich_tag(tag: &str, style: &mut RichTextStyle, stack: &mut Vec<(char, RichTextStyle)>) {
+    let tag = tag.trim();
+    if let Some(name) = tag.strip_prefix('/') {
+        let key = match name.trim() {
+            "b" => 'b',
+            "i" => 'i',
+            "a" => 'a',
+            _ => return,
+        };
+        if let Some(position) = stack.iter().rposition(|(open, _)| *open == key) {
+            let (_, saved) = stack.remove(position);
+            *style = saved;
+            // Anything opened inside the closed tag is unclosed; drop those entries rather than
+            // leaving a half-applied style behind.
+            stack.truncate(position);
+        } else {
+            // A closing tag with no matching open still ends the attribute it names; otherwise a
+            // stray `</b>` would be a no-op and the caller's typo would be invisible.
+            match key {
+                'b' => style.bold = false,
+                'i' => style.italic = false,
+                'a' => style.link = None,
+                _ => {}
+            }
+        }
+        return;
+    }
+    let key = if tag == "b" || tag.starts_with("b ") {
+        'b'
+    } else if tag == "i" || tag.starts_with("i ") {
+        'i'
+    } else if tag == "a" || tag.starts_with("a ") {
+        'a'
+    } else {
+        // An unimplemented tag is dropped; its text is kept by the caller's literal buffer.
+        return;
+    };
+    stack.push((key, style.clone()));
+    match key {
+        'b' => style.bold = true,
+        'i' => style.italic = true,
+        'a' => style.link = link_target(tag),
+        _ => {}
+    }
+}
+
+/// The `href` value of an `<a …>` tag, supporting single or double quotes.
+fn link_target(tag: &str) -> Option<String> {
+    let start = tag.find("href")? + "href".len();
+    let rest = tag[start..].trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start();
+    let quote = rest.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let body = &rest[1..];
+    let end = body.find(quote)?;
+    Some(body[..end].to_string())
+}
+
+/// Decodes the five named entities the rich subset supports.
+fn decode_entities(text: &str) -> String {
+    const NAMED: [(&str, &str); 5] =
+        [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&apos;", "'")];
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(position) = rest.find('&') {
+        out.push_str(&rest[..position]);
+        rest = &rest[position..];
+        let mut matched = false;
+        for &(encoded, decoded) in NAMED.iter() {
+            if let Some(after) = rest.strip_prefix(encoded) {
+                out.push_str(decoded);
+                rest = after;
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            // An unknown entity is literal, so a caller's `&` is never eaten.
+            out.push('&');
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
     out
 }
 
@@ -243,6 +639,39 @@ pub struct Label {
     /// Both drivers rest at exactly `0.0`, so a label that has never been pointed at paints
     /// its declared ink byte-for-byte (see `Label::interactive_ink`).
     fade: InteractionFade,
+    /// Uniform extra indent from the content box's leading edge, in pixels.
+    ///
+    /// Applied in one place — [`Label::content_rect`] — so the painted text, the wrapped line
+    /// width and the intrinsic size all move together.
+    indent: u32,
+    /// Whether `text` is painted literally or parsed as inline markup.
+    text_format: TextFormat,
+    /// Links the caller declared through [`Label::add_link`].
+    explicit_links: Vec<InlineLink>,
+    /// The links in effect: the caller's, plus any parsed from rich markup.
+    ///
+    /// Kept as one table so `links()` and hit testing agree on what a link *is*. Ranges index
+    /// [`Label::displayed_text`].
+    links: Vec<InlineLink>,
+    /// The styled runs of the rich-text rendering, empty for plain text.
+    rich_runs: Vec<RichTextRun>,
+    /// Whether activating a link also hands it to the platform's external handler.
+    open_external_links: bool,
+    /// The link the pointer is currently over, as an index into [`Label::links`].
+    hovered_link: Option<usize>,
+    /// A monotonic revision of the text and its interpretation.
+    ///
+    /// Both caches (the wrapped-line table and the rich runs) are keyed by it, so changing the
+    /// text or the format invalidates them with one increment rather than a retained-length check
+    /// at every draw.
+    text_revision: u32,
+    /// The cached wrapped-line table, valid for one (revision, width, font) triple.
+    wrap_cache: Option<LineLayout>,
+    /// Emitted with a link's target when the user activates that link.
+    pub link_activated: Signal1<String>,
+    /// Emitted with a link's target when the pointer enters it, and with an empty string when the
+    /// pointer leaves the last link — the reference toolkit's `linkHovered` contract.
+    pub link_hovered: Signal1<String>,
 }
 impl Label {
     /// Creates a label with initial text and geometry.
@@ -258,6 +687,17 @@ impl Label {
             pixmap: None,
             scaled_contents: false,
             fade: InteractionFade::new(),
+            indent: 0,
+            text_format: TextFormat::PlainText,
+            explicit_links: Vec::new(),
+            links: Vec::new(),
+            rich_runs: Vec::new(),
+            open_external_links: false,
+            hovered_link: None,
+            text_revision: 0,
+            wrap_cache: None,
+            link_activated: Signal1::new(),
+            link_hovered: Signal1::new(),
         }
     }
     /// Returns label text.
@@ -265,13 +705,207 @@ impl Label {
         &self.text
     }
     /// Sets label text.
+    ///
+    /// The text is what links index, so a link whose range no longer fits the new text is dropped
+    /// rather than left pointing into the middle of a character.
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();
         if text == self.text {
             return;
         }
         self.text = text;
+        self.rebuild_text_state();
         self.base.request_redraw();
+    }
+
+    /// Clears the label's contents.
+    ///
+    /// The reference toolkit's `QLabel::clear`: the text and any pixmap are removed, so the label
+    /// paints nothing. Caller-declared links are dropped with the text because their offsets index
+    /// a string that is no longer there; rich-markup links disappear with the markup.
+    pub fn clear(&mut self) {
+        self.explicit_links.clear();
+        self.text.clear();
+        #[cfg(feature = "image")]
+        {
+            self.pixmap = None;
+        }
+        // Rebuilding directly rather than going through `set_text`: that method is a no-op for an
+        // already-empty string, which would leave the cleared links in the effective table.
+        self.rebuild_text_state();
+        self.base.request_redraw();
+    }
+
+    /// Sets the text to the decimal rendering of `num`.
+    ///
+    /// The reference toolkit's `QLabel::setNum`, and the reason it exists: a label used as a
+    /// numeric readout should not make its caller allocate a temporary string through whatever
+    /// formatting discipline it happens to use. Any [`Display`](crate::compat::fmt::Display)
+    /// value is accepted, so integers, floats and the crate's own numeric types all work.
+    pub fn set_num<T: crate::compat::fmt::Display>(&mut self, num: T) {
+        self.set_text(format!("{num}"));
+    }
+
+    /// The label's links, sorted by their start offset.
+    ///
+    /// One table for both sources, so a caller reading it and the hit test that uses it agree on
+    /// what a link is and which one a position belongs to.
+    pub fn links(&self) -> &[InlineLink] {
+        &self.links
+    }
+
+    /// Declares a link over `start..end` of the label's displayed text.
+    ///
+    /// Reports `false` and changes nothing when the range is empty, out of bounds, or does not
+    /// land on character boundaries — a link that cannot be located is refused rather than stored
+    /// and silently unreachable. In [`TextFormat::RichText`], markup links coexist with the ones
+    /// declared here.
+    pub fn add_link(&mut self, start: usize, end: usize, href: impl Into<String>) -> bool {
+        let valid = {
+            let displayed = self.displayed_text();
+            start < end
+                && end <= displayed.len()
+                && displayed.is_char_boundary(start)
+                && displayed.is_char_boundary(end)
+        };
+        if !valid {
+            return false;
+        }
+        self.explicit_links.push(InlineLink { start, end, href: href.into() });
+        self.rebuild_links();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes every caller-declared link.
+    ///
+    /// Markup links stay, because they are part of the text: clearing the text is what removes
+    /// those. A caller that wants neither can call [`Label::clear`] or switch to plain text.
+    pub fn clear_links(&mut self) {
+        if self.explicit_links.is_empty() {
+            return;
+        }
+        self.explicit_links.clear();
+        self.rebuild_links();
+        self.base.request_redraw();
+    }
+
+    /// Whether activating a link also asks the platform to open it.
+    pub fn is_open_external_links(&self) -> bool {
+        self.open_external_links
+    }
+
+    /// Enables handing an activated link to the platform's external handler.
+    ///
+    /// Off by default: emitting [`Label::link_activated`] and letting the host decide is the right
+    /// default for an embedded UI, and a label that silently spawned a browser would be a
+    /// surprising side effect. When on, the platform's `open_external` is called with the link's
+    /// target; an unsupported backend reports through the log rather than failing the signal.
+    pub fn set_open_external_links(&mut self, open: bool) {
+        if self.open_external_links == open {
+            return;
+        }
+        self.open_external_links = open;
+        self.base.request_redraw();
+    }
+
+    /// The uniform indent between the content box's leading edge and the content.
+    pub fn indent(&self) -> u32 {
+        self.indent
+    }
+
+    /// Sets the indent.
+    ///
+    /// The indent is applied through [`Label::content_rect`], so the painted text, a wrapped
+    /// line's width and the intrinsic size all shift by it; there is no second place to keep in
+    /// step.
+    pub fn set_indent(&mut self, indent: u32) {
+        if self.indent == indent {
+            return;
+        }
+        self.indent = indent;
+        self.base.request_redraw();
+    }
+
+    /// Whether the text is painted literally or parsed as markup.
+    pub fn text_format(&self) -> TextFormat {
+        self.text_format
+    }
+
+    /// Sets the text format.
+    ///
+    /// Changing it re-parses the text (or stops parsing it), which is why it rebuilds the text
+    /// state rather than only flipping a flag: the cached run list, the link table and the wrap
+    /// table all describe the previous interpretation.
+    pub fn set_text_format(&mut self, format: TextFormat) {
+        if self.text_format == format {
+            return;
+        }
+        self.text_format = format;
+        self.rebuild_text_state();
+        self.base.request_redraw();
+    }
+
+    /// The text this label actually paints.
+    ///
+    /// Plain text is the stored string itself; rich text is the tag-stripped, entity-decoded
+    /// concatenation of its runs. Link ranges are declared against this string.
+    fn displayed_text(&self) -> Cow<'_, str> {
+        if self.text_format == TextFormat::RichText {
+            let mut out = String::with_capacity(self.text.len());
+            for run in &self.rich_runs {
+                out.push_str(&run.text);
+            }
+            Cow::Owned(out)
+        } else {
+            Cow::Borrowed(self.text.as_str())
+        }
+    }
+
+    /// Re-derives everything that depends on the text or its interpretation.
+    fn rebuild_text_state(&mut self) {
+        self.rich_runs = if self.text_format == TextFormat::RichText {
+            parse_rich_runs(&self.text)
+        } else {
+            Vec::new()
+        };
+        self.text_revision = self.text_revision.wrapping_add(1);
+        self.wrap_cache = None;
+        // Explicit ranges index the displayed text, so a text change can leave one past the end.
+        let displayed_len = {
+            let displayed = self.displayed_text();
+            displayed.len()
+        };
+        self.explicit_links.retain(|link| link.end <= displayed_len);
+        self.rebuild_links();
+    }
+
+    /// Rebuilds the effective link table from the caller's links and the rich runs.
+    fn rebuild_links(&mut self) {
+        self.links.clear();
+        for link in &self.explicit_links {
+            self.links.push(link.clone());
+        }
+        if self.text_format == TextFormat::RichText {
+            let mut offset = 0usize;
+            for run in &self.rich_runs {
+                if let Some(href) = run.link.as_ref() {
+                    if !run.text.is_empty() {
+                        self.links.push(InlineLink {
+                            start: offset,
+                            end: offset + run.text.len(),
+                            href: href.clone(),
+                        });
+                    }
+                }
+                offset += run.text.len();
+            }
+        }
+        self.links.sort_by_key(|link| link.start);
+        // An index into the old table says nothing about the new one, so the paint's highlight is
+        // dropped; the next pointer event re-resolves it. The registry is not told "left", because
+        // the pointer has not moved — the link under it may be the same one.
+        self.hovered_link = None;
     }
     /// Returns text alignment.
     pub fn alignment(&self) -> crate::core::Alignment {
@@ -372,9 +1006,12 @@ impl Label {
         self.base.request_redraw();
     }
 
-    /// The rectangle the label's content occupies: its geometry inset by [`Label::margin`].
+    /// The rectangle the label's content occupies: its geometry inset by [`Label::margin`],
+    /// less [`Label::indent`] at the leading edge.
     pub fn content_rect(&self) -> Rect {
-        ControlMetrics::content_box(self.geometry(), EdgeOffsets::all(self.margin))
+        let content = ControlMetrics::content_box(self.geometry(), EdgeOffsets::all(self.margin));
+        let shift = self.indent.min(content.width);
+        Rect::new(content.x + shift as i32, content.y, content.width - shift, content.height)
     }
 
     /// The size this label claims when nothing constrains it.
@@ -396,18 +1033,35 @@ impl Label {
         if let Some(pixmap) = self.pixmap.as_ref() {
             let floor = Size::new(LABEL_MIN_WIDTH, pixmap.height());
             return ControlMetrics::implicit_size(
-                Size::new(pixmap.width(), pixmap.height()),
+                Size::new(pixmap.width().saturating_add(self.indent), pixmap.height()),
                 EdgeOffsets::all(self.margin).grow(LABEL_PADDING),
                 floor,
             );
         }
-        let text_width = estimate_text_width(&self.text, font, 1.0);
+        let text_width = if self.text_format == TextFormat::RichText {
+            // A rich label claims the advance of its styled runs, not of the markup that produced
+            // them: the tags are never painted, so reserving room for them would size the control
+            // against text nobody sees.
+            self.rich_width(font)
+        } else {
+            estimate_text_width(&self.text, font, 1.0)
+        };
         let floor = Size::new(LABEL_MIN_WIDTH, estimate_line_height(font, 1.0));
         ControlMetrics::implicit_size(
-            Size::new(text_width, 0),
+            Size::new(text_width.saturating_add(self.indent), 0),
             EdgeOffsets::all(self.margin).grow(LABEL_PADDING),
             floor,
         )
+    }
+
+    /// The advance of the rich runs, measured with each run's own weight and slant.
+    fn rich_width(&self, font: &Font) -> u32 {
+        let mut width = 0u32;
+        for run in &self.rich_runs {
+            let run_font = font.with_bold(run.bold).with_italic(run.italic);
+            width = width.saturating_add(estimate_text_width(&run.text, &run_font, 1.0));
+        }
+        width
     }
 
     /// Whether a pixmap is present.
@@ -448,6 +1102,268 @@ impl Label {
         }
         color.blend(&color.contrast_color(), LABEL_INTERACTION_TINT * intensity)
     }
+
+    /// Paints the wrapped-line table, re-measuring it only when its key changes.
+    ///
+    /// The table is keyed by (text revision, content width, font). All three are the *inputs* of
+    /// the wrap rather than a dirty flag, so a theme change, a text-scale change, a margin or
+    /// indent change, and a `set_text` all miss the cache without any of them having to remember
+    /// to clear it. A hover fade repaints the control many times with the same three inputs, and
+    /// that is exactly the case this removes the work for.
+    fn draw_wrapped(
+        &mut self,
+        context: &mut RenderContext,
+        content: Rect,
+        font: &Font,
+        text_color: Color,
+    ) {
+        let matches = self.wrap_cache.as_ref().is_some_and(|cache| {
+            cache.text_revision == self.text_revision
+                && cache.width == content.width
+                && cache.font == *font
+        });
+        if !matches {
+            // Only a miss measures the line box. On a hit the cached height is the answer the
+            // same font produced when the table was built, so a repaint does no text measurement
+            // at all — which is the per-frame cost this cache removes.
+            let line_height = context.measure_text("M", font).height.max(1);
+            let lines = {
+                let mut measure = |candidate: &str| context.measure_text(candidate, font).width;
+                wrap_text_ranges(&self.text, content.width, &mut measure)
+            };
+            self.wrap_cache = Some(LineLayout {
+                text_revision: self.text_revision,
+                width: content.width,
+                font: font.clone(),
+                line_height,
+                lines,
+            });
+        }
+
+        let Some(cache) = self.wrap_cache.as_ref() else {
+            return;
+        };
+        let line_height = cache.line_height.max(1);
+        let mut y = content.y;
+        let bottom = content.y + content.height as i32;
+        for line in &cache.lines {
+            if y + line_height as i32 > bottom {
+                break;
+            }
+            let band = Rect::new(content.x, y, content.width, line_height);
+            draw_elided_line(
+                context,
+                band,
+                &line.text,
+                font,
+                text_color,
+                HorizontalAlignment::Left,
+                self.elide_mode,
+            );
+            y += line_height as i32;
+        }
+    }
+
+    /// Paints the rich runs on one line, aligned as a whole.
+    ///
+    /// Each run is measured and drawn with its own weight and slant, so `<b>` is a real bold face
+    /// rather than a colour trick. A link run takes the accent ink and, once it has been hovered,
+    /// the interaction tint, so the pointer feedback the plain path has also reaches a link. The
+    /// run that does not fit is elided by the control's [`TextElideMode`] and the rest are skipped,
+    /// which keeps the paint inside the content box.
+    fn draw_rich(
+        &self,
+        context: &mut RenderContext,
+        content: Rect,
+        font: &Font,
+        text_color: Color,
+        link_ink: Color,
+    ) {
+        let total = self.rich_width(font);
+        let mut x = match self.alignment {
+            crate::core::Alignment::Center => {
+                content.x + (content.width.saturating_sub(total) / 2) as i32
+            }
+            crate::core::Alignment::Right => content.x + content.width as i32 - total as i32,
+            _ => content.x,
+        };
+        let line = context.text_line(content, font);
+        let right = content.x + content.width as i32;
+        let hovered = self.hovered_link.and_then(|index| self.links.get(index));
+        for run in &self.rich_runs {
+            if x >= right {
+                break;
+            }
+            let run_font = font.with_bold(run.bold).with_italic(run.italic);
+            let run_color = if run.link.is_some() {
+                let hovered_here = match (run.link.as_ref(), hovered) {
+                    (Some(href), Some(link)) => link.href == *href,
+                    _ => false,
+                };
+                if hovered_here {
+                    link_ink.blend(&link_ink.contrast_color(), LABEL_LINK_TINT)
+                } else {
+                    link_ink
+                }
+            } else {
+                text_color
+            };
+            let available = (right - x) as u32;
+            let advance = context.measure_text(&run.text, &run_font).width;
+            if advance <= available {
+                context.draw_text(
+                    Point::new(x, line.y),
+                    &run.text,
+                    &run_font,
+                    run_color,
+                    HorizontalAlignment::Left,
+                );
+                x += advance as i32;
+            } else {
+                draw_elided_line(
+                    context,
+                    Rect::new(x, line.y, available, line.height),
+                    &run.text,
+                    &run_font,
+                    run_color,
+                    HorizontalAlignment::Left,
+                    self.elide_mode,
+                );
+                break;
+            }
+        }
+    }
+
+    /// The index in [`Label::links`] of the link under `pos`, if any.
+    ///
+    /// # Coordinate model
+    ///
+    /// A hit maps the point to a byte offset in [`Label::displayed_text`] — through the cached
+    /// line table for wrapped text, through the run advances for rich text, and through the aligned
+    /// origin otherwise — and then asks the link table which range contains it. Measuring uses the
+    /// same shared estimator the layout does, so a hit cannot be computed against a different
+    /// ruler than the paint; the estimator is exact for the monospace metrics it models and an
+    /// approximation for a shaped face, which is the same trade the intrinsic size makes.
+    ///
+    /// Elision is a paint-time shortening: hit testing measures the declared text, so a label that
+    /// fits is exact and a label whose link is itself elided reports the link's declared range.
+    fn link_at(&self, pos: Point) -> Option<usize> {
+        if self.links.is_empty() {
+            return None;
+        }
+        let content = self.content_rect();
+        if !content.contains_point(pos) {
+            return None;
+        }
+        let font = effective_font(self.style());
+        let offset = if self.text_format == TextFormat::RichText {
+            self.rich_offset(pos, content, font)?
+        } else if self.word_wrap {
+            self.wrapped_offset(pos, content, font)?
+        } else {
+            self.single_line_offset(pos, content, font)?
+        };
+        self.links.iter().position(|link| offset >= link.start && offset < link.end)
+    }
+
+    /// The displayed-text offset under `pos` for a single, unwrapped line.
+    fn single_line_offset(&self, pos: Point, content: Rect, font: &Font) -> Option<usize> {
+        let text_width = estimate_text_width(&self.text, font, 1.0);
+        let origin = match self.alignment {
+            crate::core::Alignment::Center => {
+                content.x + (content.width.saturating_sub(text_width) / 2) as i32
+            }
+            crate::core::Alignment::Right => content.x + content.width as i32 - text_width as i32,
+            _ => content.x,
+        };
+        offset_in_text(&self.text, pos.x - origin, font)
+    }
+
+    /// The displayed-text offset under `pos` for wrapped text.
+    ///
+    /// Uses the cached line table, which is the same table the painter just laid out. A label that
+    /// has never been painted has no table, so it reports no link: hit testing a layout that does
+    /// not exist yet would have to re-measure with a guess and could disagree with the first
+    /// frame.
+    fn wrapped_offset(&self, pos: Point, content: Rect, font: &Font) -> Option<usize> {
+        let cache = self.wrap_cache.as_ref()?;
+        if cache.text_revision != self.text_revision
+            || cache.width != content.width
+            || cache.font != *font
+        {
+            return None;
+        }
+        let line_height = cache.line_height.max(1);
+        if pos.y < content.y {
+            return None;
+        }
+        let index = ((pos.y - content.y) as u32) / line_height;
+        let line = cache.lines.get(index as usize)?;
+        let within = offset_in_text(&line.text, pos.x - content.x, font)?;
+        Some(map_line_offset(line, within, &self.text))
+    }
+
+    /// The displayed-text offset under `pos` for rich text.
+    fn rich_offset(&self, pos: Point, content: Rect, font: &Font) -> Option<usize> {
+        let start_x = {
+            let total = self.rich_width(font);
+            match self.alignment {
+                crate::core::Alignment::Center => {
+                    content.x + (content.width.saturating_sub(total) / 2) as i32
+                }
+                crate::core::Alignment::Right => content.x + content.width as i32 - total as i32,
+                _ => content.x,
+            }
+        };
+        let mut x = start_x;
+        let mut offset = 0usize;
+        for run in &self.rich_runs {
+            let run_font = font.with_bold(run.bold).with_italic(run.italic);
+            let width = estimate_text_width(&run.text, &run_font, 1.0) as i32;
+            if pos.x < x + width {
+                return offset_in_text(&run.text, pos.x - x, &run_font).map(|at| offset + at);
+            }
+            x += width;
+            offset += run.text.len();
+        }
+        None
+    }
+
+    /// Re-resolves which link the pointer is over and announces the change.
+    fn update_hovered_link(&mut self, mut pos: Option<Point>) {
+        if !self.base.is_enabled() {
+            pos = None;
+        }
+        let next = pos.and_then(|pos| self.link_at(pos));
+        if next == self.hovered_link {
+            return;
+        }
+        self.hovered_link = next;
+        let href = next
+            .and_then(|index| self.links.get(index))
+            .map(|link| link.href.clone())
+            .unwrap_or_default();
+        // An empty target is the documented "left the last link" payload.
+        self.link_hovered.emit(href);
+        self.base.request_redraw();
+    }
+
+    /// Activates the link at `index`: emits the target and, if enabled, opens it externally.
+    fn activate_link(&mut self, index: usize) {
+        let Some(link) = self.links.get(index) else {
+            return;
+        };
+        let href = link.href.clone();
+        if self.open_external_links && !href.is_empty() {
+            let platform = crate::platform::platform_facts();
+            if let Err(error) = crate::platform::Platform::open_external(platform, &href) {
+                // The signal is still emitted: whether the host can open a target is not the
+                // label's decision to block, and a silent failure would look like a dead link.
+                log::warn!("label link could not be opened externally: {error:?}");
+            }
+        }
+        self.link_activated.emit(href);
+    }
 }
 impl Widget for Label {
     fn base(&self) -> &BaseWidget {
@@ -484,6 +1400,28 @@ impl Widget for Label {
         self.fade.is_animating()
     }
 
+    /// Resolves the published link events to this control's signals.
+    ///
+    /// The payload is the link's target. A hover that leaves the last link reports an empty
+    /// string, which is the reference toolkit's `linkHovered` contract and the reason the payload
+    /// is a `String` rather than an `Option`: one value describes both edges.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "link_activated" => Some(EventSignalRef::mapped(
+                "link_activated",
+                &self.link_activated,
+                |href: &String| CapabilityValue::String(href.clone()),
+            )),
+            "link_hovered" => {
+                Some(EventSignalRef::mapped("link_hovered", &self.link_hovered, |href: &String| {
+                    CapabilityValue::String(href.clone())
+                }))
+            }
+            _ => None,
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -503,6 +1441,10 @@ impl WidgetProperties for Label {
             "elide" => Ok(CapabilityValue::String(self.elide_mode().as_str().to_string())),
             "margin" => Ok(CapabilityValue::UInt(self.margin() as u64)),
             "scaled_contents" => Ok(CapabilityValue::Bool(self.scaled_contents())),
+            "indent" => Ok(CapabilityValue::UInt(self.indent() as u64)),
+            "text_format" => Ok(CapabilityValue::String(self.text_format().as_str().to_string())),
+            "open_external_links" => Ok(CapabilityValue::Bool(self.is_open_external_links())),
+            "link_count" => Ok(CapabilityValue::UInt(self.links().len() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -537,6 +1479,23 @@ impl WidgetProperties for Label {
                 self.set_scaled_contents(expect_bool(value)?);
                 Ok(())
             }
+            "indent" => {
+                self.set_indent(expect_u32(value)?);
+                Ok(())
+            }
+            "text_format" => {
+                let token = expect_string(value)?;
+                let Some(format) = TextFormat::from_name(&token) else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_text_format(format);
+                Ok(())
+            }
+            "open_external_links" => {
+                self.set_open_external_links(expect_bool(value)?);
+                Ok(())
+            }
+            "link_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -549,6 +1508,10 @@ impl WidgetProperties for Label {
             "elide",
             "margin",
             "scaled_contents",
+            "indent",
+            "text_format",
+            "open_external_links",
+            "link_count",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -565,6 +1528,21 @@ impl EventHandler for Label {
             | Event::MousePress { .. }
             | Event::MouseRelease { .. } => self.sync_fade(),
             _ => { /* Other events carry no fade-relevant pointer state */ }
+        }
+        // Link hover and activation are pointer-position questions, so they are answered here
+        // rather than in the draw path: the draw path knows where the ink went, but only the event
+        // path knows where the pointer is.
+        match event {
+            Event::MouseMove { pos } => self.update_hovered_link(Some(*pos)),
+            Event::MouseLeave { .. } => self.update_hovered_link(None),
+            Event::MouseRelease { pos, button }
+                if *button == crate::event::mouse_button::PRIMARY =>
+            {
+                if let Some(index) = self.link_at(*pos) {
+                    self.activate_link(index);
+                }
+            }
+            _ => { /* Other events carry no link target */ }
         }
     }
 }
@@ -591,15 +1569,16 @@ impl Draw for Label {
         // `slider.rs` documents ("not held across the draw"). Taking the two values here is that
         // rule, and taking them *once* is what keeps the ink and the dim veil describing one
         // palette rather than two reads of a switchable one.
-        let (theme_ink, theme_disabled, theme_surface) = {
+        let (theme_ink, theme_disabled, theme_surface, theme_accent) = {
             let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     Some(active.colors.foreground),
                     Some(active.colors.disabled),
                     Some(active.colors.background),
+                    Some(active.colors.accent),
                 ),
-                None => (None, None, None),
+                None => (None, None, None, None),
             }
         };
         // Draw pixmap content
@@ -655,36 +1634,23 @@ impl Draw for Label {
             // label paints. Once a hover or press is in flight the ink steps toward its
             // contrasting tone by the driver's own fraction.
             let text_color = self.interactive_ink(text_color);
-            let font = effective_font(self.style());
-            // The margin is the control's own inset, so every text path below — measured,
-            // wrapped and elided — uses the same content box rather than the raw rectangle.
+            // Cloned out of the style because the drawing helpers below take `&mut self` (the wrap
+            // cache is filled there). The clone is one reference-count bump on the font's shared
+            // family, not a copy of the face.
+            let font = effective_font(self.style()).clone();
+            // The margin and indent are the control's own insets, so every text path below —
+            // measured, wrapped and elided — uses the same content box rather than the raw
+            // rectangle.
             let content = self.content_rect();
-            if self.word_wrap {
-                // Wrap to the **content** width (margin already removed), then draw each line on
-                // its own band. An empty line is still a row, so blank paragraphs keep their
-                // height instead of collapsing the following text upward.
-                let lines = wrap_text(&self.text, content.width, &mut |candidate| {
-                    context.measure_text(candidate, font).width
-                });
-                let line_height = context.measure_text("M", font).height.max(1);
-                let mut y = content.y;
-                let bottom = content.y + content.height as i32;
-                for line in lines {
-                    if y + line_height as i32 > bottom {
-                        break;
-                    }
-                    let band = Rect::new(content.x, y, content.width, line_height);
-                    draw_elided_line(
-                        context,
-                        band,
-                        &line,
-                        font,
-                        text_color,
-                        HorizontalAlignment::Left,
-                        self.elide_mode,
-                    );
-                    y += line_height as i32;
-                }
+            if self.text_format == TextFormat::RichText {
+                let link_ink = theme_accent.unwrap_or(text_color);
+                self.draw_rich(context, content, &font, text_color, link_ink);
+            } else if self.word_wrap {
+                // Wrap to the **content** width (margin and indent already removed), then draw
+                // each line on its own band. The line table is cached against the text revision,
+                // the width and the font, so a hover fade repainting the same label does not
+                // re-shape the paragraph: this was the per-frame cost the issue names.
+                self.draw_wrapped(context, content, &font, text_color);
             } else {
                 // The **shared** estimate, because this is the same quantity `implicit_size` reports.
                 //
@@ -696,7 +1662,7 @@ impl Draw for Label {
                 // three times too large and drifted left. The label's own doc comment already claims
                 // the inline copy "would drift from the shared one on the first change to either" —
                 // it had, and this was the copy.
-                let text_width = estimate_text_width(&self.text, font, 1.0);
+                let text_width = estimate_text_width(&self.text, &font, 1.0);
                 let text_x = match self.alignment {
                     crate::core::Alignment::Center => {
                         content.x + (content.width.saturating_sub(text_width) / 2) as i32
@@ -717,7 +1683,7 @@ impl Draw for Label {
                 //
                 // Only the vertical anchor moves: the horizontal origin above is computed from
                 // the caller's alignment and stays exactly as it was.
-                let line = context.text_line(content, font);
+                let line = context.text_line(content, &font);
                 let horizontal = match self.alignment {
                     crate::core::Alignment::Center => HorizontalAlignment::Center,
                     crate::core::Alignment::Right => HorizontalAlignment::Right,
@@ -729,7 +1695,7 @@ impl Draw for Label {
                     context.draw_text(
                         Point::new(text_x, line.y),
                         &self.text,
-                        font,
+                        &font,
                         text_color,
                         HorizontalAlignment::Left,
                     );
@@ -741,7 +1707,7 @@ impl Draw for Label {
                         context,
                         Rect::new(content.x, line.y, content.width, line.height),
                         &self.text,
-                        font,
+                        &font,
                         text_color,
                         horizontal,
                         self.elide_mode,

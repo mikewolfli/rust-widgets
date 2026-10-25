@@ -12,7 +12,8 @@ use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
 use crate::event::{Event, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, Signal1};
-use crate::widget::capability::coercion::{expect_u32, expect_usize};
+use crate::widget::capability::access::selection_mode_to_str;
+use crate::widget::capability::coercion::{expect_selection_mode, expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -21,7 +22,7 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 use super::data_source::{IncrementalTableDataSource, ListModelDataSource};
-use super::list_view::VecListModel;
+use super::list_view::{SelectionMode, VecListModel};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WindowCache {
@@ -64,6 +65,21 @@ pub struct VirtualList {
     row_height: u32,
     overscan: usize,
     selected_row: Option<usize>,
+    /// Every selected row, in visual order.
+    ///
+    /// `selected_row` remains the *current* row (the one keyboard navigation and the anchor use)
+    /// and is kept inside this set, so a single-selection caller sees exactly the value it always
+    /// did. The set is what makes `Multi`/`Extended` expressible at all.
+    selected_rows: std::collections::BTreeSet<usize>,
+    /// How clicks and selections combine.
+    selection_mode: SelectionMode,
+    /// The row a `Shift`-extend grows from.
+    selection_anchor: Option<usize>,
+    /// Emitted with the whole selection whenever it changes.
+    ///
+    /// `selection_changed` keeps its single-row payload for compatibility; this is the
+    /// set-valued signal a multi-selection host needs.
+    pub selected_rows_changed: Signal1<Vec<usize>>,
     /// The row the pointer is currently over, or `None` when it is between/outside the rows.
     ///
     /// Filled by `MouseMove` through the same [`Self::row_at`] the click uses, so the highlighted
@@ -105,6 +121,10 @@ impl VirtualList {
             row_height: 20,
             overscan: 2,
             selected_row: None,
+            selected_rows: std::collections::BTreeSet::new(),
+            selection_mode: SelectionMode::Single,
+            selection_anchor: None,
+            selected_rows_changed: Signal1::new(),
             hovered_row: None,
             window_cache: None,
             data_generation: Arc::new(AtomicU64::new(0)),
@@ -159,6 +179,8 @@ impl VirtualList {
         self.data_source = Some(data_source);
         self.scroll_row = 0;
         self.selected_row = None;
+        self.selected_rows.clear();
+        self.selection_anchor = None;
         self.row_order.clear();
         self.clear_window_cache();
         self.normalize_projection_state();
@@ -190,6 +212,8 @@ impl VirtualList {
         self.data_generation.fetch_add(1, Ordering::Relaxed);
         self.scroll_row = 0;
         self.selected_row = None;
+        self.selected_rows.clear();
+        self.selection_anchor = None;
         self.row_order.clear();
         self.clear_window_cache();
         self.emit_visible_window_changed();
@@ -300,17 +324,154 @@ impl VirtualList {
     }
 
     /// Selects a row.
+    ///
+    /// The mode decides how the selection changes; this is the un-modified path (a plain click or
+    /// a programmatic select), and it still works exactly as before in [`SelectionMode::Single`].
     pub fn select_row(&mut self, row: usize) -> bool {
+        self.select_row_with_modifiers(row, crate::shortcut::Modifiers::empty())
+    }
+
+    /// Selects `row` honouring keyboard modifiers.
+    ///
+    /// `Shift` extends from the anchor, `Ctrl`/`Primary` toggles one row, and no modifier is a
+    /// plain selection. In `Single` mode every call replaces the selection, which is what keeps a
+    /// pre-multi-selection caller unchanged.
+    pub fn select_row_with_modifiers(
+        &mut self,
+        row: usize,
+        modifiers: crate::shortcut::Modifiers,
+    ) -> bool {
         if row >= self.row_count() {
             return false;
         }
-        if self.selected_row == Some(row) {
+        let unchanged = self.selection_mode == SelectionMode::Single
+            && self.selected_row == Some(row)
+            && self.selected_rows.len() == 1
+            && self.selected_rows.contains(&row);
+        if unchanged {
             return true;
         }
+        match self.selection_mode {
+            SelectionMode::None => {
+                self.selected_rows.clear();
+                self.selected_rows.insert(row);
+                self.selection_anchor = Some(row);
+            }
+            SelectionMode::Single => {
+                self.selected_rows.clear();
+                self.selected_rows.insert(row);
+                self.selection_anchor = Some(row);
+            }
+            SelectionMode::Multi => {
+                let toggle = modifiers.contains(crate::shortcut::Modifiers::CTRL)
+                    || modifiers.contains(crate::shortcut::Modifiers::PRIMARY);
+                if toggle && !self.selected_rows.insert(row) {
+                    self.selected_rows.remove(&row);
+                } else {
+                    self.selected_rows.insert(row);
+                }
+                self.selection_anchor = Some(row);
+            }
+            SelectionMode::Extended => {
+                let shift = modifiers.contains(crate::shortcut::Modifiers::SHIFT);
+                let toggle = modifiers.contains(crate::shortcut::Modifiers::CTRL)
+                    || modifiers.contains(crate::shortcut::Modifiers::PRIMARY);
+                if shift {
+                    let anchor = self.selection_anchor.unwrap_or(row);
+                    let (low, high) = if anchor <= row { (anchor, row) } else { (row, anchor) };
+                    self.selected_rows = (low..=high).collect();
+                } else if toggle {
+                    if !self.selected_rows.insert(row) {
+                        self.selected_rows.remove(&row);
+                    }
+                    self.selection_anchor = Some(row);
+                } else {
+                    self.selected_rows.clear();
+                    self.selected_rows.insert(row);
+                    self.selection_anchor = Some(row);
+                }
+            }
+        }
         self.selected_row = Some(row);
-        self.selection_changed.emit(self.selected_row);
+        self.emit_selection();
         self.base.request_redraw();
         true
+    }
+
+    /// Selects the inclusive range `from..=to`.
+    ///
+    /// In single-selection mode a range cannot be expressed, so the selection collapses to `to`
+    /// (the row a range gesture would end on) rather than contradicting the mode.
+    pub fn select_range(&mut self, from: usize, to: usize) -> bool {
+        let count = self.row_count();
+        if from >= count || to >= count {
+            return false;
+        }
+        if self.selection_mode == SelectionMode::Single
+            || self.selection_mode == SelectionMode::None
+        {
+            return self.select_row(to);
+        }
+        let (low, high) = if from <= to { (from, to) } else { (to, from) };
+        self.selected_rows = (low..=high).collect();
+        self.selected_row = Some(high);
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(low);
+        }
+        self.emit_selection();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The selected rows, in ascending (visual) order.
+    pub fn selected_rows(&self) -> Vec<usize> {
+        self.selected_rows.iter().copied().filter(|row| *row < self.row_count()).collect()
+    }
+
+    /// Clears the selection, leaving no current row.
+    pub fn clear_selection(&mut self) {
+        if self.selected_rows.is_empty() && self.selected_row.is_none() {
+            return;
+        }
+        self.selected_rows.clear();
+        self.selected_row = None;
+        self.selection_anchor = None;
+        self.selection_changed.emit(None);
+        self.selected_rows_changed.emit(Vec::new());
+        self.base.request_redraw();
+    }
+
+    /// How clicks and selections combine.
+    pub fn selection_mode(&self) -> SelectionMode {
+        self.selection_mode
+    }
+
+    /// Sets the selection mode.
+    ///
+    /// Leaving `Multi`/`Extended` keeps only the current row, because a caller that switched to
+    /// `Single` expects exactly one selected row.
+    pub fn set_selection_mode(&mut self, mode: SelectionMode) {
+        if self.selection_mode == mode {
+            return;
+        }
+        self.selection_mode = mode;
+        if mode == SelectionMode::Single || mode == SelectionMode::None {
+            self.selected_rows.clear();
+            if let Some(row) = self.selected_row.filter(|row| *row < self.row_count()) {
+                self.selected_rows.insert(row);
+                self.selection_anchor = Some(row);
+            } else {
+                self.selection_anchor = None;
+            }
+        }
+        self.emit_selection();
+        self.base.request_redraw();
+    }
+
+    /// Emits both the legacy single-row signal and the set-valued one.
+    fn emit_selection(&self) {
+        self.selection_changed.emit(self.selected_row);
+        self.selected_rows_changed.emit(self.selected_rows());
     }
 
     /// Moves the displayed row at `from` to `to`, keeping the selection on the item it names.
@@ -332,12 +493,16 @@ impl VirtualList {
         self.row_order.insert(to, row);
         let before = self.selected_row;
         self.selected_row = self.selected_row.map(|index| index_after_move(index, from, to));
+        self.selected_rows =
+            self.selected_rows.iter().map(|index| index_after_move(*index, from, to)).collect();
+        self.selection_anchor =
+            self.selection_anchor.map(|index| index_after_move(index, from, to));
         // The cache key counts the source revision, not this local arrangement, so the cached
         // window has to be dropped explicitly or a repaint would serve the old order.
         self.clear_window_cache();
         self.data_generation.fetch_add(1, Ordering::Relaxed);
         if before != self.selected_row {
-            self.selection_changed.emit(self.selected_row);
+            self.emit_selection();
         }
         self.base.request_redraw();
         true
@@ -479,6 +644,8 @@ impl VirtualList {
         if row_count == 0 {
             self.scroll_row = 0;
             self.selected_row = None;
+            self.selected_rows.clear();
+            self.selection_anchor = None;
             return;
         }
 
@@ -487,6 +654,10 @@ impl VirtualList {
             self.scroll_row = max_row;
         }
         self.selected_row = self.selected_row.filter(|row| *row <= max_row);
+        self.selected_rows.retain(|row| *row <= max_row);
+        if let Some(row) = self.selected_row {
+            self.selected_rows.insert(row);
+        }
     }
 
     fn visible_capacity(&self) -> usize {
@@ -570,6 +741,15 @@ impl Widget for VirtualList {
                     CapabilityValue::String(v.as_str().to_string())
                 }))
             }
+            "selected_rows_changed" => Some(EventSignalRef::mapped(
+                "selected_rows_changed",
+                &self.selected_rows_changed,
+                |rows| {
+                    CapabilityValue::Tuple(
+                        rows.iter().map(|row| CapabilityValue::UInt(*row as u64)).collect(),
+                    )
+                },
+            )),
             _ => None,
         }
     }
@@ -662,6 +842,15 @@ impl WidgetProperties for VirtualList {
                 Some(row) => Ok(CapabilityValue::UInt(row as u64)),
                 None => Ok(CapabilityValue::Null),
             },
+            "selected_rows" => Ok(CapabilityValue::Tuple(
+                self.selected_rows()
+                    .into_iter()
+                    .map(|row| CapabilityValue::UInt(row as u64))
+                    .collect(),
+            )),
+            "selection_mode" => Ok(CapabilityValue::String(
+                selection_mode_to_str(self.selection_mode()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -681,9 +870,14 @@ impl WidgetProperties for VirtualList {
                 self.set_overscan(expect_usize(value)?);
                 Ok(())
             }
+            "selection_mode" => {
+                self.set_selection_mode(expect_selection_mode(value)?);
+                Ok(())
+            }
             "has_data_source" => Err(CapabilityAccessError::ReadOnlyProperty),
             "row_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             "selected_row" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "selected_rows" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -696,6 +890,8 @@ impl WidgetProperties for VirtualList {
             "row_height",
             "overscan",
             "selected_row",
+            "selected_rows",
+            "selection_mode",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -792,7 +988,7 @@ impl Draw for VirtualList {
                 continue;
             }
 
-            if self.selected_row == Some(row_index) {
+            if self.selected_row == Some(row_index) || self.selected_rows.contains(&row_index) {
                 context.fill_rect(Rect::new(rect.x, y, rect.width, self.row_height), selected_bg);
             } else if self.hovered_row == Some(row_index) {
                 // A weaker wash than the selection, from the same accent: a row the pointer is over
@@ -848,11 +1044,15 @@ impl crate::event::EventHandler for VirtualList {
         self.normalize_projection_state();
 
         match event {
-            Event::MousePress { pos, button, .. } if *button == 1 => {
+            Event::MousePress { pos, button, modifiers } if *button == 1 => {
                 // The same derivation the hover uses, so the row a click selects and the row the
-                // pointer highlights cannot disagree.
+                // pointer highlights cannot disagree. Modifiers choose between replace, toggle
+                // and range-extend in the multi-row modes.
                 if let Some(row) = self.row_at(*pos) {
-                    let _ = self.select_row(row);
+                    let _ = self.select_row_with_modifiers(
+                        row,
+                        crate::shortcut::Modifiers::from_event_bits(*modifiers),
+                    );
                 }
             }
             // Row hover, derived from the same `row_at` the click uses, so the row that is
@@ -878,10 +1078,30 @@ impl crate::event::EventHandler for VirtualList {
                     self.scroll_by_rows(-(scroll.lines_y as isize));
                 }
             }
-            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => {
+            Event::KeyPress { key, modifiers } if self.base.focus_reason().is_some() => {
                 let page = self.visible_row_capacity().max(1);
                 let last = self.row_count().saturating_sub(1);
                 let current = self.selected_row.unwrap_or(0);
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                // Ctrl/Cmd+A selects the whole projection, which is the shortcut every list
+                // responds to and the one a multi-selection host expects.
+                if (mods.contains(crate::shortcut::Modifiers::CTRL)
+                    || mods.contains(crate::shortcut::Modifiers::PRIMARY))
+                    && crate::event::key_codes::ascii_key_code('a').is_some_and(|code| code == *key)
+                {
+                    let mut rows: Vec<usize> = (0..self.row_count()).collect();
+                    if self.selection_mode == SelectionMode::Single {
+                        rows.truncate(1);
+                    }
+                    if let Some(&last_row) = rows.last() {
+                        self.selected_rows = rows.into_iter().collect();
+                        self.selected_row = Some(last_row);
+                        self.selection_anchor = self.selected_rows.iter().next().copied();
+                        self.emit_selection();
+                        self.base.request_redraw();
+                    }
+                    return;
+                }
                 let next = match *key {
                     crate::event::key_codes::UP => current.saturating_sub(1),
                     crate::event::key_codes::DOWN => current.saturating_add(1).min(last),
@@ -891,7 +1111,7 @@ impl crate::event::EventHandler for VirtualList {
                     crate::event::key_codes::PAGE_DOWN => current.saturating_add(page).min(last),
                     _ => current,
                 };
-                if self.select_row(next) {
+                if self.select_row_with_modifiers(next, mods) {
                     if next < self.scroll_row {
                         self.set_scroll_row(next);
                     } else if next >= self.scroll_row + page {

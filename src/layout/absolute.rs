@@ -678,8 +678,8 @@ impl AbsoluteLayout {
     /// `index`.
     ///
     /// Returns `true` if a child was updated and `false` if `index` is out of
-    /// range. The child's position is left untouched. There is no way to remove a
-    /// constraint once set short of replacing the child.
+    /// range. The child's position is left untouched. Use
+    /// [`Self::remove_constraint`] to return the child to its unconstrained size.
     pub fn set_constraint(&mut self, index: usize, constraint: Constraint) -> bool {
         if let Some(entry) = self.children.get_mut(index) {
             entry.constraint = Some(constraint);
@@ -687,6 +687,31 @@ impl AbsoluteLayout {
         } else {
             false
         }
+    }
+
+    /// Attaches or clears the size constraint of the child at insertion index `index`.
+    ///
+    /// `None` removes the constraint, so the child is sized by its own hint again. Returns
+    /// `true` when a child was updated and `false` when `index` is out of range; an
+    /// already-unconstrained child is still a valid update.
+    pub fn set_constraint_optional(
+        &mut self,
+        index: usize,
+        constraint: Option<Constraint>,
+    ) -> bool {
+        if let Some(entry) = self.children.get_mut(index) {
+            entry.constraint = constraint;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Removes the size constraint of the child at insertion index `index`.
+    ///
+    /// Returns `true` if `index` was in range, including when the child had no constraint.
+    pub fn remove_constraint(&mut self, index: usize) -> bool {
+        self.set_constraint_optional(index, None)
     }
     /// Borrows the position of the child at insertion index `index`, or `None` if
     /// `index` is out of range.
@@ -750,6 +775,42 @@ impl Layout for AbsoluteLayout {
 
     fn has_child(&self, id: ObjectId) -> bool {
         self.children.iter().any(|entry| entry.widget_id == id)
+    }
+
+    fn widget_count(&self) -> usize {
+        let mut count = 0usize;
+        for (index, entry) in self.children.iter().enumerate() {
+            if !self.children[..index].iter().any(|other| other.widget_id == entry.widget_id) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    fn index_of(&self, id: ObjectId) -> Option<usize> {
+        let mut seen: Vec<ObjectId> = Vec::new();
+        for entry in &self.children {
+            if !seen.contains(&entry.widget_id) {
+                if entry.widget_id == id {
+                    return Some(seen.len());
+                }
+                seen.push(entry.widget_id);
+            }
+        }
+        None
+    }
+
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        // The entry list is addressable by id, so this is a direct lookup rather than a full
+        // `update` pass: the child's hint and its constraint decide its rectangle.
+        let entry = self.children.iter().find(|entry| entry.widget_id == id)?;
+        let child_size = entry.widget.as_ref().map(|w| w.size_hint()).unwrap_or(Size::new(0, 0));
+        let constrained_size = entry
+            .constraint
+            .as_ref()
+            .map(|constraint| constraint.apply(child_size))
+            .unwrap_or(child_size);
+        Some(entry.position.resolve(rect.size(), constrained_size))
     }
 
     fn clear(&mut self) {

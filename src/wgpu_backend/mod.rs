@@ -35,7 +35,7 @@ mod tests {
                 commands::WgpuDrawCommand::Clear { color: types::Rgba8 { r: 0, g: 0, b: 0, a: 0 } },
                 commands::WgpuDrawCommand::DrawText {
                     rect: types::PixelRect { x: 0, y: 0, width: 16, height: 16 },
-                    text: "AB".to_string(),
+                    text: "AB".into(),
                     color: types::Rgba8 { r: 220, g: 10, b: 40, a: 255 },
                     clip: Some(types::PixelRect { x: 0, y: 0, width: 8, height: 16 }),
                 },
@@ -69,7 +69,7 @@ mod tests {
             4,
             &[commands::WgpuDrawCommand::DrawImage {
                 rect: types::PixelRect { x: 0, y: 0, width: 4, height: 4 },
-                rgba8: source,
+                rgba8: source.into(),
                 image_width: 2,
                 image_height: 2,
                 clip: None,
@@ -92,7 +92,7 @@ mod tests {
             4,
             &[commands::WgpuDrawCommand::DrawImage {
                 rect: types::PixelRect { x: 0, y: 0, width: 4, height: 4 },
-                rgba8: vec![0; 12],
+                rgba8: vec![0; 12].into(),
                 image_width: 2,
                 image_height: 2,
                 clip: None,

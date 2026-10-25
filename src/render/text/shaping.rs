@@ -39,7 +39,7 @@
 // see `compat::MiniToString`'s comment.
 #[cfg(alloc_frugal)]
 use crate::compat::MiniToString;
-use crate::compat::Vec;
+use crate::compat::{lock, HashMap, Mutex, String, Vec};
 use crate::core::Font;
 use crate::render::text::font_assets::{active_faces, FaceBytes};
 use crate::render::{ShapedGlyphRun, TextShaper};
@@ -271,7 +271,14 @@ fn ligature_free_features() -> &'static [rustybuzz::Feature] {
 /// method falls back to the model — this type never guesses a glyph.
 pub struct RustybuzzShaper {
     face: FaceBytes,
+    /// Memo for the trait entry points, which do not go through the renderer's per-thread cache:
+    /// a caller that holds `&dyn TextShaper` asked the font to shape the same caption repeatedly.
+    /// Keyed by `(text, font_size bits)`; the face is fixed for this shaper (G-19).
+    trait_cache: Mutex<HashMap<(String, u32), Option<ShapedGlyphRun>>>,
 }
+
+/// How many shaped runs one [`RustybuzzShaper`] memoises.
+const TRAIT_SHAPE_CACHE_LIMIT: usize = 256;
 
 impl RustybuzzShaper {
     /// A shaper over `face`, or `None` when its bytes are not a font this crate can read.
@@ -280,7 +287,7 @@ impl RustybuzzShaper {
         // face it intends to shape with, so warming the same cache `shape_face` reads means the
         // first call does not walk the table directory again.
         super::font_assets::with_shaper_face(face, |_| ())?;
-        Some(Self { face })
+        Some(Self { face, trait_cache: Mutex::new(HashMap::new()) })
     }
 
     /// A shaper over the first of this build's opt-in faces that covers `text`, if any.
@@ -298,6 +305,21 @@ impl RustybuzzShaper {
     /// The name of the face this shaper reads.
     pub fn face_name(&self) -> &'static str {
         self.face.name
+    }
+
+    /// The trait-entry-point cache: shaping is deterministic for a fixed face, text and size.
+    fn trait_shape(&self, text: &str, font_size: f32) -> Option<ShapedGlyphRun> {
+        let key = (String::from(text), font_size.to_bits());
+        if let Some(hit) = lock(&self.trait_cache).get(&key).cloned() {
+            return hit;
+        }
+        let shaped = self.shape_face(text, font_size, 1.0);
+        let mut cache = lock(&self.trait_cache);
+        if cache.len() >= TRAIT_SHAPE_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, shaped.clone());
+        shaped
     }
 
     /// Shape `text` into one run of positioned glyphs, in logical order.
@@ -434,11 +456,22 @@ impl TextShaper for RustybuzzShaper {
     /// One run of real glyphs, or — if the face cannot be read — an empty run rather than a
     /// fabricated one.
     fn shape(&self, text: &str, font_size: f32) -> Vec<ShapedGlyphRun> {
-        self.shape_face(text, font_size, 1.0).into_iter().collect()
+        self.trait_shape(text, font_size).into_iter().collect()
     }
 
     fn measure_width(&self, text: &str, font_size: f32) -> f32 {
-        self.shape_face(text, font_size, 1.0).map(|run| run.width).unwrap_or(0.0)
+        self.trait_shape(text, font_size).map(|run| run.width).unwrap_or(0.0)
+    }
+
+    fn cache_identity(&self) -> u64 {
+        // FNV-1a over the face name: the name is the identity `face_for_family` selects by, and a
+        // zero result would disable RichText's cache, so it is forced odd.
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for byte in self.face.name.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash | 1
     }
 
     fn measure_height(&self, _text: &str, font_size: f32) -> f32 {

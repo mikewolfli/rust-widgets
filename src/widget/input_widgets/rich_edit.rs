@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Rich text editor widget.
-use crate::core::HorizontalAlignment;
-use crate::core::Rect;
+use crate::core::{Font, HorizontalAlignment, Rect, Size};
 use crate::event::wheel::WheelScroll;
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -14,7 +13,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::effective_font;
+use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::RefCell;
@@ -36,7 +35,7 @@ pub struct TextSpan {
 ///
 /// The default inherits the editor's own style; an empty span list therefore paints exactly as
 /// an unstyled document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CharFormat {
     /// Paint the run in a bold face.
     pub bold: bool,
@@ -44,8 +43,29 @@ pub struct CharFormat {
     pub italic: bool,
     /// Draw a line under the run.
     pub underline: bool,
+    /// Draw a line through the middle of the run.
+    pub strikeout: bool,
+    /// Override the run's family; `None` keeps the editor's own face.
+    pub font_family: Option<String>,
+    /// Override the run's point size; `None` keeps the editor's own size.
+    ///
+    /// Integral, so `CharFormat` keeps `Eq` (a float field would have removed that impl).
+    pub font_size: Option<u32>,
     /// Override the run's ink; `None` keeps the editor's text colour.
     pub color: Option<crate::core::Color>,
+}
+
+impl CharFormat {
+    /// Whether this format changes anything about the painted run.
+    pub fn is_plain(&self) -> bool {
+        !self.bold
+            && !self.italic
+            && !self.underline
+            && !self.strikeout
+            && self.font_family.is_none()
+            && self.font_size.is_none()
+            && self.color.is_none()
+    }
 }
 
 /// Rich text/code editor baseline widget contract.
@@ -109,6 +129,17 @@ pub struct RichEdit {
     dragging_selection: bool,
     /// The byte offset where the pointer drag began.
     drag_anchor: usize,
+    /// Whether long logical lines wrap at the interior's width instead of being clipped.
+    ///
+    /// Off by default, so a document that was clipped at the control's edge keeps that layout.
+    line_wrap: bool,
+    /// Text painted when the document is empty.
+    placeholder_text: String,
+    /// The format applied to text typed at a bare caret.
+    ///
+    /// [`Self::apply_char_format`] stores the format here when there is no selection; the next
+    /// inserted run is then stamped with it. `None` inherits the editor's own style.
+    typing_format: Option<CharFormat>,
 }
 impl RichEdit {
     /// Creates an empty rich editor.
@@ -131,6 +162,9 @@ impl RichEdit {
             first_visible_line: 0,
             dragging_selection: false,
             drag_anchor: 0,
+            line_wrap: false,
+            placeholder_text: String::new(),
+            typing_format: None,
         }
     }
     /// Returns current editor text.
@@ -213,7 +247,132 @@ impl RichEdit {
             .iter()
             .rev()
             .find(|span| span.range.contains(&offset))
-            .map_or(CharFormat::default(), |span| span.format)
+            .map_or(CharFormat::default(), |span| span.format.clone())
+    }
+
+    /// Whether long lines wrap at the interior's width.
+    pub fn line_wrap(&self) -> bool {
+        self.line_wrap
+    }
+
+    /// Enables or disables soft wrapping of long logical lines.
+    pub fn set_line_wrap(&mut self, wrap: bool) {
+        if self.line_wrap == wrap {
+            return;
+        }
+        self.line_wrap = wrap;
+        self.first_visible_line = 0;
+        self.base.request_redraw();
+    }
+
+    /// The text painted when the document is empty.
+    pub fn placeholder_text(&self) -> &str {
+        &self.placeholder_text
+    }
+
+    /// Sets the placeholder text.
+    pub fn set_placeholder_text(&mut self, text: String) {
+        if self.placeholder_text == text {
+            return;
+        }
+        self.placeholder_text = text;
+        self.base.request_redraw();
+    }
+
+    /// Applies `format` to the selection, or to text typed next when nothing is selected.
+    ///
+    /// The format is stored as a span over the selected range; spans are resolved last-wins, so a
+    /// later call can restyle a range it previously covered. With a bare caret the format is kept
+    /// as the typing format and stamped onto the next inserted run instead of changing anything
+    /// already in the document.
+    pub fn apply_char_format(&mut self, format: CharFormat) {
+        if self.read_only {
+            return;
+        }
+        let Some((start, end)) = self.selection.filter(|(start, end)| start != end) else {
+            self.typing_format = Some(format);
+            return;
+        };
+        let len = self.text.len();
+        let (lo, hi) = if start < end { (start, end) } else { (end, start) };
+        let lo = floor_char_boundary(&self.text, lo.min(len));
+        let hi = floor_char_boundary(&self.text, hi.min(len));
+        if lo >= hi {
+            self.typing_format = Some(format);
+            return;
+        }
+        self.spans.push(TextSpan { range: lo..hi, format });
+        self.base.request_redraw();
+    }
+
+    /// The width a display row has for text, after the field's padding.
+    fn content_width(&self) -> f32 {
+        self.geometry().width.saturating_sub(8).max(1) as f32
+    }
+
+    /// The face a run at `offset` is painted with, after its span's attributes are applied.
+    fn face_at(&self, offset: usize) -> Font {
+        let format = self.format_at(offset);
+        let mut face = effective_font(self.style()).clone();
+        if let Some(family) = format.font_family {
+            face = face.with_family(family);
+        }
+        if let Some(size) = format.font_size {
+            face = face.with_size(size as f32);
+        }
+        if format.bold {
+            face = face.with_bold(true);
+        }
+        if format.italic {
+            face = face.with_italic(true);
+        }
+        face
+    }
+
+    /// The byte ranges of the rows the paint and hit test share.
+    ///
+    /// With wrapping off this is one row per logical line; with it on, a long line contributes as
+    /// many rows as it takes to fit the interior width. Deriving both readers from this one table
+    /// is what keeps a click on the row it was painted on.
+    fn visual_rows(&self) -> Vec<(usize, usize)> {
+        let mut rows = Vec::new();
+        let mut line_start = 0usize;
+        for line in self.text.split('\n') {
+            let line_end = line_start + line.len();
+            // A trailing carriage return (from CRLF) is invisible and was never painted by
+            // `.lines()`, so excluding it keeps this table's rows the same spans the old paint used.
+            let content = line.strip_suffix('\r').unwrap_or(line);
+            let content_end = line_start + content.len();
+            if !self.line_wrap || content.is_empty() {
+                rows.push((line_start, content_end));
+            } else {
+                let limit = self.content_width();
+                let mut row_start = line_start;
+                let mut width = 0.0f32;
+                for (index, ch) in content.char_indices() {
+                    let face = self.face_at(line_start + index);
+                    let advance = estimate_text_width(&ch.to_string(), &face, 1.0) as f32;
+                    if width > 0.0 && width + advance > limit {
+                        rows.push((row_start, line_start + index));
+                        row_start = line_start + index;
+                        width = 0.0;
+                    }
+                    width += advance;
+                }
+                rows.push((row_start, content_end));
+            }
+            line_start = line_end + 1;
+        }
+        rows
+    }
+
+    /// The number of rows the current wrap layout paints.
+    fn display_row_count(&self) -> usize {
+        if self.line_wrap {
+            self.visual_rows().len()
+        } else {
+            self.line_count()
+        }
     }
 
     /// The first document line the viewport paints.
@@ -250,7 +409,7 @@ impl RichEdit {
         if lines == 0 {
             return false;
         }
-        let max_first = self.line_count().saturating_sub(self.visible_line_count());
+        let max_first = self.display_row_count().saturating_sub(self.visible_line_count());
         let next =
             (self.first_visible_line as i64 + lines as i64).clamp(0, max_first as i64) as usize;
         if next == self.first_visible_line {
@@ -262,14 +421,22 @@ impl RichEdit {
 
     /// Scrolls the viewport the minimum amount that brings `offset`'s line into view.
     fn scroll_caret_into_view(&mut self) {
-        let Some((line, _)) = self.byte_offset_to_line_col(self.extend_caret) else {
-            return;
+        let row = if self.line_wrap {
+            let rows = self.visual_rows();
+            rows.iter()
+                .position(|(_, end)| *end >= self.extend_caret)
+                .unwrap_or_else(|| rows.len().saturating_sub(1))
+        } else {
+            match self.byte_offset_to_line_col(self.extend_caret) {
+                Some((line, _)) => line,
+                None => return,
+            }
         };
         let visible = self.visible_line_count();
-        if line < self.first_visible_line {
-            self.first_visible_line = line;
-        } else if line >= self.first_visible_line + visible {
-            self.first_visible_line = line + 1 - visible;
+        if row < self.first_visible_line {
+            self.first_visible_line = row;
+        } else if row >= self.first_visible_line + visible {
+            self.first_visible_line = row + 1 - visible;
         }
     }
 
@@ -340,6 +507,14 @@ impl RichEdit {
         next.replace_range(start..end, &filtered);
         let new_caret = start + filtered.len();
         self.set_text_for_edit(next);
+        // Stamp the run with the format a bare caret asked for. Insertion is the only moment the
+        // range is known, and `set_text_for_edit` leaves spans untouched, so the span survives the
+        // replacement.
+        if let Some(format) = self.typing_format.clone() {
+            if start < new_caret {
+                self.spans.push(TextSpan { range: start..new_caret, format });
+            }
+        }
         self.selection = Some((new_caret, new_caret));
         self.extend_caret = new_caret;
         self.cursor_position_changed.emit(new_caret);
@@ -432,16 +607,13 @@ impl RichEdit {
         let row =
             self.first_visible_line + ((pos.y - first_line_y).max(0) / line_height.max(1)) as usize;
 
-        // Walk the value's own line splitting, so the answer is derived from the text rather than
-        // rebuilt from a second model of where the newlines are.
-        let mut line_start = 0usize;
-        for (index, line) in self.text.lines().enumerate() {
-            if index == row {
-                return line_start + self.byte_offset_at_x(line, pos.x - rect.x);
-            }
-            line_start += line.len() + 1; // the line plus its `\n`
+        // Walk the same row table the paint path uses, so a click resolves to the row that was
+        // drawn under it — including across a soft-wrapped line.
+        let rows = self.visual_rows();
+        if let Some((start, end)) = rows.get(row).copied() {
+            return start + self.byte_offset_at_x(&self.text[start..end], pos.x - rect.x);
         }
-        // Below every line the value has (or an empty value): the caret belongs at the end.
+        // Below every row the value has (or an empty value): the caret belongs at the end.
         self.text.len()
     }
 
@@ -589,31 +761,6 @@ impl RichEdit {
         Some((line, col))
     }
 
-    /// The byte offset at which `line` starts in `self.text`.
-    ///
-    /// # Why this is derived and not stored
-    ///
-    /// Line starts are a pure function of the text, and the text is mutated by every edit. A stored
-    /// table would have to be rebuilt on each of them, and a missed rebuild would put the selection
-    /// highlight on the wrong line — a defect that only shows up after an edit, which is the hardest
-    /// kind to reproduce. Deriving it costs one pass over the prefix, which the draw already pays for
-    /// the caret's own line lookup.
-    fn line_start_offset(&self, line: usize) -> usize {
-        if line == 0 {
-            return 0;
-        }
-        let mut current = 0usize;
-        for (i, ch) in self.text.char_indices() {
-            if ch == '\n' {
-                current += 1;
-                if current == line {
-                    return i + 1;
-                }
-            }
-        }
-        self.text.len()
-    }
-
     /// Converts (line_index, col_index) back to a byte offset.
     fn line_col_to_byte_offset(&self, line: usize, col: usize) -> usize {
         let mut current_line = 0usize;
@@ -659,6 +806,24 @@ impl Widget for RichEdit {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// A document asks for the width of its widest line and the height of its rows.
+    ///
+    /// The editor used to fall back to whatever default the trait supplied, which ignored the
+    /// value entirely. Measuring with the same effective font the paint uses keeps the hint and
+    /// the ink in step, and the row count follows the wrap mode so a wrapped document asks for the
+    /// height it actually paints.
+    fn size_hint(&self) -> Size {
+        let font = effective_font(self.style());
+        let width = self
+            .text
+            .lines()
+            .map(|line| estimate_text_width(line, font, 1.0) as f32)
+            .fold(0.0f32, f32::max);
+        let line_height = font.effective_line_height().max(1.0);
+        let height = self.display_row_count() as f32 * line_height;
+        Size::new((width + 16.0).max(120.0) as u32, (height + 12.0).max(60.0) as u32)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -724,6 +889,8 @@ impl WidgetProperties for RichEdit {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "line_count" => Ok(CapabilityValue::UInt(self.text().lines().count() as u64)),
             "read_only" => Ok(CapabilityValue::Bool(self.read_only)),
+            "line_wrap" => Ok(CapabilityValue::Bool(self.line_wrap)),
+            "placeholder_text" => Ok(CapabilityValue::String(self.placeholder_text.clone())),
             _ => base_property_get(self, name),
         }
     }
@@ -739,6 +906,14 @@ impl WidgetProperties for RichEdit {
                 self.base.request_redraw();
                 Ok(())
             }
+            "line_wrap" => {
+                self.set_line_wrap(expect_bool(value)?);
+                Ok(())
+            }
+            "placeholder_text" => {
+                self.set_placeholder_text(expect_string(value)?);
+                Ok(())
+            }
             // Derived from the document body.
             "line_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -746,7 +921,14 @@ impl WidgetProperties for RichEdit {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "line_count", "read_only", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "text",
+            "line_count",
+            "read_only",
+            "line_wrap",
+            "placeholder_text",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `rich_edit` publishes.
@@ -826,9 +1008,7 @@ impl Draw for RichEdit {
         let font = effective_font(self.style());
         let line_height = 16i32;
         let padding = 2i32;
-        let cursor_before = self.selection.map_or(0, |(start, _)| start);
-        // Compute (line, col) for cursor
-        let cursor_coord = self.byte_offset_to_line_col(cursor_before);
+        let cursor_before = self.selection.map_or(0, |(start, _)| start).min(self.text.len());
 
         // The selection highlight is drawn as a background band **before** the ink, so the text
         // stays legible on top of it.
@@ -843,40 +1023,46 @@ impl Draw for RichEdit {
         // The band's two edges are measured with the same `estimate_text_width` the caret uses, so
         // highlighting a range cancels exactly to the caret at either end. Computing them `col * 7`
         // apart would have reproduced the caret defect twice more.
+        //
+        // The rows come from `visual_rows`, the same table the hit test reads, so a soft-wrapped
+        // line is highlighted and clicked on the row it was painted on.
         let selection = self.selection.filter(|(start, end)| start != end);
-        for (line_idx, line) in self.text.lines().enumerate() {
-            // The viewport starts at `first_visible_line`; lines above it are skipped without
+        let rows = self.visual_rows();
+        // An empty document still shows a caret and its placeholder.
+        if self.text.is_empty() && !self.placeholder_text.is_empty() {
+            context.draw_text(
+                crate::core::Point::new(rect.x + padding, rect.y + padding + line_height),
+                &self.placeholder_text,
+                font,
+                ink.blend(&paper, 0.45),
+                HorizontalAlignment::Left,
+            );
+        }
+        for (row_idx, (row_start, row_end)) in rows.iter().copied().enumerate() {
+            // The viewport starts at `first_visible_line`; rows above it are skipped without
             // consuming a row of the paint grid, which is what makes the scroll offset real.
-            if line_idx < self.first_visible_line {
+            if row_idx < self.first_visible_line {
                 continue;
             }
             let line_y =
-                rect.y + padding + line_height * ((line_idx - self.first_visible_line) as i32 + 1);
+                rect.y + padding + line_height * ((row_idx - self.first_visible_line) as i32 + 1);
             if line_y > rect.y + rect.height as i32 {
                 break;
             }
+            let row_text = &self.text[row_start..row_end];
             if let Some((start, end)) = selection {
-                let line_start = self.line_start_offset(line_idx);
-                let line_end = line_start + line.len();
-                // Clamp the selection to this line, so a range spanning several lines highlights
-                // each of them only over its own part.
-                //
-                // The four offsets are byte indices, and `set_selection` only clamps them to the
-                // value's length — this file's own module docs say they are "not guaranteed to
-                // land on character boundaries". Slicing `line` at them would panic on a
-                // multi-byte character, so each is floored first (and the pair is re-ordered,
-                // since flooring can in principle collapse one onto the other).
-                let from = (start.max(line_start).min(line_end) - line_start).min(line.len());
-                let to = (end.max(line_start).min(line_end) - line_start).min(line.len());
-                let from = floor_char_boundary(line, from);
-                let to = floor_char_boundary(line, to);
+                // Clamp the selection to this row, so a range spanning several rows highlights
+                // each of them only over its own part. The offsets are byte indices and
+                // `set_selection` only clamps them to the value's length, so each is floored to a
+                // character boundary before slicing (a mid-character slice would panic).
+                let from = (start.max(row_start).min(row_end) - row_start).min(row_text.len());
+                let to = (end.max(row_start).min(row_end) - row_start).min(row_text.len());
+                let from = floor_char_boundary(row_text, from);
+                let to = floor_char_boundary(row_text, to);
                 if from < to {
-                    let left = rect.x
-                        + padding
-                        + crate::widget::metrics::estimate_text_width(&line[..from], font, 1.0)
-                            as i32;
-                    let width =
-                        crate::widget::metrics::estimate_text_width(&line[from..to], font, 1.0);
+                    let left =
+                        rect.x + padding + estimate_text_width(&row_text[..from], font, 1.0) as i32;
+                    let width = estimate_text_width(&row_text[from..to], font, 1.0);
                     context.fill_rect(
                         crate::core::Rect::new(
                             left,
@@ -888,53 +1074,50 @@ impl Draw for RichEdit {
                     );
                 }
             }
-            // Draw the line text
+            // Draw the row's text
             if self.spans.is_empty() {
                 context.draw_text(
                     crate::core::Point::new(rect.x + padding, line_y),
-                    line,
+                    row_text,
                     font,
                     ink,
                     HorizontalAlignment::Left,
                 );
             } else {
-                let line_start = self.line_start_offset(line_idx);
-                self.draw_rich_line(context, line, line_start, rect.x + padding, line_y, font, ink);
+                self.draw_rich_line(
+                    context,
+                    row_text,
+                    row_start,
+                    rect.x + padding,
+                    line_y,
+                    font,
+                    ink,
+                );
             }
-            // Draw cursor on this line if not read-only
-            if !self.read_only && Some(line_idx) == cursor_coord.map(|(l, _)| l) {
-                if let Some((_, col)) = cursor_coord {
-                    // The caret sits where the text **actually** ends, measured with the renderer's
-                    // own advance model, rather than at `col * 7`.
-                    //
-                    // # The defect this replaces (BLUE24 §12 U-4's prerequisite)
-                    //
-                    // The old line was `rect.x + padding + (col as i32) * 7`, with the comment
-                    // "rough char width". Seven logical pixels is an average for a proportional
-                    // Latin face at one size, so the caret drifted off the character it was supposed
-                    // to sit on: on the crate's own `Open Sans` an `i` is ~3.5 px and a `w` ~10.3 px
-                    // (measured in §12.2.4), and on a CJK glyph it is off by roughly a factor of two
-                    // per character. A caret that is not where the text is makes every later
-                    // editing gesture look wrong — which is why this is the prerequisite for
-                    // selection handles, not a cosmetic fix.
-                    //
-                    // `estimate_text_width` is the shared model — the one the gate
-                    // `check_implicit_size_uses_metrics` points at and the one the renderer draws
-                    // with — so the caret and the ink cannot disagree about where a character ends.
-                    let prefix: String = line.chars().take(col).collect();
-                    let advance =
-                        crate::widget::metrics::estimate_text_width(&prefix, font, 1.0) as i32;
-                    let cursor_x = rect.x + padding + advance;
-                    // The caret is the selection indicator, so it carries the accent rather than
-                    // a fixed black the user could not find on a dark page.
-                    let caret = crate::style::semantic_color(crate::style::SemanticColor::Info)
-                        .unwrap_or(ink);
-                    context.draw_line(
-                        crate::core::Point::new(cursor_x, line_y - line_height + 2),
-                        crate::core::Point::new(cursor_x, line_y + 2),
-                        caret,
-                    );
-                }
+            // Draw the caret on the row that owns it. At a soft-wrap boundary the boundary offset
+            // belongs to the **previous** row, so the character the caret follows stays on screen;
+            // a logical line's own start is still included (the newline separates the offsets).
+            let wrapped_continuation = row_idx > 0 && rows[row_idx - 1].1 == row_start;
+            if !self.read_only
+                && cursor_before >= row_start
+                && cursor_before <= row_end
+                && !(cursor_before == row_start && wrapped_continuation)
+            {
+                // The caret sits where the text **actually** ends, measured with the renderer's
+                // own advance model, rather than at `col * 7`.
+                let prefix_end = floor_char_boundary(&self.text, cursor_before);
+                let prefix = &self.text[row_start..prefix_end.max(row_start)];
+                let advance = estimate_text_width(prefix, font, 1.0) as i32;
+                let cursor_x = rect.x + padding + advance;
+                // The caret is the selection indicator, so it carries the accent rather than a
+                // fixed black the user could not find on a dark page.
+                let caret =
+                    crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(ink);
+                context.draw_line(
+                    crate::core::Point::new(cursor_x, line_y - line_height + 2),
+                    crate::core::Point::new(cursor_x, line_y + 2),
+                    caret,
+                );
             }
         }
     }
@@ -977,6 +1160,12 @@ impl RichEdit {
                 continue;
             }
             let mut face = font.clone();
+            if let Some(family) = format.font_family.clone() {
+                face = face.with_family(family);
+            }
+            if let Some(size) = format.font_size {
+                face = face.with_size(size as f32);
+            }
             if format.bold {
                 face = face.with_bold(true);
             }
@@ -992,12 +1181,22 @@ impl RichEdit {
                 run_ink,
                 HorizontalAlignment::Left,
             );
-            let advance = crate::widget::metrics::estimate_text_width(run, &face, 1.0) as i32;
+            let advance = estimate_text_width(run, &face, 1.0) as i32;
             if format.underline {
                 let underline_y = baseline_y + 1;
                 context.draw_line(
                     crate::core::Point::new(pen_x, underline_y),
                     crate::core::Point::new(pen_x + advance, underline_y),
+                    run_ink,
+                );
+            }
+            if format.strikeout {
+                // Through the middle of the glyph box rather than at the baseline, so the line
+                // reads as a strike rather than a second underline.
+                let strike_y = baseline_y - face.effective_line_height() as i32 / 2;
+                context.draw_line(
+                    crate::core::Point::new(pen_x, strike_y),
+                    crate::core::Point::new(pen_x + advance, strike_y),
                     run_ink,
                 );
             }
@@ -1148,6 +1347,10 @@ impl crate::event::EventHandler for RichEdit {
                         next.insert(cursor, '\n');
                         self.set_text_for_edit(next);
                         let new_cursor = cursor + 1;
+                        // A typing format asked for at a bare caret applies to the newline too.
+                        if let Some(format) = self.typing_format.clone() {
+                            self.spans.push(TextSpan { range: cursor..new_cursor, format });
+                        }
                         self.selection = Some((new_cursor, new_cursor));
                         self.extend_caret = new_cursor;
                         self.text_changed.emit(self.text.clone());

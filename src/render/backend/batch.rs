@@ -6,8 +6,7 @@
 //! Provides types for organizing draw commands into batches that can be
 //! recorded once and replayed efficiently by the renderer.
 
-use crate::compat::Rc;
-use crate::compat::{fmt, HashMap, String, Vec};
+use crate::compat::{fmt, Arc, HashMap, Rc, String, Vec};
 
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::render::{
@@ -224,17 +223,19 @@ pub enum BatchCommand {
     },
     /// Draw a clipped region of an image.
     ///
-    /// # Deprecated behaviour
-    ///
-    /// The current replay implementation drops this command and logs a warning,
-    /// because the image cache stores raw pixel bytes without the source
-    /// dimensions needed to compute the source rectangle. Record it only if a
-    /// future backend is expected to support cropping.
+    /// `source_width` / `source_height` describe the full source image the
+    /// `source` rectangle indexes into. They are stored with the command because
+    /// the image cache holds only raw pixel bytes, which do not say how many
+    /// pixels a row has (G-14).
     DrawImageSubrect {
         /// Destination rectangle on the surface.
         dest: Rect,
-        /// Sub-rectangle of the source image to draw.
+        /// Sub-rectangle of the source image to draw, in source pixels.
         source: Rect,
+        /// Full source image width in pixels.
+        source_width: u32,
+        /// Full source image height in pixels.
+        source_height: u32,
         /// Cache key of the source image.
         image_id: ObjectId,
         /// Multiplier in `0.0..=1.0` applied to the image's alpha channel.
@@ -377,7 +378,10 @@ pub(crate) struct BatchState {
     /// Optional image data cache mapping `ObjectId` → RGBA pixel bytes.
     /// Populated externally before replay so that `DrawImage` /
     /// `DrawImageSubrect` commands can be translated into `RenderCommand`s.
-    pub(crate) images: HashMap<ObjectId, Vec<u8>>,
+    ///
+    /// The bytes are shared (`Arc`), so replay clones a refcount instead of the
+    /// whole RGBA payload (G-02).
+    pub(crate) images: HashMap<ObjectId, Arc<[u8]>>,
 }
 
 impl BatchState {
@@ -677,7 +681,7 @@ impl Default for TransformState {
 /// `SoftwarePaintBackend`'s fields and pass them without any clone.
 fn transform_command(
     cmd: &BatchCommand,
-    images: &HashMap<ObjectId, Vec<u8>>,
+    images: &HashMap<ObjectId, Arc<[u8]>>,
     state: &mut TransformState,
 ) -> Option<RenderCommand> {
     match cmd {
@@ -803,9 +807,12 @@ fn transform_command(
         }),
 
         BatchCommand::DrawImage { rect, image_id, opacity } => {
-            let mut data = images.get(image_id).cloned().unwrap_or_default();
-            if data.is_empty() {
+            let Some(source) = images.get(image_id).cloned() else {
                 log::warn!("[batch] DrawImage references unknown image id {image_id}; dropping");
+                return None;
+            };
+            if source.is_empty() {
+                log::warn!("[batch] DrawImage references an empty image id {image_id}; dropping");
                 return None;
             }
             // Test-only accounting of how many source pixel bytes this translation
@@ -813,16 +820,17 @@ fn transform_command(
             // on: replaying a batch must not copy image data belonging to batches that
             // are not being replayed. Compiled out of production builds (principle #28).
             #[cfg(test)]
-            note_image_bytes_translated(data.len());
+            note_image_bytes_translated(source.len());
             let applied_rect = state.apply_to_rect(rect);
             let combined_opacity = state.opacity * opacity;
-            // RenderCommand::DrawImage has no alpha channel, so a partial
-            // opacity is baked into the image's alpha bytes (RGBA).
-            if combined_opacity < 1.0 && data.len() % 4 == 0 {
-                for px in data.as_chunks_mut::<4>().0 {
-                    px[3] = (px[3] as f32 * combined_opacity).round().clamp(0.0, 255.0) as u8;
-                }
-            }
+            // RenderCommand::DrawImage has no alpha channel, so a partial opacity is baked into
+            // the image's alpha bytes. The baked variant is cached by source identity + opacity
+            // (G-02), so replaying the same faded image frame after frame copies it once.
+            let data = if combined_opacity < 1.0 && source.len() % 4 == 0 {
+                baked_image(&source, combined_opacity)
+            } else {
+                source
+            };
             #[cfg(feature = "3d")]
             {
                 // A rotated image keeps its pixels: the destination is the mapped quad, and the
@@ -857,15 +865,48 @@ fn transform_command(
             })
         }
 
-        BatchCommand::DrawImageSubrect { image_id, .. } => {
-            // Source-region cropping needs the source image's dimensions,
-            // which the image cache (ObjectId -> raw RGBA bytes) does not
-            // carry. Emitting a stretched full-image would silently render
-            // the wrong pixels, so drop the command and report it instead.
-            log::warn!(
-                    "[batch] DrawImageSubrect (image={image_id}) dropped: source-crop requires image dimensions metadata that is not stored"
+        BatchCommand::DrawImageSubrect {
+            dest,
+            source,
+            source_width,
+            source_height,
+            image_id,
+            opacity,
+        } => {
+            let Some(data) = images.get(image_id) else {
+                log::warn!(
+                    "[batch] DrawImageSubrect references unknown image id {image_id}; dropping"
                 );
-            None
+                return None;
+            };
+            // Crop the requested source rectangle into its own tightly packed RGBA buffer and
+            // stretch that to `dest`. Replaying the full image would draw the wrong pixels, and
+            // dropping it (the old behaviour) lost the command entirely (G-14).
+            let Some(cropped) = crop_source_rect(data, *source_width, *source_height, *source)
+            else {
+                log::warn!(
+                    "[batch] DrawImageSubrect (image={image_id}) has an empty or out-of-bounds \
+                     source rectangle {source:?} for a {source_width}x{source_height} image; dropping"
+                );
+                return None;
+            };
+            #[cfg(test)]
+            note_image_bytes_translated(cropped.len());
+            let applied_rect = state.apply_to_rect(dest);
+            let combined_opacity = state.opacity * opacity;
+            let data: Arc<[u8]> = Arc::from(cropped);
+            let data = if combined_opacity < 1.0 && data.len() % 4 == 0 {
+                baked_image(&data, combined_opacity)
+            } else {
+                data
+            };
+            Some(RenderCommand::DrawImage {
+                x: applied_rect.x,
+                y: applied_rect.y,
+                width: applied_rect.width,
+                height: applied_rect.height,
+                data,
+            })
         }
 
         BatchCommand::DrawText { position, text, color, font_size } => {
@@ -936,6 +977,88 @@ fn transform_command(
     }
 }
 
+thread_local! {
+    /// Alpha-baked image variants, keyed by the source allocation's address, length and opacity.
+    ///
+    /// Each entry holds the source `Arc` as well as the baked bytes. Keeping the source alive is
+    /// what makes the address a stable identity: without it the allocation could be freed and a
+    /// different image could reuse the same address. Bounded because a frame can fade many images.
+    static BAKED_IMAGES: core::cell::RefCell<HashMap<(usize, usize, u32), (Arc<[u8]>, Arc<[u8]>)>> =
+        core::cell::RefCell::new(HashMap::new());
+}
+
+/// How many alpha-baked image variants one thread keeps before starting over.
+const BAKED_IMAGE_CACHE_LIMIT: usize = 32;
+
+/// Returns `source` with every alpha byte scaled by `opacity`, reusing a previously baked variant
+/// when the same source allocation is faded by the same factor (G-02).
+fn baked_image(source: &Arc<[u8]>, opacity: f32) -> Arc<[u8]> {
+    let key = (source.as_ptr() as usize, source.len(), opacity.to_bits());
+    if let Some(hit) =
+        BAKED_IMAGES.with(|cache| cache.borrow().get(&key).map(|(_, baked)| Arc::clone(baked)))
+    {
+        return hit;
+    }
+    let mut baked = source.to_vec();
+    for pixel in baked.as_chunks_mut::<4>().0 {
+        pixel[3] = (pixel[3] as f32 * opacity).round().clamp(0.0, 255.0) as u8;
+    }
+    let baked: Arc<[u8]> = Arc::from(baked);
+    BAKED_IMAGES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= BAKED_IMAGE_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, (Arc::clone(source), Arc::clone(&baked)));
+    });
+    baked
+}
+
+/// Copies `source`'s requested sub-rectangle into a tightly packed RGBA buffer.
+///
+/// The rectangle is clipped to the source image; `None` means the crop is empty or the source
+/// buffer does not match the dimensions it claims. `source_width`/`source_height` are the
+/// metadata a batch records with the command (G-14).
+fn crop_source_rect(
+    data: &[u8],
+    source_width: u32,
+    source_height: u32,
+    source: Rect,
+) -> Option<Vec<u8>> {
+    if source_width == 0 || source_height == 0 {
+        return None;
+    }
+    let expected = (source_width as usize)
+        .checked_mul(source_height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))?;
+    if data.len() < expected {
+        log::warn!(
+            "[batch] DrawImageSubrect source buffer is {} bytes but {source_width}x{source_height} \
+             needs {expected}; dropping",
+            data.len()
+        );
+        return None;
+    }
+    let left = i64::from(source.x).max(0);
+    let top = i64::from(source.y).max(0);
+    let right = (i64::from(source.x) + i64::from(source.width)).min(i64::from(source_width));
+    let bottom = (i64::from(source.y) + i64::from(source.height)).min(i64::from(source_height));
+    if right <= left || bottom <= top {
+        return None;
+    }
+    let width = (right - left) as usize;
+    let height = (bottom - top) as usize;
+    let mut cropped = vec![0u8; width * height * 4];
+    let source_stride = source_width as usize * 4;
+    let row_bytes = width * 4;
+    for row in 0..height {
+        let src = (top as usize + row) * source_stride + left as usize * 4;
+        let dst = row * row_bytes;
+        cropped[dst..dst + row_bytes].copy_from_slice(&data[src..src + row_bytes]);
+    }
+    Some(cropped)
+}
+
 // Test-only counter of source image bytes copied by `transform_command`.
 //
 // # Why a counter rather than a global allocator shim (D09-RENDER-05)
@@ -983,7 +1106,7 @@ fn take_image_bytes_translated() -> usize {
 /// produces.
 fn replay_into(
     batches: &HashMap<BatchId, Vec<BatchCommand>>,
-    images: &HashMap<ObjectId, Vec<u8>>,
+    images: &HashMap<ObjectId, Arc<[u8]>>,
     surface: &mut SoftwareSurface,
     id: BatchId,
 ) {
@@ -1161,13 +1284,23 @@ mod tests {
         let cmd = BatchCommand::DrawImageSubrect {
             dest: Rect::new(10, 10, 64, 64),
             source: Rect::new(0, 0, 32, 32),
+            source_width: 128,
+            source_height: 64,
             image_id: 2u64,
             opacity: 0.5,
         };
         match cmd {
-            BatchCommand::DrawImageSubrect { dest, source, image_id, opacity } => {
+            BatchCommand::DrawImageSubrect {
+                dest,
+                source,
+                source_width,
+                source_height,
+                image_id,
+                opacity,
+            } => {
                 assert_eq!(dest, Rect::new(10, 10, 64, 64));
                 assert_eq!(source, Rect::new(0, 0, 32, 32));
+                assert_eq!((source_width, source_height), (128, 64));
                 assert_eq!(image_id, 2u64);
                 assert!((opacity - 0.5).abs() < 1e-6);
             }
@@ -1328,7 +1461,7 @@ mod tests {
     fn a_rotated_image_maps_its_source_grid_onto_the_quad() {
         let mut state = TransformState::default();
         let mut images = HashMap::new();
-        images.insert(7u64, vec![255u8; 2 * 2 * 4]);
+        images.insert(7u64, Arc::from(vec![255u8; 2 * 2 * 4]));
         let rotation = Mat3::rotation(core::f32::consts::FRAC_PI_4);
         assert!(transform_command(
             &BatchCommand::PushTransform { matrix: rotation },
@@ -1569,7 +1702,10 @@ mod tests {
             // Two unrelated batches, each holding a cached image of the given size.
             for image_index in 0..2u64 {
                 let object_id = 1000 + image_index;
-                backend.batch_state.images.insert(object_id, vec![7u8; unrelated_image_bytes]);
+                backend
+                    .batch_state
+                    .images
+                    .insert(object_id, Arc::from(vec![7u8; unrelated_image_bytes]));
                 let other = backend.begin_batch();
                 backend
                     .record(BatchCommand::DrawImage {

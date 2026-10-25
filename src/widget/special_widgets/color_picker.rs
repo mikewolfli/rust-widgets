@@ -211,6 +211,60 @@ impl ColorPicker {
         self.presets.len()
     }
 
+    /// Returns the preset palette.
+    pub fn presets(&self) -> &[Color] {
+        &self.presets
+    }
+
+    /// Replaces the preset palette.
+    ///
+    /// The palette was six colours fixed at construction, with no writer at all, so a caller's own
+    /// house colours could not appear in the picker without editing the crate. The swatches that do
+    /// not fit the row are not painted or hit-tested — the row is bounded by the current-value
+    /// swatch — and [`Self::apply_preset`] still addresses every entry by index.
+    pub fn set_presets(&mut self, presets: Vec<Color>) {
+        self.presets = presets;
+        self.base.request_redraw();
+    }
+
+    /// Appends one preset, returning its index.
+    pub fn add_preset(&mut self, color: Color) -> usize {
+        let index = self.presets.len();
+        self.presets.push(color);
+        self.base.request_redraw();
+        index
+    }
+
+    /// Removes the preset at `index`, returning it when it was present.
+    pub fn remove_preset(&mut self, index: usize) -> Option<Color> {
+        if index >= self.presets.len() {
+            return None;
+        }
+        let removed = self.presets.remove(index);
+        self.base.request_redraw();
+        Some(removed)
+    }
+
+    /// The hue in degrees, `0..=359`.
+    ///
+    /// The rails store hue as a byte (`0..=255`), which is the right storage for a gradient but the
+    /// wrong unit for a caller or a designer: a hue is named in degrees. This is the published
+    /// spelling; the byte stays the paint's own index.
+    pub fn hue_degrees(&self) -> u16 {
+        ((f32::from(self.hue) / 255.0) * 359.0).round() as u16
+    }
+
+    /// Sets the hue from degrees, clamped to `0..=359`.
+    pub fn set_hue_degrees(&mut self, degrees: u16) {
+        let degrees = degrees.min(359);
+        let hue = ((f32::from(degrees) / 359.0) * 255.0).round().clamp(0.0, 255.0) as u8;
+        if self.hue == hue {
+            return;
+        }
+        self.hue = hue;
+        self.sync_color_from_hsva();
+    }
+
     /// Height of the bottom chrome stack below the palette: the hex readout's line box, the
     /// preset swatch row, and the margins around them.
     ///
@@ -258,6 +312,13 @@ impl ColorPicker {
         }
         let rect = self.geometry();
         let x = rect.x + 8 + (index as i32) * 22;
+        // The row ends where the current-value swatch begins, so an injected palette cannot paint
+        // under it. A swatch past that edge has no rectangle; `presets` still holds it and
+        // `apply_preset` still addresses it.
+        let row_end = rect.x + rect.width as i32 - 70 - 6;
+        if x + 18 > row_end {
+            return None;
+        }
         let y = rect.y + rect.height as i32 - (PRESET_ROW + MARGIN) as i32;
         Some(Rect::new(x, y, 18, 18))
     }
@@ -376,6 +437,13 @@ impl WidgetProperties for ColorPicker {
             "hex_rgba" => Ok(CapabilityValue::String(self.hex_rgba())),
             "show_alpha" => Ok(CapabilityValue::Bool(self.show_alpha())),
             "preset_count" => Ok(CapabilityValue::UInt(self.preset_count() as u64)),
+            "presets" => Ok(CapabilityValue::Tuple(
+                self.presets()
+                    .iter()
+                    .map(|color| CapabilityValue::String(color.to_hex_rgba()))
+                    .collect(),
+            )),
+            "hue_degrees" => Ok(CapabilityValue::UInt(self.hue_degrees() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -395,15 +463,42 @@ impl WidgetProperties for ColorPicker {
                 self.set_show_alpha(expect_bool(value)?);
                 Ok(())
             }
-            // The preset palette is fixed at construction and applied by index
-            // through `apply_preset`, so the count is a derived read.
+            // The preset palette is written through `set_presets` / `add_preset` /
+            // `remove_preset`, so the count is a derived read.
             "preset_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "presets" => {
+                let tokens = crate::widget::capability::coercion::expect_string_list(value)?;
+                let mut colors = Vec::with_capacity(tokens.len());
+                for token in tokens {
+                    // A token that is not a colour refuses the whole list rather than being
+                    // skipped, so the palette the control holds is exactly the one asked for.
+                    let color =
+                        Color::parse_hex(&token).ok_or(CapabilityAccessError::TypeMismatch)?;
+                    colors.push(color);
+                }
+                self.set_presets(colors);
+                Ok(())
+            }
+            "hue_degrees" => {
+                let degrees = crate::widget::capability::coercion::expect_usize(value)?;
+                let degrees =
+                    u16::try_from(degrees).map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                self.set_hue_degrees(degrees);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["hex_rgba", "show_alpha", "preset_count", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "hex_rgba",
+            "show_alpha",
+            "preset_count",
+            "presets",
+            "hue_degrees",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `color_picker` publishes.
@@ -813,5 +908,75 @@ mod tests {
         assert!(v >= 250);
         // Hue for green is around 120 deg -> (120/360)*255 = 85
         assert!((h as i32 - 85).abs() <= 2);
+    }
+
+    #[test]
+    fn presets_are_writable_and_indexed() {
+        let mut picker = ColorPicker::new(Rect::new(0, 0, 260, 220));
+        picker.set_presets(vec![Color::rgb(1, 2, 3), Color::rgb(4, 5, 6)]);
+        assert_eq!(picker.preset_count(), 2);
+        assert_eq!(picker.presets()[1], Color::rgb(4, 5, 6));
+
+        let index = picker.add_preset(Color::rgb(7, 8, 9));
+        assert_eq!(index, 2);
+        assert_eq!(picker.preset_count(), 3);
+
+        assert!(picker.apply_preset(2));
+        assert_eq!(picker.color(), Color::rgb(7, 8, 9));
+
+        assert_eq!(picker.remove_preset(0), Some(Color::rgb(1, 2, 3)));
+        assert_eq!(picker.preset_count(), 2);
+        assert_eq!(picker.remove_preset(9), None);
+    }
+
+    #[test]
+    fn presets_property_round_trips_as_a_string_list() {
+        let mut picker = ColorPicker::new(Rect::new(0, 0, 260, 220));
+        let list = CapabilityValue::Tuple(vec![
+            CapabilityValue::String("#112233FF".to_string()),
+            CapabilityValue::String("#445566FF".to_string()),
+        ]);
+        picker.set("presets", list).expect("a list of hex colours is accepted");
+        assert_eq!(picker.preset_count(), 2);
+        match picker.get("presets").expect("readable") {
+            CapabilityValue::Tuple(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], CapabilityValue::String("#112233FF".to_string()));
+            }
+            other => panic!("presets must be a string list, got {other:?}"),
+        }
+
+        // One bad token refuses the whole list instead of silently dropping an entry.
+        let bad = CapabilityValue::Tuple(vec![
+            CapabilityValue::String("#112233FF".to_string()),
+            CapabilityValue::String("not a colour".to_string()),
+        ]);
+        assert!(picker.set("presets", bad).is_err());
+        assert_eq!(picker.preset_count(), 2);
+    }
+
+    #[test]
+    fn hue_degrees_is_the_published_spelling_of_the_hue_byte() {
+        let mut picker = ColorPicker::new(Rect::new(0, 0, 260, 220));
+        picker.set_hue_degrees(120);
+        assert_eq!(picker.hue_degrees(), 120);
+        let color = picker.color();
+        assert!(color.g > 200, "120° is green, got {color:?}");
+        assert!(color.r < 60 && color.b < 60, "120° must be green, got {color:?}");
+
+        // Round trip through the byte the rails store. The byte has 256 steps and a hue has 360
+        // degrees, so the two cannot be exactly bijective; the contract is one degree, which is
+        // finer than the byte itself can express.
+        for degrees in [0u16, 1, 90, 180, 240, 270, 359] {
+            picker.set_hue_degrees(degrees);
+            let read_back = picker.hue_degrees();
+            assert!(
+                (i32::from(read_back) - i32::from(degrees)).abs() <= 1,
+                "{degrees}° read back as {read_back}°"
+            );
+        }
+
+        picker.set("hue_degrees", CapabilityValue::UInt(240)).expect("writable");
+        assert!((i32::from(picker.hue_degrees()) - 240).abs() <= 1);
     }
 }

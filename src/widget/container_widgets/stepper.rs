@@ -43,6 +43,8 @@ pub struct Stepper {
     min: i32,
     max: i32,
     step: i32,
+    /// Whether stepping past a bound wraps to the other bound instead of clamping.
+    wrapping: bool,
     /// Emitted when the value changes.
     pub value_changed: Signal1<i32>,
 }
@@ -57,6 +59,7 @@ impl Stepper {
             min: 0,
             max: 100,
             step: 1,
+            wrapping: false,
             value_changed: Signal1::new(),
         }
     }
@@ -111,14 +114,45 @@ impl Stepper {
         self.step
     }
 
-    /// Increments the value by the step amount, clamped to max.
-    pub fn increment(&mut self) {
-        self.set_value(self.value.saturating_add(self.step));
+    /// Whether stepping past a bound wraps to the other bound.
+    pub fn wrapping(&self) -> bool {
+        self.wrapping
     }
 
-    /// Decrements the value by the step amount, clamped to min.
+    /// Enables or disables wrapping. Off by default, which clamps at the bounds.
+    pub fn set_wrapping(&mut self, wrapping: bool) {
+        if self.wrapping == wrapping {
+            return;
+        }
+        self.wrapping = wrapping;
+        self.base.request_redraw();
+    }
+
+    /// Moves the value by `delta`, wrapping inside `[min, max]` when enabled.
+    fn advance(&mut self, delta: i64) {
+        let target = self.value as i64 + delta;
+        if self.wrapping {
+            // The span is inclusive: `min..=max` has `max - min + 1` values.
+            let span = (self.max as i64 - self.min as i64).saturating_add(1);
+            if span <= 0 {
+                self.set_value(self.min);
+                return;
+            }
+            let offset = (target - self.min as i64).rem_euclid(span);
+            self.set_value((self.min as i64 + offset) as i32);
+        } else {
+            self.set_value(target.clamp(self.min as i64, self.max as i64) as i32);
+        }
+    }
+
+    /// Increments the value by the step amount, wrapping or clamping at the bounds.
+    pub fn increment(&mut self) {
+        self.advance(self.step as i64);
+    }
+
+    /// Decrements the value by the step amount, wrapping or clamping at the bounds.
     pub fn decrement(&mut self) {
-        self.set_value(self.value.saturating_sub(self.step));
+        self.advance(-(self.step as i64));
     }
 
     /// The band the whole control is drawn in: full width, one button tall, centred.
@@ -394,6 +428,15 @@ impl EventHandler for Stepper {
                     self.increment();
                 }
             }
+            Event::KeyPress { key, .. } => match *key {
+                crate::event::key_codes::UP | crate::event::key_codes::RIGHT => self.increment(),
+                crate::event::key_codes::DOWN | crate::event::key_codes::LEFT => self.decrement(),
+                crate::event::key_codes::PAGE_UP => self.advance(self.step as i64 * 10),
+                crate::event::key_codes::PAGE_DOWN => self.advance(-(self.step as i64 * 10)),
+                crate::event::key_codes::HOME => self.set_value(self.min),
+                crate::event::key_codes::END => self.set_value(self.max),
+                _ => self.base.handle_event(event),
+            },
             _ => {
                 self.base.handle_event(event);
             }

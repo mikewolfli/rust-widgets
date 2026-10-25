@@ -152,6 +152,13 @@ pub struct EmojiPicker {
     cursor: Option<usize>,
     /// The grid index the pointer is over, if any.
     hovered: Option<usize>,
+    /// Scratch index buffer for the visible glyph projection.
+    ///
+    /// Filled by [`Self::refresh_visible_indices`] and read by the draw path. The projection used
+    /// to be a fresh `Vec` per call, and the hit-test and cursor paths each built their own — so
+    /// every pointer move or scroll step allocated the window it was about to look at. The
+    /// buffer is reused; its length is only meaningful immediately after a refresh.
+    visible_indices: Vec<usize>,
     /// Emitted when a glyph is chosen, with its id.
     pub glyph_chosen: Signal1<String>,
     /// Emitted when the hovered glyph changes.
@@ -192,6 +199,7 @@ impl EmojiPicker {
             recent: Vec::new(),
             cursor: None,
             hovered: None,
+            visible_indices: Vec::new(),
             glyph_chosen: Signal1::new(),
             hovered_glyph_changed: Signal1::new(),
         }
@@ -332,22 +340,17 @@ impl EmojiPicker {
     ///
     /// # The one place the tabs, the search and the grid agree
     ///
-    /// Filtering happens here and nowhere else, so the drawing loop, the hit-test
-    /// and the keyboard cursor cannot disagree about what is on screen — which is
-    /// the defect class this accessor removes.
+    /// The filter itself is defined once, in [`Self::glyph_is_visible`], and every projection
+    /// (this accessor, the hit-test, the cursor and the draw path) goes through it — so the
+    /// drawing loop, the hit-test and the keyboard cursor cannot disagree about what is on
+    /// screen. This allocating form is kept as the public accessor; the internal paths use the
+    /// same predicate without materialising a vector.
     ///
     /// A non-empty search overrides the tab: searching means "find this anywhere",
     /// and restricting it to the current category would hide matches the user can
     /// see exist in another tab's label.
     pub fn visible_glyphs(&self) -> Vec<&EmojiGlyph> {
-        if !self.search.is_empty() {
-            return self.glyphs.iter().filter(|glyph| glyph.matches(&self.search)).collect();
-        }
-        // Resolve the active category without materialising `tabs()`: that built a
-        // `Vec<Category>` (one `String` per category) per call, and the draw path asks for the
-        // visible set every frame.
-        let recent_offset = usize::from(self.recent_tab_visible());
-        if self.recent_tab_visible() && self.active_tab == 0 {
+        if self.recent_tab_active() {
             // In recency order, not table order: the list exists to be a shortcut.
             return self
                 .recent
@@ -355,17 +358,89 @@ impl EmojiPicker {
                 .filter_map(|id| self.glyphs.iter().find(|glyph| &glyph.id == id))
                 .collect();
         }
-        let Some(category) =
-            self.active_tab.checked_sub(recent_offset).and_then(|index| self.categories.get(index))
-        else {
-            return Vec::new();
-        };
-        self.glyphs.iter().filter(|glyph| &glyph.category == category).collect()
+        self.glyphs.iter().filter(|glyph| self.glyph_is_visible(glyph)).collect()
+    }
+
+    /// Borrowed form of [`Self::visible_glyphs`]: the visible order as indices into [`Self::glyphs`].
+    ///
+    /// The buffer is the one the draw path refills, so using this accessor costs no allocation.
+    /// The allocating accessor stays available for callers that want glyph references directly.
+    pub fn visible_glyphs_slice(&mut self) -> &[usize] {
+        self.refresh_visible_indices();
+        &self.visible_indices
+    }
+
+    /// Whether the recent pseudo-category is the active tab.
+    fn recent_tab_active(&self) -> bool {
+        self.recent_tab_visible() && self.active_tab == 0
+    }
+
+    /// Whether `glyph` belongs to the current projection.
+    ///
+    /// The one definition of the filter, shared by the allocating accessor and the internal
+    /// paths. Ordering is a separate question (the recent tab lists by recency, every other
+    /// projection by table order), which is why it is not folded in here.
+    fn glyph_is_visible(&self, glyph: &EmojiGlyph) -> bool {
+        if !self.search.is_empty() {
+            return glyph.matches(&self.search);
+        }
+        if self.recent_tab_active() {
+            return self.recent.iter().any(|id| &glyph.id == id);
+        }
+        let recent_offset = usize::from(self.recent_tab_visible());
+        self.active_tab
+            .checked_sub(recent_offset)
+            .and_then(|index| self.categories.get(index))
+            .is_some_and(|category| &glyph.category == category)
     }
 
     /// The glyph at grid index `index`, if the grid is that long.
     pub fn glyph_at_index(&self, index: usize) -> Option<&EmojiGlyph> {
-        self.visible_glyphs().into_iter().nth(index)
+        // Walked directly rather than through `visible_glyphs().into_iter().nth(index)`: that
+        // materialised the whole projection (and dropped it) to read one element, on the hover
+        // and click paths.
+        if self.recent_tab_active() {
+            return self
+                .recent
+                .iter()
+                .filter_map(|id| self.glyphs.iter().find(|glyph| &glyph.id == id))
+                .nth(index);
+        }
+        self.glyphs.iter().filter(|glyph| self.glyph_is_visible(glyph)).nth(index)
+    }
+
+    /// The number of glyphs the grid currently shows, without materialising the projection.
+    ///
+    /// The count is the only thing the hit-test and cursor paths need, and it uses the same
+    /// predicate as [`Self::visible_glyphs`], so the two cannot disagree.
+    fn visible_len(&self) -> usize {
+        self.glyphs.iter().filter(|glyph| self.glyph_is_visible(glyph)).count()
+    }
+
+    /// Refills [`Self::visible_indices`] and returns how many entries it holds.
+    ///
+    /// The order matches [`Self::visible_glyphs`]: recency order for the recent tab, table order
+    /// otherwise.
+    fn refresh_visible_indices(&mut self) -> usize {
+        let mut indices = core::mem::take(&mut self.visible_indices);
+        indices.clear();
+        if self.recent_tab_active() {
+            for id in &self.recent {
+                if let Some(index) = self.glyphs.iter().position(|glyph| &glyph.id == id) {
+                    indices.push(index);
+                }
+            }
+        } else {
+            indices.extend(
+                self.glyphs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, glyph)| self.glyph_is_visible(glyph))
+                    .map(|(index, _)| index),
+            );
+        }
+        self.visible_indices = indices;
+        self.visible_indices.len()
     }
 
     /// Chooses `glyph`, recording it as recent and emitting it.
@@ -450,7 +525,7 @@ impl EmojiPicker {
     /// [`Self::cell_rect_at`] so they do not re-project the visible set per cell.
     #[cfg(test)]
     fn cell_rect(&self, index: usize) -> Option<Rect> {
-        let count = self.visible_glyphs().len();
+        let count = self.visible_len();
         self.cell_rect_at(index, count)
     }
 
@@ -471,8 +546,7 @@ impl EmojiPicker {
         }
         let row = ((pos.y - grid_top) as u32 / CELL_SIZE) as usize;
         let index = row * columns + column;
-        let count = self.visible_glyphs().len();
-        (index < count).then_some(index)
+        (index < self.visible_len()).then_some(index)
     }
 
     /// The tab index under `pos`, when the pointer is over the tab strip.
@@ -515,7 +589,7 @@ impl EmojiPicker {
     /// Wrapping rather than clamping: a picker is a grid of equals, and stopping at
     /// the last cell would make arrowing through a long list feel broken at the edge.
     fn move_cursor(&mut self, delta: i32) {
-        let count = self.visible_glyphs().len();
+        let count = self.visible_len();
         if count == 0 {
             self.cursor = None;
             return;
@@ -543,7 +617,7 @@ impl EmojiPicker {
     ///
     /// Returns whether the cursor moved, so the caller repaints only on a change.
     fn scroll_cursor_rows(&mut self, rows: i32) -> bool {
-        let count = self.visible_glyphs().len();
+        let count = self.visible_len();
         if count == 0 {
             let changed = self.cursor.is_some();
             self.cursor = None;
@@ -618,7 +692,7 @@ impl WidgetProperties for EmojiPicker {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "glyph_count" => Ok(CapabilityValue::UInt(self.glyphs().len() as u64)),
-            "visible_glyph_count" => Ok(CapabilityValue::UInt(self.visible_glyphs().len() as u64)),
+            "visible_glyph_count" => Ok(CapabilityValue::UInt(self.visible_len() as u64)),
             "tab_count" => Ok(CapabilityValue::UInt(self.tabs().len() as u64)),
             "active_tab" => Ok(CapabilityValue::UInt(self.active_tab() as u64)),
             "search" => Ok(CapabilityValue::String(self.search().to_string())),
@@ -705,11 +779,10 @@ impl Draw for EmojiPicker {
         context.draw_rect(rect, border);
         self.draw_search(context, field, ink);
         self.draw_tabs(context, strip, ink, panel);
-        // Borrowed: the visible set is a projection of `self.glyphs`, so cloning each glyph
-        // (id, symbol, category and keyword strings) per frame duplicated the whole visible
-        // page. The grid only reads them.
-        let visible = self.visible_glyphs();
-        self.draw_grid(context, &visible, ink);
+        // The projection is filled into the control's reusable index buffer instead of a fresh
+        // `Vec<&EmojiGlyph>` per frame; the grid only needs to read the indices it contains.
+        let visible_count = self.refresh_visible_indices();
+        self.draw_grid(context, visible_count, ink);
         self.draw_footer(context, strip, ink);
     }
 }
@@ -931,12 +1004,16 @@ impl EmojiPicker {
         );
     }
 
-    /// Draws the glyph grid.
-    fn draw_grid(&self, context: &mut RenderContext, visible: &[&EmojiGlyph], ink: Color) {
+    /// Draws the glyph grid from the indices in [`Self::visible_indices`].
+    ///
+    /// `visible_count` must come from the refresh that preceded this call. Indices are resolved
+    /// against `glyphs` here rather than through a materialised `Vec<&EmojiGlyph>`, so the draw
+    /// path allocates nothing for the projection.
+    fn draw_grid(&self, context: &mut RenderContext, visible_count: usize, ink: Color) {
         // One font for the whole grid: the cell glyphs used to build a fresh `Font` per cell,
         // twice (once to measure, once to draw), and the placeholder built a third.
         let glyph_font = Self::sans_font_16();
-        if visible.is_empty() {
+        if visible_count == 0 {
             let rect = self.geometry();
             // The placeholder recedes by alpha, not by being a second literal grey.
             context.draw_text(
@@ -948,8 +1025,15 @@ impl EmojiPicker {
             );
             return;
         }
-        for (index, glyph) in visible.iter().enumerate() {
-            let Some(cell) = self.cell_rect_at(index, visible.len()) else {
+        for index in 0..visible_count {
+            let Some(glyph) = self
+                .visible_indices
+                .get(index)
+                .and_then(|glyph_index| self.glyphs.get(*glyph_index))
+            else {
+                break;
+            };
+            let Some(cell) = self.cell_rect_at(index, visible_count) else {
                 continue;
             };
             // A cell outside the control's own rectangle would paint over a
@@ -1182,6 +1266,23 @@ mod tests {
         let symbols = p.visible_glyphs();
         assert_eq!(symbols.len(), 2);
         assert_eq!(symbols[0].id, "tick");
+    }
+
+    #[test]
+    fn emoji_picker_visible_glyphs_slice_matches_the_allocating_accessor() {
+        let mut p = picker();
+        let expected: Vec<String> = p.visible_glyphs().iter().map(|g| g.id.clone()).collect();
+        let indices: Vec<usize> = p.visible_glyphs_slice().to_vec();
+        let ids: Vec<String> =
+            indices.iter().filter_map(|&i| p.glyphs().get(i)).map(|g| g.id.clone()).collect();
+        assert_eq!(ids, expected);
+
+        p.set_active_tab(1); // symbols
+        let expected: Vec<String> = p.visible_glyphs().iter().map(|g| g.id.clone()).collect();
+        let indices: Vec<usize> = p.visible_glyphs_slice().to_vec();
+        let ids: Vec<String> =
+            indices.iter().filter_map(|&i| p.glyphs().get(i)).map(|g| g.id.clone()).collect();
+        assert_eq!(ids, expected);
     }
 
     #[test]

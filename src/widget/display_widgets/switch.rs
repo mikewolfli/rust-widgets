@@ -18,7 +18,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -698,6 +698,13 @@ impl WidgetProperties for Switch {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
+            // A named ON colour is optional, so "not set" is `Null` rather than a colour the
+            // control would paint.
+            "on_track_color" => Ok(match self.on_track_color() {
+                Some(color) => CapabilityValue::Color(color),
+                None => CapabilityValue::Null,
+            }),
+            "switch_geometry" => Ok(CapabilityValue::String(self.switch_geometry().token().into())),
             _ => base_property_get(self, name),
         }
     }
@@ -708,13 +715,36 @@ impl WidgetProperties for Switch {
                 self.set_checked(expect_bool(value)?);
                 Ok(())
             }
+            "on_track_color" => {
+                // `Null` restores the theme's accent; a hex string is accepted because the JSON
+                // and C surfaces carry colours as text.
+                let color = match value {
+                    CapabilityValue::Null => None,
+                    CapabilityValue::Color(color) => Some(color),
+                    CapabilityValue::String(raw) => match crate::core::Color::parse_hex(&raw) {
+                        Some(color) => Some(color),
+                        None => return Err(CapabilityAccessError::TypeMismatch),
+                    },
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_on_track_color(color);
+                Ok(())
+            }
+            "switch_geometry" => {
+                let token = expect_string(value)?;
+                let preset =
+                    SwitchGeometry::from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_switch_geometry(preset);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        // Mirrors `SWITCH_PROPERTIES`.
-        property_names_of!["checked", BASE_PROPERTY_NAMES]
+        // Mirrors `SWITCH_PROPERTIES`; the two presentation knobs are published because both
+        // have public setters and neither is reachable through `checked`.
+        property_names_of!["checked", "on_track_color", "switch_geometry", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `switch` publishes.

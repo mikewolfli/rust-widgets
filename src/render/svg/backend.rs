@@ -6,6 +6,8 @@
 #[cfg(feature = "3d")]
 use super::convert::quad_points;
 use super::convert::{color_to_rgba, point_attrs, rect_attrs};
+#[cfg(test)]
+use crate::compat::Arc;
 use crate::compat::Rc;
 use crate::compat::{format, MiniToString, String, Vec};
 use crate::core::{Color, Font, Point, Rect, Size};
@@ -1950,7 +1952,7 @@ mod tests {
             y: 0,
             width: 50,
             height: 50,
-            data: vec![],
+            data: Arc::from(vec![]),
         });
 
         svg.end_frame();
@@ -2311,7 +2313,7 @@ mod tests {
                 y: 20,
                 width: 40,
                 height: 40,
-                data: vec![1, 2, 3, 4],
+                data: Arc::from(vec![1, 2, 3, 4]),
             },
             RenderCommand::PushClip { x: 10, y: 10, width: 50, height: 50 },
             RenderCommand::PopClip,

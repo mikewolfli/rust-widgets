@@ -11,13 +11,30 @@ use crate::compat::Vec;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::widget::capability::coercion::expect_string;
+use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::{expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// A status badge painted on an avatar's lower-right corner.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AvatarBadge {
+    /// The badge caption (typically one character or a short count).
+    pub text: String,
+    /// The badge's fill colour.
+    pub color: Color,
+}
+
+impl AvatarBadge {
+    /// Creates a badge with a coloured fill.
+    pub fn new(text: impl Into<String>, color: Color) -> Self {
+        Self { text: text.into(), color }
+    }
+}
 
 /// Avatar widget for displaying user profile images or initials-based placeholders.
 ///
@@ -54,6 +71,14 @@ pub struct Avatar {
     square: bool,
     /// Diameter (circle) or side length (square) in logical pixels.
     size: u32,
+    /// Optional status badge at the lower-right corner.
+    badge: Option<AvatarBadge>,
+    /// Ring colour drawn around the disc; `None` derives it from the disc.
+    ring_color: Option<Color>,
+    /// Ring width in logical pixels; `0` draws no ring.
+    ring_width: u32,
+    /// Emitted when the avatar's disc is clicked.
+    pub avatar_clicked: GenericSignal,
 }
 
 impl Avatar {
@@ -81,6 +106,10 @@ impl Avatar {
             bg_color_is_explicit: false,
             square: false,
             size: sz,
+            badge: None,
+            ring_color: None,
+            ring_width: 0,
+            avatar_clicked: GenericSignal::new(),
         }
     }
 
@@ -175,6 +204,53 @@ impl Avatar {
     pub fn size(&self) -> u32 {
         self.size
     }
+
+    /// The status badge, if one is installed.
+    pub fn badge(&self) -> Option<&AvatarBadge> {
+        self.badge.as_ref()
+    }
+
+    /// Installs or removes the status badge.
+    pub fn set_badge(&mut self, badge: Option<AvatarBadge>) {
+        if self.badge == badge {
+            return;
+        }
+        self.badge = badge;
+        self.base.request_redraw();
+    }
+
+    /// The ring colour, or `None` while it is derived from the disc.
+    pub fn ring_color(&self) -> Option<Color> {
+        self.ring_color
+    }
+
+    /// Sets the ring colour; `None` restores the derived contrast ring.
+    pub fn set_ring_color(&mut self, color: Option<Color>) {
+        if self.ring_color == color {
+            return;
+        }
+        self.ring_color = color;
+        self.base.request_redraw();
+    }
+
+    /// The ring width in logical pixels.
+    pub fn ring_width(&self) -> u32 {
+        self.ring_width
+    }
+
+    /// Sets the ring width; `0` removes the ring.
+    pub fn set_ring_width(&mut self, width: u32) {
+        if self.ring_width == width {
+            return;
+        }
+        self.ring_width = width;
+        self.base.request_redraw();
+    }
+
+    /// The disc actually painted, shared by draw and hit testing.
+    fn disc_rect(&self) -> Rect {
+        ControlMetrics::centered_square(self.geometry(), self.size_hint().width)
+    }
 }
 
 impl Widget for Avatar {
@@ -193,6 +269,15 @@ impl Widget for Avatar {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Resolves the avatar's published event to its signal.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "avatar_clicked" => Some(EventSignalRef::unit("avatar_clicked", &self.avatar_clicked)),
+            _ => None,
+        }
+    }
 }
 
 /// `Avatar`'s property contract.
@@ -206,6 +291,18 @@ impl WidgetProperties for Avatar {
         match name {
             "initials" => Ok(CapabilityValue::String(self.text().to_string())),
             "image_source" => Ok(CapabilityValue::String(self.image_source().to_string())),
+            "badge" => Ok(match self.badge() {
+                Some(badge) => CapabilityValue::String(format!(
+                    "{}|{},{},{},{}",
+                    badge.text, badge.color.r, badge.color.g, badge.color.b, badge.color.a
+                )),
+                None => CapabilityValue::Null,
+            }),
+            "ring_color" => Ok(match self.ring_color() {
+                Some(color) => CapabilityValue::Color(color),
+                None => CapabilityValue::Null,
+            }),
+            "ring_width" => Ok(CapabilityValue::UInt(u64::from(self.ring_width()))),
             _ => base_property_get(self, name),
         }
     }
@@ -220,12 +317,57 @@ impl WidgetProperties for Avatar {
                 self.set_image_source(&expect_string(value)?);
                 Ok(())
             }
+            "badge" => {
+                match value {
+                    CapabilityValue::Null => self.set_badge(None),
+                    other => {
+                        let text = expect_string(other)?;
+                        let (caption, color) = match text.split_once('|') {
+                            Some((caption, spec)) => {
+                                let mut parts = spec.split(',');
+                                let r = parts.next().and_then(|v| v.parse().ok());
+                                let g = parts.next().and_then(|v| v.parse().ok());
+                                let b = parts.next().and_then(|v| v.parse().ok());
+                                let a = parts.next().and_then(|v| v.parse().ok());
+                                match (r, g, b, a) {
+                                    (Some(r), Some(g), Some(b), Some(a)) => {
+                                        (caption, Color::rgba(r, g, b, a))
+                                    }
+                                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                                }
+                            }
+                            None => (text.as_str(), Color::ERROR),
+                        };
+                        self.set_badge(Some(AvatarBadge::new(caption, color)));
+                    }
+                }
+                Ok(())
+            }
+            "ring_color" => {
+                match value {
+                    CapabilityValue::Null => self.set_ring_color(None),
+                    CapabilityValue::Color(color) => self.set_ring_color(Some(color)),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
+            "ring_width" => {
+                self.set_ring_width(expect_u32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["initials", "image_source", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "initials",
+            "image_source",
+            "badge",
+            "ring_color",
+            "ring_width",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -241,7 +383,7 @@ impl Draw for Avatar {
         // avatar. The height is `size_hint`'s, so the drawn shape and the reported size cannot
         // disagree; `center_in` clamps *down* rather than up, so a control laid out smaller
         // than its hint still paints inside the rectangle it was given.
-        let rect = ControlMetrics::centered_square(self.geometry(), self.size_hint().width);
+        let rect = self.disc_rect();
         let size = rect.width.min(rect.height);
         let center = Point::new(rect.x + (size as i32) / 2, rect.y + (size as i32) / 2);
 
@@ -265,6 +407,17 @@ impl Draw for Avatar {
             context.fill_rounded_rect(rect, corner_radius, disc_color);
         } else {
             context.fill_circle(center, size / 2, disc_color);
+        }
+
+        // Ring: a stroke just inside the disc's edge so it cannot overhang the control.
+        if self.ring_width > 0 && size > self.ring_width * 2 {
+            let ring = self.ring_color.unwrap_or_else(|| disc_color.contrast_color());
+            context.draw_circle_stroke(
+                center,
+                size / 2 - self.ring_width / 2,
+                ring,
+                self.ring_width,
+            );
         }
 
         // ── The picture, when the caller supplied one ──
@@ -302,6 +455,37 @@ impl Draw for Avatar {
                 disc_color.contrast_color(),
                 HorizontalAlignment::Left,
             );
+        }
+
+        // ── Status badge ──
+        if let Some(badge) = &self.badge {
+            let radius = (size / 6).clamp(6, 12);
+            let badge_center = Point::new(
+                rect.x + rect.width as i32 - radius as i32,
+                rect.y + rect.height as i32 - radius as i32,
+            );
+            // A matching surface-coloured halo separates the badge from the picture behind it.
+            context.fill_circle(badge_center, radius + 1, disc_color);
+            context.fill_circle(badge_center, radius, badge.color);
+            if !badge.text.is_empty() {
+                let badge_font = Font::bold("Arial", (radius as f32 * 0.9).max(7.0));
+                let line = context.text_line(
+                    Rect::new(
+                        badge_center.x - radius as i32,
+                        badge_center.y - radius as i32,
+                        radius * 2,
+                        radius * 2,
+                    ),
+                    &badge_font,
+                );
+                context.draw_text_fitted_cow(
+                    line,
+                    badge.text.as_str(),
+                    &badge_font,
+                    badge.color.contrast_color(),
+                    HorizontalAlignment::Center,
+                );
+            }
         }
     }
 }
@@ -435,6 +619,20 @@ impl Avatar {
 impl EventHandler for Avatar {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        if let Event::MousePress { pos, button: 1, .. } = event {
+            let disc = self.disc_rect();
+            let center =
+                Point::new(disc.x + disc.width as i32 / 2, disc.y + disc.height as i32 / 2);
+            let dx = (pos.x - center.x) as i64;
+            let dy = (pos.y - center.y) as i64;
+            let radius = (disc.width.min(disc.height) / 2) as i64;
+            if dx * dx + dy * dy <= radius * radius {
+                self.avatar_clicked.emit();
+            }
+        }
     }
 }
 
@@ -768,6 +966,34 @@ mod tests {
         assert!(avatar.decoded_source_key.is_none(), "and so is the key they belong to");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn badge_ring_and_click_are_observable() {
+        use crate::event::{Event, EventHandler};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let mut avatar = Avatar::new(Rect::new(0, 0, 40, 40));
+        assert!(avatar.badge().is_none());
+        avatar.set_badge(Some(AvatarBadge::new("3", Color::ERROR)));
+        avatar.set_ring_color(Some(Color::PRIMARY));
+        avatar.set_ring_width(2);
+        assert_eq!(avatar.ring_width(), 2);
+        assert_eq!(avatar.ring_color(), Some(Color::PRIMARY));
+        let svg = crate::widget::svg::render_to_svg(&mut avatar);
+        assert!(svg.starts_with("<svg"));
+
+        let hit = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&hit);
+        avatar.avatar_clicked.connect(move || flag.store(true, Ordering::SeqCst));
+        avatar.handle_event(&Event::MousePress {
+            pos: Point::new(20, 20),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(hit.load(Ordering::SeqCst), "a press on the disc reports the click");
+        assert!(avatar.event_signal_dyn("avatar_clicked").is_some());
     }
 
     /// The smallest valid PNG: a 2x2 truecolour-with-alpha image whose first pixel is opaque red.

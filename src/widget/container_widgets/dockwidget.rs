@@ -3,7 +3,7 @@
 
 //! Dock widget.
 use crate::compat::Cow;
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Orientation, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -1334,7 +1334,24 @@ struct DockEntry {
     group: usize,
     /// Whether this member is the visible one in its group.
     active: bool,
+    /// The smallest extent this dock accepts along the band's axis.
+    ///
+    /// Zero means "no floor", which is what every dock had before the field existed; the split
+    /// rule then divides the band equally. A non-zero floor is honoured whenever the band can hold
+    /// it, so a toolbar or a narrow panel cannot be squeezed to nothing by its neighbours.
+    min_size: u32,
+    /// The dock whose rectangle this one subdivides, if any.
+    ///
+    /// `Some(parent)` means the dock does **not** own a band: it shares `parent`'s rectangle and is
+    /// placed inside it by [`DockArea::place_dock`]. This is what makes a nested split expressible —
+    /// the four-band model alone could only put a dock on an edge, never beside another dock.
+    split_of: Option<ObjectId>,
+    /// The axis along which `split_of`'s rectangle is divided among its split children.
+    split_orientation: Orientation,
 }
+
+/// The gap at the inner boundary of an edge band that a resize gesture can grab.
+const EDGE_HANDLE_EXTENT: u32 = 4;
 
 /// Version tag of the blob produced by [`DockArea::save_state`].
 const DOCK_AREA_STATE_VERSION: u8 = 1;
@@ -1365,13 +1382,51 @@ pub struct DockArea {
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Thickness of one edge band in logical pixels.
     edge_extent: u32,
+    /// Per-edge overrides of [`Self::edge_extent`], indexed like [`ALL_DOCK_AREAS`].
+    ///
+    /// The four bands used to share one number, so widening a left tool strip also widened the
+    /// bottom console. An override lets each edge carry its own thickness; `None` means "use the
+    /// shared default".
+    edge_extents: [Option<u32>; 4],
+    /// Emitted with the dock that became the visible member of its tab group.
+    ///
+    /// A host had no way to learn that the user switched tabs in a dock group, or which dock
+    /// became visible after a `remove_dock` repaired the arrangement.
+    pub active_dock_changed: Signal1<ObjectId>,
+    /// Emitted with the dock that was removed from this host.
+    pub dock_removed: Signal1<ObjectId>,
+    /// Emitted after any change to the arrangement: a dock added, removed, tabbed, resized or
+    /// split, or the surface moved.
+    ///
+    /// # Arity
+    ///
+    /// The issue spells this `Signal0`. This crate has no zero-argument signal type: a
+    /// payload-free notification is `Signal1<()>`, which is what `CupertinoNavigationBar`'s
+    /// `back_pressed` and `ThemeManager`'s `theme_changed` already use. The name and the emission
+    /// point are the ones the issue asks for; only the spelling differs.
+    pub layout_changed: Signal1<()>,
+    /// The live edge-resize gesture, if one is in progress: the grabbed edge and how far the
+    /// pointer sat from that band's inner boundary when the gesture began.
+    edge_drag: Option<(DockWidgetArea, i32)>,
 }
 
 impl DockArea {
     /// Creates an empty host for `area` with a third of the shorter side as each band.
     pub fn new(area: Rect) -> Self {
         let edge_extent = (area.width.min(area.height) / DOCK_SNAP_DIVISOR).max(1);
-        Self { area, docks: Vec::new(), central: None, next_group: 1, registry: None, edge_extent }
+        Self {
+            area,
+            docks: Vec::new(),
+            central: None,
+            next_group: 1,
+            registry: None,
+            edge_extent,
+            edge_extents: [None; 4],
+            active_dock_changed: Signal1::new(),
+            dock_removed: Signal1::new(),
+            layout_changed: Signal1::new(),
+            edge_drag: None,
+        }
     }
 
     /// The surface every child is arranged in.
@@ -1394,6 +1449,9 @@ impl DockArea {
     }
 
     /// Sets the thickness of one edge band. Zero is clamped to one pixel.
+    ///
+    /// This is the *default* band thickness: an edge that was given its own value through
+    /// [`Self::set_edge_extent_for`] keeps it.
     pub fn set_edge_extent(&mut self, extent: u32) {
         let extent = extent.max(1);
         if self.edge_extent == extent {
@@ -1401,6 +1459,56 @@ impl DockArea {
         }
         self.edge_extent = extent;
         self.arrange();
+    }
+
+    /// The thickness `area`'s band currently has.
+    pub fn edge_extent_for(&self, area: DockWidgetArea) -> u32 {
+        match edge_index(area) {
+            Some(index) => self.edge_extents[index].unwrap_or(self.edge_extent),
+            None => self.edge_extent,
+        }
+    }
+
+    /// Gives `area`'s band its own thickness, returning `false` for
+    /// [`DockWidgetArea::NoDockWidgetArea`].
+    ///
+    /// # Why this exists beside `set_edge_extent`
+    ///
+    /// The issue asks for `set_edge_extent(area, extent)`. Rust has no method overloading and the
+    /// existing one-argument entry is public API that cannot be removed, so the per-edge form is a
+    /// second name rather than a second meaning for the same name. Zero is clamped to one pixel.
+    pub fn set_edge_extent_for(&mut self, area: DockWidgetArea, extent: u32) -> bool {
+        let Some(index) = edge_index(area) else {
+            return false;
+        };
+        let extent = extent.max(1);
+        if self.edge_extent_for(area) == extent {
+            return true;
+        }
+        self.edge_extents[index] = Some(extent);
+        self.arrange();
+        true
+    }
+
+    /// The smallest extent the dock `widget` accepts along its band's axis, if it is registered.
+    pub fn dock_min_size(&self, widget: ObjectId) -> Option<u32> {
+        self.docks.iter().find(|dock| dock.widget == widget).map(|dock| dock.min_size)
+    }
+
+    /// Sets the smallest extent `widget` accepts, returning whether it is registered.
+    ///
+    /// The floor is honoured while the band can hold every member's floor; when it cannot, the
+    /// band is shared equally instead, so the docks still tile it rather than overflowing it.
+    pub fn set_dock_min_size(&mut self, widget: ObjectId, min_size: u32) -> bool {
+        let Some(dock) = self.docks.iter_mut().find(|dock| dock.widget == widget) else {
+            return false;
+        };
+        if dock.min_size == min_size {
+            return true;
+        }
+        dock.min_size = min_size;
+        self.arrange();
+        true
     }
 
     /// Uses `registry` to place and show children in addition to the global helpers.
@@ -1421,17 +1529,33 @@ impl DockArea {
         }
         let group = self.next_group;
         self.next_group = self.next_group.saturating_add(1);
-        self.docks.push(DockEntry { widget, area, group, active: true });
+        self.docks.push(DockEntry {
+            widget,
+            area,
+            group,
+            active: true,
+            min_size: 0,
+            split_of: None,
+            split_orientation: Orientation::Vertical,
+        });
         self.arrange();
         true
     }
 
     /// Removes `widget` from the host, returning whether it was registered.
+    ///
+    /// Emits [`Self::dock_removed`] and, through [`Self::arrange`], [`Self::layout_changed`].
     pub fn remove_dock(&mut self, widget: ObjectId) -> bool {
         let before = self.docks.len();
         self.docks.retain(|dock| dock.widget != widget);
         let removed = self.docks.len() != before;
         if removed {
+            // A dock that was split inside the removed one loses its parent: it keeps its own
+            // rectangle (the band model places it again) instead of pointing at a dock that is gone.
+            for dock in self.docks.iter_mut().filter(|dock| dock.split_of == Some(widget)) {
+                dock.split_of = None;
+            }
+            self.dock_removed.emit(widget);
             self.arrange();
         }
         removed
@@ -1481,10 +1605,13 @@ impl DockArea {
         }
         self.docks[index].group = anchor.group;
         self.docks[index].area = anchor.area;
+        // A tabbed member shares its anchor's rectangle, so any split it had is meaningless.
+        self.docks[index].split_of = None;
         self.docks[index].active = false;
         for dock in self.docks.iter_mut().filter(|dock| dock.group == anchor.group) {
             dock.active = dock.widget == into;
         }
+        self.active_dock_changed.emit(into);
         self.arrange();
         true
     }
@@ -1504,6 +1631,7 @@ impl DockArea {
         self.next_group = self.next_group.saturating_add(1);
         self.docks[index].group = new_group;
         self.docks[index].active = true;
+        self.active_dock_changed.emit(widget);
         self.arrange();
         true
     }
@@ -1522,6 +1650,7 @@ impl DockArea {
         for dock in self.docks.iter_mut().filter(|dock| dock.group == group) {
             dock.active = dock.widget == widget;
         }
+        self.active_dock_changed.emit(widget);
         self.arrange();
         true
     }
@@ -1551,101 +1680,413 @@ impl DockArea {
 
     /// Computes every child rectangle: the edge bands first, the centre from what is left.
     ///
-    /// Members of one tab group share a rectangle. The result is in edge order
+    /// Members of one tab group share a rectangle; a dock that was split beside another dock is
+    /// laid out inside its parent's rectangle. The result is in edge order
     /// (left, right, top, bottom) and then group order, with the centre last, so a caller
     /// can zip it with ids without assuming insertion order.
     pub fn layout(&self) -> Vec<(ObjectId, Rect)> {
+        self.layout_entries().into_iter().map(|(widget, rect, _)| (widget, rect)).collect()
+    }
+
+    /// The arrangement, with each dock's visibility in the same pass (C-28).
+    ///
+    /// # Why the flag travels with the rectangle
+    ///
+    /// [`Self::arrange`] used to ask "is this widget's dock the active one?" with
+    /// `docks.iter().all(..)` for **every** rectangle, and the group tables were rebuilt by
+    /// filtering the whole dock list per edge and per group — quadratic in the dock count on every
+    /// arrangement. Both tables are built once here from one walk, and the visibility answer is
+    /// read off the entry that produced the rectangle.
+    fn layout_entries(&self) -> Vec<(ObjectId, Rect, bool)> {
         let mut out = Vec::new();
-        let mut remaining = self.area;
-        for edge in ALL_DOCK_AREAS {
-            let mut groups: Vec<usize> = Vec::new();
-            for dock in self.docks.iter().filter(|dock| dock.area == edge) {
-                if !groups.contains(&dock.group) {
-                    groups.push(dock.group);
-                }
-            }
-            if groups.is_empty() {
+        // Groups per edge, in first-appearance order, and the top-level members of every group.
+        // `split_of.is_none()` is what separates a dock that owns a slot in a band from one that
+        // subdivides another dock's rectangle.
+        let mut groups_by_edge: [Vec<usize>; 4] = core::array::from_fn(|_| Vec::new());
+        let mut members: Vec<(usize, Vec<ObjectId>)> = Vec::new();
+        for dock in &self.docks {
+            if dock.split_of.is_some() {
                 continue;
             }
+            if let Some(edge) = edge_index(dock.area) {
+                if !groups_by_edge[edge].contains(&dock.group) {
+                    groups_by_edge[edge].push(dock.group);
+                }
+            }
+            match members.iter_mut().find(|(group, _)| *group == dock.group) {
+                Some((_, widgets)) => widgets.push(dock.widget),
+                None => members.push((dock.group, vec![dock.widget])),
+            }
+        }
+
+        let (bands, centre) = self.carve();
+        for (edge, band) in bands {
+            let horizontal = matches!(
+                edge,
+                DockWidgetArea::TopDockWidgetArea | DockWidgetArea::BottomDockWidgetArea
+            );
+            let Some(edge) = edge_index(edge) else {
+                continue;
+            };
+            let groups = &groups_by_edge[edge];
+            // A group's floor is the largest floor its members state: the tabbed members share one
+            // rectangle, so the strictest one is the one that holds.
+            let floors: Vec<u32> = groups
+                .iter()
+                .map(|group| {
+                    self.docks
+                        .iter()
+                        .filter(|dock| dock.group == *group)
+                        .map(|dock| dock.min_size)
+                        .max()
+                        .unwrap_or(0)
+                })
+                .collect();
+            let total = if horizontal { band.width } else { band.height };
+            for (group, (offset, extent)) in groups.iter().zip(distribute(total, &floors)) {
+                let rect = if horizontal {
+                    Rect::new(band.x + offset as i32, band.y, extent, band.height)
+                } else {
+                    Rect::new(band.x, band.y + offset as i32, band.width, extent)
+                };
+                let Some((_, widgets)) = members.iter().find(|(other, _)| other == group) else {
+                    continue;
+                };
+                for widget in widgets {
+                    self.place_dock(*widget, rect, &mut out, 0);
+                }
+            }
+        }
+        if let Some(central) = self.central {
+            out.push((central, centre, true));
+        }
+        out
+    }
+
+    /// Places `widget` in `rect` and, recursively, the docks that were split inside it.
+    ///
+    /// The depth bound is a guard rather than a modelled limit: a split chain longer than 16 is not
+    /// a layout, and a bound turns a malformed graph into "stops descending" instead of a hang.
+    fn place_dock(
+        &self,
+        widget: ObjectId,
+        rect: Rect,
+        out: &mut Vec<(ObjectId, Rect, bool)>,
+        depth: u32,
+    ) {
+        let Some(entry) = self.docks.iter().find(|dock| dock.widget == widget) else {
+            return;
+        };
+        out.push((widget, rect, entry.active));
+        if depth >= 16 {
+            return;
+        }
+        let children: Vec<ObjectId> = self
+            .docks
+            .iter()
+            .filter(|dock| dock.split_of == Some(widget))
+            .map(|dock| dock.widget)
+            .collect();
+        if children.is_empty() {
+            return;
+        }
+        // The siblings were all created by `split_dock`, which stores the axis on each child; the
+        // first one states it for the set.
+        let orientation = self
+            .docks
+            .iter()
+            .find(|dock| dock.widget == children[0])
+            .map(|dock| dock.split_orientation)
+            .unwrap_or(Orientation::Vertical);
+        let floors: Vec<u32> = children
+            .iter()
+            .map(|child| {
+                self.docks
+                    .iter()
+                    .find(|dock| dock.widget == *child)
+                    .map(|d| d.min_size)
+                    .unwrap_or(0)
+            })
+            .collect();
+        let total = match orientation {
+            Orientation::Vertical => rect.height,
+            Orientation::Horizontal => rect.width,
+        };
+        for (child, (offset, extent)) in children.iter().zip(distribute(total, &floors)) {
+            let child_rect = match orientation {
+                Orientation::Vertical => {
+                    Rect::new(rect.x, rect.y + offset as i32, rect.width, extent)
+                }
+                Orientation::Horizontal => {
+                    Rect::new(rect.x + offset as i32, rect.y, extent, rect.height)
+                }
+            };
+            self.place_dock(*child, child_rect, out, depth + 1);
+        }
+    }
+
+    /// The band each occupied edge owns, in the order they are carved out of the surface.
+    ///
+    /// One derivation for [`Self::layout_entries`] and [`Self::edge_handle_rects`], so "where the
+    /// band is" and "where its resize handle is" cannot disagree.
+    fn edge_bands(&self) -> Vec<(DockWidgetArea, Rect)> {
+        self.carve().0
+    }
+
+    /// Carves the occupied bands out of the surface and returns them with what is left.
+    fn carve(&self) -> (Vec<(DockWidgetArea, Rect)>, Rect) {
+        let mut bands = Vec::with_capacity(ALL_DOCK_AREAS.len());
+        let mut remaining = self.area;
+        for edge in ALL_DOCK_AREAS {
+            if !self.docks.iter().any(|dock| dock.area == edge && dock.split_of.is_none()) {
+                continue;
+            }
+            let extent = self.edge_extent_for(edge);
             match edge {
                 DockWidgetArea::LeftDockWidgetArea => {
-                    let thickness = self.edge_extent.min(remaining.width);
-                    let band = Rect::new(remaining.x, remaining.y, thickness, remaining.height);
-                    self.place_groups(&mut out, &groups, band, false);
+                    let thickness = extent.min(remaining.width);
+                    bands.push((
+                        edge,
+                        Rect::new(remaining.x, remaining.y, thickness, remaining.height),
+                    ));
                     remaining.x = remaining.x.saturating_add(thickness as i32);
                     remaining.width = remaining.width.saturating_sub(thickness);
                 }
                 DockWidgetArea::RightDockWidgetArea => {
-                    let thickness = self.edge_extent.min(remaining.width);
-                    let band = Rect::new(
-                        remaining.x + remaining.width as i32 - thickness as i32,
-                        remaining.y,
-                        thickness,
-                        remaining.height,
-                    );
-                    self.place_groups(&mut out, &groups, band, false);
+                    let thickness = extent.min(remaining.width);
+                    bands.push((
+                        edge,
+                        Rect::new(
+                            remaining.x + remaining.width as i32 - thickness as i32,
+                            remaining.y,
+                            thickness,
+                            remaining.height,
+                        ),
+                    ));
                     remaining.width = remaining.width.saturating_sub(thickness);
                 }
                 DockWidgetArea::TopDockWidgetArea => {
-                    let thickness = self.edge_extent.min(remaining.height);
-                    let band = Rect::new(remaining.x, remaining.y, remaining.width, thickness);
-                    self.place_groups(&mut out, &groups, band, true);
+                    let thickness = extent.min(remaining.height);
+                    bands.push((
+                        edge,
+                        Rect::new(remaining.x, remaining.y, remaining.width, thickness),
+                    ));
                     remaining.y = remaining.y.saturating_add(thickness as i32);
                     remaining.height = remaining.height.saturating_sub(thickness);
                 }
                 DockWidgetArea::BottomDockWidgetArea => {
-                    let thickness = self.edge_extent.min(remaining.height);
-                    let band = Rect::new(
-                        remaining.x,
-                        remaining.y + remaining.height as i32 - thickness as i32,
-                        remaining.width,
-                        thickness,
-                    );
-                    self.place_groups(&mut out, &groups, band, true);
+                    let thickness = extent.min(remaining.height);
+                    bands.push((
+                        edge,
+                        Rect::new(
+                            remaining.x,
+                            remaining.y + remaining.height as i32 - thickness as i32,
+                            remaining.width,
+                            thickness,
+                        ),
+                    ));
                     remaining.height = remaining.height.saturating_sub(thickness);
                 }
                 DockWidgetArea::NoDockWidgetArea => {}
             }
         }
-        if let Some(central) = self.central {
-            out.push((central, remaining));
-        }
-        out
+        (bands, remaining)
     }
 
-    /// Splits `band` evenly between `groups` along its long axis and emits every member.
-    fn place_groups(
-        &self,
-        out: &mut Vec<(ObjectId, Rect)>,
-        groups: &[usize],
-        band: Rect,
-        horizontal: bool,
-    ) {
-        let total = if horizontal { band.width } else { band.height };
-        let count = groups.len() as u32;
-        let mut cursor = 0u32;
-        for (index, group) in groups.iter().enumerate() {
-            let extent = if index + 1 == groups.len() {
-                total.saturating_sub(cursor)
-            } else {
-                total / count
-            };
-            let rect = if horizontal {
-                Rect::new(band.x + cursor as i32, band.y, extent, band.height)
-            } else {
-                Rect::new(band.x, band.y + cursor as i32, band.width, extent)
-            };
-            for dock in self.docks.iter().filter(|dock| dock.group == *group) {
-                out.push((dock.widget, rect));
+    /// The grab strips at the inner boundary of every occupied edge band.
+    ///
+    /// A host forwards pointer positions to [`Self::begin_edge_drag`], [`Self::drag_edge_to`] and
+    /// [`Self::end_edge_drag`], which is the same grab-and-drag contract `Splitter` implements for
+    /// its own handles.
+    pub fn edge_handle_rects(&self) -> Vec<(DockWidgetArea, Rect)> {
+        self.edge_bands()
+            .into_iter()
+            .map(|(edge, band)| {
+                let handle = match edge {
+                    DockWidgetArea::LeftDockWidgetArea => Rect::new(
+                        band.x + band.width as i32 - EDGE_HANDLE_EXTENT as i32,
+                        band.y,
+                        EDGE_HANDLE_EXTENT,
+                        band.height,
+                    ),
+                    DockWidgetArea::RightDockWidgetArea => {
+                        Rect::new(band.x, band.y, EDGE_HANDLE_EXTENT, band.height)
+                    }
+                    DockWidgetArea::TopDockWidgetArea => Rect::new(
+                        band.x,
+                        band.y + band.height as i32 - EDGE_HANDLE_EXTENT as i32,
+                        band.width,
+                        EDGE_HANDLE_EXTENT,
+                    ),
+                    DockWidgetArea::BottomDockWidgetArea => {
+                        Rect::new(band.x, band.y, band.width, EDGE_HANDLE_EXTENT)
+                    }
+                    DockWidgetArea::NoDockWidgetArea => band,
+                };
+                (edge, handle)
+            })
+            .collect()
+    }
+
+    /// The occupied edge whose resize handle is under `pos`, if any.
+    pub fn edge_handle_at(&self, pos: Point) -> Option<DockWidgetArea> {
+        self.edge_handle_rects()
+            .into_iter()
+            .find(|(_, rect)| rect.contains(pos))
+            .map(|(edge, _)| edge)
+    }
+
+    /// Begins an edge-resize gesture at `pos`, returning whether a handle was grabbed.
+    ///
+    /// The pointer's distance from the band's inner boundary is remembered, so the band follows the
+    /// pointer without jumping when the grab happened a few pixels into the handle. The handle's own
+    /// inner edge *is* the band's inner boundary (`edge_handle_rects` derives it that way), which is
+    /// why the offset can be read from the handle rectangle alone.
+    pub fn begin_edge_drag(&mut self, pos: Point) -> bool {
+        let Some((edge, handle)) =
+            self.edge_handle_rects().into_iter().find(|(_, rect)| rect.contains(pos))
+        else {
+            return false;
+        };
+        let grab = match edge {
+            DockWidgetArea::LeftDockWidgetArea => (handle.x + handle.width as i32) - pos.x,
+            DockWidgetArea::RightDockWidgetArea => pos.x - handle.x,
+            DockWidgetArea::TopDockWidgetArea => (handle.y + handle.height as i32) - pos.y,
+            DockWidgetArea::BottomDockWidgetArea => pos.y - handle.y,
+            DockWidgetArea::NoDockWidgetArea => return false,
+        };
+        self.edge_drag = Some((edge, grab));
+        true
+    }
+
+    /// Moves the grabbed edge so its inner boundary follows `pos`.
+    ///
+    /// Returns `false` when no gesture is in progress. The extent is clamped to one pixel, and the
+    /// arrangement (and therefore [`Self::layout_changed`]) is updated on a real change.
+    pub fn drag_edge_to(&mut self, pos: Point) -> bool {
+        let Some((edge, grab)) = self.edge_drag else {
+            return false;
+        };
+        let extent = match edge {
+            DockWidgetArea::LeftDockWidgetArea => pos.x - self.area.x + grab,
+            DockWidgetArea::RightDockWidgetArea => {
+                self.area.x + self.area.width as i32 - pos.x + grab
             }
-            cursor = cursor.saturating_add(extent);
+            DockWidgetArea::TopDockWidgetArea => pos.y - self.area.y + grab,
+            DockWidgetArea::BottomDockWidgetArea => {
+                self.area.y + self.area.height as i32 - pos.y + grab
+            }
+            DockWidgetArea::NoDockWidgetArea => return false,
+        };
+        let extent = extent.max(1) as u32;
+        if self.edge_extent_for(edge) == extent {
+            return true;
         }
+        // A drag writes the edge's own override rather than the shared default, so resizing one
+        // band does not move the other three.
+        if let Some(index) = edge_index(edge) {
+            self.edge_extents[index] = Some(extent);
+        }
+        self.arrange();
+        true
+    }
+
+    /// Ends the edge-resize gesture, if one is in progress.
+    pub fn end_edge_drag(&mut self) {
+        self.edge_drag = None;
+    }
+
+    /// The edge currently being resized, if any.
+    pub fn edge_dragging(&self) -> Option<DockWidgetArea> {
+        self.edge_drag.map(|(edge, _)| edge)
+    }
+
+    /// Splits `widget` out of its band and places it beside `beside`, inside `beside`'s rectangle.
+    ///
+    /// `orientation` states the axis the two are laid along: [`Orientation::Vertical`] stacks them
+    /// (one above the other), [`Orientation::Horizontal`] puts them side by side.
+    ///
+    /// Returns `false` when either dock is unknown, when they are the same dock, when `beside` is
+    /// itself a nested split (its rectangle belongs to its parent) or when `widget` is already split
+    /// beside `beside`. A tabbed member loses its tab group: a control cannot both share one
+    /// rectangle with a tab and own a rectangle of its own.
+    ///
+    /// # Registration order
+    ///
+    /// The split dock is re-inserted next to its parent in the registration order, which is how the
+    /// band's own group order places the two rectangles side by side. [`Self::save_state`] writes
+    /// docks in registration order, so a host restoring a blob should rebuild in
+    /// [`Self::dock_ids`] order — which is the order this call re-establishes.
+    pub fn split_dock(
+        &mut self,
+        widget: ObjectId,
+        beside: ObjectId,
+        orientation: Orientation,
+    ) -> bool {
+        if widget == beside {
+            return false;
+        }
+        let Some(index) = self.docks.iter().position(|dock| dock.widget == widget) else {
+            return false;
+        };
+        // Swap the entry out first, so the insertion point below is computed over the list the
+        // entry is not part of.
+        let mut entry = self.docks.remove(index);
+        let Some(anchor_index) = self.docks.iter().position(|dock| dock.widget == beside) else {
+            self.docks.insert(index, entry);
+            return false;
+        };
+        if self.docks[anchor_index].split_of.is_some() {
+            self.docks.insert(index, entry);
+            return false;
+        }
+        let anchor_group = self.docks[anchor_index].group;
+        let anchor_area = self.docks[anchor_index].area;
+        // The new group is inserted right after the anchor's group, so the band's own order puts
+        // the two rectangles next to each other instead of the new one at the end of the band.
+        let insert_at = self
+            .docks
+            .iter()
+            .rposition(|dock| dock.group == anchor_group)
+            .map(|position| position + 1)
+            .unwrap_or(anchor_index + 1);
+        let group = self.next_group;
+        self.next_group = self.next_group.saturating_add(1);
+        entry.area = anchor_area;
+        entry.group = group;
+        entry.active = true;
+        entry.split_of = Some(beside);
+        entry.split_orientation = orientation;
+        self.docks.insert(insert_at.min(self.docks.len()), entry);
+        self.active_dock_changed.emit(widget);
+        self.arrange();
+        true
+    }
+
+    /// Puts the nested dock `widget` back in its own band slot, returning whether it was nested.
+    pub fn unsplit_dock(&mut self, widget: ObjectId) -> bool {
+        let Some(dock) = self.docks.iter_mut().find(|dock| dock.widget == widget) else {
+            return false;
+        };
+        if dock.split_of.take().is_none() {
+            return false;
+        }
+        dock.active = true;
+        self.arrange();
+        true
+    }
+
+    /// The dock `widget` was split inside, if any.
+    pub fn split_parent_of(&self, widget: ObjectId) -> Option<ObjectId> {
+        self.docks.iter().find(|dock| dock.widget == widget).and_then(|dock| dock.split_of)
     }
 
     /// Pushes the computed rectangles into the widgets and hides inactive tabs.
+    ///
+    /// Emits [`Self::layout_changed`], which is the one place an arrangement change is announced:
+    /// every entry point above ends here, so no path can rearrange the surface silently.
     pub fn arrange(&self) {
-        for (widget, rect) in self.layout() {
-            let visible = self.docks.iter().all(|dock| dock.widget != widget || dock.active);
+        for (widget, rect, visible) in self.layout_entries() {
             crate::set_widget_geometry(widget, rect.x, rect.y, rect.width, rect.height);
             crate::set_widget_visible(widget, visible);
             if let Some(ref registry) = self.registry {
@@ -1653,6 +2094,7 @@ impl DockArea {
                 registry.set_widget_geometry(widget, rect);
             }
         }
+        self.layout_changed.emit(());
     }
 
     /// Serialises the dock arrangement: each dock's edge, tab group and active flag.
@@ -1700,6 +2142,11 @@ impl DockArea {
             dock.area = area;
             dock.group = group;
             dock.active = state[cursor + 5] != 0;
+            // The blob describes bands, groups and the visible member — not nesting. Clearing the
+            // split parent keeps the restored arrangement self-consistent: a dock that was nested
+            // when the blob was written is a band member again, which is exactly what the blob says
+            // about it.
+            dock.split_of = None;
             cursor += 6;
         }
         self.next_group = self
@@ -1712,6 +2159,58 @@ impl DockArea {
         self.arrange();
         true
     }
+}
+
+/// The index of `area` in [`ALL_DOCK_AREAS`], or `None` for
+/// [`DockWidgetArea::NoDockWidgetArea`].
+///
+/// The index is what [`DockArea::edge_extents`] is keyed by, so the per-edge overrides and the
+/// traversal order cannot disagree about which slot belongs to which edge.
+fn edge_index(area: DockWidgetArea) -> Option<usize> {
+    ALL_DOCK_AREAS.iter().position(|candidate| *candidate == area)
+}
+
+/// Splits `extent` between `floors.len()` slots along one axis, returning `(offset, size)` pairs.
+///
+/// # The floor rule
+///
+/// The surplus beyond the stated floors is shared equally, so two docks with the same floor get the
+/// same size and a dock with a larger floor gets exactly the extra it asked for. When the band
+/// cannot hold the floors at all (a narrow surface, a wide minimum), the band is shared equally
+/// instead: the answer is then smaller than the request, but it still tiles the band exactly rather
+/// than spilling past its end.
+///
+/// The last slot always takes the remainder, so the sizes add up to `extent` even when the division
+/// does not come out even.
+fn distribute(extent: u32, floors: &[u32]) -> Vec<(u32, u32)> {
+    let count = floors.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(count);
+    let total_floor = floors.iter().fold(0u32, |total, floor| total.saturating_add(*floor));
+    if total_floor >= extent {
+        let share = extent / count as u32;
+        let mut cursor = 0u32;
+        for slot in 0..count {
+            let size = if slot + 1 == count { extent.saturating_sub(cursor) } else { share };
+            out.push((cursor, size));
+            cursor = cursor.saturating_add(size);
+        }
+        return out;
+    }
+    let extra = (extent - total_floor) / count as u32;
+    let mut cursor = 0u32;
+    for (slot, floor) in floors.iter().enumerate() {
+        let size = if slot + 1 == count {
+            extent.saturating_sub(cursor)
+        } else {
+            floor.saturating_add(extra)
+        };
+        out.push((cursor, size));
+        cursor = cursor.saturating_add(size);
+    }
+    out
 }
 
 #[cfg(test)]

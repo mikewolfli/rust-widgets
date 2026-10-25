@@ -61,9 +61,15 @@ const CARD_PAYLOAD_TYPE: &str = "kanban_card";
 /// one-pixel drag, small enough that a deliberate move registers immediately.
 const CARD_DRAG_THRESHOLD: i32 = 4;
 
-/// How wide each column is, in logical pixels, and the gap between them.
-const COLUMN_WIDTH: u32 = 220;
+/// The default width of each column, in logical pixels, and the gap between them.
+const DEFAULT_COLUMN_WIDTH: u32 = 220;
 const COLUMN_GAP: i32 = 12;
+
+/// The narrowest a column may be made: below this a card's title is one glyph and a dash.
+const MIN_COLUMN_WIDTH: u32 = 80;
+
+/// How far one horizontal wheel notch scrolls the board, in pixels.
+const HORIZONTAL_SCROLL_STEP: i32 = 40;
 
 /// The height of a column's header strip.
 const HEADER_HEIGHT: u32 = 32;
@@ -185,6 +191,10 @@ pub struct KanbanBoard {
     focused_card: Option<CardPosition>,
     /// Per-column scroll offsets, in cards.
     column_scroll: Vec<usize>,
+    /// Width of one column, in logical pixels.
+    column_width: u32,
+    /// How far the columns are scrolled left, in pixels.
+    horizontal_scroll: i32,
     /// Emitted after a card moves, with the card's id and its new position.
     pub card_moved: Signal1<(String, CardPosition)>,
     /// Emitted when a card is activated (clicked without dragging), with its id.
@@ -208,6 +218,8 @@ impl KanbanBoard {
             hovered_card: None,
             focused_card: None,
             column_scroll: Vec::new(),
+            column_width: DEFAULT_COLUMN_WIDTH,
+            horizontal_scroll: 0,
             card_moved: Signal1::new(),
             card_activated: Signal1::new(),
         }
@@ -232,6 +244,7 @@ impl KanbanBoard {
         if self.drag_origin.is_some_and(|origin| origin.column >= self.columns.len()) {
             self.cancel_drag();
         }
+        self.clamp_horizontal_scroll();
         self.base.request_redraw();
         Some(removed)
     }
@@ -352,15 +365,73 @@ impl KanbanBoard {
 
     /// The rectangle of the column at `index`.
     ///
-    /// Columns are laid out left to right at a fixed width, which is what makes the
-    /// board scrollable horizontally by its container rather than reflowing.
+    /// Columns are laid out left to right at the control's own width, offset by the horizontal
+    /// scroll. They used to be laid out at a fixed 220 px with no offset at all, which left a board
+    /// wider than its viewport with no way to reach the columns past the edge — the documented
+    /// answer was "let the container scroll it", which a control that paints itself cannot rely on.
     pub fn column_rect(&self, index: usize) -> Option<Rect> {
         if index >= self.columns.len() {
             return None;
         }
         let rect = self.geometry();
-        let x = rect.x + (index as i32) * (COLUMN_WIDTH as i32 + COLUMN_GAP);
-        Some(Rect::new(x, rect.y, COLUMN_WIDTH, rect.height))
+        let stride = self.column_width as i32 + COLUMN_GAP;
+        // Clamped on read as well as on write: a board that shrank after its offset was set would
+        // otherwise paint past its content and show empty space.
+        let scroll = self.horizontal_scroll.min(self.max_horizontal_scroll());
+        let x = rect.x - scroll + (index as i32) * stride;
+        Some(Rect::new(x, rect.y, self.column_width, rect.height))
+    }
+
+    /// Returns the width of one column.
+    pub fn column_width(&self) -> u32 {
+        self.column_width
+    }
+
+    /// Sets the width of one column (floored at [`MIN_COLUMN_WIDTH`]).
+    pub fn set_column_width(&mut self, width: u32) {
+        let width = width.max(MIN_COLUMN_WIDTH);
+        if self.column_width == width {
+            return;
+        }
+        self.column_width = width;
+        self.clamp_horizontal_scroll();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns how far the columns are scrolled left, in pixels.
+    pub fn horizontal_scroll(&self) -> i32 {
+        self.horizontal_scroll
+    }
+
+    /// Scrolls the board horizontally to `offset` pixels (clamped to the content).
+    pub fn set_horizontal_scroll(&mut self, offset: i32) {
+        let next = offset.max(0).min(self.max_horizontal_scroll());
+        if self.horizontal_scroll == next {
+            return;
+        }
+        self.horizontal_scroll = next;
+        self.base.request_redraw();
+    }
+
+    /// Scrolls the board horizontally by `delta` pixels.
+    pub fn scroll_horizontally_by(&mut self, delta: i32) {
+        self.set_horizontal_scroll(self.horizontal_scroll.saturating_add(delta));
+    }
+
+    /// The largest scroll offset that still shows content.
+    fn max_horizontal_scroll(&self) -> i32 {
+        if self.columns.is_empty() {
+            return 0;
+        }
+        let content =
+            self.columns.len() as i32 * (self.column_width as i32 + COLUMN_GAP) - COLUMN_GAP;
+        (content - self.geometry().width as i32).max(0)
+    }
+
+    /// Re-clamps the scroll after the content or viewport width changed.
+    fn clamp_horizontal_scroll(&mut self) {
+        self.horizontal_scroll = self.horizontal_scroll.min(self.max_horizontal_scroll());
     }
 
     /// The rectangle of the card at `position`, or `None` when it is not laid out.
@@ -380,11 +451,17 @@ impl KanbanBoard {
         if position.card < scroll {
             return None;
         }
-        Some(Rect::new(column_rect.x, y, COLUMN_WIDTH, CARD_HEIGHT))
+        Some(Rect::new(column_rect.x, y, column_rect.width, CARD_HEIGHT))
     }
 
     /// The column containing `pos`, when the pointer is over one.
     fn column_at(&self, pos: Point) -> Option<usize> {
+        // Clamped to the board first: a column wider or further right than the control would
+        // otherwise answer for a point outside it, which is a press on whatever the layout put
+        // beside the board.
+        if !self.geometry().contains_point(pos) {
+            return None;
+        }
         (0..self.columns.len())
             .find(|index| self.column_rect(*index).is_some_and(|rect| rect.contains_point(pos)))
     }
@@ -732,7 +809,7 @@ impl Widget for KanbanBoard {
     fn size_hint(&self) -> Size {
         // Wide enough for two columns, which is the smallest useful board.
         Size::new(
-            COLUMN_WIDTH * 2 + COLUMN_GAP as u32,
+            self.column_width * 2 + COLUMN_GAP as u32,
             HEADER_HEIGHT + (CARD_HEIGHT + CARD_GAP as u32) * 3,
         )
     }
@@ -752,9 +829,15 @@ impl Widget for KanbanBoard {
         use crate::signal::EventSignalRef;
         match name {
             "card_moved" => Some(EventSignalRef::mapped("card_moved", &self.card_moved, |v| {
+                // The second component is a pair of indices, not its `Debug` spelling: a subscriber
+                // that declares `(String, String)` cannot read `"CardPosition { column: 1, card: 0 }"`
+                // as a destination, which made the event unusable for the one thing it reports.
                 CapabilityValue::Tuple(alloc::vec![
                     CapabilityValue::String(v.0.clone()),
-                    CapabilityValue::String(format!("{:?}", v.1)),
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.1.column as u64),
+                        CapabilityValue::UInt(v.1.card as u64),
+                    ]),
                 ])
             })),
             "card_activated" => {
@@ -785,7 +868,10 @@ impl WidgetProperties for KanbanBoard {
                 Some(index) => CapabilityValue::UInt(index as u64),
                 None => CapabilityValue::Null,
             }),
-            "column_width" => Ok(CapabilityValue::UInt(COLUMN_WIDTH as u64)),
+            "column_width" => Ok(CapabilityValue::UInt(self.column_width() as u64)),
+            "horizontal_scroll_offset" => {
+                Ok(CapabilityValue::UInt(self.horizontal_scroll().max(0) as u64))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -797,9 +883,28 @@ impl WidgetProperties for KanbanBoard {
             "column_count" | "card_count" | "dragging_card_id" | "hovered_column" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
-            // Reported so a caller can size a container against it, but the layout
-            // constant is not per-instance state.
-            "column_width" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // A caller may set the width, so it is a per-instance value now rather than the fixed
+            // layout constant it used to report as read-only.
+            "column_width" => {
+                let width = match value {
+                    CapabilityValue::UInt(width) => {
+                        u32::try_from(width).map_err(|_| CapabilityAccessError::TypeMismatch)?
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_column_width(width);
+                Ok(())
+            }
+            "horizontal_scroll_offset" => {
+                let offset = match value {
+                    CapabilityValue::UInt(offset) => {
+                        i32::try_from(offset).map_err(|_| CapabilityAccessError::TypeMismatch)?
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_horizontal_scroll(offset);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -812,6 +917,7 @@ impl WidgetProperties for KanbanBoard {
             "dragging_card_id",
             "hovered_column",
             "column_width",
+            "horizontal_scroll_offset",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -866,10 +972,24 @@ impl EventHandler for KanbanBoard {
             Event::MouseRelease { pos, button } if *button == 1 && self.drag.is_some() => {
                 self.finish_card_drag(*pos);
             }
-            Event::Wheel { delta, .. } => {
+            Event::Wheel { delta, modifiers } => {
+                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                // Shift, or a horizontal wheel, scrolls the board itself. Without this a board
+                // wider than its viewport could only be scrolled by its container.
+                if modifiers.contains(crate::shortcut::Modifiers::SHIFT) || delta.x != 0 {
+                    let step = if delta.x != 0 {
+                        delta.x.signum() * HORIZONTAL_SCROLL_STEP
+                    } else if delta.y > 0 {
+                        -HORIZONTAL_SCROLL_STEP
+                    } else if delta.y < 0 {
+                        HORIZONTAL_SCROLL_STEP
+                    } else {
+                        0
+                    };
+                    self.scroll_horizontally_by(step);
+                    return;
+                }
                 if delta.y != 0 {
-                    let pos = self.geometry().position();
-                    let _ = pos;
                     // Scroll the column under the pointer when one is known, otherwise the
                     // first column: a board with several columns scrolls them independently.
                     let column = self.hovered_column.unwrap_or(0);
@@ -1016,11 +1136,25 @@ impl Draw for KanbanBoard {
             desc: role_font(self.base.style(), 10.0),
         };
 
+        // Columns that the horizontal scroll has moved past either edge are skipped, and the rest
+        // are clipped to the board: a column laid out at a negative x would otherwise paint over
+        // whatever the layout put to the left of the board (nothing clips a widget at this layer).
+        context.push_clip(rect.x, rect.y, rect.width, rect.height);
         for index in 0..self.columns.len() {
+            let Some(column_rect) = self.column_rect(index) else {
+                continue;
+            };
+            if column_rect.x + column_rect.width as i32 <= rect.x
+                || column_rect.x >= rect.x + rect.width as i32
+            {
+                continue;
+            }
             self.draw_column(context, index, &chrome, &fonts);
         }
+        context.pop_clip();
         // The drag overlay is painted last so the card follows the pointer over
-        // every column rather than being clipped to the one it started in.
+        // every column rather than being clipped to the one it started in. It is clamped to the
+        // board inside `draw_drag_overlay`, so it stays inside the control without a clip.
         self.draw_drag_overlay(context, &chrome);
     }
 }
@@ -1348,11 +1482,12 @@ impl KanbanBoard {
         // the board — nothing clips a widget at this layer.
         let label = session.payload().label.clone();
         let board = self.geometry();
-        let ghost_x = (current.x - (COLUMN_WIDTH as i32 / 2))
-            .clamp(board.x, board.x + board.width.saturating_sub(COLUMN_WIDTH) as i32);
+        let ghost_width = self.column_width;
+        let ghost_x = (current.x - (ghost_width as i32 / 2))
+            .clamp(board.x, board.x + board.width.saturating_sub(ghost_width) as i32);
         let ghost_y = (current.y - (CARD_HEIGHT as i32 / 2))
             .clamp(board.y, board.y + board.height.saturating_sub(CARD_HEIGHT) as i32);
-        let ghost = Rect::new(ghost_x, ghost_y, COLUMN_WIDTH, CARD_HEIGHT);
+        let ghost = Rect::new(ghost_x, ghost_y, ghost_width, CARD_HEIGHT);
         context.fill_rounded_rect(ghost, 6, chrome.ghost().with_alpha(230));
         context.draw_rounded_rect_stroke(ghost, 6, chrome.insertion(), 2);
         if !label.is_empty() {
@@ -1775,8 +1910,8 @@ mod tests {
         let board = board();
         let first = board.column_rect(0).expect("column 0");
         let second = board.column_rect(1).expect("column 1");
-        assert_eq!(second.x - first.x, COLUMN_WIDTH as i32 + COLUMN_GAP);
-        assert_eq!(first.width, COLUMN_WIDTH);
+        assert_eq!(second.x - first.x, DEFAULT_COLUMN_WIDTH as i32 + COLUMN_GAP);
+        assert_eq!(first.width, DEFAULT_COLUMN_WIDTH);
         assert!(board.column_rect(9).is_none());
     }
 
@@ -1833,18 +1968,20 @@ mod tests {
     #[test]
     fn kanban_derived_properties_are_read_only() {
         let mut board = board();
-        for name in
-            ["column_count", "card_count", "dragging_card_id", "hovered_column", "column_width"]
-        {
+        for name in ["column_count", "card_count", "dragging_card_id", "hovered_column"] {
             assert_eq!(
                 board.set(name, CapabilityValue::UInt(3)),
                 Err(CapabilityAccessError::ReadOnlyProperty),
                 "{name} must be read-only"
             );
         }
+        // `column_width` used to be in that list; SP-15 makes it the one display dimension the
+        // caller owns, so it is writable and only the derived counts stay read-only.
+        assert!(board.set("column_width", CapabilityValue::UInt(300)).is_ok());
+        assert_eq!(board.column_width(), 300);
         assert_eq!(board.get("column_count").unwrap(), CapabilityValue::UInt(3));
         assert_eq!(board.get("card_count").unwrap(), CapabilityValue::UInt(1));
-        assert_eq!(board.get("column_width").unwrap(), CapabilityValue::UInt(COLUMN_WIDTH as u64));
+        assert_eq!(board.get("column_width").unwrap(), CapabilityValue::UInt(300));
     }
 
     #[test]
@@ -1890,5 +2027,53 @@ mod tests {
         assert_eq!(board.insert_index_at(0, Point::new(column_x, column_rect.y + 2)), 0);
         // Far below everything appends.
         assert_eq!(board.insert_index_at(0, Point::new(column_x, column_rect.y + 2000)), 2);
+    }
+
+    #[test]
+    fn column_width_is_writable_and_moves_the_next_column() {
+        let mut board = board();
+        let before = board.column_rect(1).expect("column 1").x;
+        board.set_column_width(320);
+        assert_eq!(board.column_width(), 320);
+        assert_eq!(board.get("column_width").unwrap(), CapabilityValue::UInt(320));
+        let after = board.column_rect(1).expect("column 1").x;
+        assert_eq!(after - before, 100, "a wider column must displace the one beside it");
+        assert_eq!(board.column_rect(0).unwrap().width, 320);
+
+        // A width below the floor is clamped rather than producing an unusable column.
+        board.set("column_width", CapabilityValue::UInt(1)).expect("writable");
+        assert_eq!(board.column_width(), MIN_COLUMN_WIDTH);
+    }
+
+    #[test]
+    fn horizontal_scroll_shifts_columns_and_clamps_to_content() {
+        // Three 220 px columns plus gaps are narrower than this board, so the test widens them
+        // first to give the content somewhere to scroll.
+        let mut board = board();
+        board.set_column_width(400);
+        let unscrolled = board.column_rect(0).expect("column 0").x;
+        board.set_horizontal_scroll(100);
+        assert_eq!(board.horizontal_scroll(), 100);
+        assert_eq!(board.column_rect(0).unwrap().x, unscrolled - 100);
+
+        // Past the end is clamped to the content's own width, not left unbounded.
+        board.set_horizontal_scroll(100_000);
+        assert_eq!(board.horizontal_scroll(), board.max_horizontal_scroll());
+        // Reset and a negative request both stop at zero.
+        board.set_horizontal_scroll(-50);
+        assert_eq!(board.horizontal_scroll(), 0);
+
+        // Shift-wheel scrolls horizontally instead of scrolling a column's cards.
+        board.handle_event(&Event::wheel(0, -120, 0x0001));
+        assert!(board.horizontal_scroll() > 0);
+    }
+
+    #[test]
+    fn horizontal_scroll_is_published_as_a_property() {
+        let mut board = board();
+        board.set_column_width(400);
+        board.set("horizontal_scroll_offset", CapabilityValue::UInt(64)).expect("writable");
+        assert_eq!(board.horizontal_scroll(), 64);
+        assert_eq!(board.get("horizontal_scroll_offset").unwrap(), CapabilityValue::UInt(64));
     }
 }

@@ -239,6 +239,47 @@ impl BoxLayout {
             item.policy = policy;
         }
     }
+
+    /// The stretch factor of the item at `index`, or `None` when `index` is out of range.
+    ///
+    /// This addresses the item list, including spacers; [`child_ids`](Layout::child_ids) skips
+    /// spacers, so use [`index_of`](Layout::index_of) for a widget-id index.
+    pub fn stretch_factor(&self, index: usize) -> Option<u32> {
+        self.items.get(index).map(|item| item.stretch)
+    }
+
+    /// Replaces the stretch factor of the item at `index`.
+    ///
+    /// `0` becomes `1`, matching every insertion path (a zero weight would make an item
+    /// unaddressable by the allocator). Returns `false` when `index` is out of range.
+    pub fn set_stretch_factor(&mut self, index: usize, stretch: u32) -> bool {
+        match self.items.get_mut(index) {
+            Some(item) => {
+                item.stretch = stretch.max(1);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The stretch factor of `widget_id`, or `None` when it is not a widget item.
+    pub fn widget_stretch_factor(&self, widget_id: ObjectId) -> Option<u32> {
+        self.items.iter().find(|item| item.widget_id == Some(widget_id)).map(|item| item.stretch)
+    }
+
+    /// Replaces the stretch factor of `widget_id`.
+    ///
+    /// `0` becomes `1`. Returns `false` when `widget_id` is not an item of this layout. Spacers
+    /// have no id and are addressed through [`Self::set_stretch_factor`].
+    pub fn set_widget_stretch_factor(&mut self, widget_id: ObjectId, stretch: u32) -> bool {
+        match self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
+            Some(item) => {
+                item.stretch = stretch.max(1);
+                true
+            }
+            None => false,
+        }
+    }
     /// Splits `primary` pixels across the items, honouring each item's constraints.
     ///
     /// # The two invariants this must not break
@@ -664,6 +705,33 @@ impl Layout for BoxLayout {
     }
     fn has_child(&self, id: ObjectId) -> bool {
         self.items.iter().any(|item| item.widget_id == Some(id))
+    }
+    fn widget_count(&self) -> usize {
+        self.items.iter().filter(|item| item.widget_id.is_some()).count()
+    }
+    fn index_of(&self, id: ObjectId) -> Option<usize> {
+        let mut index = 0usize;
+        for item in &self.items {
+            if let Some(widget_id) = item.widget_id {
+                if widget_id == id {
+                    return Some(index);
+                }
+                index += 1;
+            }
+        }
+        None
+    }
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        if !self.has_child(id) {
+            return None;
+        }
+        let mut found = None;
+        self.update(rect, &mut |child, child_rect| {
+            if child == id && found.is_none() {
+                found = Some(child_rect);
+            }
+        });
+        found
     }
     fn clear(&mut self) {
         self.items.clear();

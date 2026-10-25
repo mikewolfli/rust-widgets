@@ -4,8 +4,8 @@
 //! Slider widget.
 use core::fmt::Write as _;
 
-use crate::compat::{String, ToString};
-use crate::core::{Color, HorizontalAlignment, Orientation, Point, Rect, Size};
+use crate::compat::{String, ToString, Vec};
+use crate::core::{Color, Font, HorizontalAlignment, Orientation, Point, Rect, Size};
 use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -40,6 +40,9 @@ pub struct Slider {
     track_highlight: bool,
     /// Whether each tick is labelled with its numeric value.
     tick_labels: bool,
+    /// Formatted tick labels and their metrics, rebuilt only when the tick configuration,
+    /// the effective face or the device scale changes.
+    tick_label_cache: TickLabelCache,
     /// Whether the hover/drag halo interpolates instead of stepping between two levels.
     animated_halo: bool,
     /// The halo's current strength, `0.0` at rest and a blend weight while hovered or dragged.
@@ -81,6 +84,28 @@ pub enum TickPosition {
     TicksBelow,
     /// Tick marks on both sides
     TicksBothSides,
+}
+
+/// One formatted tick label with the metrics `draw` positions it by.
+struct CachedTickLabel {
+    /// The label text, formatted once rather than per frame.
+    text: String,
+    /// Measured width, used to centre the label under a horizontal tick.
+    width: u32,
+    /// Measured height, used to centre the label beside a vertical tick.
+    height: u32,
+}
+
+/// Tick labels and metrics for the current `(range, interval, face, scale)`.
+#[derive(Default)]
+struct TickLabelCache {
+    minimum: i32,
+    maximum: i32,
+    interval: i32,
+    /// The face the labels were measured with; `None` means the cache is empty.
+    font: Option<Font>,
+    dpi_scale_bits: u32,
+    labels: Vec<CachedTickLabel>,
 }
 
 /// Edge length of the draggable handle, in logical pixels.
@@ -167,6 +192,7 @@ impl Slider {
             mouse_pressed: false,
             track_highlight: false,
             tick_labels: false,
+            tick_label_cache: TickLabelCache::default(),
             animated_halo: false,
             halo: PropertyDriver::at(0.0, MotionSlot::Fast),
             direction: crate::core::TextDirection::default(),
@@ -496,6 +522,44 @@ impl Slider {
     fn tick_value(&self, index: u32) -> i32 {
         let value = self.minimum as i64 + index as i64 * self.tick_interval as i64;
         value.clamp(self.minimum as i64, self.maximum as i64) as i32
+    }
+
+    /// Formats and measures the tick labels, reusing the previous result while every
+    /// input that determines it stays the same.
+    ///
+    /// The draw pass used to `write!` a fresh `String` and call `measure_text` for each
+    /// tick on every frame, up to a hundred times while dragging. The labels depend only
+    /// on the range, the interval, the effective face and the device scale, so they are
+    /// built once per change and read-only afterwards.
+    fn refresh_tick_labels(&mut self, context: &RenderContext, font: &Font) {
+        let scale_bits = context.dpi_scale().to_bits();
+        let unchanged = self.tick_label_cache.font.as_ref() == Some(font)
+            && self.tick_label_cache.dpi_scale_bits == scale_bits
+            && self.tick_label_cache.minimum == self.minimum
+            && self.tick_label_cache.maximum == self.maximum
+            && self.tick_label_cache.interval == self.tick_interval;
+        if unchanged {
+            return;
+        }
+
+        self.tick_label_cache.labels.clear();
+        let count = self.tick_count();
+        for index in 0..count {
+            let value = self.tick_value(index);
+            let mut label = String::new();
+            let _ = write!(label, "{}", value);
+            let metrics = context.measure_text(&label, font);
+            self.tick_label_cache.labels.push(CachedTickLabel {
+                text: label,
+                width: metrics.width,
+                height: metrics.height,
+            });
+        }
+        self.tick_label_cache.minimum = self.minimum;
+        self.tick_label_cache.maximum = self.maximum;
+        self.tick_label_cache.interval = self.tick_interval;
+        self.tick_label_cache.font = Some(font.clone());
+        self.tick_label_cache.dpi_scale_bits = scale_bits;
     }
 
     /// Returns value for a given pixel position.
@@ -993,6 +1057,13 @@ impl Draw for Slider {
         let rect = self.geometry();
         let slider_pos = self.value_to_pixel_pos(self.value);
 
+        // Resolve the label face once, outside the tick loop, and refresh the cached
+        // labels before the style is borrowed for the rest of the draw.
+        if self.tick_labels && self.tick_position != TickPosition::NoTicks {
+            let tick_font = crate::widget::metrics::effective_font(self.style()).clone();
+            self.refresh_tick_labels(context, &tick_font);
+        }
+
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
         // this control, and only then fall back to a literal. The groove read `style` already,
         // but the handle and the ticks were literals, so a light/dark switch left them unchanged
@@ -1181,6 +1252,8 @@ impl Draw for Slider {
                 if self.tick_position != TickPosition::NoTicks && self.tick_interval > 0 {
                     let tick_height = dimensions::SLIDER_TRACK_HEIGHT * 2;
                     let tick_count = self.tick_count();
+                    // Resolve the label face once rather than on every tick.
+                    let tick_font = crate::widget::metrics::effective_font(style);
                     for i in 0..tick_count {
                         let value = self.tick_value(i);
                         let tick_x = self.value_to_pixel_pos(value);
@@ -1206,19 +1279,17 @@ impl Draw for Slider {
                             );
                         }
                         if self.tick_labels {
-                            let font = crate::widget::metrics::effective_font(style);
-                            let mut label = String::new();
-                            let _ = write!(label, "{}", value);
-                            let metrics = context.measure_text(&label, font);
-                            let label_x = tick_x as i32 - metrics.width as i32 / 2;
-                            let label_y = track.y + track.height as i32 + 2;
-                            context.draw_text(
-                                Point::new(label_x, label_y),
-                                label.as_str(),
-                                font,
-                                tick_color,
-                                HorizontalAlignment::Left,
-                            );
+                            if let Some(label) = self.tick_label_cache.labels.get(i as usize) {
+                                let label_x = tick_x as i32 - label.width as i32 / 2;
+                                let label_y = track.y + track.height as i32 + 2;
+                                context.draw_text(
+                                    Point::new(label_x, label_y),
+                                    label.text.as_str(),
+                                    tick_font,
+                                    tick_color,
+                                    HorizontalAlignment::Left,
+                                );
+                            }
                         }
                     }
                 }
@@ -1273,6 +1344,8 @@ impl Draw for Slider {
                 if self.tick_position != TickPosition::NoTicks && self.tick_interval > 0 {
                     let tick_width = dimensions::SLIDER_TRACK_HEIGHT * 2;
                     let tick_count = self.tick_count();
+                    // Resolve the label face once rather than on every tick.
+                    let tick_font = crate::widget::metrics::effective_font(style);
                     for i in 0..tick_count {
                         let value = self.tick_value(i);
                         let tick_y = self.value_to_pixel_pos(value);
@@ -1298,19 +1371,17 @@ impl Draw for Slider {
                             );
                         }
                         if self.tick_labels {
-                            let font = crate::widget::metrics::effective_font(style);
-                            let mut label = String::new();
-                            let _ = write!(label, "{}", value);
-                            let metrics = context.measure_text(&label, font);
-                            let label_x = track.x + tick_width as i32 + 2;
-                            let label_y = tick_y as i32 - metrics.height as i32 / 2;
-                            context.draw_text(
-                                Point::new(label_x, label_y),
-                                label.as_str(),
-                                font,
-                                tick_color,
-                                HorizontalAlignment::Left,
-                            );
+                            if let Some(label) = self.tick_label_cache.labels.get(i as usize) {
+                                let label_x = track.x + tick_width as i32 + 2;
+                                let label_y = tick_y as i32 - label.height as i32 / 2;
+                                context.draw_text(
+                                    Point::new(label_x, label_y),
+                                    label.text.as_str(),
+                                    tick_font,
+                                    tick_color,
+                                    HorizontalAlignment::Left,
+                                );
+                            }
                         }
                     }
                 }

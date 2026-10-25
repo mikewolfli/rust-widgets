@@ -50,6 +50,10 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("undo_stack_limit", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("undo_depth", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("goto_bar_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("breakpoint_gutter", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -62,6 +66,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("show_critical_path", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_today", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -72,6 +79,14 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("scrollback_lines", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("wrap_output", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_scrollbar", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("caret_style", true, true, &["line", "block", "underline"]),
+            PropertySchema::new("caret_blink_enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("prompt", PropertyValueKind::String, true, true),
+            PropertySchema::enumerated("selection_mode", true, true, &["lines", "characters"]),
+            PropertySchema::new("ansi_palette", PropertyValueKind::NumberList, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -82,6 +97,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("queued_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("max_queued", PropertyValueKind::UInt, true, true),
+            PropertySchema::enumerated("anchor", true, true, &["top", "center", "bottom"]),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -95,6 +113,7 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated("projection", true, true, &["linear", "mercator"]),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -110,6 +129,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("playlist_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("track_count", PropertyValueKind::UInt, true, false),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -129,6 +150,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("collapsed_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("separator", PropertyValueKind::String, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -172,6 +195,11 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("accepted_types", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("multi_file", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("hover_style", PropertyValueKind::String, true, true),
+            PropertySchema::new("show_count_badge", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("dropped_count", PropertyValueKind::UInt, true, false),
         ];
 
         // `ChartWidget`'s property contract. This is the single definition of the
@@ -214,6 +242,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated("popup_direction", true, true, &["down", "up", "auto"]),
+            PropertySchema::new("max_menu_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("menu_scroll", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -225,6 +256,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("size_to_fit", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("min_segment_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("multi_select", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -266,6 +300,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("show_time_labels", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("lane_mode", true, true, &["row", "lane_packed"]),
         ];
 
         // `CommandPalette` is a queryable command list: the filtered result set,
@@ -283,6 +319,7 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("group_by_category", PropertyValueKind::Bool, true, true),
         ];
 
         // `NotificationCenter` publishes its unread state and selection. The item
@@ -315,6 +352,12 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated("view_mode", true, true, &["side_by_side", "unified"]),
+            PropertySchema::new("fold_unchanged", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("fold_threshold", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("fold_context_lines", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("unified_changed_pair", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("whitespace_mode", true, true, &["show", "ignore_eol", "ignore_all", "mark_blank_changes"]),
         ];
 
         // `ToastStack` publishes the stack depth and the selected toast id. The
@@ -329,6 +372,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("max_visible", PropertyValueKind::UInt, true, true),
+            PropertySchema::enumerated("anchor", true, true, &["top_left", "top_right", "bottom_left", "bottom_right"]),
+            PropertySchema::enumerated("stacking_direction", true, true, &["newest_at_bottom", "newest_at_top"]),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -348,6 +394,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("page_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("headers", PropertyValueKind::StringList, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -365,6 +413,7 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("movable", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -386,6 +435,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("maximum", PropertyValueKind::UInt, true, true),
             PropertySchema::new("thickness", PropertyValueKind::UInt, true, true),
             PropertySchema::new("sweep_angle", PropertyValueKind::UInt, true, true),
+            // The 12-o'clock origin the arc sweeps from. It existed as a field with no
+            // accessor, so a document could not place a gauge's start at anywhere but the top.
+            PropertySchema::new("start_angle", PropertyValueKind::Float, true, true),
             PropertySchema::new("indeterminate", PropertyValueKind::Bool, true, true),
             // Both are painted (`rounded` changes the cap geometry, `show_value` the label band)
             // and had public setters, but were unreachable through the contract.
@@ -450,6 +502,10 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("live_update", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("commit_delay_ms", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("has_pending_commit", PropertyValueKind::Bool, true, false),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -481,11 +537,12 @@ macro_rules! impl_properties_other {
             PropertySchema::new("card_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("dragging_card_id", PropertyValueKind::String, true, false),
             PropertySchema::new("hovered_column", PropertyValueKind::UInt, true, false),
-            PropertySchema::new("column_width", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("column_width", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("horizontal_scroll_offset", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -502,6 +559,7 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("series_names", PropertyValueKind::StringList, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -523,6 +581,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("viewport_rows", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("viewport_columns", PropertyValueKind::UInt, true, true),
         ];
 
         pub(crate) const METER_PROPERTIES: &[PropertySchema] = &[
@@ -575,6 +635,13 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("layer_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("anti_alias", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_grid", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("grid_step", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("snap_to_grid", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("zoom_range", PropertyValueKind::NumberList, true, true),
+            PropertySchema::new("zoom_step", PropertyValueKind::Float, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -645,6 +712,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("section_separator_visible", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -666,12 +735,16 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("year_span", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const DIVIDER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("orientation", PropertyValueKind::String, true, true),
             PropertySchema::new("thickness", PropertyValueKind::Float, true, true),
+            // The line colour. `set_color` was public and painted but absent from the contract,
+            // so the capability layer and the JSON loader could not address it.
+            PropertySchema::new("color", PropertyValueKind::Color, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -702,6 +775,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("badge", PropertyValueKind::String, true, true),
+            PropertySchema::new("ring_color", PropertyValueKind::Color, true, true),
+            PropertySchema::new("ring_width", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -748,6 +824,11 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated("ec_level", true, true, &["L", "M", "Q", "H"]),
+            PropertySchema::new("min_version", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("max_version", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("foreground_color", PropertyValueKind::Color, true, true),
+            PropertySchema::new("background_color", PropertyValueKind::Color, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -758,6 +839,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("duration_ms", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("slide_progress", PropertyValueKind::Float, true, false),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -767,6 +850,11 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::enumerated("badge_style", true, true, &["text", "dot"]),
+            PropertySchema::new("drawer_animated", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("scrim_opacity", PropertyValueKind::Float, true, true),
+            PropertySchema::new("page_transition", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -783,6 +871,7 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("group_id", PropertyValueKind::String, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -793,6 +882,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("back_visible", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -810,6 +901,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("progress_color", PropertyValueKind::Color, true, true),
             PropertySchema::new("diameter", PropertyValueKind::UInt, true, true),
             PropertySchema::new("indeterminate", PropertyValueKind::Bool, true, true),
+            // The centre reading: an opt-in switch and the template it renders through.
+            PropertySchema::new("show_center_text", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("center_text_format", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -851,6 +945,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("prompt", PropertyValueKind::String, true, true),
+            PropertySchema::new("collapse_offset", PropertyValueKind::Float, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -870,6 +966,10 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("presets", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("double_month", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("min_nights", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("max_nights", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -891,6 +991,8 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        
+            PropertySchema::new("keyboard_navigation_enabled", PropertyValueKind::Bool, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -923,6 +1025,10 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("fill", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_points", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_last_marker", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("capacity", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -975,6 +1081,7 @@ macro_rules! impl_properties_other {
             // the schema exists to prevent.
             PropertySchema::new("overlay_count", PropertyValueKind::UInt, true, true),
             PropertySchema::new("show_price_levels", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_overlay_legend", PropertyValueKind::Bool, true, true),
         ];
         /// Property schema for `volume_chart`.
         pub(crate) const VOLUME_CHART_PROPERTIES: &[PropertySchema] = &[
@@ -1031,6 +1138,7 @@ macro_rules! impl_properties_other {
             // row height is a layout decision the control owns, and `selected_index`
             // is derived from the rows rather than assignable.
             PropertySchema::new("row_height", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("scroll_offset", PropertyValueKind::UInt, true, true),
         ];
         /// Property schema for `indicator_chart`.
         pub(crate) const INDICATOR_CHART_PROPERTIES: &[PropertySchema] = &[
@@ -1074,6 +1182,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("minute", PropertyValueKind::UInt, true, true),
             PropertySchema::new("second", PropertyValueKind::UInt, true, true),
             PropertySchema::new("show_seconds", PropertyValueKind::Bool, true, true),
+            // Where the face's time comes from: the host (`manual`) or the machine clock
+            // (`system`). Published as a token so the loader can select it.
+            PropertySchema::enumerated("time_source", true, true, &["manual", "system"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -1094,6 +1205,12 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("bands", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("tick_count", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("start_angle", PropertyValueKind::Float, true, true),
+            PropertySchema::new("end_angle", PropertyValueKind::Float, true, true),
+            PropertySchema::enumerated("needle_style", true, true, &["none", "line", "triangle"]),
+            PropertySchema::new("unit_label", PropertyValueKind::String, true, true),
         ];
 
         // ── macOS (desktop) component set ───────────────────────────────

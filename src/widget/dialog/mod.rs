@@ -33,9 +33,9 @@ pub use popover::Popover;
 pub use popup_window::PopupWindow;
 pub use progress_dialog::ProgressDialog;
 pub use tooltip::Tooltip;
-pub use wizard::{WizardDialog, WizardStep};
+pub use wizard::{NavAction, WizardDialog, WizardStep, WizardStyle};
 
 pub(crate) use modal::{
-    draw_modal_scrim, draw_modal_scrim_scaled, localized_label, scale_about_centre,
+    draw_modal_scrim, draw_modal_scrim_scaled, localized_label, move_focus, scale_about_centre,
     REVEAL_MIN_SCALE,
 };

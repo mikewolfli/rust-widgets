@@ -16,12 +16,13 @@ use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{GenericSignal, Signal1};
+use crate::signal::{ConnectionHandle, GenericSignal, Signal1};
 use crate::widget::capability::access::tool_bar_orientation_to_str;
 use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_toolbar_orientation};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::menu_toolbar::action::Action;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -86,6 +87,11 @@ pub struct ToolBarItem {
     icon: Option<String>,
     /// Per-item square size override, in logical pixels.
     icon_size: Option<u32>,
+    /// Whether this item starts a new row (horizontal bar) or column (vertical bar).
+    ///
+    /// A break is a layout marker, not a visible button: it owns no pixels and no hit target.
+    /// Keeping it as an item is what makes it addressable by index and by `save_state`.
+    line_break: bool,
 }
 impl ToolBarItem {
     /// Creates an enabled, unchecked, non-separator item.
@@ -103,7 +109,17 @@ impl ToolBarItem {
             separator: false,
             icon: None,
             icon_size: None,
+            line_break: false,
         }
+    }
+    /// Creates a line-break marker.
+    ///
+    /// Subsequent items begin a new row on a horizontal bar, or a new column on a vertical
+    /// one. The marker paints nothing and cannot be hit.
+    pub fn line_break() -> Self {
+        let mut item = Self::new("", "");
+        item.line_break = true;
+        item
     }
     /// Creates a separator: an item with an empty id and text and
     /// [`Self::is_separator`] true.
@@ -226,6 +242,86 @@ impl ToolBarItem {
     pub fn set_icon_size(&mut self, size: Option<u32>) {
         self.icon_size = size;
     }
+
+    /// Whether this item is a line-break marker rather than a button.
+    pub fn is_line_break(&self) -> bool {
+        self.line_break
+    }
+}
+
+/// One item's live link to the [`Action`] it was built from.
+///
+/// The stored command is a clone of the action's inner command; signal handles are shared by
+/// clone, so triggering this copy emits the source command's `triggered`/`toggled` signals, and
+/// the source action's own forwarding then emits its `toggled`/`changed` notification. The
+/// connection keeps the action's `changed` notification wired to a repaint of this strip.
+struct ActionLink {
+    command: crate::action::Action,
+    /// The source action's widget-level `triggered` signal, fired after the cloned command
+    /// triggers so a listener on the action (rather than on its inner command) also hears it.
+    triggered: Signal1<bool>,
+    _changed: ConnectionHandle,
+}
+
+/// Builds the toolbar button that presents `action`.
+fn tool_bar_item_from_action(action: &Action) -> ToolBarItem {
+    let id = action.command_id().unwrap_or(action.text());
+    let mut item = ToolBarItem::new(id.to_string(), action.text());
+    item.set_checkable(action.is_checkable());
+    item.set_checked(action.is_checked());
+    item.set_enabled(action.cmd().is_enabled());
+    item.set_tooltip(action.status_tip());
+    if !action.icon_text().is_empty() {
+        item.set_icon(Some(action.icon_text().to_string()));
+    }
+    item
+}
+
+/// Appends one length-prefixed UTF-8 field for [`ToolBar::save_state`].
+fn write_state_string(out: &mut Vec<u8>, text: &str) {
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(text.as_bytes());
+}
+
+/// Bounded reader for the [`ToolBar::restore_state`] byte format.
+struct StateReader<'a> {
+    data: &'a [u8],
+    at: usize,
+}
+
+impl<'a> StateReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, at: 0 }
+    }
+
+    fn u8(&mut self) -> Option<u8> {
+        let value = *self.data.get(self.at)?;
+        self.at += 1;
+        Some(value)
+    }
+
+    fn u32(&mut self) -> Option<u32> {
+        let end = self.at.checked_add(4)?;
+        let bytes = self.data.get(self.at..end)?;
+        self.at = end;
+        Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn string(&mut self) -> Option<String> {
+        let len = self.u32()? as usize;
+        let end = self.at.checked_add(len)?;
+        let bytes = self.data.get(self.at..end)?;
+        self.at = end;
+        Some(String::from(core::str::from_utf8(bytes).ok()?))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.at == self.data.len()
+    }
+
+    fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.at)
+    }
 }
 /// Toolbar widget.
 pub struct ToolBar {
@@ -261,6 +357,11 @@ pub struct ToolBar {
     /// [`ToolBar::is_top_level`] for why this is not a `BaseWidget` flag.
     top_level: bool,
     items: Vec<ToolBarItem>,
+    /// One action link per item, index-aligned with `items`.
+    ///
+    /// A parallel vector rather than a field on `ToolBarItem` because the item is a `Clone`
+    /// presentation record while a link owns a signal connection, which is not cloneable.
+    action_links: Vec<Option<ActionLink>>,
     hovered_index: Option<usize>,
     /// Emitted with the id of the item that was activated.
     ///
@@ -306,6 +407,7 @@ impl ToolBar {
             customize_requested: GenericSignal::new(),
             top_level: false,
             items: Vec::new(),
+            action_links: Vec::new(),
             hovered_index: None,
             action_triggered: Signal1::new(),
             orientation_changed: Signal1::new(),
@@ -470,9 +572,320 @@ impl ToolBar {
     pub fn add_action(&mut self, id: impl Into<String>, text: impl Into<String>) -> usize {
         let idx = self.items.len();
         self.items.push(ToolBarItem::new(id, text));
+        self.action_links.push(None);
         self.clamp_overflow();
         self.base.request_redraw();
         idx
+    }
+
+    /// Appends a button that presents a live [`Action`] and returns its index.
+    ///
+    /// The item mirrors the action's label, id, enabled/checkable/checked state, tooltip and
+    /// icon text. The link is live in both directions the two models can observe: the action's
+    /// `changed` notification repaints this strip, and pressing the item triggers the action's
+    /// command (so listeners on the source action hear it).
+    pub fn add_action_ref(&mut self, action: &Action) -> usize {
+        let index = self.items.len();
+        let item = tool_bar_item_from_action(action);
+        let link = self.action_link(action);
+        self.items.push(item);
+        self.action_links.push(Some(link));
+        self.clamp_overflow();
+        self.base.request_redraw();
+        index
+    }
+
+    /// Inserts a button for `action` at `index` and returns where it landed.
+    ///
+    /// An index past the end appends. The link is the same one [`Self::add_action_ref`]
+    /// installs.
+    pub fn insert_action(&mut self, index: usize, action: &Action) -> usize {
+        let index = index.min(self.items.len());
+        let item = tool_bar_item_from_action(action);
+        let link = self.action_link(action);
+        self.items.insert(index, item);
+        self.action_links.insert(index, Some(link));
+        self.shift_hovered_after_insert(index);
+        self.clamp_overflow();
+        self.base.request_redraw();
+        index
+    }
+
+    /// Removes the first item linked to `action_id` and returns whether one was removed.
+    ///
+    /// `action_id` is the item id a later `action_triggered` would carry — the action's
+    /// command id when [`Self::add_action_ref`] built it. A separator or line break is never
+    /// matched, even though both have an empty id.
+    pub fn remove_action(&mut self, action_id: &str) -> bool {
+        let position = self.items.iter().position(|item| {
+            item.id() == action_id && !item.is_separator() && !item.is_line_break()
+        });
+        match position {
+            Some(index) => self.remove_item(index).is_some(),
+            None => false,
+        }
+    }
+
+    /// Inserts a pre-built item at `index` and returns where it landed.
+    ///
+    /// A past-the-end index appends. The inserted item has no action link.
+    pub fn insert_item(&mut self, index: usize, item: ToolBarItem) -> usize {
+        let index = index.min(self.items.len());
+        self.items.insert(index, item);
+        self.action_links.insert(index, None);
+        self.shift_hovered_after_insert(index);
+        self.clamp_overflow();
+        self.base.request_redraw();
+        index
+    }
+
+    /// Removes the item at `index`, returning it when the index was in range.
+    pub fn remove_item(&mut self, index: usize) -> Option<ToolBarItem> {
+        if index >= self.items.len() {
+            return None;
+        }
+        let removed = self.items.remove(index);
+        if index < self.action_links.len() {
+            self.action_links.remove(index);
+        }
+        self.hovered_index = match self.hovered_index {
+            Some(at) if at == index => None,
+            Some(at) if at > index => Some(at - 1),
+            other => other,
+        };
+        if self.overflow_offset > index {
+            self.overflow_offset -= 1;
+        }
+        self.clamp_overflow();
+        self.base.request_redraw();
+        Some(removed)
+    }
+
+    /// Appends a line-break marker.
+    ///
+    /// Items after the break start a new row on a horizontal strip (a new column on a
+    /// vertical one). A toolbar with no break lays out exactly as before.
+    pub fn add_tool_bar_break(&mut self) {
+        self.items.push(ToolBarItem::line_break());
+        self.action_links.push(None);
+        self.clamp_overflow();
+        self.base.request_redraw();
+    }
+
+    /// Serializes the toolbar's item and layout state to a stable byte sequence.
+    ///
+    /// The format is versioned (`RWTS`, version 1) and length-prefixed, so a restored state
+    /// cannot read past its buffer. Action links are not serialized: they are live signal
+    /// connections, and re-creating them is the host's decision when it re-registers actions.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RWTS");
+        out.push(1);
+        out.push(match self.orientation {
+            ToolBarOrientation::Horizontal => 0,
+            ToolBarOrientation::Vertical => 1,
+        });
+        out.extend_from_slice(&self.icon_size.to_bits().to_le_bytes());
+        out.push(self.movable as u8);
+        out.push(self.floatable as u8);
+        out.push(self.top_level as u8);
+        out.push(self.editable as u8);
+        out.push(match self.button_style {
+            ToolBarButtonStyle::TextOnly => 0,
+            ToolBarButtonStyle::IconOnly => 1,
+            ToolBarButtonStyle::TextBesideIcon => 2,
+            ToolBarButtonStyle::TextUnderIcon => 3,
+        });
+        out.extend_from_slice(&(self.overflow_offset as u32).to_le_bytes());
+        out.extend_from_slice(&(self.items.len() as u32).to_le_bytes());
+        for item in &self.items {
+            let mut flags = 0u8;
+            if item.is_checkable() {
+                flags |= 1;
+            }
+            if item.is_checked() {
+                flags |= 2;
+            }
+            if item.is_enabled() {
+                flags |= 4;
+            }
+            if item.is_separator() {
+                flags |= 8;
+            }
+            if item.is_line_break() {
+                flags |= 16;
+            }
+            out.push(flags);
+            write_state_string(&mut out, item.id());
+            write_state_string(&mut out, item.text());
+            write_state_string(&mut out, item.tooltip());
+            match item.icon() {
+                Some(icon) => {
+                    out.push(1);
+                    write_state_string(&mut out, icon);
+                }
+                None => out.push(0),
+            }
+            match item.icon_size() {
+                Some(size) => {
+                    out.push(1);
+                    out.extend_from_slice(&size.to_le_bytes());
+                }
+                None => out.push(0),
+            }
+        }
+        out
+    }
+
+    /// Restores a state written by [`Self::save_state`].
+    ///
+    /// Returns `false`, leaving the toolbar untouched, when the buffer is not this format: a
+    /// truncated or foreign blob must not half-apply. Action links are cleared because their
+    /// signal connections cannot be rebuilt from bytes.
+    pub fn restore_state(&mut self, state: &[u8]) -> bool {
+        let Some(rest) = state.strip_prefix(b"RWTS") else {
+            return false;
+        };
+        let mut reader = StateReader::new(rest);
+        let Some(version) = reader.u8() else { return false };
+        if version != 1 {
+            return false;
+        }
+        let Some(orientation) = reader.u8() else { return false };
+        let Some(icon_bits) = reader.u32() else { return false };
+        let Some(movable) = reader.u8() else { return false };
+        let Some(floatable) = reader.u8() else { return false };
+        let Some(top_level) = reader.u8() else { return false };
+        let Some(editable) = reader.u8() else { return false };
+        let Some(style) = reader.u8() else { return false };
+        let Some(overflow) = reader.u32() else { return false };
+        let Some(count) = reader.u32() else { return false };
+
+        let orientation = match orientation {
+            0 => ToolBarOrientation::Horizontal,
+            1 => ToolBarOrientation::Vertical,
+            _ => return false,
+        };
+        let button_style = match style {
+            0 => ToolBarButtonStyle::TextOnly,
+            1 => ToolBarButtonStyle::IconOnly,
+            2 => ToolBarButtonStyle::TextBesideIcon,
+            3 => ToolBarButtonStyle::TextUnderIcon,
+            _ => return false,
+        };
+
+        // Each item needs at least 15 bytes (flags, three empty length-prefixed strings and
+        // the two presence bytes). Refusing an impossible count keeps a hostile blob from
+        // requesting a multi-gigabyte allocation before the first truncation is noticed.
+        if count as usize > reader.remaining() / 15 {
+            return false;
+        }
+        let mut items = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let Some(flags) = reader.u8() else { return false };
+            let Some(id) = reader.string() else { return false };
+            let Some(text) = reader.string() else { return false };
+            let Some(tooltip) = reader.string() else { return false };
+            let Some(has_icon) = reader.u8() else { return false };
+            let icon = if has_icon == 1 {
+                let Some(icon) = reader.string() else { return false };
+                Some(icon)
+            } else if has_icon == 0 {
+                None
+            } else {
+                return false;
+            };
+            let Some(has_size) = reader.u8() else { return false };
+            let icon_size = if has_size == 1 {
+                let Some(size) = reader.u32() else { return false };
+                Some(size)
+            } else if has_size == 0 {
+                None
+            } else {
+                return false;
+            };
+            let mut item = ToolBarItem::new(id, text);
+            item.set_tooltip(tooltip);
+            item.set_icon(icon);
+            item.set_icon_size(icon_size);
+            item.set_checkable(flags & 1 != 0);
+            item.set_checked(flags & 2 != 0);
+            item.set_enabled(flags & 4 != 0);
+            item.set_separator(flags & 8 != 0);
+            item.line_break = flags & 16 != 0;
+            items.push(item);
+        }
+        if !reader.is_empty() {
+            return false;
+        }
+
+        self.orientation = orientation;
+        self.icon_size = f32::from_bits(icon_bits).max(8.0);
+        self.movable = movable != 0;
+        self.floatable = floatable != 0;
+        self.top_level = top_level != 0;
+        self.editable = editable != 0;
+        self.button_style = button_style;
+        self.items = items;
+        self.action_links = core::iter::repeat_with(|| None).take(self.items.len()).collect();
+        self.overflow_offset = overflow as usize;
+        self.hovered_index = None;
+        self.drag_state = None;
+        self.drag_dock_band = None;
+        self.clamp_overflow();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Builds the signal link for one action.
+    fn action_link(&self, action: &Action) -> ActionLink {
+        let redraw = self.base.redraw_requested_signal().clone();
+        let changed = action.changed.connect(move || redraw.emit());
+        ActionLink {
+            command: action.cmd().clone(),
+            triggered: action.triggered.clone(),
+            _changed: changed,
+        }
+    }
+
+    /// Keeps the highlight on the same item after an insertion before it.
+    fn shift_hovered_after_insert(&mut self, index: usize) {
+        if let Some(hovered) = self.hovered_index {
+            if hovered >= index {
+                self.hovered_index = Some(hovered + 1);
+            }
+        }
+        if index < self.overflow_offset {
+            self.overflow_offset += 1;
+        }
+    }
+
+    /// Appends an item resolved from the action registry.
+    ///
+    /// The action id becomes the item id, so [`ToolBar::action_triggered`] carries the command
+    /// id a host can pass straight to `ActionManager::trigger_action`. Label and state are read
+    /// from the registry, which makes the toolbar a view of the commands rather than a second
+    /// declaration of them. Returns `None` for an unknown id.
+    pub fn add_action_from_manager(
+        &mut self,
+        manager: &mut crate::action::ActionManager,
+        action_id: &str,
+    ) -> Option<usize> {
+        let definition = manager.action_definition(action_id)?;
+        // A toolbar item that was not recorded as a host would leave `bindings_for_host`
+        // disagreeing with what the strip shows, so resolution and binding happen together.
+        if !manager.bind_action_to_toolbar(definition.id.clone(), self.base.id()) {
+            return None;
+        }
+        let index = self.add_action(definition.id, definition.text);
+        if let Some(item) = self.items.get_mut(index) {
+            item.set_enabled(definition.enabled);
+            item.set_checkable(definition.checkable);
+            if definition.checkable {
+                item.set_checked(definition.checked);
+            }
+        }
+        Some(index)
     }
     /// Appends a visual divider.
     ///
@@ -482,6 +895,7 @@ impl ToolBar {
     /// Repaints, for the same reason as [`ToolBar::add_action`].
     pub fn add_separator(&mut self) {
         self.items.push(ToolBarItem::separator());
+        self.action_links.push(None);
         self.clamp_overflow();
         self.base.request_redraw();
     }
@@ -494,6 +908,7 @@ impl ToolBar {
             return;
         }
         self.items.clear();
+        self.action_links.clear();
         self.overflow_offset = 0;
         self.base.request_redraw();
     }
@@ -617,7 +1032,9 @@ impl ToolBar {
         let mut used = 0i32;
         let mut count = 0usize;
         for item in &self.items {
-            let step = if item.is_separator() {
+            let step = if item.is_line_break() {
+                0
+            } else if item.is_separator() {
                 dimensions::TOOLBAR_SPACING
             } else {
                 item.icon_size().unwrap_or(self.icon_size as u32) + dimensions::TOOLBAR_SPACING
@@ -771,36 +1188,63 @@ impl ToolBar {
         }
         let horizontal = self.orientation == ToolBarOrientation::Horizontal;
         let inset = dimensions::TOOLBAR_ITEM_INSET as i32;
-        let cross = if horizontal {
+        // A break starts a new line, so the cross axis is divided by the number of lines. With
+        // no break this is one line and every item keeps the historical band height.
+        let lines = 1 + self.items.iter().filter(|item| item.is_line_break()).count();
+        let cross_available = if horizontal {
             band.height.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2)
         } else {
             band.width.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2)
         };
+        let cross = (cross_available / lines as u32).max(1);
         // Items scrolled off the leading edge keep a zero-size band, so the list's
         // indices still address the same item while no hit test can reach a hidden one.
         let start = self.overflow_offset.min(self.items.len());
-        let mut placed = vec![Rect::new(0, 0, 0, 0); start];
+        let mut placed = Vec::with_capacity(self.items.len());
         // The offset runs along the strip's main axis; the cross-axis position is the band's origin
-        // plus the same inset the layout used as padding.
+        // plus the same inset the layout used as padding, shifted by the current line.
         let mut offset = if horizontal { band.x } else { band.y } + inset;
-        for item in &self.items[start..] {
+        let mut line = 0i32;
+        for (index, item) in self.items.iter().enumerate() {
+            let cross_origin = if horizontal {
+                band.y + inset + line * cross as i32
+            } else {
+                band.x + inset + line * cross as i32
+            };
+            if item.is_line_break() {
+                // The marker occupies no pixels; it only moves the cursor to the next line.
+                placed.push(Rect::new(0, 0, 0, 0));
+                line += 1;
+                offset = if horizontal { band.x } else { band.y } + inset;
+                continue;
+            }
             let step = if item.is_separator() {
                 dimensions::TOOLBAR_SPACING
             } else {
                 item.icon_size().unwrap_or(self.icon_size as u32) + dimensions::TOOLBAR_SPACING
             };
+            if index < start {
+                placed.push(Rect::new(0, 0, 0, 0));
+                offset += step as i32;
+                continue;
+            }
             let rect = if horizontal {
-                let rect = Rect::new(offset, band.y + inset, step, cross);
+                let rect = Rect::new(offset, cross_origin, step, cross);
                 offset += step as i32;
                 rect
             } else {
-                let rect = Rect::new(band.x + inset, offset, cross, step);
+                let rect = Rect::new(cross_origin, offset, cross, step);
                 offset += step as i32;
                 rect
             };
             placed.push(rect);
         }
         placed
+    }
+
+    /// The number of layout lines (rows when horizontal, columns when vertical).
+    pub fn line_count(&self) -> usize {
+        1 + self.items.iter().filter(|item| item.is_line_break()).count()
     }
     fn hit_item(&self, pos: Point) -> Option<usize> {
         // `Rect::contains_point`, not a hand-written comparison: the crate's
@@ -1009,14 +1453,35 @@ impl EventHandler for ToolBar {
                     return;
                 }
                 if let Some(idx) = self.hit_item(*pos) {
-                    if let Some(item) = self.items.get_mut(idx) {
-                        if item.is_enabled() && !item.is_separator() {
-                            if item.is_checkable() {
-                                item.set_checked(!item.is_checked());
+                    let mut triggered_id = None;
+                    {
+                        let item = self.items.get_mut(idx);
+                        let link = self.action_links.get_mut(idx).and_then(Option::as_mut);
+                        if let Some(item) = item {
+                            if item.is_enabled() && !item.is_separator() && !item.is_line_break() {
+                                match link {
+                                    Some(link) => {
+                                        // The linked command is the authority for a checkable
+                                        // item; triggering it also notifies every listener of the
+                                        // source action, because a clone shares the signal handles.
+                                        if link.command.trigger() {
+                                            link.triggered.emit(link.command.is_checked());
+                                        }
+                                        item.set_checked(link.command.is_checked());
+                                    }
+                                    None => {
+                                        if item.is_checkable() {
+                                            item.set_checked(!item.is_checked());
+                                        }
+                                    }
+                                }
+                                triggered_id = Some(item.id().to_string());
                             }
-                            let id = item.id().to_string();
-                            self.action_triggered.emit(id);
                         }
+                    }
+                    if let Some(id) = triggered_id {
+                        self.action_triggered.emit(id);
+                        self.base.request_redraw();
                     }
                 }
             }
@@ -1557,5 +2022,109 @@ mod tests {
         bar.set_button_style(ToolBarButtonStyle::TextBesideIcon);
         let beside = crate::widget::svg::render_to_svg(&mut bar);
         assert_ne!(beside, icon_only);
+    }
+
+    /// Adding an action creates a button that both reflects and triggers it.
+    #[test]
+    fn a_linked_action_mirrors_the_button_and_is_triggered_by_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut action = Action::new("Save", Rect::new(0, 0, 80, 24));
+        action.set_command_id("save");
+        action.set_checkable(true);
+        action.set_checked(true);
+        let fired = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&fired);
+        action.triggered.connect(move |_| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let mut bar = ToolBar::new(Rect::new(0, 0, 240, 36));
+        let index = bar.add_action_ref(&action);
+        assert_eq!(bar.items()[index].id(), "save");
+        assert_eq!(bar.items()[index].text(), "Save");
+        assert!(bar.items()[index].is_checkable() && bar.items()[index].is_checked());
+
+        let band = bar.item_bands()[index];
+        bar.handle_event(&Event::mouse_press(band.x + 2, band.y + 2, 1));
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "pressing the item triggers the action");
+        assert!(!bar.items()[index].is_checked(), "and the action's toggle drives the button");
+    }
+
+    /// The action's own change notification repaints the strip.
+    #[test]
+    fn an_action_change_requests_a_repaint_of_the_toolbar() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut action = Action::new("Open", Rect::new(0, 0, 80, 24));
+        let mut bar = ToolBar::new(Rect::new(0, 0, 240, 36));
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&redraws);
+        bar.base.redraw_requested_signal().connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        bar.add_action_ref(&action);
+        redraws.store(0, Ordering::SeqCst);
+
+        action.set_text("Open Recent");
+        assert!(redraws.load(Ordering::SeqCst) >= 1, "Action::changed must repaint the strip");
+    }
+
+    /// Positional insertion, removal and id lookup keep the item list consistent.
+    #[test]
+    fn items_can_be_inserted_and_removed_by_position_and_action() {
+        let mut bar = ToolBar::new(Rect::new(0, 0, 300, 36));
+        bar.add_action("a", "A");
+        bar.add_action("c", "C");
+        let at = bar.insert_item(1, ToolBarItem::new("b", "B"));
+        assert_eq!(at, 1);
+        assert_eq!(bar.items().iter().map(ToolBarItem::text).collect::<Vec<_>>(), ["A", "B", "C"]);
+
+        let removed = bar.remove_item(1).expect("an in-range index returns the item");
+        assert_eq!(removed.text(), "B");
+        assert!(bar.remove_item(99).is_none());
+
+        let action = Action::new("Save", Rect::new(0, 0, 80, 24));
+        let index = bar.add_action_ref(&action);
+        let id = bar.items()[index].id().to_string();
+        assert!(bar.remove_action(&id), "the linked item is removed by its id");
+        assert!(!bar.remove_action(&id));
+    }
+
+    /// A break starts a new line, and a restored state reproduces the item set.
+    #[test]
+    fn a_tool_bar_break_wraps_and_the_state_round_trips() {
+        let mut bar = ToolBar::new(Rect::new(0, 0, 300, dimensions::TOOLBAR_HEIGHT));
+        bar.add_action("a", "A");
+        bar.add_tool_bar_break();
+        bar.add_action("b", "B");
+        bar.add_separator();
+        bar.set_orientation(ToolBarOrientation::Vertical);
+        bar.set_icon_size(32.0);
+        bar.set_editable(true);
+
+        assert_eq!(bar.line_count(), 2);
+        let bands = bar.item_bands();
+        // Vertical: the break starts a new column, so B is right of A, not below it.
+        assert_eq!(bands[2].x, bands[0].x + bands[0].width as i32);
+        assert_eq!(bands[2].y, bands[0].y);
+        assert_eq!(bands[1].width, 0, "the break itself owns no pixels");
+
+        let saved = bar.save_state();
+        let mut restored = ToolBar::new(Rect::new(0, 0, 300, dimensions::TOOLBAR_HEIGHT));
+        assert!(restored.restore_state(&saved));
+        assert_eq!(restored.items().len(), bar.items().len());
+        assert_eq!(restored.orientation(), ToolBarOrientation::Vertical);
+        assert_eq!(restored.icon_size(), 32.0);
+        assert!(restored.is_editable());
+        assert!(restored.items()[1].is_line_break());
+        assert_eq!(restored.items()[2].text(), "B");
+        assert!(restored.items()[3].is_separator());
+
+        assert!(!restored.restore_state(b"nope"), "a foreign blob is refused");
+        assert!(!restored.restore_state(&saved[..8]), "so is a truncated one");
+        assert_eq!(restored.items().len(), 4, "a refused restore leaves the state intact");
     }
 }

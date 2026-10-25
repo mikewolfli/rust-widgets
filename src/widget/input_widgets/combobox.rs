@@ -19,8 +19,8 @@
 //! stated as "the value takes what the indicator does not", which makes "the value yields to the
 //! indicator" true by construction rather than by two subtractions that happen to agree.
 
-use crate::compat::{Rc, String, ToString, Vec};
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::compat::{Rc, RefCell, String, ToString, Vec};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -413,6 +413,25 @@ pub struct ComboBox {
     /// Emitted with the new open state when the drop-down is shown or hidden, so a
     /// host can dismiss its other popups without polling.
     pub popup_visibility_changed: Signal1<bool>,
+    /// Emitted with the index of the row the highlight moves to, whether by keyboard or pointer.
+    ///
+    /// The highlight is the row a commit would take but is *not* committed yet, which is the fact
+    /// `current_index_changed` cannot express: it moves on hover without changing the value.
+    pub highlighted: Signal1<usize>,
+    /// Emitted with the value of an editable box after its text is edited.
+    ///
+    /// Non-editable boxes never emit it, because their value can only change by selecting an item.
+    pub text_edited: Signal1<String>,
+    /// Text shown when the field has no value and the list is empty.
+    ///
+    /// Empty by default, in which case the field paints its historical `"(Empty)"` fallback and
+    /// the open list paints `"(No items)"`.
+    placeholder_text: String,
+    /// How many characters a [`ComboBoxSizeAdjustPolicy::AdjustToMinimumContentsLength`] hint asks for.
+    ///
+    /// Zero means "no content request": the hint stays at the field's own chrome, which is what
+    /// the policy did before the numeral existed.
+    minimum_contents_length: usize,
     /// Per-item presentation metadata, parallel to `items`.
     item_meta: Vec<ComboBoxItem>,
     /// What an editable box does with a value that is not already an item.
@@ -427,6 +446,33 @@ pub struct ComboBox {
     completions: Vec<String>,
     /// Fade progress of the drop-down, `0.0..=1.0`, advanced by [`ComboBox::tick`].
     reveal_progress: f32,
+    /// Bumped whenever `items` or `item_meta` changes.
+    ///
+    /// The width hint and the row icons are derived from those two vectors, so each mutation
+    /// advances this revision. A cache entry keyed on an older revision is unreachable, which is
+    /// what keeps a replacement list from being measured as the one before it.
+    item_revision: u64,
+    /// Memoised width of the widest item, keyed by the item revision and the font.
+    size_hint_cache: RefCell<Option<SizeHintCache>>,
+    /// Memoised advances of the row icons, parallel to `item_meta`.
+    icon_advance_cache: RefCell<Option<IconAdvanceCache>>,
+}
+
+/// Memoised widest-item width, keyed by the item revision and the font.
+struct SizeHintCache {
+    revision: u64,
+    font: Font,
+    widest: u32,
+}
+
+/// Memoised per-row icon advances, parallel to `item_meta`.
+///
+/// `None` means "not measured yet"; a row without an icon never reads its slot.
+struct IconAdvanceCache {
+    revision: u64,
+    font: Font,
+    dpi_bits: u32,
+    advances: Vec<Option<i32>>,
 }
 impl ComboBox {
     /// The band the control actually paints: full width, one field tall, centred.
@@ -506,6 +552,10 @@ impl ComboBox {
             current_text_changed: Signal1::new(),
             activated: Signal1::new(),
             popup_visibility_changed: Signal1::new(),
+            highlighted: Signal1::new(),
+            text_edited: Signal1::new(),
+            placeholder_text: String::new(),
+            minimum_contents_length: 0,
             item_meta: Vec::new(),
             insert_policy: ComboBoxInsertPolicy::InsertAtBottom,
             size_adjust_policy: ComboBoxSizeAdjustPolicy::AdjustToContents,
@@ -513,8 +563,79 @@ impl ComboBox {
             completer: None,
             completions: Vec::new(),
             reveal_progress: 1.0,
+            item_revision: 0,
+            size_hint_cache: RefCell::new(None),
+            icon_advance_cache: RefCell::new(None),
         }
     }
+    /// Bumped whenever `items` or `item_meta` changes, so the derived caches invalidate.
+    fn invalidate_item_caches(&mut self) {
+        self.item_revision = self.item_revision.wrapping_add(1);
+    }
+
+    /// The widest item's measured width, memoised for the current items and font.
+    fn widest_item_width(&self) -> u32 {
+        let font = effective_font(self.style());
+        if let Ok(cache) = self.size_hint_cache.try_borrow() {
+            if let Some(cache) = cache.as_ref() {
+                if cache.revision == self.item_revision && cache.font == *font {
+                    return cache.widest;
+                }
+            }
+        }
+        let widest =
+            self.items.iter().map(|s| estimate_text_width(s, font, 1.0)).max().unwrap_or(8);
+        if let Ok(mut cache) = self.size_hint_cache.try_borrow_mut() {
+            *cache =
+                Some(SizeHintCache { revision: self.item_revision, font: font.clone(), widest });
+        }
+        widest
+    }
+
+    /// The measured advance of a row's icon, memoised for the current items, font and scale.
+    fn icon_advance(&self, context: &RenderContext, index: usize, icon: &str, font: &Font) -> i32 {
+        let dpi_bits = context.dpi_scale().to_bits();
+        if let Ok(cache) = self.icon_advance_cache.try_borrow() {
+            if let Some(cache) = cache.as_ref() {
+                if cache.revision == self.item_revision
+                    && cache.font == *font
+                    && cache.dpi_bits == dpi_bits
+                {
+                    if let Some(Some(advance)) = cache.advances.get(index) {
+                        return *advance;
+                    }
+                }
+            }
+        }
+        let advance = context.measure_text(icon, font).width as i32;
+        if let Ok(mut cache) = self.icon_advance_cache.try_borrow_mut() {
+            let stale = cache.as_ref().is_none_or(|cache| {
+                cache.revision != self.item_revision
+                    || cache.font != *font
+                    || cache.dpi_bits != dpi_bits
+            });
+            if stale {
+                let mut advances = Vec::new();
+                advances.resize(self.item_meta.len(), None);
+                *cache = Some(IconAdvanceCache {
+                    revision: self.item_revision,
+                    font: font.clone(),
+                    dpi_bits,
+                    advances,
+                });
+            }
+            if let Some(cache) = cache.as_mut() {
+                if cache.advances.len() < self.item_meta.len() {
+                    cache.advances.resize(self.item_meta.len(), None);
+                }
+                if let Some(slot) = cache.advances.get_mut(index) {
+                    *slot = Some(advance);
+                }
+            }
+        }
+        advance
+    }
+
     /// Returns number of items.
     pub fn count(&self) -> usize {
         self.items.len()
@@ -531,6 +652,7 @@ impl ComboBox {
     pub fn add_item(&mut self, text: String) {
         self.items.push(text);
         self.item_meta.push(ComboBoxItem::new());
+        self.invalidate_item_caches();
         self.refresh_completions();
         self.base.request_redraw();
     }
@@ -545,6 +667,7 @@ impl ComboBox {
         let added = items.len();
         self.items.extend(items);
         self.item_meta.resize(self.item_meta.len() + added, ComboBoxItem::new());
+        self.invalidate_item_caches();
         self.base.request_redraw();
     }
     /// Replaces all items with the given items. Clears the current selection.
@@ -556,6 +679,7 @@ impl ComboBox {
         self.items = items;
         self.item_meta.clear();
         self.item_meta.resize(added, ComboBoxItem::new());
+        self.invalidate_item_caches();
         self.current_index = None;
         self.current_index_changed.emit(None);
         self.current_text_changed.emit(String::new());
@@ -572,6 +696,7 @@ impl ComboBox {
         self.items = items;
         self.item_meta = meta;
         self.item_meta.resize(count, ComboBoxItem::new());
+        self.invalidate_item_caches();
         self.current_index = None;
         self.current_index_changed.emit(None);
         self.current_text_changed.emit(String::new());
@@ -592,6 +717,7 @@ impl ComboBox {
             return;
         }
         *slot = meta;
+        self.invalidate_item_caches();
         self.base.request_redraw();
     }
 
@@ -602,6 +728,7 @@ impl ComboBox {
                 return;
             }
             meta.icon = icon;
+            self.invalidate_item_caches();
             self.base.request_redraw();
         }
     }
@@ -694,6 +821,7 @@ impl ComboBox {
         if index <= self.items.len() {
             self.items.insert(index, text);
             self.item_meta.insert(index.min(self.item_meta.len()), ComboBoxItem::new());
+            self.invalidate_item_caches();
             // Adjust current index if needed
             if let Some(current) = &mut self.current_index {
                 if index <= *current {
@@ -713,6 +841,7 @@ impl ComboBox {
             if index < self.item_meta.len() {
                 self.item_meta.remove(index);
             }
+            self.invalidate_item_caches();
             // Adjust current index if needed
             if let Some(current) = &mut self.current_index {
                 if index == *current {
@@ -735,6 +864,7 @@ impl ComboBox {
         }
         self.items.clear();
         self.item_meta.clear();
+        self.invalidate_item_caches();
         self.current_index = None;
         self.current_text_changed.emit(String::new());
         self.current_index_changed.emit(None);
@@ -768,6 +898,58 @@ impl ComboBox {
     pub fn current_text(&self) -> String {
         self.current_index.and_then(|idx| self.items.get(idx)).cloned().unwrap_or_default()
     }
+
+    /// The text shown when the field has no value and the list is empty.
+    pub fn placeholder_text(&self) -> &str {
+        &self.placeholder_text
+    }
+
+    /// Sets the empty-state text.
+    ///
+    /// The field and its open list both use it when there is nothing to show; the historical
+    /// `"(Empty)"` and `"(No items)"` strings remain as the fallbacks when it is empty.
+    pub fn set_placeholder_text(&mut self, text: String) {
+        if self.placeholder_text == text {
+            return;
+        }
+        self.placeholder_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The number of characters the minimum-content-length policy asks the hint for.
+    pub fn minimum_contents_length(&self) -> usize {
+        self.minimum_contents_length
+    }
+
+    /// Sets the character count the minimum-content-length policy measures.
+    pub fn set_minimum_contents_length(&mut self, length: usize) {
+        if self.minimum_contents_length == length {
+            return;
+        }
+        self.minimum_contents_length = length;
+        self.base.request_layout();
+    }
+
+    /// Replaces one item's label, keeping its presentation metadata.
+    ///
+    /// The counterpart of [`Self::set_item_icon`] / [`Self::set_item_enabled`] / [`Self::set_item_meta`]:
+    /// a label used to be writable only when the row was added. When the edited row is the current
+    /// one, `current_text_changed` reports the new value.
+    pub fn set_item_text(&mut self, index: usize, text: String) {
+        let Some(slot) = self.items.get_mut(index) else {
+            return;
+        };
+        if *slot == text {
+            return;
+        }
+        *slot = text;
+        self.invalidate_item_caches();
+        self.refresh_completions();
+        if self.current_index == Some(index) {
+            self.current_text_changed.emit(self.items[index].clone());
+        }
+        self.base.request_redraw();
+    }
     /// Sets current text (for editable combo boxes).
     ///
     /// When the text matches an existing item, that item becomes current. When
@@ -779,6 +961,7 @@ impl ComboBox {
         if !self.editable {
             return;
         }
+        let before = self.current_text();
         self.refresh_completions();
         let index = self.items.iter().position(|item| item == &text);
         let index = match index {
@@ -799,6 +982,7 @@ impl ComboBox {
                 };
                 self.items.insert(at, text);
                 self.item_meta.insert(at.min(self.item_meta.len()), ComboBoxItem::new());
+                self.invalidate_item_caches();
                 if let Some(current) = &mut self.current_index {
                     if at <= *current {
                         *current += 1;
@@ -809,6 +993,13 @@ impl ComboBox {
             None => None,
         };
         self.set_current_index(index);
+        // The editable value is this control's one editable-text mutation point. Report it through
+        // `text_edited` as well as through the selection's `current_text_changed`, so a host can
+        // distinguish "the user edited the value" from "the selection moved".
+        let after = self.current_text();
+        if after != before {
+            self.text_edited.emit(after);
+        }
     }
     /// Returns whether the combo box is editable.
     pub fn is_editable(&self) -> bool {
@@ -988,6 +1179,22 @@ impl ComboBox {
         }
     }
 
+    /// Moves the highlight to `hovered`, announcing a row that became highlighted.
+    ///
+    /// Returns whether it changed, so a caller repaints only on a real move. A cleared highlight
+    /// emits nothing: the published payload is an index, and "no row" has none — a listener sees
+    /// the absence by no longer receiving one.
+    fn set_hovered(&mut self, hovered: Option<usize>) -> bool {
+        if self.hovered_item == hovered {
+            return false;
+        }
+        self.hovered_item = hovered;
+        if let Some(index) = hovered {
+            self.highlighted.emit(index);
+        }
+        true
+    }
+
     /// Moves the highlight by `delta` rows, clamped to the items that exist.
     ///
     /// Returns whether the highlight moved, so a caller can repaint only when something changed.
@@ -1021,7 +1228,7 @@ impl ComboBox {
             guard += 1;
         }
         let moved = self.hovered_item != Some(next);
-        self.hovered_item = Some(next);
+        self.set_hovered(Some(next));
         self.scroll_to(next);
         moved
     }
@@ -1125,9 +1332,7 @@ impl Widget for ComboBox {
         // than an 8-px-per-UTF-8-byte guess. The old `s.len() * 8` counted bytes, so a CJK value
         // measured three times its drawn width, and it ignored the font entirely, so a scaled theme
         // font did not widen the field (D09-STYLE-02).
-        let font = effective_font(self.style());
-        let widest =
-            self.items().iter().map(|s| estimate_text_width(s, font, 1.0)).max().unwrap_or(8);
+        let widest = self.widest_item_width();
         // The profile decides the field's height, so its half-height is also the vertical air
         // a value gets inside it; reading the constant here would size the hint for the wrong
         // platform.
@@ -1154,11 +1359,22 @@ impl Widget for ComboBox {
         let width = match self.size_adjust_policy {
             ComboBoxSizeAdjustPolicy::AdjustToContents
             | ComboBoxSizeAdjustPolicy::AdjustToContentsOnFirstShow => hint.width,
-            // The minimum-length policy asks only for the field's own chrome; the layout gives
-            // the rest of the width.
-            ComboBoxSizeAdjustPolicy::AdjustToMinimumContentsLength => floor
-                .width
-                .max(dimensions::TEXT_FIELD_PADDING_H + dimensions::BUTTON_ICON_SIZE + trailing),
+            // The minimum-length policy asks for the field's own chrome plus the requested number
+            // of characters. A zero length keeps the historical "chrome only" floor, which is
+            // what the policy meant before the numeral existed (I-13).
+            ComboBoxSizeAdjustPolicy::AdjustToMinimumContentsLength => {
+                let requested = if self.minimum_contents_length == 0 {
+                    floor.width
+                } else {
+                    let font = effective_font(self.style());
+                    // `M` is the widest common Latin glyph, so the measured request is an upper
+                    // bound rather than an average that a wide value could exceed.
+                    let sample = "M".repeat(self.minimum_contents_length);
+                    let content = estimate_text_width(&sample, font, 1.0);
+                    ControlMetrics::implicit_size(Size::new(content, 0), padding, floor).width
+                };
+                floor.width.max(requested)
+            }
         };
         Size::new(width, self.field_band().height.max(floor.height))
     }
@@ -1202,6 +1418,12 @@ impl Widget for ComboBox {
                 &self.popup_visibility_changed,
                 |v| CapabilityValue::Bool(*v),
             )),
+            "highlighted" => Some(EventSignalRef::mapped("highlighted", &self.highlighted, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
+            "text_edited" => Some(EventSignalRef::mapped("text_edited", &self.text_edited, |v| {
+                CapabilityValue::String(v.clone())
+            })),
             _ => None,
         }
     }
@@ -1229,6 +1451,10 @@ impl WidgetProperties for ComboBox {
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
             "max_visible_items" => Ok(CapabilityValue::UInt(self.max_visible_items() as u64)),
+            "placeholder_text" => Ok(CapabilityValue::String(self.placeholder_text().to_string())),
+            "minimum_contents_length" => {
+                Ok(CapabilityValue::UInt(self.minimum_contents_length() as u64))
+            }
             "insert_policy" => {
                 Ok(CapabilityValue::String(insert_policy_token(self.insert_policy()).to_string()))
             }
@@ -1291,6 +1517,14 @@ impl WidgetProperties for ComboBox {
                 self.set_max_visible_items(expect_usize(value)?);
                 Ok(())
             }
+            "placeholder_text" => {
+                self.set_placeholder_text(expect_string(value)?);
+                Ok(())
+            }
+            "minimum_contents_length" => {
+                self.set_minimum_contents_length(expect_usize(value)?);
+                Ok(())
+            }
             "insert_policy" => {
                 let token = expect_string(value)?;
                 let policy =
@@ -1324,6 +1558,8 @@ impl WidgetProperties for ComboBox {
             "editable",
             "open",
             "max_visible_items",
+            "placeholder_text",
+            "minimum_contents_length",
             "insert_policy",
             "size_adjust_policy",
             "direction",
@@ -1374,7 +1610,7 @@ impl EventHandler for ComboBox {
                 // A row of the open list takes priority: it is drawn over the field, so a press
                 // inside it belongs to the list even where the two boxes overlap.
                 if let Some(index) = self.item_at_point(*pos) {
-                    self.hovered_item = Some(index);
+                    self.set_hovered(Some(index));
                     self.commit_hovered();
                     return;
                 }
@@ -1396,8 +1632,7 @@ impl EventHandler for ComboBox {
             Event::MouseMove { pos } => {
                 if self.open {
                     let hovered = self.item_at_point(*pos);
-                    if hovered != self.hovered_item {
-                        self.hovered_item = hovered;
+                    if self.set_hovered(hovered) {
                         self.base.request_redraw();
                     }
                 }
@@ -1405,7 +1640,7 @@ impl EventHandler for ComboBox {
             #[cfg(feature = "touch")]
             Event::Tap { pos } => {
                 if let Some(index) = self.item_at_point(*pos) {
-                    self.hovered_item = Some(index);
+                    self.set_hovered(Some(index));
                     self.commit_hovered();
                 } else if self.open {
                     self.set_open(false);
@@ -1498,7 +1733,7 @@ impl EventHandler for ComboBox {
                 36 if self.open => {
                     let first = (0..self.items.len()).find(|&index| self.is_item_enabled(index));
                     if let Some(index) = first {
-                        self.hovered_item = Some(index);
+                        self.set_hovered(Some(index));
                         self.scroll_to_current();
                         self.base.request_redraw();
                     }
@@ -1507,7 +1742,7 @@ impl EventHandler for ComboBox {
                     let last =
                         (0..self.items.len()).rev().find(|&index| self.is_item_enabled(index));
                     if let Some(index) = last {
-                        self.hovered_item = Some(index);
+                        self.set_hovered(Some(index));
                         self.scroll_to_current();
                         self.base.request_redraw();
                     }
@@ -1519,7 +1754,7 @@ impl EventHandler for ComboBox {
                         let start =
                             self.hovered_item.or(self.current_index).map_or(0, |index| index + 1);
                         if let Some(index) = self.find_prefix(&self.type_ahead, start) {
-                            self.hovered_item = Some(index);
+                            self.set_hovered(Some(index));
                             self.set_current_index(Some(index));
                             self.base.request_redraw();
                         }
@@ -1628,7 +1863,13 @@ impl Draw for ComboBox {
         // Draw current text, or the placeholder when the list is empty. Bounded to the box the
         // indicator left, so a long value is fitted rather than run under the indicator.
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
-        let current_text = self.current_text();
+        // The value is borrowed from `items` rather than cloned: `current_text()` returns an owned
+        // string, so the paint path allocated one per frame just to compare it against `""`.
+        let current_text: &str = self
+            .current_index
+            .and_then(|idx| self.items.get(idx))
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let value_line = context.text_line(geometry.text_box, font);
         let text_box = Rect::new(
             geometry.text_box.x,
@@ -1641,9 +1882,15 @@ impl Draw for ComboBox {
         // the same alignment, so the field reads as one column whichever value it is showing.
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
         if !current_text.is_empty() {
-            context.draw_text_fitted_cow(text_box, &current_text, font, text_color, value_align);
+            context.draw_text_fitted_cow(text_box, current_text, font, text_color, value_align);
         } else if self.items.is_empty() {
-            context.draw_text_fitted_cow(text_box, "(Empty)", font, text_color, value_align);
+            // A host-supplied empty-state text wins; the historical literal is the fallback.
+            let empty = if self.placeholder_text.is_empty() {
+                "(Empty)"
+            } else {
+                self.placeholder_text.as_str()
+            };
+            context.draw_text_fitted_cow(text_box, empty, font, text_color, value_align);
         }
 
         // ── Keyboard focus ring ──
@@ -1684,9 +1931,14 @@ impl Draw for ComboBox {
                 // rendering failure rather than as "there is nothing to choose", and a user cannot
                 // tell it from a list that failed to load.
                 let row = Rect::new(list.x, list.y, list.width, dimensions::MENU_ROW_HEIGHT);
+                let empty = if self.placeholder_text.is_empty() {
+                    "(No items)"
+                } else {
+                    self.placeholder_text.as_str()
+                };
                 context.draw_text_fitted_cow(
                     context.text_line(row, font),
-                    "(No items)",
+                    empty,
                     font,
                     text_color.blend(&bg, 0.45),
                     HorizontalAlignment::Left,
@@ -1713,7 +1965,7 @@ impl Draw for ComboBox {
                     let enabled = meta.is_none_or(|meta| meta.enabled);
                     if let Some(icon) = meta.and_then(|meta| meta.icon.as_deref()) {
                         if !icon.is_empty() {
-                            let advance = context.measure_text(icon, font).width as i32;
+                            let advance = self.icon_advance(context, index, icon, font);
                             context.draw_text(
                                 Point::new(label_x, line.y),
                                 icon,

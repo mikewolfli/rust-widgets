@@ -9,8 +9,10 @@
 //!
 //! **Decoding note**: GIF/APNG/WebP *stream* decoding is not built in. Decode
 //! the container yourself (per frame) and hand the RGBA frames to
-//! [`AnimatedImage::load_frames`]. [`AnimatedImage::load_from_bytes`] refuses
-//! raw streams rather than fabricating placeholder frames.
+//! [`AnimatedImage::load_frames`], or install a provider with
+//! [`AnimatedImage::set_frame_provider`] so the control fetches frames on demand.
+//! The control deliberately exposes no byte-stream loader: a method that cannot
+//! decode would only advertise a capability it does not have.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
@@ -18,7 +20,7 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -37,7 +39,14 @@ pub struct AnimatedFrame {
     pub delay_ms: u64,
 }
 
-/// Image encoding format hint used when parsing animated image data.
+/// Image encoding format hint, used by a host's decoder.
+///
+/// # Host-decoding contract
+///
+/// This control ships no container decoder. The variants name the container a
+/// host is expected to decode before calling [`AnimatedImage::load_frames`] or
+/// installing an [`AnimatedFrameProvider`]; the control never parses these
+/// bytes itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnimatedImageFormat {
     /// Graphics Interchange Format.
@@ -46,6 +55,38 @@ pub enum AnimatedImageFormat {
     Apng,
     /// Animated WebP.
     WebP,
+}
+
+/// Supplies decoded frames on demand instead of keeping every frame resident.
+///
+/// The control calls [`AnimatedFrameProvider::frame`] only for the frames it is about to show;
+/// [`AnimatedFrameProvider::frame_count`] is the sequence length. A provider that cannot decode a
+/// frame returns `None`, and the control then paints nothing for that index rather than inventing
+/// a placeholder picture.
+pub trait AnimatedFrameProvider {
+    /// Number of frames in the sequence.
+    fn frame_count(&self) -> usize;
+    /// The decoded frame at `index`, or `None` when it cannot be produced.
+    fn frame(&self, index: usize) -> Option<AnimatedFrame>;
+}
+
+/// How playback traverses the frame sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlaybackDirection {
+    /// Frames advance from the first to the last.
+    #[default]
+    Forward,
+    /// Frames advance from the last to the first.
+    Reverse,
+}
+
+/// One cached scaled frame, keyed by frame index, destination size and fit mode.
+struct ScaledFrame {
+    frame_index: usize,
+    width: u32,
+    height: u32,
+    fit: AnimatedImageFit,
+    data: Vec<u8>,
 }
 
 /// How a decoded frame is mapped into the control's rectangle.
@@ -84,6 +125,18 @@ pub struct AnimatedImage {
     pub animation_finished: GenericSignal,
     /// Emitted when the current frame index changes. Passes the new frame index.
     pub frame_changed: Signal1<u32>,
+    /// How playback traverses the sequence.
+    direction: PlaybackDirection,
+    /// A host decoder that supplies frames on demand.
+    frame_provider: Option<Box<dyn AnimatedFrameProvider>>,
+    /// Frame count reported by the provider (zero when no provider is installed).
+    provider_count: usize,
+    /// Frames fetched from the provider, in least-recently-used-first order.
+    provider_cache: Vec<(usize, AnimatedFrame)>,
+    /// Upper bound on [`Self::provider_cache`] entries; `0` means unbounded.
+    frame_cache_limit: usize,
+    /// Cached result of the nearest-neighbour resample used by the fit modes.
+    scale_cache: Option<ScaledFrame>,
 }
 
 impl AnimatedImage {
@@ -102,6 +155,12 @@ impl AnimatedImage {
             fit: AnimatedImageFit::Original,
             animation_finished: GenericSignal::new(),
             frame_changed: Signal1::new(),
+            direction: PlaybackDirection::Forward,
+            frame_provider: None,
+            provider_count: 0,
+            provider_cache: Vec::new(),
+            frame_cache_limit: 0,
+            scale_cache: None,
         }
     }
 
@@ -117,32 +176,127 @@ impl AnimatedImage {
             ));
         }
         self.frames = frames;
+        self.frame_provider = None;
+        self.provider_count = 0;
+        self.provider_cache.clear();
         self.current_frame = 0;
         self.frame_timer = 0;
         self.loops_completed = 0;
         self.playing = false;
+        self.scale_cache = None;
         self.base.request_redraw();
         Ok(())
     }
 
-    /// Load frames from raw GIF/APNG/WebP bytes.
+    /// Installs a host decoder that supplies frames on demand.
     ///
-    /// This widget does not include container decoders, so raw streams are
-    /// rejected with an explicit error instead of fabricating placeholder
-    /// frames. Decode the stream per frame and use [`Self::load_frames`].
-    pub fn load_from_bytes(
-        &mut self,
-        _data: &[u8],
-        format: AnimatedImageFormat,
-    ) -> Result<(), String> {
-        Err(format!(
-            "decoding {format:?} streams is not implemented; decode frames and pass them via AnimatedImage::load_frames"
-        ))
+    /// The control then keeps only the frames it has recently shown (bounded by
+    /// [`Self::frame_cache_limit`]) instead of requiring every decoded frame up front. Installing a
+    /// provider clears any eagerly loaded frames; `load_frames` conversely clears the provider, so
+    /// exactly one of the two supplies the sequence.
+    pub fn set_frame_provider(&mut self, provider: Box<dyn AnimatedFrameProvider>) {
+        self.provider_count = provider.frame_count();
+        self.frame_provider = Some(provider);
+        self.frames.clear();
+        self.provider_cache.clear();
+        self.current_frame = 0;
+        self.frame_timer = 0;
+        self.loops_completed = 0;
+        self.playing = false;
+        self.scale_cache = None;
+        self.base.request_redraw();
+    }
+
+    /// Removes the host decoder, keeping any frames already fetched.
+    pub fn clear_frame_provider(&mut self) {
+        if self.frame_provider.take().is_none() {
+            return;
+        }
+        self.provider_count = 0;
+        self.provider_cache.clear();
+        self.scale_cache = None;
+        self.base.request_redraw();
+    }
+
+    /// Whether a host frame provider is installed.
+    pub fn has_frame_provider(&self) -> bool {
+        self.frame_provider.is_some()
+    }
+
+    /// The maximum number of provider frames kept resident; `0` means unbounded.
+    pub fn frame_cache_limit(&self) -> usize {
+        self.frame_cache_limit
+    }
+
+    /// Sets the provider-frame cache bound and evicts the least recently shown frames.
+    pub fn set_frame_cache_limit(&mut self, limit: usize) {
+        if self.frame_cache_limit == limit {
+            return;
+        }
+        self.frame_cache_limit = limit;
+        self.evict_provider_cache();
+        self.base.request_redraw();
+    }
+
+    /// The resident RGBA bytes held by the control, in bytes.
+    ///
+    /// A host can use this to verify that a bounded provider cache really bounds memory rather
+    /// than merely reporting that it should.
+    pub fn memory_usage(&self) -> usize {
+        let eager: usize = self.frames.iter().map(|frame| frame.data.len()).sum();
+        let cached: usize = self.provider_cache.iter().map(|(_, frame)| frame.data.len()).sum();
+        let scaled = self.scale_cache.as_ref().map(|cache| cache.data.len()).unwrap_or(0);
+        eager + cached + scaled
+    }
+
+    /// The frame `index`, fetching it from the provider when it is not resident.
+    ///
+    /// Only a provider-backed sequence can fetch; an eager sequence answers from its own list.
+    fn ensure_frame(&mut self, index: usize) -> Option<&AnimatedFrame> {
+        if self.frame_provider.is_none() {
+            return self.frames.get(index);
+        }
+        if let Some(position) = self.provider_cache.iter().position(|(slot, _)| *slot == index) {
+            // Refresh recency so the least recently *shown* frame is the one evicted.
+            if position + 1 != self.provider_cache.len() {
+                let entry = self.provider_cache.remove(position);
+                self.provider_cache.push(entry);
+            }
+            return self.provider_cache.last().map(|(_, frame)| frame);
+        }
+        let frame = self.frame_provider.as_ref()?.frame(index)?;
+        self.provider_cache.push((index, frame));
+        self.evict_provider_cache();
+        self.provider_cache.iter().find(|(slot, _)| *slot == index).map(|(_, frame)| frame)
+    }
+
+    /// Drops cached provider frames beyond [`Self::frame_cache_limit`], never the current one.
+    fn evict_provider_cache(&mut self) {
+        if self.frame_cache_limit == 0 {
+            return;
+        }
+        while self.provider_cache.len() > self.frame_cache_limit {
+            let evictable = self
+                .provider_cache
+                .iter()
+                .position(|(slot, _)| *slot != self.current_frame)
+                .unwrap_or(0);
+            self.provider_cache.remove(evictable);
+        }
+    }
+
+    /// The resident frame `index`, without fetching it.
+    fn cached_frame(&self, index: usize) -> Option<&AnimatedFrame> {
+        if self.frame_provider.is_some() {
+            self.provider_cache.iter().find(|(slot, _)| *slot == index).map(|(_, frame)| frame)
+        } else {
+            self.frames.get(index)
+        }
     }
 
     /// Starts playback of the animation.
     pub fn play(&mut self) {
-        if self.frames.is_empty() {
+        if self.frame_count() == 0 {
             return;
         }
         self.playing = true;
@@ -219,37 +373,101 @@ impl AnimatedImage {
         self.current_frame
     }
 
+    /// Selects the visible frame directly, resetting the frame timer.
+    ///
+    /// This is the seek entry point: a host scrubbing a timeline sets the index and receives the
+    /// same `frame_changed` signal a normal advance produces. An index past the end is clamped; a
+    /// sequence with no frames ignores the call.
+    pub fn set_current_frame(&mut self, frame: usize) {
+        let count = self.frame_count();
+        if count == 0 {
+            return;
+        }
+        let frame = frame.min(count - 1);
+        if self.current_frame == frame {
+            self.frame_timer = 0;
+            return;
+        }
+        self.current_frame = frame;
+        self.frame_timer = 0;
+        self.frame_changed.emit(frame as u32);
+        self.base.request_redraw();
+    }
+
+    /// How playback traverses the sequence.
+    pub fn direction(&self) -> PlaybackDirection {
+        self.direction
+    }
+
+    /// Sets the traversal direction. A change is visible on the next advance.
+    pub fn set_direction(&mut self, direction: PlaybackDirection) {
+        if self.direction == direction {
+            return;
+        }
+        self.direction = direction;
+        self.base.request_redraw();
+    }
+
     /// Returns the total number of frames.
     pub fn frame_count(&self) -> usize {
-        self.frames.len()
+        if self.frame_provider.is_some() {
+            self.provider_count
+        } else {
+            self.frames.len()
+        }
     }
 
     /// Advances to the next frame. Wraps around when reaching the end
     /// and handles loop counting.
     pub fn advance_frame(&mut self) {
-        if self.frames.is_empty() {
+        let count = self.frame_count();
+        if count == 0 {
             return;
         }
 
-        let next = self.current_frame + 1;
-        if next >= self.frames.len() {
-            // Reached the end of the sequence.
-            if self.loop_count == 0 {
-                // Infinite looping: wrap around.
-                self.current_frame = 0;
-            } else {
-                self.loops_completed += 1;
-                if self.loops_completed >= self.loop_count {
-                    // All loops completed, stop.
-                    self.playing = false;
-                    self.animation_finished.emit();
-                    // Stay on the last frame.
-                    return;
+        let stepped = match self.direction {
+            PlaybackDirection::Forward => {
+                let next = self.current_frame + 1;
+                if next >= count {
+                    None
+                } else {
+                    Some(next)
                 }
-                self.current_frame = 0;
             }
-        } else {
-            self.current_frame = next;
+            PlaybackDirection::Reverse => {
+                if self.current_frame == 0 {
+                    None
+                } else {
+                    Some(self.current_frame - 1)
+                }
+            }
+        };
+
+        match stepped {
+            Some(next) => self.current_frame = next,
+            None => {
+                // Reached the end of the sequence.
+                if self.loop_count == 0 {
+                    // Infinite looping: wrap around.
+                    self.current_frame = match self.direction {
+                        PlaybackDirection::Forward => 0,
+                        PlaybackDirection::Reverse => count - 1,
+                    };
+                } else {
+                    self.loops_completed += 1;
+                    if self.loops_completed >= self.loop_count {
+                        // All loops completed, stop.
+                        self.playing = false;
+                        self.animation_finished.emit();
+                        // Stay on the last frame.
+                        return;
+                    }
+                    self.current_frame = match self.direction {
+                        PlaybackDirection::Forward => 0,
+                        PlaybackDirection::Reverse => count - 1,
+                    };
+                }
+            }
         }
 
         self.frame_timer = 0;
@@ -260,12 +478,14 @@ impl AnimatedImage {
     /// Advances the animation timer by the given number of milliseconds.
     /// Returns true if the frame changed as a result.
     pub fn tick(&mut self, delta_ms: u64) -> bool {
-        if !self.playing || self.frames.is_empty() {
+        if !self.playing || self.frame_count() == 0 {
             return false;
         }
 
-        let delay =
-            self.frames.get(self.current_frame).map(|f| f.delay_ms).unwrap_or(self.frame_delay);
+        let delay = self
+            .ensure_frame(self.current_frame)
+            .map(|frame| frame.delay_ms)
+            .unwrap_or(self.frame_delay);
 
         // `saturating_add`: `frame_timer` is a `u64` fed by a public `tick(delta_ms)`, so a large
         // `delta_ms` (or many small ones between advances) could overflow it. A wrapped timer is
@@ -361,6 +581,14 @@ impl WidgetProperties for AnimatedImage {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "playing" => Ok(CapabilityValue::Bool(self.is_playing())),
+            "direction" => Ok(CapabilityValue::String(
+                match self.direction() {
+                    PlaybackDirection::Forward => "forward",
+                    PlaybackDirection::Reverse => "reverse",
+                }
+                .to_string(),
+            )),
+            "frame_cache_limit" => Ok(CapabilityValue::UInt(self.frame_cache_limit() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -375,12 +603,25 @@ impl WidgetProperties for AnimatedImage {
                 }
                 Ok(())
             }
+            "direction" => {
+                let direction = match expect_string(value)?.to_ascii_lowercase().as_str() {
+                    "forward" => PlaybackDirection::Forward,
+                    "reverse" => PlaybackDirection::Reverse,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_direction(direction);
+                Ok(())
+            }
+            "frame_cache_limit" => {
+                self.set_frame_cache_limit(expect_usize(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["playing", BASE_PROPERTY_NAMES]
+        property_names_of!["playing", "direction", "frame_cache_limit", BASE_PROPERTY_NAMES]
     }
 
     /// Runs the published playback commands.
@@ -414,7 +655,7 @@ impl Draw for AnimatedImage {
         // pixel baseline cannot move. Resolved once per draw, because the empty state, the
         // background, the status chips and the counter all read from it and re-resolving
         // would take the theme lock several times inside one draw.
-        let style = self.style();
+        let style = self.style().clone();
         let themed = crate::style::resolved_theme_style_shared("animated_image");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
@@ -435,12 +676,12 @@ impl Draw for AnimatedImage {
         let placeholder_text =
             style.text_color.or(themed_text).unwrap_or(Color::rgba(160, 160, 160, 220));
 
-        if self.frames.is_empty() {
+        if self.frame_count() == 0 {
             // Empty state: a neutral placeholder panel. The panel and the label are this
             // widget's chrome — there is no frame data here at all — so both now follow the
             // theme instead of pinning the control to one appearance.
             context.fill_rounded_rect(rect, 4, base_bg);
-            let font = effective_font(style);
+            let font = effective_font(&style);
             let text = "No frames loaded";
             // Centred on the vertical midline and **fitted** to the control's width. The
             // label is 16 characters at 14 px, so it is wider than a control narrower than
@@ -460,7 +701,14 @@ impl Draw for AnimatedImage {
             return;
         }
 
-        if let Some(frame) = self.frames.get(self.current_frame) {
+        let frame_count = self.frame_count();
+        let frame_index = self.current_frame.min(frame_count - 1);
+        // A provider-backed sequence is fetched here; an eager one answers from its own list.
+        // The guarantee is only that the frame about to be drawn is resident, so the paint path
+        // below never has to fetch in the middle of a draw.
+        self.ensure_frame(frame_index);
+        let frame_size = self.cached_frame(frame_index).map(|frame| (frame.width, frame.height));
+        if let Some((fw, fh)) = frame_size {
             // Background — the surface the frame is matted onto, i.e. chrome. Disabled steps the
             // resolved fill toward its own contrast colour rather than toward a fixed white,
             // which on a dark surface made the disabled state *more* prominent than the enabled
@@ -480,42 +728,56 @@ impl Draw for AnimatedImage {
             );
 
             // Draw the frame, mapped into the control by the fit mode.
-            let fw = frame.width as i32;
-            let fh = frame.height as i32;
+            let fw_i = fw as i32;
+            let fh_i = fh as i32;
             context.push_clip(rect.x, rect.y, rect.width, rect.height);
             match self.fit {
                 AnimatedImageFit::Original => {
-                    let dx = rect.x + (rect.width as i32 - fw) / 2;
-                    let dy = rect.y + (rect.height as i32 - fh) / 2;
-                    context.draw_image(
-                        dx.max(0),
-                        dy.max(0),
-                        frame.width,
-                        frame.height,
-                        &frame.data,
-                    );
+                    let dx = rect.x + (rect.width as i32 - fw_i) / 2;
+                    let dy = rect.y + (rect.height as i32 - fh_i) / 2;
+                    if let Some(frame) = self.cached_frame(frame_index) {
+                        context.draw_image(dx.max(0), dy.max(0), fw, fh, &frame.data);
+                    }
                 }
                 fit => {
-                    let dest = fit_destination(rect, frame.width, frame.height, fit);
-                    if dest.width == frame.width && dest.height == frame.height {
-                        context.draw_image(
-                            dest.x.max(0),
-                            dest.y.max(0),
-                            frame.width,
-                            frame.height,
-                            &frame.data,
-                        );
+                    let dest = fit_destination(rect, fw, fh, fit);
+                    if dest.width == fw && dest.height == fh {
+                        if let Some(frame) = self.cached_frame(frame_index) {
+                            context.draw_image(dest.x.max(0), dest.y.max(0), fw, fh, &frame.data);
+                        }
                     } else {
-                        // The renderer's image primitive copies at native size; a fit mode
-                        // resamples once into a buffer at the destination size.
-                        let scaled = nearest_scale(
-                            &frame.data,
-                            frame.width,
-                            frame.height,
-                            dest.width,
-                            dest.height,
+                        // The resample is cached by frame index, destination size and fit mode:
+                        // without the cache a playing animation allocated and resampled the
+                        // whole picture on every frame.
+                        let cached = matches!(
+                            &self.scale_cache,
+                            Some(cache)
+                                if cache.frame_index == frame_index
+                                    && cache.width == dest.width
+                                    && cache.height == dest.height
+                                    && cache.fit == fit
                         );
-                        context.draw_image(dest.x, dest.y, dest.width, dest.height, &scaled);
+                        if !cached {
+                            let scaled = self.cached_frame(frame_index).map(|frame| {
+                                nearest_scale(&frame.data, fw, fh, dest.width, dest.height)
+                            });
+                            self.scale_cache = scaled.map(|data| ScaledFrame {
+                                frame_index,
+                                width: dest.width,
+                                height: dest.height,
+                                fit,
+                                data,
+                            });
+                        }
+                        if let Some(cache) = self.scale_cache.as_ref() {
+                            context.draw_image(
+                                dest.x,
+                                dest.y,
+                                dest.width,
+                                dest.height,
+                                &cache.data,
+                            );
+                        }
                     }
                 }
             }
@@ -556,8 +818,8 @@ impl Draw for AnimatedImage {
             }
 
             // Frame counter overlay at top-right.
-            let counter_text = format!("{}/{}", self.current_frame + 1, self.frames.len());
-            let font = effective_font(style);
+            let counter_text = format!("{}/{}", frame_index + 1, frame_count);
+            let font = effective_font(&style);
             let metrics = context.measure_text(&counter_text, font);
             let cx = rect.x + rect.width as i32 - metrics.width as i32 - 4;
             let cy = rect.y + 2;
@@ -674,10 +936,6 @@ mod tests {
     use crate::core::Point;
     use std::sync::{Arc, Mutex};
 
-    fn make_test_data(len: usize) -> Vec<u8> {
-        (0..len).map(|i| (i % 255) as u8).collect()
-    }
-
     /// Two 2-frame sequences for playback/advance tests.
     fn two_test_frames() -> Vec<AnimatedFrame> {
         vec![
@@ -715,17 +973,60 @@ mod tests {
     }
 
     #[test]
-    fn animated_image_load_from_bytes_rejects_raw_streams() {
+    fn a_frame_provider_supplies_only_the_frames_that_are_shown() {
+        struct Provider {
+            count: usize,
+        }
+        impl AnimatedFrameProvider for Provider {
+            fn frame_count(&self) -> usize {
+                self.count
+            }
+            fn frame(&self, index: usize) -> Option<AnimatedFrame> {
+                Some(AnimatedFrame {
+                    data: vec![index as u8; 16],
+                    width: 2,
+                    height: 2,
+                    delay_ms: 100,
+                })
+            }
+        }
+
         let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
-        let data = make_test_data(128);
-        // Raw GIF/APNG/WebP bytes are refused (no built-in container decoder),
-        // never silently turned into placeholder frames.
-        let result = img.load_from_bytes(&data, AnimatedImageFormat::Gif);
-        assert!(result.is_err());
-        let msg = result.unwrap_err();
-        assert!(msg.contains("not implemented"), "{msg}");
-        assert!(msg.contains("load_frames"), "{msg}");
-        assert_eq!(img.frame_count(), 0);
+        assert_eq!(img.memory_usage(), 0);
+        img.set_frame_provider(Box::new(Provider { count: 4 }));
+        assert!(img.has_frame_provider());
+        assert_eq!(img.frame_count(), 4);
+
+        img.set_frame_cache_limit(2);
+        assert_eq!(img.frame_cache_limit(), 2);
+        img.play();
+        assert!(img.tick(100));
+        assert!(img.tick(100));
+        assert!(img.tick(100));
+        assert_eq!(img.current_frame(), 3);
+        assert!(
+            img.memory_usage() <= 2 * 16,
+            "a bounded cache must bound resident frames, got {}",
+            img.memory_usage()
+        );
+
+        // The eager route still replaces the provider rather than coexisting with it.
+        img.load_frames(two_test_frames()).unwrap();
+        assert!(!img.has_frame_provider());
+        assert_eq!(img.frame_count(), 2);
+    }
+
+    #[test]
+    fn frame_seek_and_direction_are_honoured() {
+        let mut img = AnimatedImage::new(Rect::new(0, 0, 200, 200));
+        img.load_frames(two_test_frames()).unwrap();
+        assert_eq!(img.direction(), PlaybackDirection::Forward);
+        img.set_current_frame(1);
+        assert_eq!(img.current_frame(), 1);
+        img.set_direction(PlaybackDirection::Reverse);
+        img.play();
+        assert!(img.tick(100));
+        assert_eq!(img.current_frame(), 0, "reverse playback walks towards the first frame");
     }
 
     #[test]

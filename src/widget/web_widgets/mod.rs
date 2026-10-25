@@ -5,6 +5,7 @@
 pub mod web_engine;
 pub mod web_view;
 pub use web_engine::WebEngineView as WebEngine;
+pub use web_engine::{Cookie, CookieSameSite, HistoryEntry, DEFAULT_USER_AGENT};
 pub use web_engine::{
     WebEngineContextMenuRequest, WebEngineCookieStore, WebEngineDownloadItem,
     WebEngineFindTextResult, WebEngineNotification, WebEnginePage, WebEngineScriptDialog,

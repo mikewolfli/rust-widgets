@@ -10,9 +10,10 @@
 
 use core::fmt::Write as _;
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::signal::Signal1;
 use crate::style::SemanticColor;
 use crate::widget::capability::coercion::{
     badge_level_to_str, expect_badge_level, expect_bool, expect_i64, expect_string,
@@ -20,7 +21,9 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
+use crate::widget::metrics::{
+    dimensions, estimate_line_height, estimate_text_width, role_font, ControlMetrics,
+};
 use crate::widget::{BaseWidget, Draw, InteractionFade, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -82,6 +85,45 @@ pub struct Badge {
     last_label: String,
     /// Whether the last painted visible state was the dot marker, for the same reason.
     last_dot: bool,
+    /// The label and the metrics the pill is built from, so a resting badge does not
+    /// rebuild and measure the same text every frame.
+    label_cache: BadgeLabelCache,
+    /// Emitted with the new count when [`Badge::set_count`] actually changes it.
+    pub count_changed: Signal1<u32>,
+    /// Emitted with the published level token when [`Badge::set_level`] changes it.
+    pub level_changed: Signal1<&'static str>,
+}
+
+/// Where the painted label comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum BadgeLabelSource {
+    /// No label to paint.
+    #[default]
+    Empty,
+    /// The caller's own `text`.
+    Caller,
+    /// The capped `"{max}+"` count.
+    Capped,
+    /// The uncapped count.
+    Count,
+    /// The label remembered before the appear/disappear fade.
+    Last,
+}
+
+/// Cached label text and the two measurements `draw` takes from it.
+#[derive(Default)]
+struct BadgeLabelCache {
+    text: String,
+    source: BadgeLabelSource,
+    /// The count and cap the cached label was derived from, so a count change that keeps
+    /// the same [`BadgeLabelSource`] still invalidates it.
+    count: u32,
+    max_count: u32,
+    /// The face the metrics were measured with; `None` means the cache is empty.
+    font: Option<Font>,
+    dpi_scale_bits: u32,
+    text_width: u32,
+    line_height: u32,
 }
 
 impl Badge {
@@ -99,6 +141,9 @@ impl Badge {
             fade: InteractionFade::new(),
             last_label: String::new(),
             last_dot: false,
+            label_cache: BadgeLabelCache::default(),
+            count_changed: Signal1::new(),
+            level_changed: Signal1::new(),
         }
     }
 
@@ -112,6 +157,7 @@ impl Badge {
         self.count = count;
         self.sync_fade();
         self.base.request_redraw();
+        self.count_changed.emit(count);
     }
 
     /// Returns the current notification count.
@@ -162,6 +208,7 @@ impl Badge {
         }
         self.level = level;
         self.base.request_redraw();
+        self.level_changed.emit(badge_level_to_str(level));
     }
 
     /// Returns the current severity level.
@@ -207,8 +254,10 @@ impl Badge {
 
     /// The label to render, written into `out` when it is a computed count.
     ///
-    /// Borrowed when the badge shows caller text or a literal — the common case — so the
-    /// draw pass only owns a string when a count is actually shown.
+    /// Borrowed when the badge shows caller text or a literal — the common case. The draw
+    /// pass reaches the same answer through [`Self::label_source`] and its label cache;
+    /// this form is what [`Self::remember_visible_state`] uses to save the label being
+    /// painted before a fade starts.
     fn display_text_into<'a>(&'a self, out: &'a mut String) -> &'a str {
         if !self.text.is_empty() {
             return self.text.as_str();
@@ -227,6 +276,64 @@ impl Badge {
     #[cfg(test)]
     fn display_text(&self) -> String {
         self.display_text_cow().into_owned()
+    }
+
+    /// Classifies the label the badge would paint, without formatting it.
+    fn label_source(&self) -> BadgeLabelSource {
+        if !self.text.is_empty() {
+            BadgeLabelSource::Caller
+        } else if self.max_count != 0 && self.count > self.max_count {
+            BadgeLabelSource::Capped
+        } else if self.count > 0 {
+            BadgeLabelSource::Count
+        } else if !self.last_label.is_empty() {
+            // Only reached while a disappear fade still paints the label it started with:
+            // the dot path returns before this point and a visible badge always has a
+            // count or caller text.
+            BadgeLabelSource::Last
+        } else {
+            BadgeLabelSource::Empty
+        }
+    }
+
+    /// Rebuilds the cached label and metrics when their inputs change.
+    fn refresh_label(&mut self, context: &RenderContext, font: &Font) {
+        let source = self.label_source();
+        let dpi_scale_bits = context.dpi_scale().to_bits();
+        let stale = self.label_cache.font.as_ref() != Some(font)
+            || self.label_cache.dpi_scale_bits != dpi_scale_bits
+            || self.label_cache.source != source
+            || self.label_cache.count != self.count
+            || self.label_cache.max_count != self.max_count
+            || match source {
+                BadgeLabelSource::Caller => self.label_cache.text != self.text,
+                BadgeLabelSource::Last => self.label_cache.text != self.last_label,
+                _ => false,
+            };
+        if !stale {
+            return;
+        }
+
+        self.label_cache.text.clear();
+        match source {
+            BadgeLabelSource::Empty => {}
+            BadgeLabelSource::Caller => self.label_cache.text.push_str(&self.text),
+            BadgeLabelSource::Capped => {
+                let _ = write!(self.label_cache.text, "{}+", self.max_count);
+            }
+            BadgeLabelSource::Count => {
+                let _ = write!(self.label_cache.text, "{}", self.count);
+            }
+            BadgeLabelSource::Last => self.label_cache.text.push_str(&self.last_label),
+        }
+        let metrics = context.measure_text(self.label_cache.text.as_str(), font);
+        self.label_cache.text_width = metrics.width;
+        self.label_cache.line_height = context.measure_text("M", font).height.max(1);
+        self.label_cache.source = source;
+        self.label_cache.count = self.count;
+        self.label_cache.max_count = self.max_count;
+        self.label_cache.font = Some(font.clone());
+        self.label_cache.dpi_scale_bits = dpi_scale_bits;
     }
 
     /// Returns whether the badge should be drawn at all.
@@ -294,7 +401,44 @@ impl Widget for Badge {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(24, 24)
+        // A dot is one fixed marker; a label is as wide as the pill that carries it. The
+        // hint follows the same text and padding `draw` derives the pill from, so a
+        // multi-digit badge is not laid out at a size its own label overflows.
+        const MIN_SIDE: u32 = 24;
+        if self.dot_mode {
+            return crate::core::Size::new(MIN_SIDE, MIN_SIDE);
+        }
+        let mut scratch = String::new();
+        let text = self.display_text_into(&mut scratch);
+        if text.is_empty() {
+            return crate::core::Size::new(MIN_SIDE, MIN_SIDE);
+        }
+        let font = role_font(self.base.style(), dimensions::BADGE_LABEL_FONT_SIZE as f32);
+        let width = estimate_text_width(text, &font, 1.0)
+            .saturating_add(dimensions::BADGE_PILL_PADDING_H * 2)
+            .max(MIN_SIDE);
+        let height = estimate_line_height(&font, 1.0)
+            .saturating_add(dimensions::BADGE_PILL_PADDING_V * 2)
+            .max(MIN_SIDE);
+        crate::core::Size::new(width, height)
+    }
+
+    /// Resolves a published event name to the signal the badge emits.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "count_changed" => {
+                Some(EventSignalRef::mapped("count_changed", &self.count_changed, |value| {
+                    CapabilityValue::Int(*value as i64)
+                }))
+            }
+            "level_changed" => {
+                Some(EventSignalRef::mapped("level_changed", &self.level_changed, |value| {
+                    CapabilityValue::String((*value).to_string())
+                }))
+            }
+            _ => None,
+        }
     }
 
     // The pill's fill is what the appear/disappear fade paints, so a badge whose opacity
@@ -389,6 +533,18 @@ impl Draw for Badge {
         }
 
         let rect = self.geometry();
+        // Whether this frame paints the marker rather than a label. Resolved before the style
+        // borrow so the label cache below can be refreshed through `&mut self`.
+        let draw_dot = self.dot_mode || (!self.should_draw() && self.last_dot);
+        // The label is rebuilt only when its source text, the face or the scale changes, and
+        // its two measurements are kept with it, so a resting badge only reads the cache.
+        let label_font = if draw_dot {
+            None
+        } else {
+            let font = role_font(self.base.style(), dimensions::BADGE_LABEL_FONT_SIZE as f32);
+            self.refresh_label(context, &font);
+            Some(font)
+        };
         // The pill fill is chrome: it resolves explicit style first, then the theme's
         // resolved style for this control, and only then falls back to the severity's
         // own literal. Without the theme step a light/dark switch would change nothing
@@ -443,18 +599,7 @@ impl Draw for Badge {
             style.background_color.unwrap_or_else(|| severity.legible_on(surface, 3.0))
         };
         // The count reads against the pill, so its colour is derived per-branch below from the
-        // fill it actually lands on. Rendered in place; see `display_text_into`.
-        let mut count_text = String::new();
-        let current_label = self.display_text_into(&mut count_text);
-        // While fading out, `should_draw` is already false and the computed label is empty;
-        // the label that was on screen is the one the fade must carry.
-        let text_str = if current_label.is_empty() && !self.should_draw() {
-            self.last_label.as_str()
-        } else {
-            current_label
-        };
-        let draw_dot = self.dot_mode || (!self.should_draw() && self.last_dot);
-
+        // fill it actually lands on.
         if draw_dot {
             // The dot is a **fixed-size** marker, not a fraction of the caller's rectangle:
             // `min(w, h) / 2` drew a 12 px dot in a 24 px census cell and a 60 px disc in a
@@ -467,7 +612,10 @@ impl Draw for Badge {
             return;
         }
 
-        if text_str.is_empty() {
+        let Some(font) = label_font else {
+            return;
+        };
+        if self.label_cache.text.is_empty() {
             return;
         }
 
@@ -481,17 +629,14 @@ impl Draw for Badge {
         // `pill_height` so a wide label also grew the pill taller. Both now derive from
         // the resolved label and the named pill metrics alone, and the pill is centred in
         // the control by [`ControlMetrics::center_in`], which clamps rather than expands.
-        let font = role_font(style, dimensions::BADGE_LABEL_FONT_SIZE as f32);
-        let metrics = context.measure_text(text_str, &font);
-
-        let text_width = metrics.width;
+        let text_width = self.label_cache.text_width;
         // A pill is exactly tall enough for its own line box plus the named vertical
         // padding, with [`dimensions::BADGE_PILL_HEIGHT`] as the floor every severity
         // shares: a count and a label must be the same object, not two sizes. Both terms
         // are constants of the control — neither reads `rect` — so the badge is the same
         // pill in any layout. The floor is clamped to the control so a badge laid out
         // smaller than a pill is not painted outside its own rectangle.
-        let line_height = context.measure_text("M", &font).height.max(1);
+        let line_height = self.label_cache.line_height;
         let pill_height = (line_height + dimensions::BADGE_PILL_PADDING_V * 2)
             .max(dimensions::BADGE_PILL_HEIGHT.min(rect.height))
             .min(rect.height);
@@ -517,7 +662,7 @@ impl Draw for Badge {
         let line = context.text_line(pill_rect, &font);
         context.draw_text_fitted_cow(
             Rect::new(line.x, line.y, line.width.max(1), line.height.max(1)),
-            text_str,
+            self.label_cache.text.as_str(),
             &font,
             text_color,
             HorizontalAlignment::Center,

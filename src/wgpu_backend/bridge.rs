@@ -26,8 +26,13 @@ pub fn bridge_non_zero_fill_commands(
         .map(|(index, command)| match command {
             RenderCommand::FillPathNonZero { path, color } => {
                 Ok(WgpuDrawCommand::FillPathNonZero {
-                    points: path.points().iter().map(|point| (point.x, point.y)).collect(),
-                    contours: path.contours().to_vec(),
+                    points: path
+                        .points()
+                        .iter()
+                        .map(|point| (point.x, point.y))
+                        .collect::<Vec<_>>()
+                        .into(),
+                    contours: path.contours().into(),
                     color: Rgba8 { r: color.r, g: color.g, b: color.b, a: color.a },
                     clip: None,
                 })

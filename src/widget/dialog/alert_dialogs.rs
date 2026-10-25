@@ -26,10 +26,10 @@
 //! rectangle. The shared card painter lives in this module because all three use it; a second
 //! copy would be the "two answers to one question" defect.
 
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Rect, Size};
 use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::GenericSignal;
+use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver, SemanticColor};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -268,6 +268,8 @@ struct CardContent<'a> {
     extra_lines: &'a [String],
     buttons: &'a [&'a str],
     hovered: Option<usize>,
+    /// The action button the keyboard focus ring is on.
+    focused: Option<usize>,
     /// A caller-supplied severity glyph; `None` keeps the role's own glyph.
     icon: Option<IconName>,
     /// An optional check box row above the buttons: its label and its state.
@@ -520,6 +522,9 @@ fn paint_card(
             text_ink,
             HorizontalAlignment::Center,
         );
+        if card.focused == Some(index) {
+            ctx.draw_rounded_rect_stroke(*rect, 4, palette.accent, 2);
+        }
     }
     (rect, rects, check_box_rect)
 }
@@ -627,6 +632,10 @@ pub struct AlertDialog {
     pub accepted: GenericSignal,
     /// Emitted when the dialog is dismissed without acknowledging (Escape or a close request).
     pub rejected: GenericSignal,
+    /// Emitted when Tab moves the focus ring; the payload is this dialog's own object id.
+    pub focus_changed: Signal1<ObjectId>,
+    /// The action button the keyboard focus ring is on.
+    focus: Option<usize>,
 }
 
 impl AlertDialog {
@@ -641,6 +650,8 @@ impl AlertDialog {
             card: CardState::new(Size::new(320, 160)),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
+            focus_changed: Signal1::new(),
+            focus: None,
         }
     }
 
@@ -876,6 +887,11 @@ impl Widget for AlertDialog {
         match name {
             "accepted" => Some(EventSignalRef::unit("accepted", &self.accepted)),
             "rejected" => Some(EventSignalRef::unit("rejected", &self.rejected)),
+            "focus_changed" => {
+                Some(EventSignalRef::mapped("focus_changed", &self.focus_changed, |v| {
+                    CapabilityValue::UInt(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -988,6 +1004,7 @@ impl Draw for AlertDialog {
             extra_lines: &[],
             buttons: &[self.button_text.as_str()],
             hovered: self.hovered,
+            focused: self.focus,
             icon: self.card.icon,
             check_box: (!self.card.check_box_text.is_empty())
                 .then_some((self.card.check_box_text.as_str(), self.card.check_box_checked)),
@@ -1014,6 +1031,7 @@ impl EventHandler for AlertDialog {
             }
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = button_at(&self.buttons(), *pos) {
+                    self.focus = Some(index);
                     self.activate(index);
                     self.base.request_redraw();
                     return;
@@ -1023,8 +1041,17 @@ impl EventHandler for AlertDialog {
                 }
             }
             Event::KeyPress { key, .. } => {
-                if *key == key_codes::ENTER || *key == key_codes::LINE_FEED {
-                    self.activate(self.card.default_button);
+                if *key == key_codes::TAB {
+                    let count = self.buttons().len();
+                    let next = super::move_focus(self.focus, count, true);
+                    if next != self.focus {
+                        self.focus = next;
+                        self.focus_changed.emit(self.id());
+                        self.base.request_redraw();
+                    }
+                } else if *key == key_codes::ENTER || *key == key_codes::LINE_FEED {
+                    let button = self.focus.filter(|index| *index < self.buttons().len());
+                    self.activate(button.unwrap_or(self.card.default_button));
                 } else if *key == key_codes::ESCAPE {
                     self.rejected.emit();
                 }
@@ -1054,6 +1081,10 @@ pub struct ConfirmDialog {
     pub accepted: GenericSignal,
     /// Emitted when the dismissing action is pressed.
     pub rejected: GenericSignal,
+    /// Emitted when Tab moves the focus ring; the payload is this dialog's own object id.
+    pub focus_changed: Signal1<ObjectId>,
+    /// The action button the keyboard focus ring is on.
+    focus: Option<usize>,
 }
 
 impl ConfirmDialog {
@@ -1069,6 +1100,8 @@ impl ConfirmDialog {
             card: CardState::new(Size::new(360, 170)),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
+            focus_changed: Signal1::new(),
+            focus: None,
         }
     }
 
@@ -1328,6 +1361,11 @@ impl Widget for ConfirmDialog {
         match name {
             "accepted" => Some(EventSignalRef::unit("accepted", &self.accepted)),
             "rejected" => Some(EventSignalRef::unit("rejected", &self.rejected)),
+            "focus_changed" => {
+                Some(EventSignalRef::mapped("focus_changed", &self.focus_changed, |v| {
+                    CapabilityValue::UInt(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -1447,6 +1485,7 @@ impl Draw for ConfirmDialog {
             extra_lines: &[],
             buttons: &labels,
             hovered: self.hovered,
+            focused: self.focus,
             icon: self.card.icon,
             check_box: (!self.card.check_box_text.is_empty())
                 .then_some((self.card.check_box_text.as_str(), self.card.check_box_checked)),
@@ -1473,6 +1512,7 @@ impl EventHandler for ConfirmDialog {
             }
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = button_at(&self.buttons(), *pos) {
+                    self.focus = Some(index);
                     self.activate(index);
                     return;
                 }
@@ -1481,8 +1521,17 @@ impl EventHandler for ConfirmDialog {
                 }
             }
             Event::KeyPress { key, .. } => {
-                if *key == key_codes::ENTER || *key == key_codes::LINE_FEED {
-                    self.activate(self.card.default_button);
+                if *key == key_codes::TAB {
+                    let count = self.buttons().len();
+                    let next = super::move_focus(self.focus, count, true);
+                    if next != self.focus {
+                        self.focus = next;
+                        self.focus_changed.emit(self.id());
+                        self.base.request_redraw();
+                    }
+                } else if *key == key_codes::ENTER || *key == key_codes::LINE_FEED {
+                    let button = self.focus.filter(|index| *index < self.buttons().len());
+                    self.activate(button.unwrap_or(self.card.default_button));
                 } else if *key == key_codes::ESCAPE {
                     self.rejected.emit();
                 }
@@ -1898,6 +1947,7 @@ impl Draw for AboutDialog {
             extra_lines: &lines,
             buttons: &["Close"],
             hovered: self.hovered,
+            focused: None,
             icon: self.card.icon,
             check_box: (!self.card.check_box_text.is_empty())
                 .then_some((self.card.check_box_text.as_str(), self.card.check_box_checked)),

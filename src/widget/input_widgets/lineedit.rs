@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! Single-line text edit widget.
-use crate::compat::{Box, Rc, RefCell, String, ToString};
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::compat::{Box, Rc, RefCell, String, ToString, Vec};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
 #[cfg(test)]
 use crate::event::FocusReason;
@@ -57,7 +57,6 @@ pub struct LineEdit {
     read_only: bool,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
-    restoring_history: bool,
     /// Whether this field currently owns keyboard focus.
     ///
     /// Tracked here because the caret is only drawn for the focused field, and the
@@ -150,6 +149,30 @@ pub struct LineEdit {
     pub selection_changed: GenericSignal,
     /// Emitted with the new caret byte offset whenever it moves.
     pub cursor_position_changed: Signal1<usize>,
+    /// Emitted when the value changes through a *user* edit path.
+    ///
+    /// [`Self::text_changed`] fires for every mutation, including a programmatic
+    /// [`Self::set_text`]; this signal is the user-only half, so a host can tell a keystroke,
+    /// paste, cut, drop or undo apart from a field refresh. Programmatic writes must not make a
+    /// form look edited, which is exactly what the undifferentiated signal could not express.
+    pub text_edited: Signal1<String>,
+    /// Emitted with the new value whenever undo availability changes.
+    pub undo_available: Signal1<bool>,
+    /// Emitted with the new value whenever redo availability changes.
+    pub redo_available: Signal1<bool>,
+    /// Emitted with the new value whenever copying the selection becomes possible or impossible.
+    pub copy_available: Signal1<bool>,
+    /// Whether a pointer drag may carry the selection out of the field.
+    ///
+    /// Off by default, which is the convention for single-line fields: a press and drag inside
+    /// the field is a selection gesture, and a drag that happened to leave the box should not
+    /// silently start moving text.
+    drag_enabled: bool,
+    /// Last availability values announced, so each signal is edge-triggered rather than emitted
+    /// on every caret move that left it unchanged.
+    undo_available_announced: bool,
+    redo_available_announced: bool,
+    copy_available_announced: bool,
     /// Whether the value has been edited since the last programmatic [`Self::set_text`].
     ///
     /// A form can use this to warn about unsaved changes without comparing snapshots.
@@ -176,6 +199,54 @@ pub struct LineEdit {
     press_streak: u8,
     /// Clock reading of the most recent press, in milliseconds.
     last_press_ms: u32,
+    /// Bumped whenever an input of the painted string or of its advances changes.
+    ///
+    /// The value's text, the echo mode, the placeholder and the focus flag all decide what
+    /// `draw` paints, so each of them advances this revision. The advance cache keys on it, which
+    /// is what makes its entries unreachable as soon as the string they measured no longer exists.
+    text_revision: u64,
+    /// Memoised advances of the painted value, the selection edges and the caret prefix.
+    ///
+    /// A frame used to shape the same string up to five times: the whole value for its origin,
+    /// the value again for the caret, one prefix per selection edge, and the caret's prefix. The
+    /// advances are pure functions of the text, the font, the echo mode and the DPI scale, so the
+    /// cache reuses them until one of those inputs changes.
+    text_advances: RefCell<TextAdvanceCache>,
+}
+
+/// Which of the field's two strings an advance is measured from.
+///
+/// The caret measures a prefix of the field's **value** while the selection band measures a
+/// prefix of what is **painted**; the two differ whenever the echo mode masks the value.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AdvanceSource {
+    /// The string `draw` paints, after echo mode and placeholder are applied.
+    Display,
+    /// The field's own value.
+    Value,
+}
+
+/// Where a value mutation came from, which decides what happens to the undo history.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditOrigin {
+    /// A programmatic write: the field is the "saved" state, so no undo entry is recorded and
+    /// the history that described the previous value is discarded.
+    Programmatic,
+    /// A user edit: the previous value is recorded so it can be undone.
+    User,
+}
+
+/// Memoised advances for the value, the selection edges and the caret prefix.
+#[derive(Default)]
+struct TextAdvanceCache {
+    revision: u64,
+    font: Option<Font>,
+    echo_mode: Option<EchoMode>,
+    dpi_bits: u32,
+    /// `(from, to, advance)` for slices of the painted value.
+    display: Vec<(usize, usize, i32)>,
+    /// `(from, to, advance)` for slices of the field's own value.
+    value: Vec<(usize, usize, i32)>,
 }
 /// Text echo mode for a line edit.
 ///
@@ -239,7 +310,6 @@ impl LineEdit {
             validation_error_active: false,
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
-            restoring_history: false,
             focused: false,
             decorations: DecorationSlots::default(),
             cursor_blink: crate::style::CursorBlink::new(),
@@ -252,12 +322,22 @@ impl LineEdit {
             context_menu_requested: Signal1::new(),
             selection_changed: GenericSignal::new(),
             cursor_position_changed: Signal1::new(),
+            text_edited: Signal1::new(),
+            undo_available: Signal1::new(),
+            redo_available: Signal1::new(),
+            copy_available: Signal1::new(),
+            drag_enabled: true,
+            undo_available_announced: false,
+            redo_available_announced: false,
+            copy_available_announced: false,
             modified: false,
             clear_button_enabled: false,
             password_echo_on_edit: false,
             scroll_x: 0,
             clock_ms: 0,
             press_streak: 0,
+            text_revision: 0,
+            text_advances: RefCell::new(TextAdvanceCache::default()),
             last_press_ms: 0,
         }
     }
@@ -342,7 +422,9 @@ impl LineEdit {
         if repaired == self.text {
             return false;
         }
-        self.set_text(repaired);
+        // A repair is an edit the field performs for the user, so it stays undoable: undoing it
+        // must put back the value the user actually typed.
+        self.apply_text(repaired, EditOrigin::User);
         true
     }
 
@@ -416,6 +498,7 @@ impl LineEdit {
             return;
         }
         self.focused = focused;
+        self.invalidate_text_advances();
         // The caret blinks exactly while the field holds focus, so the blink state is driven from
         // the same flag `draw` reads rather than from a parallel notion of "active".
         if focused {
@@ -446,8 +529,18 @@ impl LineEdit {
         running
     }
     /// Sets text and emits text_changed signal if different.
+    ///
+    /// This is the **programmatic** entry point: the write is the field's clean state, so it is
+    /// neither recorded in the undo history nor allowed to leave a history entry that predates it
+    /// (Ctrl+Z must not jump back to a value the application itself replaced). User edits go
+    /// through [`Self::insert_str`], [`Self::backspace`] and [`Self::delete`], which record their
+    /// previous value.
     pub fn set_text(&mut self, text: impl Into<String>) {
-        let text = text.into();
+        self.apply_text(text.into(), EditOrigin::Programmatic);
+    }
+
+    /// Filters, clamps and commits `text`, attributing the change to `origin`.
+    fn apply_text(&mut self, text: String, origin: EditOrigin) -> bool {
         // The grammar is a property of the field, not of the typing path: a value it cannot
         // represent must not enter the model from a programmatic write either. Surrounding
         // whitespace is trimmed here (not on a keystroke, where a space is a separator the
@@ -472,33 +565,52 @@ impl LineEdit {
             }
             _ => text,
         };
+        self.commit_text(text, origin)
+    }
+
+    /// Stores `text` and publishes the consequences, honouring `origin` for history handling.
+    ///
+    /// Returns whether the value actually changed, so an edit path that produced the same string
+    /// can avoid reporting an edit that did not happen.
+    fn commit_text(&mut self, text: String, origin: EditOrigin) -> bool {
         if self.text == text {
-            return;
+            return false;
         }
         let before_cursor = self.cursor_position;
         let before_selection = self.selection_start;
         self.text = text;
+        self.invalidate_text_advances();
         self.revalidate();
-        if !self.restoring_history {
-            let before = self.history_target.borrow().clone();
-            *self.history_target.borrow_mut() = self.text.clone();
-            self.undo_stack.push(Box::new(ValueCommand::new(
-                self.history_target.clone(),
-                before,
-                self.text.clone(),
-                "Edit text",
-                "line_edit_text",
-            )));
+        match origin {
+            EditOrigin::User => {
+                let before = self.history_target.borrow().clone();
+                *self.history_target.borrow_mut() = self.text.clone();
+                self.undo_stack.push(Box::new(ValueCommand::new(
+                    self.history_target.clone(),
+                    before,
+                    self.text.clone(),
+                    "Edit text",
+                    "line_edit_text",
+                )));
+            }
+            EditOrigin::Programmatic => {
+                // A programmatic write is the saved state by definition: the history that could
+                // restore a value before it no longer describes this field.
+                *self.history_target.borrow_mut() = self.text.clone();
+                self.undo_stack.clear();
+            }
         }
         self.cursor_position = self.text.len();
         self.selection_start = None;
-        // A programmatic write is the "saved" state by definition; the user-edit paths set the
-        // flag again after they call through here.
-        self.modified = false;
+        if origin == EditOrigin::Programmatic {
+            self.modified = false;
+        }
         self.ensure_caret_visible();
         self.notify_caret_change(before_cursor, before_selection);
+        self.refresh_edit_capabilities();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
+        true
     }
 
     /// Undo the latest text mutation.
@@ -533,14 +645,14 @@ impl LineEdit {
         let text = self.history_target.borrow().clone();
         let before_cursor = self.cursor_position;
         let before_selection = self.selection_start;
-        self.restoring_history = true;
         self.text = text;
+        self.invalidate_text_advances();
         self.cursor_position = self.text.len();
         self.selection_start = None;
-        self.restoring_history = false;
         self.modified = true;
         self.ensure_caret_visible();
         self.notify_caret_change(before_cursor, before_selection);
+        self.refresh_edit_capabilities();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
     }
@@ -556,6 +668,7 @@ impl LineEdit {
             return;
         }
         self.placeholder_text = text;
+        self.invalidate_text_advances();
         self.base.request_redraw();
     }
     /// Returns maximum text length **in characters**.
@@ -583,6 +696,7 @@ impl LineEdit {
             if self.text.chars().count() > max {
                 let byte = byte_index_of_char(&self.text, max);
                 self.text.truncate(byte);
+                self.invalidate_text_advances();
                 self.clamp_caret();
                 // A shrinking limit makes every longer value unreachable, so the
                 // history that could restore one is cleared and the shared target
@@ -590,6 +704,7 @@ impl LineEdit {
                 // would re-apply an over-limit string.
                 *self.history_target.borrow_mut() = self.text.clone();
                 self.undo_stack.clear();
+                self.refresh_edit_capabilities();
                 self.text_changed.emit(self.text.clone());
             }
         }
@@ -668,6 +783,7 @@ impl LineEdit {
             return;
         }
         self.password_echo_on_edit = enabled;
+        self.invalidate_text_advances();
         self.base.request_redraw();
     }
 
@@ -697,16 +813,119 @@ impl LineEdit {
         self.echo_mode == EchoMode::Password && self.password_echo_on_edit && self.focused
     }
 
+    /// Invalidates the memoised advances after an input they depend on changes.
+    fn invalidate_text_advances(&mut self) {
+        self.text_revision = self.text_revision.wrapping_add(1);
+    }
+
+    /// The advance of `text[from..to]`, memoised for the current value/echo/font/scale.
+    ///
+    /// The borrows are `try_borrow`/`try_borrow_mut` so a re-entrant paint (a backend that asks a
+    /// widget to measure while it is already inside this method) falls back to measuring instead
+    /// of panicking.
+    fn cached_advance(
+        &self,
+        context: &RenderContext,
+        source: AdvanceSource,
+        text: &str,
+        font: &Font,
+        from: usize,
+        to: usize,
+    ) -> i32 {
+        let dpi_bits = context.dpi_scale().to_bits();
+        if let Ok(cache) = self.text_advances.try_borrow() {
+            if cache.revision == self.text_revision
+                && cache.echo_mode == Some(self.echo_mode)
+                && cache.dpi_bits == dpi_bits
+                && cache.font.as_ref() == Some(font)
+            {
+                let entries = match source {
+                    AdvanceSource::Display => &cache.display,
+                    AdvanceSource::Value => &cache.value,
+                };
+                if let Some((_, _, advance)) =
+                    entries.iter().find(|(start, end, _)| *start == from && *end == to)
+                {
+                    return *advance;
+                }
+            }
+        }
+        let advance =
+            if from < to { context.measure_text(&text[from..to], font).width as i32 } else { 0 };
+        if let Ok(mut cache) = self.text_advances.try_borrow_mut() {
+            if cache.revision != self.text_revision
+                || cache.echo_mode != Some(self.echo_mode)
+                || cache.dpi_bits != dpi_bits
+                || cache.font.as_ref() != Some(font)
+            {
+                cache.revision = self.text_revision;
+                cache.echo_mode = Some(self.echo_mode);
+                cache.dpi_bits = dpi_bits;
+                cache.font = Some(font.clone());
+                cache.display.clear();
+                cache.value.clear();
+            }
+            let entries = match source {
+                AdvanceSource::Display => &mut cache.display,
+                AdvanceSource::Value => &mut cache.value,
+            };
+            // A moved caret or selection adds one entry per distinct offset within a revision, so
+            // the list is capped: dropping it only costs a re-measurement of the next prefix.
+            if entries.len() >= 32 {
+                entries.clear();
+            }
+            entries.push((from, to, advance));
+        }
+        advance
+    }
+
     /// Reports a caret/selection change to the host when either actually moved.
     ///
     /// Centralised so every path that moves the caret — keyboard, pointer, IME, programmatic
     /// writes — has the same notification timing.
-    fn notify_caret_change(&self, before_cursor: usize, before_selection: Option<usize>) {
+    fn notify_caret_change(&mut self, before_cursor: usize, before_selection: Option<usize>) {
         if self.cursor_position != before_cursor {
             self.cursor_position_changed.emit(self.cursor_position);
         }
         if self.selection_start != before_selection {
             self.selection_changed.emit();
+        }
+        // Copyability follows the selection and the echo mode, so every caret move is a place it
+        // can change; `refresh_edit_capabilities` emits only when the answer actually differs.
+        self.refresh_edit_capabilities();
+    }
+
+    /// Whether the current selection can be copied to the clipboard.
+    ///
+    /// [`EchoMode::NoEcho`] deliberately contributes nothing (see the copy path), so a selection it
+    /// hides is not a copyable one.
+    fn can_copy(&self) -> bool {
+        self.echo_mode != EchoMode::NoEcho && self.selection_range().is_some()
+    }
+
+    /// Emits the three availability signals when their answers have changed.
+    fn refresh_edit_capabilities(&mut self) {
+        let undo = self.can_undo();
+        if undo != self.undo_available_announced {
+            self.undo_available_announced = undo;
+            self.undo_available.emit(undo);
+        }
+        let redo = self.can_redo();
+        if redo != self.redo_available_announced {
+            self.redo_available_announced = redo;
+            self.redo_available.emit(redo);
+        }
+        let copy = self.can_copy();
+        if copy != self.copy_available_announced {
+            self.copy_available_announced = copy;
+            self.copy_available.emit(copy);
+        }
+    }
+
+    /// Emits [`Self::text_edited`] when a user gesture actually changed the value.
+    fn emit_text_edited_if_changed(&self, before: &str) {
+        if self.text != before {
+            self.text_edited.emit(self.text.clone());
         }
     }
 
@@ -885,6 +1104,9 @@ impl LineEdit {
             return;
         }
         self.echo_mode = mode;
+        self.invalidate_text_advances();
+        // NoEcho removes the copyable payload, and the other modes restore it.
+        self.refresh_edit_capabilities();
         self.base.request_redraw();
     }
     /// Returns cursor position.
@@ -932,6 +1154,43 @@ impl LineEdit {
         }
         Some(if start < end { (start, end) } else { (end, start) })
     }
+
+    /// Selects `length` bytes starting at `start`, clamped to the value.
+    ///
+    /// Both ends are snapped to character boundaries and clamped to the value's length, so a
+    /// caller computing a highlight from a search offset cannot leave the selection inside a
+    /// character. The caret is left at the range's end, which is the convention
+    /// [`Self::select_all`] and [`Self::select_with_modifiers`] already follow, so a following
+    /// `Shift`-movement extends from the end the user just selected to.
+    ///
+    /// The unit matches [`Self::selection_range`] and [`Self::cursor_position`] — **byte**
+    /// offsets — because those are the offsets this control's public surface already speaks.
+    /// A zero length clears the selection instead of reporting an empty range.
+    pub fn set_selection(&mut self, start: usize, length: usize) {
+        let len = self.text.len();
+        let start = floor_char_boundary(&self.text, start.min(len));
+        let end = floor_char_boundary(&self.text, start.saturating_add(length).min(len));
+        let before_cursor = self.cursor_position;
+        let before_selection = self.selection_start;
+        if start == end {
+            self.selection_start = None;
+            self.cursor_position = start;
+        } else {
+            self.selection_start = Some(start);
+            self.cursor_position = end;
+        }
+        self.ensure_caret_visible();
+        self.notify_caret_change(before_cursor, before_selection);
+        self.base.request_redraw();
+    }
+
+    /// The selected length **in bytes**, or zero when nothing is selected.
+    ///
+    /// The same unit as [`Self::set_selection`] and the offsets [`Self::selection_range`] returns.
+    pub fn selection_length(&self) -> usize {
+        self.selection_range().map(|(start, end)| end - start).unwrap_or(0)
+    }
+
     /// Returns selected text.
     ///
     /// The two offsets are snapped to character boundaries before slicing, so a caret left inside a
@@ -963,6 +1222,7 @@ impl LineEdit {
         }
         self.selection_start = None;
         self.selection_changed.emit();
+        self.refresh_edit_capabilities();
         self.base.request_redraw();
     }
 
@@ -1222,7 +1482,7 @@ impl LineEdit {
             self.cursor_position = at + effective_text.len();
         }
         self.selection_start = None;
-        self.set_text(new_text);
+        self.apply_text(new_text, EditOrigin::User);
         self.modified = true;
         // `set_text` may have clamped the value to `max_length`, which can move the caret it
         // recomputed; snap it back onto a boundary inside whatever the field now holds.
@@ -1333,7 +1593,7 @@ impl LineEdit {
             new_text.replace_range(start..end, "");
             self.cursor_position = start;
             self.selection_start = None;
-            self.set_text(new_text);
+            self.apply_text(new_text, EditOrigin::User);
             self.modified = true;
         } else if self.cursor_position > 0 {
             // Delete the character before the caret, from its own start to the caret.
@@ -1343,7 +1603,7 @@ impl LineEdit {
             let mut new_text = self.text.clone();
             new_text.replace_range(previous..caret, "");
             self.cursor_position = previous;
-            self.set_text(new_text);
+            self.apply_text(new_text, EditOrigin::User);
             self.modified = true;
         }
     }
@@ -1362,7 +1622,7 @@ impl LineEdit {
                 .unwrap_or(self.text.len());
             let mut new_text = self.text.clone();
             new_text.replace_range(caret..next, "");
-            self.set_text(new_text);
+            self.apply_text(new_text, EditOrigin::User);
             self.modified = true;
         }
     }
@@ -1388,6 +1648,24 @@ impl LineEdit {
     /// Clears all text.
     pub fn clear(&mut self) {
         self.set_text(String::new());
+    }
+
+    /// Whether the selected text may be dragged out of the field.
+    pub fn drag_enabled(&self) -> bool {
+        self.drag_enabled
+    }
+
+    /// Enables or disables dragging the selection out of the field.
+    ///
+    /// On by default, which is the behaviour every field had before the switch existed: a press
+    /// and drag inside the field selects, and a drag that leaves the box starts moving the
+    /// selected text. A host that wants the gesture to stay inside the field turns it off. The
+    /// switch is not draw-visible, so it queues no frame.
+    pub fn set_drag_enabled(&mut self, enabled: bool) {
+        if self.drag_enabled == enabled {
+            return;
+        }
+        self.drag_enabled = enabled;
     }
     /// The published spelling of an [`EchoMode`].
     fn echo_mode_token(mode: EchoMode) -> &'static str {
@@ -1808,6 +2086,24 @@ impl Widget for LineEdit {
                 &self.cursor_position_changed,
                 |v| CapabilityValue::UInt(*v as u64),
             )),
+            "text_edited" => Some(EventSignalRef::mapped("text_edited", &self.text_edited, |v| {
+                CapabilityValue::String(v.clone())
+            })),
+            "undo_available" => {
+                Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "redo_available" => {
+                Some(EventSignalRef::mapped("redo_available", &self.redo_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "copy_available" => {
+                Some(EventSignalRef::mapped("copy_available", &self.copy_available, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -1862,6 +2158,7 @@ impl WidgetProperties for LineEdit {
             "modified" => Ok(CapabilityValue::Bool(self.is_modified())),
             "clear_button_enabled" => Ok(CapabilityValue::Bool(self.clear_button_enabled())),
             "password_echo_on_edit" => Ok(CapabilityValue::Bool(self.password_echo_on_edit())),
+            "drag_enabled" => Ok(CapabilityValue::Bool(self.drag_enabled())),
             "scroll_x" => Ok(CapabilityValue::Int(self.scroll_x() as i64)),
             _ => base_property_get(self, name),
         }
@@ -1937,6 +2234,10 @@ impl WidgetProperties for LineEdit {
                 self.set_password_echo_on_edit(expect_bool(value)?);
                 Ok(())
             }
+            "drag_enabled" => {
+                self.set_drag_enabled(expect_bool(value)?);
+                Ok(())
+            }
             "scroll_x" => {
                 let offset = match value {
                     CapabilityValue::Int(v) => v as i32,
@@ -1972,6 +2273,7 @@ impl WidgetProperties for LineEdit {
             "modified",
             "clear_button_enabled",
             "password_echo_on_edit",
+            "drag_enabled",
             "scroll_x",
             BASE_PROPERTY_NAMES
         ]
@@ -2239,6 +2541,7 @@ impl EventHandler for LineEdit {
                 let before = self.text.clone();
                 self.handle_key(*key, crate::shortcut::Modifiers::from_event_bits(*modifiers));
                 self.announce_value_changed_if_text_moved(&before);
+                self.emit_text_edited_if_changed(&before);
             }
             // Platform-committed text (D09-INPUT-01).
             //
@@ -2253,6 +2556,7 @@ impl EventHandler for LineEdit {
                 let before = self.text.clone();
                 self.insert_str(text);
                 self.announce_value_changed_if_text_moved(&before);
+                self.emit_text_edited_if_changed(&before);
             }
             // A commit ends the composition as well as inserting its text. Clearing the preedit
             // first is what keeps the underlined preview from surviving the string it previewed:
@@ -2263,6 +2567,7 @@ impl EventHandler for LineEdit {
                 self.composition = None;
                 self.insert_str(text);
                 self.announce_value_changed_if_text_moved(&before);
+                self.emit_text_edited_if_changed(&before);
             }
             // The uncommitted composition belongs to the field while the user is building it: the
             // value does not change, but the inline preedit at the caret does. Without this arm an
@@ -2290,9 +2595,13 @@ impl EventHandler for LineEdit {
                 // The clear button owns its corner of the field and consumes the press before the
                 // caret can move there: a click meant to erase must not also select text.
                 if self.clear_button_hit(*pos) {
-                    self.clear();
+                    let before = self.text.clone();
+                    // The button is a user gesture, so its erase stays undoable even though the
+                    // programmatic `clear()` entry point is a pristine write (I-04).
+                    self.apply_text(String::new(), EditOrigin::User);
                     self.modified = true;
                     self.press_streak = 0;
+                    self.emit_text_edited_if_changed(&before);
                     return;
                 }
                 // Track a multi-click streak so a third press can select the whole value. The
@@ -2360,7 +2669,9 @@ impl EventHandler for LineEdit {
 /// its copy path follows.
 impl DragSource for LineEdit {
     fn drag_payload(&self, pos: Point) -> Option<DragPayload> {
-        if !self.field_rect().contains_point(pos) {
+        // The switch is consulted before anything is measured, so a field that did not opt in
+        // pays nothing for a gesture it will refuse.
+        if !self.drag_enabled || !self.field_rect().contains_point(pos) {
             return None;
         }
         let selected = self.selected_text();
@@ -2381,8 +2692,10 @@ impl DragSource for LineEdit {
             return;
         }
         if !self.selected_text().is_empty() {
+            let before = self.text.clone();
             self.backspace();
             self.modified = true;
+            self.emit_text_edited_if_changed(&before);
         }
     }
 }
@@ -2404,8 +2717,10 @@ impl DropTarget for LineEdit {
         }
         self.press_at(self.byte_index_at_x(pos.x), crate::shortcut::Modifiers::empty());
         self.end_drag();
+        let before = self.text.clone();
         self.insert_str(&text);
         self.modified = true;
+        self.emit_text_edited_if_changed(&before);
         self.base.request_redraw();
         DropEffect::Copy
     }
@@ -2482,6 +2797,16 @@ impl Draw for LineEdit {
             }
         };
         let font = effective_font(style);
+        // Whether the painted string is the field's own value (normal echo, or a revealed
+        // password) rather than a derived one. The caret measures its prefix from that same
+        // string when it can, so the two share one memoised advance instead of measuring two
+        // copies of it.
+        let display_is_value = !(self.text.is_empty() && !self.placeholder_text.is_empty())
+            && match self.echo_mode {
+                EchoMode::Normal => true,
+                EchoMode::NoEcho => false,
+                EchoMode::Password => revealed,
+            };
         let value_line = context.text_line(rect, font);
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
         // The box the value is laid out in, and the alignment it uses within that box.
@@ -2505,7 +2830,14 @@ impl Draw for LineEdit {
             value_line.height,
         );
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
-        let value_advance = context.measure_text(display_text, font).width as i32;
+        let value_advance = self.cached_advance(
+            context,
+            AdvanceSource::Display,
+            display_text,
+            font,
+            0,
+            display_text.len(),
+        );
         let value_origin = crate::render::fitted_origin(value_box, value_advance, value_align);
         // ── Selection band ──
         //
@@ -2519,8 +2851,22 @@ impl Draw for LineEdit {
                 let selection_color = text_color.blend(&bg, 0.3).blend(&bg, 0.25);
                 let left_edge = layout.value.x;
                 let right_edge = layout.value.x + layout.value.width as i32;
-                let start_advance = context.measure_text(&display_text[..start], font).width as i32;
-                let end_advance = context.measure_text(&display_text[..end], font).width as i32;
+                let start_advance = self.cached_advance(
+                    context,
+                    AdvanceSource::Display,
+                    display_text,
+                    font,
+                    0,
+                    start,
+                );
+                let end_advance = self.cached_advance(
+                    context,
+                    AdvanceSource::Display,
+                    display_text,
+                    font,
+                    0,
+                    end,
+                );
                 let x0 =
                     (value_origin.x + start_advance - self.scroll_x).clamp(left_edge, right_edge);
                 let x1 =
@@ -2662,13 +3008,29 @@ impl Draw for LineEdit {
             // advance is measured and run through the same origin function, so the caret rides with
             // the glyphs it belongs to.
             let caret_byte = floor_char_boundary(self.text.as_str(), self.cursor_position);
-            let prefix = &self.text[..caret_byte];
-            // The value's own advance, run through the same `fitted_origin` `draw_text_fitted`
-            // uses, so a centred or right-aligned value keeps its caret on the glyphs instead of at
-            // the field's leading edge.
-            let value_advance = context.measure_text(display_text, font).width as i32;
-            let value_origin = crate::render::fitted_origin(value_box, value_advance, value_align);
-            let prefix_advance = context.measure_text(prefix, font).width as i32;
+            // The value's own advance and its fitted origin were resolved once above, for the
+            // painted value; the caret rides on the same two facts instead of re-deriving them.
+            // The prefix is measured from the same string the caret belongs to: the painted one
+            // when it is the field's value, otherwise the value itself.
+            let prefix_advance = if display_is_value {
+                self.cached_advance(
+                    context,
+                    AdvanceSource::Display,
+                    display_text,
+                    font,
+                    0,
+                    caret_byte,
+                )
+            } else {
+                self.cached_advance(
+                    context,
+                    AdvanceSource::Value,
+                    self.text.as_str(),
+                    font,
+                    0,
+                    caret_byte,
+                )
+            };
             let caret_x = value_origin.x + prefix_advance - self.scroll_x;
             // The marker is clipped to the **value's** box. A caret beyond the visible text (a value
             // wider than the room it has) belongs at the last pixel a user can see, not outside the
@@ -2720,7 +3082,9 @@ impl Draw for LineEdit {
                     crate::core::HorizontalAlignment::Left,
                 );
                 // The underline is one pixel below the glyph box, over the preedit's own width.
-                let underline_y = value_line.y + context.measure_text("M", font).height as i32 + 1;
+                // The line box above already carries the font's measured height (it is derived
+                // from the same `"M"` measurement), so it is read instead of measured again.
+                let underline_y = value_line.y + value_line.height as i32 + 1;
                 context.draw_line(
                     Point::new(preedit_x, underline_y),
                     Point::new(preedit_x + preedit_width, underline_y),
@@ -2916,8 +3280,11 @@ mod tests {
     #[test]
     fn lineedit_undo_redo_restores_text() {
         let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
-        le.set_text("one");
-        le.set_text("two");
+        // A programmatic `set_text` is the saved state and records no history, so the two values
+        // are produced through the user edit path (see I-04).
+        le.insert_str("one");
+        le.select_all();
+        le.insert_str("two");
         assert!(le.can_undo());
         assert!(le.undo());
         assert_eq!(le.text(), "one");
@@ -2929,8 +3296,10 @@ mod tests {
     #[test]
     fn lineedit_control_z_and_control_y_drive_history() {
         let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
-        le.set_text("before");
-        le.set_text("after");
+        // Programmatic writes are pristine (I-04), so the history is built by real edits.
+        le.insert_str("before");
+        le.select_all();
+        le.insert_str("after");
         // Bit 3 is the event's Meta/Command bit, i.e. the portable "primary accelerator"
         // (`Modifiers::from_event_bits`). The physical-Control bit is bit 1 and means Control.
         le.handle_event(&Event::key_press(90, 0b1000));

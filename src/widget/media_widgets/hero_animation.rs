@@ -9,11 +9,11 @@
 //! position, size, and opacity interpolation based on a progress value from
 //! 0.0 (source) to 1.0 (target).
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
-use crate::render::RenderContext;
+use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
 use crate::signal::GenericSignal;
 use crate::widget::capability::coercion::expect_f32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -21,6 +21,17 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+/// A rendered endpoint, captured once so the transition never mutates child geometry.
+///
+/// The old draw path called `set_geometry(interp_rect)` on the endpoint, painted it, then restored
+/// the old rectangle: a draw function with a side effect. The snapshot is the endpoint's own
+/// picture at its own rectangle; the transition scales and fades that image instead.
+struct EndpointSnapshot {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
 
 /// HeroAnimation widget for shared element transitions.
 pub struct HeroAnimation {
@@ -47,6 +58,16 @@ pub struct HeroAnimation {
     target_rect: Option<Rect>,
     /// Emitted when the animation completes.
     pub animation_completed: GenericSignal,
+    /// Colour interpolated from at progress 0, when the caller wants an explicit pair.
+    source_tint: Color,
+    /// Colour interpolated to at progress 1.
+    target_tint: Color,
+    /// The progress caption, rebuilt when progress changes instead of every draw.
+    progress_label: String,
+    /// Cached picture of the source endpoint, at its own geometry.
+    source_snapshot: Option<EndpointSnapshot>,
+    /// Cached picture of the target endpoint, at its own geometry.
+    target_snapshot: Option<EndpointSnapshot>,
 }
 
 impl HeroAnimation {
@@ -64,6 +85,11 @@ impl HeroAnimation {
             source_rect: None,
             target_rect: None,
             animation_completed: GenericSignal::new(),
+            source_tint: Color::rgb(33, 118, 210),
+            target_tint: Color::rgb(76, 175, 80),
+            progress_label: "Progress: 0%".to_string(),
+            source_snapshot: None,
+            target_snapshot: None,
         }
     }
 
@@ -75,6 +101,37 @@ impl HeroAnimation {
         self.animation_progress = 0.0;
         self.elapsed_ms = 0;
         self.is_animating = true;
+        self.progress_label = "Progress: 0%".to_string();
+        self.refresh_snapshots();
+        self.base.request_redraw();
+    }
+
+    /// Re-captures both endpoints.
+    ///
+    /// A snapshot is a picture of the endpoint at the moment it was taken, so a host that changes
+    /// a child control's appearance during a paused transition calls this to refresh it.
+    pub fn refresh_snapshots(&mut self) {
+        self.source_snapshot = self.source_widget.as_mut().and_then(capture_endpoint);
+        self.target_snapshot = self.target_widget.as_mut().and_then(capture_endpoint);
+    }
+
+    /// The colour interpolated at progress 0.
+    pub fn source_tint(&self) -> Color {
+        self.source_tint
+    }
+
+    /// The colour interpolated at progress 1.
+    pub fn target_tint(&self) -> Color {
+        self.target_tint
+    }
+
+    /// Sets the endpoint colours. Nothing is emitted; the next frame uses them.
+    pub fn set_tints(&mut self, source: Color, target: Color) {
+        if self.source_tint == source && self.target_tint == target {
+            return;
+        }
+        self.source_tint = source;
+        self.target_tint = target;
         self.base.request_redraw();
     }
 
@@ -90,6 +147,7 @@ impl HeroAnimation {
         let clamped = progress.clamp(0.0, 1.0);
         if (self.animation_progress - clamped).abs() > 0.001 {
             self.animation_progress = clamped;
+            self.progress_label = format!("Progress: {:.0}%", clamped * 100.0);
             if (clamped - 1.0).abs() < 0.001 {
                 self.is_animating = false;
                 self.animation_completed.emit();
@@ -111,12 +169,14 @@ impl HeroAnimation {
     /// Sets the source widget (the "from" state).
     pub fn set_source(&mut self, widget: Box<dyn Widget>) {
         self.source_widget = Some(widget);
+        self.source_snapshot = None;
         self.base.request_redraw();
     }
 
     /// Sets the target widget (the "to" state).
     pub fn set_target(&mut self, widget: Box<dyn Widget>) {
         self.target_widget = Some(widget);
+        self.target_snapshot = None;
         self.base.request_redraw();
     }
 
@@ -157,6 +217,8 @@ impl HeroAnimation {
         }
         self.source_rect = source;
         self.target_rect = target;
+        self.source_snapshot = None;
+        self.target_snapshot = None;
         self.base.request_redraw();
     }
 
@@ -384,14 +446,11 @@ impl Draw for HeroAnimation {
 
         let interp_rect = Rect::new(ix as i32, iy as i32, iw as u32, ih as u32);
 
-        // Color interpolates from a "source" blue to a "target" green.
-        //
-        // Deliberately not themed: these are *data*, not chrome. The widget's whole subject
-        // is "animate from this colour to that colour", so recovering them from a palette
-        // would erase the demonstration — and a theme whose two tokens coincided would make
-        // the interpolation invisible.
-        let src_color = Color::rgb(33, 118, 210); // Material blue
-        let tgt_color = Color::rgb(76, 175, 80); // Material green
+        // Colour interpolates between the caller's endpoint tints. The defaults preserve the
+        // Material blue/green this control always used; a host can state its own pair so the
+        // transition names the colours of the content it moves.
+        let src_color = self.source_tint;
+        let tgt_color = self.target_tint;
         let r = src_color.r as f32 + (tgt_color.r as f32 - src_color.r as f32) * t;
         let g = src_color.g as f32 + (tgt_color.g as f32 - src_color.g as f32) * t;
         let b = src_color.b as f32 + (tgt_color.b as f32 - src_color.b as f32) * t;
@@ -414,29 +473,34 @@ impl Draw for HeroAnimation {
         // The endpoint that owns this half of the transition is painted into the interpolated
         // box. This is what makes the control a shared-element transition rather than a
         // coloured rectangle: the source's or target's own appearance travels with the rect.
-        let endpoint: Option<&mut Box<dyn Widget>> =
-            if t < 0.5 { self.source_widget.as_mut() } else { self.target_widget.as_mut() };
-        if let Some(endpoint) = endpoint {
-            let origin = endpoint.geometry();
-            endpoint.set_geometry(interp_rect);
-            context.push_clip(interp_rect.x, interp_rect.y, interp_rect.width, interp_rect.height);
-            if let Some(drawable) = crate::widget::draw_bridge::draw_of(endpoint.as_mut()) {
-                drawable.draw(context);
-            }
-            context.pop_clip();
-            endpoint.set_geometry(origin);
+        //
+        // The endpoint is **not** resized here. Its picture is captured once into an offscreen
+        // buffer and that image is scaled into `interp_rect`, with the two endpoints cross-fading
+        // through a layer group instead of the old hard switch at `t < 0.5`.
+        if self.source_snapshot.is_none() && has_src {
+            self.source_snapshot = self.source_widget.as_mut().and_then(capture_endpoint);
+        }
+        if self.target_snapshot.is_none() && has_tgt {
+            self.target_snapshot = self.target_widget.as_mut().and_then(capture_endpoint);
+        }
+        if let Some(snapshot) = self.source_snapshot.as_ref() {
+            draw_snapshot(context, snapshot, interp_rect, 1.0 - t);
+        }
+        if let Some(snapshot) = self.target_snapshot.as_ref() {
+            draw_snapshot(context, snapshot, interp_rect, t);
         }
 
         // Draw the progress indicator label. The label is chrome, so it uses the resolved
-        // foreground instead of the fixed mid-grey that made it unreadable on a dark shell.
-        let progress_text = format!("Progress: {:.0}%", t * 100.0);
+        // foreground instead of the fixed mid-grey that made it unreadable on a dark shell. The
+        // text is rebuilt when progress changes, not in this paint path.
+        let progress_text = &self.progress_label;
         let font = effective_font(&style);
-        let metrics = context.measure_text(&progress_text, font);
+        let metrics = context.measure_text(progress_text, font);
         let text_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
         let text_y = rect.y + rect.height as i32 - 10;
         context.draw_text(
             Point::new(text_x, text_y),
-            &progress_text,
+            progress_text,
             font,
             ink,
             HorizontalAlignment::Left,
@@ -448,18 +512,95 @@ impl Draw for HeroAnimation {
         // bounded by the control, so a narrow hero truncates it rather than overhanging.
         let label_band = Rect::new(rect.x + 4, rect.y + 4, rect.width.saturating_sub(8), 14);
         let label = match (has_src, has_tgt) {
-            (true, false) => Some(("Source", Color::rgba(33, 118, 210, 200))),
-            (false, true) => Some(("Target", Color::rgba(76, 175, 80, 200))),
+            (true, false) => Some(("Source", self.source_tint.with_alpha(200))),
+            (false, true) => Some(("Target", self.target_tint.with_alpha(200))),
             (true, true) if t < 0.5 => {
-                Some(("Source \u{2192} Target", Color::rgba(33, 118, 210, 200)))
+                Some(("Source \u{2192} Target", self.source_tint.with_alpha(200)))
             }
-            (true, true) => Some(("Source \u{2192} Target", Color::rgba(76, 175, 80, 200))),
+            (true, true) => Some(("Source \u{2192} Target", self.target_tint.with_alpha(200))),
             (false, false) => None,
         };
         if let Some((text, color)) = label {
             context.draw_text_fitted_cow(label_band, text, font, color, HorizontalAlignment::Left);
         }
     }
+}
+
+/// Renders `endpoint` at its own geometry into an offscreen RGBA buffer.
+///
+/// The endpoint is drawn where it actually is: the context is translated so its top-left lands at
+/// the buffer's origin, and `set_geometry` is never called. A widget that cannot draw (an endpoint
+/// with no drawable) yields `None`, and the transition falls back to its interpolated fill.
+fn capture_endpoint(endpoint: &mut Box<dyn Widget>) -> Option<EndpointSnapshot> {
+    let rect = endpoint.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return None;
+    }
+    let size = Size::new(rect.width, rect.height);
+    let mut backend = SoftwarePaintBackend::new(size, 1.0);
+    backend.begin_frame(Color::rgba(0, 0, 0, 0));
+    {
+        let mut context = RenderContext::new(&mut backend);
+        context.push_offset(-rect.x, -rect.y);
+        if let Some(drawable) = crate::widget::draw_bridge::draw_of(endpoint.as_mut()) {
+            drawable.draw(&mut context);
+        }
+        context.pop_offset();
+    }
+    backend.end_frame();
+    Some(EndpointSnapshot {
+        width: rect.width,
+        height: rect.height,
+        data: backend.frame_rgba().to_vec(),
+    })
+}
+
+/// Paints a captured endpoint, scaled to `dest`, through a composited layer at `opacity`.
+fn draw_snapshot(
+    context: &mut RenderContext,
+    snapshot: &EndpointSnapshot,
+    dest: Rect,
+    opacity: f32,
+) {
+    if dest.width == 0 || dest.height == 0 || opacity <= 0.0 {
+        return;
+    }
+    let scaled;
+    let data: &[u8] = if dest.width == snapshot.width && dest.height == snapshot.height {
+        &snapshot.data
+    } else {
+        scaled =
+            scale_rgba(&snapshot.data, snapshot.width, snapshot.height, dest.width, dest.height);
+        &scaled
+    };
+    context.push_layer_group(dest, None, opacity.clamp(0.0, 1.0), None);
+    context.draw_image(dest.x, dest.y, dest.width, dest.height, data);
+    context.pop_layer();
+}
+
+/// Nearest-neighbour resample of an RGBA buffer into `width` x `height`.
+fn scale_rgba(
+    data: &[u8],
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let mut out = vec![0u8; (width as usize) * (height as usize) * 4];
+    if source_width == 0 || source_height == 0 || width == 0 || height == 0 {
+        return out;
+    }
+    for y in 0..height {
+        let source_y = (y as u64 * source_height as u64 / height as u64) as u32;
+        for x in 0..width {
+            let source_x = (x as u64 * source_width as u64 / width as u64) as u32;
+            let source = ((source_y as usize * source_width as usize + source_x as usize) * 4)
+                .min(data.len().saturating_sub(4));
+            let destination = (y as usize * width as usize + x as usize) * 4;
+            out[destination..destination + 4].copy_from_slice(&data[source..source + 4]);
+        }
+    }
+    out
 }
 
 impl EventHandler for HeroAnimation {
@@ -720,5 +861,36 @@ mod tests {
         )));
         let svg = crate::widget::svg::render_to_svg(&mut ha);
         assert!(svg.starts_with("<svg"));
+    }
+
+    #[test]
+    fn drawing_a_transition_does_not_move_the_endpoints() {
+        let mut ha = HeroAnimation::new(Rect::new(0, 0, 300, 200));
+        ha.set_source(Box::new(crate::widget::base_widgets::button::Button::new(
+            "Src".to_string(),
+            Rect::new(0, 0, 50, 50),
+        )));
+        ha.set_target(Box::new(crate::widget::base_widgets::button::Button::new(
+            "Tgt".to_string(),
+            Rect::new(200, 100, 100, 80),
+        )));
+        ha.set_progress(0.3);
+        let source_before = ha.source().expect("source").geometry();
+        let target_before = ha.target().expect("target").geometry();
+        let _ = crate::widget::svg::render_to_svg(&mut ha);
+        assert_eq!(ha.source().expect("source").geometry(), source_before);
+        assert_eq!(ha.target().expect("target").geometry(), target_before);
+    }
+
+    #[test]
+    fn endpoint_tints_and_cached_label_are_settings_not_paint_work() {
+        let mut ha = HeroAnimation::new(Rect::new(0, 0, 300, 200));
+        let blue = Color::rgb(10, 20, 30);
+        let red = Color::rgb(200, 10, 10);
+        ha.set_tints(blue, red);
+        assert_eq!(ha.source_tint(), blue);
+        assert_eq!(ha.target_tint(), red);
+        ha.set_progress(0.5);
+        assert_eq!(ha.progress_label, "Progress: 50%");
     }
 }

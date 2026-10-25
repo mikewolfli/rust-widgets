@@ -18,6 +18,8 @@ macro_rules! impl_properties_media {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated("direction", true, true, &["forward", "reverse"]),
+            PropertySchema::new("frame_cache_limit", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -36,6 +38,10 @@ macro_rules! impl_properties_media {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("loop_count", PropertyValueKind::Int, true, true),
+            PropertySchema::new("loops_completed", PropertyValueKind::Int, true, false),
+            PropertySchema::enumerated("direction", true, true, &["forward", "reverse"]),
+            PropertySchema::new("speed", PropertyValueKind::Float, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -45,6 +51,9 @@ macro_rules! impl_properties_media {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("loop_count", PropertyValueKind::Int, true, true),
+            PropertySchema::new("loops_completed", PropertyValueKind::Int, true, false),
+            PropertySchema::new("state", PropertyValueKind::String, true, false),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -58,6 +67,8 @@ macro_rules! impl_properties_media {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("looping", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("pipeline", PropertyValueKind::String, true, false),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -67,6 +78,9 @@ macro_rules! impl_properties_media {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("peak_threshold", PropertyValueKind::Float, true, true),
+            PropertySchema::enumerated("mode", true, true, &["waveform", "spectrum"]),
+            PropertySchema::new("level_report_interval", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -76,6 +90,9 @@ macro_rules! impl_properties_media {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("pixel_format", PropertyValueKind::String, true, true),
+            PropertySchema::new("target_fps", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("camera_id", PropertyValueKind::UInt, true, true),
         ];
     };
 }

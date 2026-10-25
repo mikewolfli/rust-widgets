@@ -10,6 +10,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::menu_toolbar::action::{Action, MenuRole};
 use crate::widget::menu_toolbar::menu::Menu;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -20,6 +21,62 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// Ten pixels is the macOS menu-bar spacing at body size: enough that adjacent titles read as
 /// separate targets, and included in `entry_width` so the hit box and the painted label agree.
 const MENU_ENTRY_TEXT_PADDING: u32 = 10;
+
+/// Where a role's actions belong in the platform's menu bar.
+///
+/// The variants are the *positions* a platform menu bar defines, not a copy of
+/// [`MenuRole`]: several roles share one position (About, Preferences and Quit all live in
+/// the application menu), and a host merges by position. The order of the variants is the
+/// conventional bar order on the platforms that expose these menus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeMenuPosition {
+    /// The application menu: About, Preferences, Quit, Hide, Hide Others, Show All.
+    Application,
+    /// The Window menu.
+    Window,
+    /// The Help menu.
+    Help,
+    /// The Services submenu inside the application menu.
+    Services,
+    /// An ordinary top-level entry, in the bar's own order.
+    Bar,
+}
+
+impl MenuRole {
+    /// The platform menu-bar position this role belongs to.
+    ///
+    /// This is the classification a host uses instead of appending every action as a
+    /// duplicate ordinary entry: `Quit` belongs in the application menu, `Window` in the
+    /// Window menu, and everything without a role stays in the bar's own order.
+    pub const fn native_position(self) -> NativeMenuPosition {
+        match self {
+            Self::About
+            | Self::Preferences
+            | Self::Quit
+            | Self::Hide
+            | Self::HideOthers
+            | Self::ShowAll => NativeMenuPosition::Application,
+            Self::Services => NativeMenuPosition::Services,
+            Self::Window => NativeMenuPosition::Window,
+            Self::Help => NativeMenuPosition::Help,
+            Self::None => NativeMenuPosition::Bar,
+        }
+    }
+}
+
+/// A host that installs this bar's actions into a platform menu bar.
+///
+/// The bar owns the actions and their roles, so the bridge only has to translate. It is
+/// deliberately one method: a platform menu is rebuilt as a whole when the action set or a
+/// role changes, and a granular insert/remove protocol would let the platform copy drift from
+/// the bar. The bar calls [`MenuBar::sync_platform_bridge`] after every action it gains.
+pub trait NativeMenuBridge {
+    /// Rebuilds (or installs) the platform menu bar from `bar`.
+    ///
+    /// Actions are grouped by [`MenuRole::native_position`]; the bar's own
+    /// [`MenuBar::entries`] remain the top-level titles of a drawn bar.
+    fn rebuild(&mut self, bar: &MenuBar);
+}
 /// A top-level menu entry in the menu bar.
 ///
 /// Entries carry only a title and an enabled flag; the menu contents they open
@@ -134,6 +191,14 @@ pub struct MenuBar {
     /// events, but a host that bridged the entries to the system menu can leave the
     /// control hidden instead of drawing a duplicate.
     native_menu_bar: bool,
+    /// Actions this bar exposes to a platform menu bridge.
+    ///
+    /// A drawn bar owns only titles, which is why the native path needs its own action list:
+    /// without it `native_role_items` would have nothing to classify and `set_native(true)`
+    /// could only be metadata.
+    actions: Vec<Action>,
+    /// The host bridge installed by [`MenuBar::set_platform_bridge`], if any.
+    platform_bridge: Option<Box<dyn NativeMenuBridge>>,
 }
 impl MenuBar {
     /// Creates an empty bar with no active or hovered entry.
@@ -153,6 +218,8 @@ impl MenuBar {
             menus: Vec::new(),
             open_menu_index: None,
             native_menu_bar: false,
+            actions: Vec::new(),
+            platform_bridge: None,
         }
     }
     /// Returns the entries in visual order.
@@ -357,6 +424,68 @@ impl MenuBar {
     /// Whether the host declared a native menu-bar bridge.
     pub fn is_native(&self) -> bool {
         self.native_menu_bar
+    }
+
+    /// Registers a live action with this bar and returns its index.
+    ///
+    /// This is the data a platform bridge merges: a drawn bar's [`Self::entries`] are only
+    /// titles, so the actions carry the roles, labels and state a native menu needs.
+    pub fn add_action(&mut self, action: Action) -> usize {
+        let index = self.actions.len();
+        self.actions.push(action);
+        self.sync_platform_bridge();
+        index
+    }
+
+    /// The live actions registered with this bar, in registration order.
+    pub fn actions(&self) -> &[Action] {
+        &self.actions
+    }
+
+    /// Every action whose [`MenuRole`] is exactly `role`.
+    ///
+    /// This is the query a bridge uses to find the entries it must merge into one platform
+    /// menu instead of appending as duplicates.
+    pub fn native_role_items(&self, role: MenuRole) -> Vec<&Action> {
+        self.actions.iter().filter(|action| action.menu_role() == role).collect()
+    }
+
+    /// Every action classified into `position` by [`MenuRole::native_position`].
+    ///
+    /// The position, not the role, is what a platform menu is built from: About, Preferences
+    /// and Quit are three roles in one application menu.
+    pub fn native_position_items(&self, position: NativeMenuPosition) -> Vec<&Action> {
+        self.actions
+            .iter()
+            .filter(|action| action.menu_role().native_position() == position)
+            .collect()
+    }
+
+    /// Installs the host bridge and immediately gives it the current action set.
+    ///
+    /// The bridge is notified again by [`Self::sync_platform_bridge`] after every action the
+    /// bar gains, so the platform copy cannot silently fall behind the model.
+    pub fn set_platform_bridge(&mut self, bridge: impl NativeMenuBridge + 'static) {
+        self.platform_bridge = Some(Box::new(bridge));
+        self.sync_platform_bridge();
+    }
+
+    /// The installed host bridge, if any.
+    pub fn platform_bridge(&self) -> Option<&dyn NativeMenuBridge> {
+        self.platform_bridge.as_deref()
+    }
+
+    /// Rebuilds the platform menu through the installed bridge.
+    ///
+    /// The bridge is temporarily taken out of the field so it can be handed an immutable
+    /// borrow of the bar: `rebuild` needs both `&mut self` (the bridge) and `&MenuBar`, and
+    /// both would otherwise come from the same struct.
+    pub fn sync_platform_bridge(&mut self) {
+        let Some(mut bridge) = self.platform_bridge.take() else {
+            return;
+        };
+        bridge.rebuild(self);
+        self.platform_bridge = Some(bridge);
     }
 
     /// Activates one entry: opens its attached menu, or reports the click.
@@ -993,5 +1122,67 @@ mod tests {
         assert!(!bar.is_native(), "a drawn bar is the default");
         bar.set_native(true);
         assert!(bar.is_native());
+    }
+
+    /// A role classifies an action into the platform position a bridge installs it at.
+    #[test]
+    fn menu_roles_classify_into_platform_positions() {
+        assert_eq!(MenuRole::None.native_position(), NativeMenuPosition::Bar);
+        assert_eq!(MenuRole::About.native_position(), NativeMenuPosition::Application);
+        assert_eq!(MenuRole::Preferences.native_position(), NativeMenuPosition::Application);
+        assert_eq!(MenuRole::Quit.native_position(), NativeMenuPosition::Application);
+        assert_eq!(MenuRole::Services.native_position(), NativeMenuPosition::Services);
+        assert_eq!(MenuRole::Window.native_position(), NativeMenuPosition::Window);
+        assert_eq!(MenuRole::Help.native_position(), NativeMenuPosition::Help);
+
+        let mut bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        let mut about = Action::new("About", Rect::new(0, 0, 100, 24));
+        about.set_menu_role(MenuRole::About);
+        let mut quit = Action::new("Quit", Rect::new(0, 0, 100, 24));
+        quit.set_menu_role(MenuRole::Quit);
+        let ordinary = Action::new("Open", Rect::new(0, 0, 100, 24));
+        bar.add_action(about);
+        bar.add_action(quit);
+        bar.add_action(ordinary);
+
+        assert_eq!(bar.native_role_items(MenuRole::Quit).len(), 1);
+        assert_eq!(bar.native_role_items(MenuRole::Quit)[0].text(), "Quit");
+        assert_eq!(bar.native_role_items(MenuRole::About).len(), 1);
+        assert_eq!(bar.native_position_items(NativeMenuPosition::Application).len(), 2);
+        assert_eq!(bar.native_position_items(NativeMenuPosition::Bar).len(), 1);
+    }
+
+    /// Installing a bridge hands it the bar and re-notifies it when actions arrive.
+    #[test]
+    fn a_platform_bridge_receives_the_classified_actions() {
+        use std::sync::{Arc, Mutex};
+
+        struct RecordingBridge {
+            calls: Arc<Mutex<Vec<Vec<String>>>>,
+        }
+        impl NativeMenuBridge for RecordingBridge {
+            fn rebuild(&mut self, bar: &MenuBar) {
+                let names = bar
+                    .native_position_items(NativeMenuPosition::Application)
+                    .into_iter()
+                    .map(|action| action.text().to_string())
+                    .collect();
+                self.calls.lock().unwrap().push(names);
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        bar.set_platform_bridge(RecordingBridge { calls: Arc::clone(&calls) });
+        assert_eq!(calls.lock().unwrap().len(), 1, "installation is the first sync");
+
+        let mut quit = Action::new("Quit", Rect::new(0, 0, 100, 24));
+        quit.set_menu_role(MenuRole::Quit);
+        bar.add_action(quit);
+
+        assert!(bar.platform_bridge().is_some());
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "adding an action rebuilds the platform menu");
+        assert_eq!(calls[1], vec!["Quit".to_string()], "and the bridge sees the role group");
     }
 }

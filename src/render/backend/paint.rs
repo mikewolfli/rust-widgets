@@ -4,7 +4,9 @@
 //! Paint backend trait and software implementation.
 use super::batch::BatchState;
 use crate::compat::vec;
+use crate::compat::Arc;
 use crate::compat::Rc;
+use crate::compat::Vec;
 use crate::core::{Color, Font, Rect, Size};
 use crate::render::pipeline::{
     sat_add_i32, sat_mul_i32, sat_neg_i32, set_pixel, u32_to_i32_saturating,
@@ -86,7 +88,7 @@ pub trait PaintBackend {
             y,
             width,
             height,
-            data: data.to_vec(),
+            data: Arc::from(data),
         });
     }
     /// Fills borrowed contours using the non-zero winding rule.
@@ -619,14 +621,29 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
                 let h = size.height as usize;
                 if w > 0 && h > 0 {
                     let radius = (*blur_radius).min(100) as usize;
-                    let blur_x0 = spread_rect.x.max(0) as usize;
-                    let blur_y0 = spread_rect.y.max(0) as usize;
-                    let blur_w = ((spread_rect.x as usize + spread_rect.width as usize).min(w))
-                        .saturating_sub(blur_x0);
-                    let blur_h = ((spread_rect.y as usize + spread_rect.height as usize).min(h))
-                        .saturating_sub(blur_y0);
-                    let back = surface.buffer.back_mut();
-                    box_blur_region(back, w, h, blur_x0, blur_y0, blur_w, blur_h, radius);
+                    let region = surface
+                        .current_clip()
+                        .map_or((0, 0, w as u32, h as u32), |(clip_x, clip_y, clip_w, clip_h)| {
+                            (clip_x, clip_y, clip_w, clip_h)
+                        });
+                    let blur_x0 = spread_rect.x.max(region.0).max(0) as usize;
+                    let blur_y0 = spread_rect.y.max(region.1).max(0) as usize;
+                    let clip_right = region.0 as i64 + i64::from(region.2);
+                    let clip_bottom = region.1 as i64 + i64::from(region.3);
+                    let blur_right = (spread_rect.x as i64 + i64::from(spread_rect.width))
+                        .min(clip_right)
+                        .min(w as i64)
+                        .max(0);
+                    let blur_bottom = (spread_rect.y as i64 + i64::from(spread_rect.height))
+                        .min(clip_bottom)
+                        .min(h as i64)
+                        .max(0);
+                    let blur_w = (blur_right - blur_x0 as i64).max(0) as usize;
+                    let blur_h = (blur_bottom - blur_y0 as i64).max(0) as usize;
+                    if blur_w > 0 && blur_h > 0 {
+                        let back = surface.buffer.back_mut();
+                        box_blur_region(back, w, h, blur_x0, blur_y0, blur_w, blur_h, radius);
+                    }
                 }
             }
         }
@@ -641,8 +658,25 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
             if w == 0 || h == 0 {
                 return;
             }
+            // A blur is expensive per pixel, so run it only over the clip that can publish the
+            // result; the whole surface remains the no-clip case (G-03).
+            let (bx, by, bw, bh) = match surface.current_clip() {
+                Some((clip_x, clip_y, clip_w, clip_h)) => {
+                    let x0 = clip_x.max(0) as usize;
+                    let y0 = clip_y.max(0) as usize;
+                    let x1 = (clip_x as i64 + i64::from(clip_w)).clamp(0, w as i64) as usize;
+                    let y1 = (clip_y as i64 + i64::from(clip_h)).clamp(0, h as i64) as usize;
+                    (
+                        x0.min(w),
+                        y0.min(h),
+                        x1.saturating_sub(x0.min(w)),
+                        y1.saturating_sub(y0.min(h)),
+                    )
+                }
+                None => (0, 0, w, h),
+            };
             let back = surface.buffer.back_mut();
-            box_blur_region(back, w, h, 0, 0, w, h, r);
+            box_blur_region(back, w, h, bx, by, bw, bh, r);
         }
         RenderCommand::ClipPath { points } => {
             // Exact path clipping: the surface restricts drawing to the path's bounds and records a
@@ -667,47 +701,48 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
             if w == 0 || h == 0 {
                 return;
             }
+            // Restrict the loop to the clip instead of evaluating the whole surface. The old loop
+            // wrote every pixel unconditionally, so a conic fill inside a small clip still paid
+            // `atan2` plus a stop search over the full frame (G-03).
+            let (x0, y0, x1, y1) = match surface.current_clip() {
+                Some((clip_x, clip_y, clip_w, clip_h)) => {
+                    let x0 = clip_x.max(0) as usize;
+                    let y0 = clip_y.max(0) as usize;
+                    let x1 = (clip_x as i64 + i64::from(clip_w)).clamp(0, w as i64) as usize;
+                    let y1 = (clip_y as i64 + i64::from(clip_h)).clamp(0, h as i64) as usize;
+                    (x0.min(w), y0.min(h), x1, y1)
+                }
+                None => (0, 0, w, h),
+            };
+            if x1 <= x0 || y1 <= y0 {
+                return;
+            }
+            // Resolve the angle ramp once. The per-pixel loop then performs one table lookup
+            // instead of a binary search over the stops (G-03).
+            const CONIC_LUT_SIZE: usize = 256;
+            let mut lut = [Color::TRANSPARENT; CONIC_LUT_SIZE];
+            for (index, slot) in lut.iter_mut().enumerate() {
+                let pos = index as f32 / (CONIC_LUT_SIZE - 1) as f32;
+                *slot = conic_stop_color(stops, pos);
+            }
+            let lut_index = |pos: f32| -> usize {
+                ((pos.clamp(0.0, 1.0) * (CONIC_LUT_SIZE - 1) as f32) as usize)
+                    .min(CONIC_LUT_SIZE - 1)
+            };
             let cx = center.x as f32;
             let cy = center.y as f32;
             let angle_offset = *start_angle;
             // Take the back buffer once rather than re-borrowing it per pixel: the writes are
             // sequential and non-overlapping, so one borrow covers the whole loop.
             let back = surface.buffer.back_mut();
-            // Iterate over all pixels on the surface
-            for py in 0..h {
-                for px in 0..w {
+            for py in y0..y1 {
+                let dy = py as f32 - cy;
+                for px in x0..x1 {
                     let dx = px as f32 - cx;
-                    let dy = py as f32 - cy;
                     let mut t = dy.atan2(dx) + core::f32::consts::PI;
                     t = (t + angle_offset) % (2.0 * core::f32::consts::PI);
                     let pos = t / (2.0 * core::f32::consts::PI);
-                    // Find the two stops surrounding pos
-                    let color = if pos <= stops[0].0 {
-                        stops[0].1
-                    } else if pos >= stops.last().unwrap().0 {
-                        stops.last().unwrap().1
-                    } else {
-                        let mut lo = 0usize;
-                        let mut hi = stops.len() - 1;
-                        while hi - lo > 1 {
-                            let mid = (lo + hi) / 2;
-                            if stops[mid].0 <= pos {
-                                lo = mid;
-                            } else {
-                                hi = mid;
-                            }
-                        }
-                        let t_local = (pos - stops[lo].0) / (stops[hi].0 - stops[lo].0).max(0.0001);
-                        let ca = stops[lo].1;
-                        let cb = stops[hi].1;
-                        Color::rgba(
-                            (ca.r as f32 + (cb.r as f32 - ca.r as f32) * t_local) as u8,
-                            (ca.g as f32 + (cb.g as f32 - ca.g as f32) * t_local) as u8,
-                            (ca.b as f32 + (cb.b as f32 - ca.b as f32) * t_local) as u8,
-                            (ca.a as f32 + (cb.a as f32 - ca.a as f32) * t_local) as u8,
-                        )
-                    };
-                    set_pixel(back, size.width, px as u32, py as u32, color);
+                    set_pixel(back, size.width, px as u32, py as u32, lut[lut_index(pos)]);
                 }
             }
         }
@@ -780,14 +815,21 @@ fn begin_layer(
     // has nothing to separate. Opacity or a cache key both need the foreground on its own.
     let isolated = effect.is_some() || opacity < 1.0 || cache_key.is_some();
     let cached_foreground = match cache_key {
-        Some(key) => surface
-            .buffer
-            .layer_cache
-            .iter()
-            .find(|(cached_key, entry)| {
+        Some(key) => {
+            let cache = &mut surface.buffer.layer_cache;
+            // Touch on hit: move the entry to the back so eviction follows *use* order. The old
+            // list was evicted from the front in insertion order, so a hot layer could be pushed
+            // out by a cold one registered later (G-13).
+            let position = cache.iter().position(|(cached_key, entry)| {
                 *cached_key == key && entry.rect == rect && entry.opacity == opacity
+            });
+            position.map(|position| {
+                let entry = cache.remove(position);
+                let foreground = Arc::clone(&entry.1.foreground);
+                cache.push(entry);
+                foreground
             })
-            .map(|(_, entry)| entry.foreground.clone()),
+        }
         None => None,
     };
     let backdrop = if isolated {
@@ -851,13 +893,14 @@ fn pop_layer(surface: &mut SoftwareSurface) {
     let was_cached = layer.cached_foreground.is_some();
     let foreground = match layer.cached_foreground {
         Some(foreground) if foreground.len() == expected => foreground,
-        _ => capture_region(surface.buffer.back_mut(), surface_width, layer.rect),
+        _ => Arc::new(capture_region(surface.buffer.back_mut(), surface_width, layer.rect)),
     };
     // Store the freshly drawn foreground for the next frame. A cached foreground is already in
-    // the cache, so storing it again would only churn the entry list.
+    // the cache, so storing it again would only churn the entry list. The buffer is shared by
+    // refcount, so keeping it here costs no copy of the region (G-01).
     if let Some(key) = layer.cache_key {
         if !was_cached && foreground.len() == expected {
-            store_cached_layer(surface, key, layer.rect, layer.opacity, foreground.clone());
+            store_cached_layer(surface, key, layer.rect, layer.opacity, Arc::clone(&foreground));
         }
     }
     // A fully transparent subtree shows neither its foreground nor its backdrop effect, but the
@@ -898,7 +941,7 @@ fn pop_layer(surface: &mut SoftwareSurface) {
         surface_width,
         layer.rect,
         &backdrop,
-        &foreground,
+        foreground.as_slice(),
         layer.opacity,
     );
 }
@@ -909,11 +952,14 @@ fn store_cached_layer(
     key: u64,
     rect: (i32, i32, u32, u32),
     opacity: f32,
-    foreground: crate::compat::Vec<u8>,
+    foreground: Arc<Vec<u8>>,
 ) {
     let cache = &mut surface.buffer.layer_cache;
-    if let Some(slot) = cache.iter_mut().find(|(cached_key, _)| *cached_key == key) {
-        slot.1 = super::surface::CachedLayer { rect, opacity, foreground };
+    if let Some(position) = cache.iter().position(|(cached_key, _)| *cached_key == key) {
+        // Replace and move to the back: a refreshed entry is the most recently used one.
+        let mut entry = cache.remove(position);
+        entry.1 = super::surface::CachedLayer { rect, opacity, foreground };
+        cache.push(entry);
         return;
     }
     if cache.len() >= LAYER_CACHE_CAPACITY {
@@ -1067,6 +1113,39 @@ fn tint_region(region: &mut [u8], tint: Color, weight: f32) {
         }
         pixel[3] = (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
     }
+}
+
+/// Samples a conic gradient's stops at ramp position `pos`.
+///
+/// The stops are assumed sorted (the command's contract). This is the search the per-pixel loop
+/// used to run; it is now paid once per lookup-table entry instead of once per pixel (G-03).
+fn conic_stop_color(stops: &[(f32, Color)], pos: f32) -> Color {
+    if pos <= stops[0].0 {
+        return stops[0].1;
+    }
+    let Some(last) = stops.last() else { return Color::TRANSPARENT };
+    if pos >= last.0 {
+        return last.1;
+    }
+    let mut lo = 0usize;
+    let mut hi = stops.len() - 1;
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if stops[mid].0 <= pos {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let t_local = (pos - stops[lo].0) / (stops[hi].0 - stops[lo].0).max(0.0001);
+    let ca = stops[lo].1;
+    let cb = stops[hi].1;
+    Color::rgba(
+        (ca.r as f32 + (cb.r as f32 - ca.r as f32) * t_local) as u8,
+        (ca.g as f32 + (cb.g as f32 - ca.g as f32) * t_local) as u8,
+        (ca.b as f32 + (cb.b as f32 - ca.b as f32) * t_local) as u8,
+        (ca.a as f32 + (cb.a as f32 - ca.a as f32) * t_local) as u8,
+    )
 }
 
 /// Apply a **Gaussian-approximating** blur to a rectangular region of an RGBA pixel buffer.
@@ -1676,7 +1755,7 @@ mod tests {
             y: 0,
             width: 2,
             height: 2,
-            data,
+            data: data.into(),
         });
         backend.end_frame();
 

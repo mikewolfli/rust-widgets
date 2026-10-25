@@ -73,6 +73,152 @@ impl PartialEq for PropertyValue {
     }
 }
 
+/// Where a property's `description` is shown.
+///
+/// The field has always been documented as "shown as a tooltip" and never painted. A mode rather
+/// than a single behaviour because a tooltip is not always reachable — a keyboard-only user cannot
+/// hover — and a panel embedded in a narrow inspector may prefer one persistent line to a floating
+/// box that covers its neighbours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DescriptionMode {
+    /// A floating box beside the hovered row.
+    #[default]
+    Tooltip,
+    /// A persistent line across the panel's bottom edge.
+    StatusBar,
+    /// The description is not painted at all.
+    Hidden,
+}
+
+impl DescriptionMode {
+    /// The token this mode is spelled as in a property write.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DescriptionMode::Tooltip => "tooltip",
+            DescriptionMode::StatusBar => "status_bar",
+            DescriptionMode::Hidden => "hidden",
+        }
+    }
+
+    /// Parses the token back, rejecting anything else.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "tooltip" => DescriptionMode::Tooltip,
+            "status_bar" => DescriptionMode::StatusBar,
+            "hidden" => DescriptionMode::Hidden,
+            _ => return None,
+        })
+    }
+}
+
+/// What gesture opens a text-style editor on a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditTrigger {
+    /// A single click on the value column opens the editor.
+    #[default]
+    SingleClick,
+    /// A double click opens the editor; a single click only focuses the row.
+    DoubleClick,
+}
+
+impl EditTrigger {
+    /// The token this trigger is spelled as in a property write.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EditTrigger::SingleClick => "single_click",
+            EditTrigger::DoubleClick => "double_click",
+        }
+    }
+
+    /// Parses the token back, rejecting anything else.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "single_click" => EditTrigger::SingleClick,
+            "double_click" => EditTrigger::DoubleClick,
+            _ => return None,
+        })
+    }
+}
+
+/// An open row editor: which entry, its scratch buffer, and the caret's character position.
+///
+/// The caret is a **character** index rather than a byte offset, so left/right move one grapheme
+/// for the scripts this panel edits, and inserting a multi-byte character cannot split a `char`.
+#[derive(Debug, Clone)]
+struct PropertyEdit {
+    index: usize,
+    buffer: String,
+    cursor: usize,
+}
+
+impl PropertyEdit {
+    fn new(index: usize, text: String) -> Self {
+        let cursor = text.chars().count();
+        Self { index, buffer: text, cursor }
+    }
+
+    /// The buffer with a caret marker at the cursor, for the single-run fitted draw.
+    fn with_caret(&self) -> String {
+        let caret = self.byte_offset();
+        let mut rendered = String::with_capacity(self.buffer.len() + 1);
+        rendered.push_str(&self.buffer[..caret]);
+        rendered.push('|');
+        rendered.push_str(&self.buffer[caret..]);
+        rendered
+    }
+
+    fn byte_offset(&self) -> usize {
+        self.buffer.char_indices().nth(self.cursor).map_or(self.buffer.len(), |(offset, _)| offset)
+    }
+
+    /// Inserts the committed text at the caret and advances it past the insertion.
+    fn insert(&mut self, text: &str) {
+        let offset = self.byte_offset();
+        self.buffer.insert_str(offset, text);
+        self.cursor += text.chars().count();
+    }
+
+    /// Removes the character before the caret.
+    fn backspace(&mut self) -> bool {
+        if self.cursor == 0 {
+            return false;
+        }
+        let end = self.byte_offset();
+        let start = self.buffer.char_indices().nth(self.cursor - 1).map_or(0, |(offset, _)| offset);
+        self.buffer.replace_range(start..end, "");
+        self.cursor -= 1;
+        true
+    }
+
+    /// Removes the character after the caret.
+    fn delete(&mut self) -> bool {
+        let start = self.byte_offset();
+        let Some((_, next)) = self.buffer[start..].char_indices().next() else {
+            return false;
+        };
+        self.buffer.replace_range(start..start + next.len_utf8(), "");
+        true
+    }
+
+    fn move_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    fn move_right(&mut self) {
+        if self.cursor < self.buffer.chars().count() {
+            self.cursor += 1;
+        }
+    }
+
+    fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn move_end(&mut self) {
+        self.cursor = self.buffer.chars().count();
+    }
+}
+
 /// A single entry in the properties panel.
 #[derive(Debug, Clone)]
 pub struct PropertyEntry {
@@ -119,6 +265,18 @@ const VALUE_COL_LEFT: i32 = 148;
 /// header's glyph box to the frame's own stroke.
 const PANEL_INSET: u32 = 2;
 
+/// Height of the description status bar, in pixels.
+const STATUS_BAR_HEIGHT: u32 = 22;
+
+/// Vertical allowance of the floating description tooltip.
+const TOOLTIP_LINE_HEIGHT: u32 = 18;
+
+/// How long the pointer must rest on a row before its tooltip appears, in milliseconds.
+const TOOLTIP_DELAY_MS: u32 = 450;
+
+/// Padding around the tooltip's text.
+const TOOLTIP_PADDING: i32 = 6;
+
 /// PropertiesPanel widget — a property editor with categorized grid layout.
 pub struct PropertiesPanel {
     base: BaseWidget,
@@ -150,10 +308,20 @@ pub struct PropertiesPanel {
     /// leave the highlight on whatever visual row the entry used to occupy;
     /// category headers are separators and are never hovered.
     hovered_entry: Option<usize>,
-    /// The entry being edited and its scratch buffer.
-    editing: Option<(usize, String)>,
+    /// The entry being edited, its scratch buffer and the caret.
+    editing: Option<PropertyEdit>,
     /// The entry carrying keyboard focus.
     focused_entry: Option<usize>,
+    /// Where the entry's `description` is painted.
+    description_mode: DescriptionMode,
+    /// What gesture opens a text-style editor.
+    edit_trigger: EditTrigger,
+    /// The last pointer position over the panel, used to anchor the tooltip.
+    hover_pos: Option<crate::core::Point>,
+    /// How long the pointer has rested on `hovered_entry`, in milliseconds.
+    hover_elapsed_ms: u32,
+    /// Emitted with the property name when a row's editor opens.
+    pub editor_opened: Signal1<String>,
 }
 
 impl PropertiesPanel {
@@ -170,6 +338,11 @@ impl PropertiesPanel {
             hovered_entry: None,
             editing: None,
             focused_entry: None,
+            description_mode: DescriptionMode::default(),
+            edit_trigger: EditTrigger::default(),
+            hover_pos: None,
+            hover_elapsed_ms: 0,
+            editor_opened: Signal1::new(),
         }
     }
 
@@ -353,13 +526,83 @@ impl PropertiesPanel {
         self.scroll_offset
     }
 
+    // ── Description and edit policy ──
+
+    /// Where property descriptions are painted.
+    pub fn description_mode(&self) -> DescriptionMode {
+        self.description_mode
+    }
+
+    /// Sets where property descriptions are painted.
+    pub fn set_description_mode(&mut self, mode: DescriptionMode) {
+        if self.description_mode == mode {
+            return;
+        }
+        self.description_mode = mode;
+        // The status bar changes the content box, so the rows and the hit test must relayout.
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// What gesture opens a text-style editor.
+    pub fn edit_trigger(&self) -> EditTrigger {
+        self.edit_trigger
+    }
+
+    /// Sets what gesture opens a text-style editor.
+    pub fn set_edit_trigger(&mut self, trigger: EditTrigger) {
+        self.edit_trigger = trigger;
+    }
+
+    /// The description of the entry under the pointer, when it has one.
+    pub fn hovered_description(&self) -> Option<&str> {
+        self.description_of(self.hovered_entry.or(self.focused_entry))
+    }
+
+    /// Whether a delayed tooltip is still waiting to appear.
+    fn tooltip_pending(&self) -> bool {
+        self.description_mode == DescriptionMode::Tooltip
+            && self.hover_elapsed_ms < TOOLTIP_DELAY_MS
+            && self.description_of(self.hovered_entry).is_some()
+    }
+
+    /// The description of `entry`, when one exists.
+    fn description_of(&self, entry: Option<usize>) -> Option<&str> {
+        let entry = self.properties.get(entry?)?;
+        entry.description.as_deref().filter(|text| !text.is_empty())
+    }
+
     // ── Row geometry ──
 
     /// The area a row may occupy: the panel's box minus the margin that keeps ink off the
     /// frame's own stroke. Both the draw pass and the hit test start from this, so a row's
     /// column stops coincide with the clickable box by construction.
     fn content_box(&self) -> Rect {
-        ControlMetrics::band_inset(self.geometry(), PANEL_INSET)
+        let inset = ControlMetrics::band_inset(self.geometry(), PANEL_INSET);
+        let status = self.status_bar_height();
+        if status == 0 {
+            return inset;
+        }
+        Rect::new(inset.x, inset.y, inset.width, inset.height.saturating_sub(status))
+    }
+
+    /// The description status bar's own box, when that mode is active.
+    fn status_bar_rect(&self) -> Option<Rect> {
+        let height = self.status_bar_height();
+        if height == 0 {
+            return None;
+        }
+        let inset = ControlMetrics::band_inset(self.geometry(), PANEL_INSET);
+        let y = inset.y + inset.height as i32 - height as i32;
+        Some(Rect::new(inset.x, y, inset.width, height))
+    }
+
+    /// How much of a `StatusBar` description mode reserves at the panel's foot.
+    fn status_bar_height(&self) -> u32 {
+        match self.description_mode {
+            DescriptionMode::StatusBar => STATUS_BAR_HEIGHT.min(self.geometry().height / 2),
+            _ => 0,
+        }
     }
 
     /// The box of the `row`-th visual row, counted from the first category header.
@@ -393,10 +636,17 @@ impl PropertiesPanel {
     /// from a painted row to a property cannot drift. Recovering it here (rather than
     /// threading an entry reference out of the hit-test loop) also avoids a second, divergent
     /// copy of the row walk.
-    fn toggle_editable_row(&mut self, row_rect: Rect, pos: crate::core::Point) {
+    fn toggle_editable_row(&mut self, row_rect: Rect, pos: crate::core::Point, double_click: bool) {
         let Some(index) = self.editable_index_at(row_rect, pos) else { return };
         self.focused_entry = Some(index);
         let Some(entry) = self.properties.get(index).cloned() else { return };
+        // A row that needs a text editor honours the configured trigger; the two one-click
+        // controls (a boolean and a choice) stay immediate, because toggling them *is* the value
+        // edit and there is no editor to open.
+        let editor_allowed = match self.edit_trigger {
+            EditTrigger::SingleClick => true,
+            EditTrigger::DoubleClick => double_click,
+        };
         match entry.value.clone() {
             PropertyValue::Bool(value) => {
                 self.commit_value(index, PropertyValue::Bool(!value));
@@ -405,11 +655,32 @@ impl PropertiesPanel {
                 let next = (selected + 1) % options.len();
                 self.commit_value(index, PropertyValue::Choice { options, selected: next });
             }
-            PropertyValue::Text(text) => self.begin_edit(index, text),
-            PropertyValue::Number(value) => self.begin_edit(index, value.to_string()),
-            // A colour or path needs a picker, not a text field; the click is acknowledged
-            // without rewriting the value.
-            _ => {}
+            // A choice with no options has nothing to cycle to; the guarded arm above does not
+            // count towards exhaustiveness.
+            PropertyValue::Choice { .. } => {}
+            PropertyValue::Text(text) => {
+                if editor_allowed {
+                    self.begin_edit(index, text);
+                }
+            }
+            PropertyValue::Number(value) => {
+                if editor_allowed {
+                    self.begin_edit(index, value.to_string());
+                }
+            }
+            // A colour is edited as its hex spelling and a path as its text: both are the
+            // string form the value already displays, so a single text editor is a real editor
+            // for them rather than the previous no-op.
+            PropertyValue::Color(color) => {
+                if editor_allowed {
+                    self.begin_edit(index, color.to_hex_rgb());
+                }
+            }
+            PropertyValue::File(path) => {
+                if editor_allowed {
+                    self.begin_edit(index, path);
+                }
+            }
         }
         self.base.request_redraw();
     }
@@ -457,28 +728,38 @@ impl PropertiesPanel {
         if !entry.editable {
             return;
         }
-        self.editing = Some((index, text));
+        let name = entry.name.clone();
+        self.editing = Some(PropertyEdit::new(index, text));
         self.focused_entry = Some(index);
+        self.editor_opened.emit(name);
         self.base.request_redraw();
     }
 
-    /// Commits the open editor, parsing a number when the entry holds one.
+    /// Commits the open editor, parsing a number or a colour when the entry holds one.
     pub fn commit_edit(&mut self) -> bool {
-        let Some((index, text)) = self.editing.take() else {
+        let Some(edit) = self.editing.take() else {
             return false;
         };
-        let Some(entry) = self.properties.get(index).cloned() else {
+        let Some(entry) = self.properties.get(edit.index).cloned() else {
             return false;
         };
+        let text = edit.buffer;
         let value = match entry.value {
             PropertyValue::Number(_) => match text.trim().parse::<f64>() {
                 Ok(number) => PropertyValue::Number(number),
                 // A value that does not parse is refused rather than coerced to zero.
                 Err(_) => return false,
             },
+            PropertyValue::Color(_) => match Color::parse_hex(&text) {
+                Some(color) => PropertyValue::Color(color),
+                // A malformed colour is refused for the same reason a malformed number is:
+                // silently keeping the old value would look like the edit had applied.
+                None => return false,
+            },
+            PropertyValue::File(_) => PropertyValue::File(text),
             _ => PropertyValue::Text(text),
         };
-        self.commit_value(index, value);
+        self.commit_value(edit.index, value);
         true
     }
 
@@ -491,7 +772,12 @@ impl PropertiesPanel {
 
     /// Whether an editor is open.
     pub fn editing_entry(&self) -> Option<usize> {
-        self.editing.as_ref().map(|(index, _)| *index)
+        self.editing.as_ref().map(|edit| edit.index)
+    }
+
+    /// The open editor's caret position, in characters from the start of its buffer.
+    pub fn edit_cursor(&self) -> Option<usize> {
+        self.editing.as_ref().map(|edit| edit.cursor)
     }
 
     fn commit_value(&mut self, index: usize, value: PropertyValue) {
@@ -523,6 +809,85 @@ impl PropertiesPanel {
             }
         }
         None
+    }
+
+    /// Paints the hovered entry's description according to [`Self::description_mode`].
+    ///
+    /// This is the wiring the `description` field never had: the row loop and the event handler
+    /// both skipped it, so the documented "shown as a tooltip" was a comment and nothing more.
+    fn draw_description(
+        &self,
+        context: &mut RenderContext,
+        geom: Rect,
+        background: Color,
+        border: Color,
+        text_color: Color,
+        font: &crate::core::Font,
+    ) {
+        match self.description_mode {
+            DescriptionMode::Hidden => {}
+            DescriptionMode::StatusBar => {
+                let Some(bar) = self.status_bar_rect() else { return };
+                context.fill_rect(bar, background.blend(&text_color, 0.10));
+                context.draw_line(
+                    crate::core::Point::new(bar.x, bar.y),
+                    crate::core::Point::new(bar.x + bar.width as i32, bar.y),
+                    border,
+                );
+                let text =
+                    self.description_of(self.hovered_entry.or(self.focused_entry)).unwrap_or("");
+                if !text.is_empty() {
+                    context.draw_text_fitted_cow(
+                        Rect::new(
+                            bar.x + 6,
+                            context.text_line(bar, font).y,
+                            bar.width.saturating_sub(12),
+                            bar.height,
+                        ),
+                        text,
+                        font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
+            DescriptionMode::Tooltip => {
+                let Some(text) = self.description_of(self.hovered_entry) else { return };
+                // A tooltip that appeared on the first hovered frame would flash while the
+                // pointer crosses the panel; the delay is what makes it read as an answer to a
+                // deliberate rest.
+                if self.hover_elapsed_ms < TOOLTIP_DELAY_MS {
+                    return;
+                }
+                let anchor = self.hover_pos.unwrap_or(crate::core::Point::new(geom.x, geom.y));
+                let metrics = context.measure_text(text, font);
+                let width = (metrics.width + TOOLTIP_PADDING as u32 * 2)
+                    .min(geom.width.saturating_sub(4))
+                    .max(1);
+                let height = TOOLTIP_LINE_HEIGHT.min(geom.height).max(1);
+                // Anchor below-right of the pointer, then pull the box back inside the panel so
+                // a row near an edge cannot paint its description outside the control.
+                let max_x = (geom.x + geom.width as i32 - width as i32).max(geom.x);
+                let max_y = (geom.y + geom.height as i32 - height as i32).max(geom.y);
+                let x = (anchor.x + 12).clamp(geom.x, max_x);
+                let y = (anchor.y + 16).clamp(geom.y, max_y);
+                let box_rect = Rect::new(x, y, width, height);
+                context.fill_rounded_rect(box_rect, 3, background.blend(&text_color, 0.18));
+                context.draw_rect_stroke(box_rect, border, 1);
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        box_rect.x + TOOLTIP_PADDING,
+                        context.text_line(box_rect, font).y,
+                        box_rect.width.saturating_sub(TOOLTIP_PADDING as u32 * 2),
+                        box_rect.height,
+                    ),
+                    text,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
     }
 
     /// Returns the text representation of a property value for display.
@@ -571,6 +936,24 @@ impl Widget for PropertiesPanel {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 400)
     }
+
+    /// Advances the tooltip's hover delay; `true` while the tooltip still owes a frame.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.tooltip_pending() {
+            return false;
+        }
+        self.hover_elapsed_ms = self.hover_elapsed_ms.saturating_add(delta_ms);
+        if self.hover_elapsed_ms >= TOOLTIP_DELAY_MS {
+            self.base.request_redraw();
+            return false;
+        }
+        true
+    }
+
+    fn is_animating(&self) -> bool {
+        self.tooltip_pending()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -598,6 +981,11 @@ impl Widget for PropertiesPanel {
                     ]))
                 }))
             }
+            "editor_opened" => {
+                Some(EventSignalRef::mapped("editor_opened", &self.editor_opened, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
             _ => None,
         }
     }
@@ -620,6 +1008,10 @@ impl WidgetProperties for PropertiesPanel {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "property_count" => Ok(CapabilityValue::UInt(self.properties().len() as u64)),
+            "description_mode" => {
+                Ok(CapabilityValue::String(self.description_mode().as_str().to_string()))
+            }
+            "edit_trigger" => Ok(CapabilityValue::String(self.edit_trigger().as_str().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -628,12 +1020,37 @@ impl WidgetProperties for PropertiesPanel {
         match name {
             // Derived from the entry list, which owns it.
             "property_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "description_mode" => {
+                let text = match value {
+                    CapabilityValue::String(text) => text,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                let mode =
+                    DescriptionMode::from_name(&text).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_description_mode(mode);
+                Ok(())
+            }
+            "edit_trigger" => {
+                let text = match value {
+                    CapabilityValue::String(text) => text,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                let trigger =
+                    EditTrigger::from_name(&text).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_edit_trigger(trigger);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["property_count", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "property_count",
+            "description_mode",
+            "edit_trigger",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -787,9 +1204,7 @@ impl Draw for PropertiesPanel {
                     ROW_HEIGHT,
                 );
                 let display = match self.editing.as_ref() {
-                    Some((editing_index, buffer)) if *editing_index == index => {
-                        std::borrow::Cow::Owned(std::format!("{buffer}|"))
-                    }
+                    Some(edit) if edit.index == index => std::borrow::Cow::Owned(edit.with_caret()),
                     _ => std::borrow::Cow::Borrowed(
                         displays.get(index).map(String::as_str).unwrap_or(""),
                     ),
@@ -823,6 +1238,8 @@ impl Draw for PropertiesPanel {
         // Draw border around the entire panel
         context.pop_clip();
         context.draw_rect_stroke(geom, border, 1);
+
+        self.draw_description(context, geom, background, border, text_color, font);
     }
 }
 
@@ -852,9 +1269,24 @@ impl EventHandler for PropertiesPanel {
                         // not editable. The offset from a header to its entries is one row,
                         // matching `1 + entries.len()` in `visual_row_count`.
                         if row_rect.contains_point(*pos) {
-                            self.toggle_editable_row(row_rect, *pos);
+                            self.toggle_editable_row(row_rect, *pos, false);
                             return;
                         }
+                    }
+                }
+            }
+            Event::MouseDoubleClick { pos, button: 1 } => {
+                // The second press of a double click is delivered separately as a `MousePress`,
+                // so this arm only opens the editor; `toggle_editable_row` owns the trigger
+                // decision and the by-type dispatch.
+                let rows = self.visual_row_count();
+                let mut row = self.first_visible_row();
+                while row < rows {
+                    let row_rect = self.row_rect_for(row);
+                    row += 1;
+                    if row_rect.contains_point(*pos) {
+                        self.toggle_editable_row(row_rect, *pos, true);
+                        return;
                     }
                 }
             }
@@ -865,16 +1297,25 @@ impl EventHandler for PropertiesPanel {
                     // Hover is the entry under the pointer, from the same inverse walk the
                     // press uses, so a highlight cannot land on a row a click would not
                     // reach. `MouseMove` fires far more often than the highlight changes,
-                    // so the redraw is requested only on an actual change.
+                    // so the redraw is requested only on an actual change. The position is
+                    // recorded either way: the tooltip anchors to it.
+                    self.hover_pos = Some(*pos);
                     let hovered = self.entry_index_at(*pos);
                     if hovered != self.hovered_entry {
                         self.hovered_entry = hovered;
+                        self.hover_elapsed_ms = 0;
+                        self.base.request_redraw();
+                    } else if self.description_mode == DescriptionMode::Tooltip && hovered.is_some()
+                    {
+                        // The box follows the pointer even while it stays over one row.
                         self.base.request_redraw();
                     }
                 }
                 self.base.handle_event(event);
             }
             Event::MouseLeave { .. } => {
+                self.hover_pos = None;
+                self.hover_elapsed_ms = 0;
                 if self.hovered_entry.take().is_some() {
                     self.base.request_redraw();
                 }
@@ -889,24 +1330,61 @@ impl EventHandler for PropertiesPanel {
                 self.scroll_offset = (self.scroll_offset - step).clamp(0, max.max(0));
                 self.base.request_redraw();
             }
-            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => {
-                if let Some((_, buffer)) = self.editing.as_mut() {
-                    match *key {
+            // IME / keyboard-layout committed text. The previous handler accepted raw key codes
+            // in `32..=126` only, so a CJK or accented character — which never arrives as one
+            // ASCII code point — was dropped on the floor.
+            Event::TextInput { text }
+                if self.editing.is_some() && text.chars().all(|ch| !ch.is_control()) =>
+            {
+                if let Some(edit) = self.editing.as_mut() {
+                    edit.insert(text);
+                }
+                self.base.request_redraw();
+            }
+            Event::KeyPress { key, modifiers } if self.base.focus_reason().is_some() => {
+                if self.editing.is_some() {
+                    // Commit/cancel take the editor out of the field, so they cannot run inside a
+                    // borrow of it; the remaining keys mutate the buffer and report whether the
+                    // frame changed, which keeps the redraw outside the borrow as well.
+                    let redraw = match *key {
                         crate::event::key_codes::ENTER => {
                             let _ = self.commit_edit();
+                            true
                         }
-                        crate::event::key_codes::ESCAPE => self.cancel_edit(),
-                        crate::event::key_codes::BACKSPACE => {
-                            buffer.pop();
-                            self.base.request_redraw();
+                        crate::event::key_codes::ESCAPE => {
+                            self.cancel_edit();
+                            false
                         }
-                        32..=126 => {
-                            if let Some(character) = char::from_u32(*key) {
-                                buffer.push(character);
-                                self.base.request_redraw();
+                        _ => {
+                            let Some(edit) = self.editing.as_mut() else { return };
+                            match *key {
+                                crate::event::key_codes::BACKSPACE => edit.backspace(),
+                                crate::event::key_codes::DELETE => edit.delete(),
+                                crate::event::key_codes::LEFT => {
+                                    edit.move_left();
+                                    true
+                                }
+                                crate::event::key_codes::RIGHT => {
+                                    edit.move_right();
+                                    true
+                                }
+                                crate::event::key_codes::HOME => {
+                                    edit.move_home();
+                                    true
+                                }
+                                crate::event::key_codes::END => {
+                                    edit.move_end();
+                                    true
+                                }
+                                _ => {
+                                    let _ = modifiers;
+                                    false
+                                }
                             }
                         }
-                        _ => {}
+                    };
+                    if redraw {
+                        self.base.request_redraw();
                     }
                     return;
                 }
@@ -1411,7 +1889,7 @@ mod tests {
         });
         assert_eq!(panel.editing_entry(), Some(0), "a click opens the number editor");
         panel.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
-        panel.handle_event(&Event::KeyPress { key: 49, modifiers: 0 });
+        panel.handle_event(&Event::text_input("1"));
         panel.handle_event(&Event::KeyPress { key: crate::event::key_codes::ENTER, modifiers: 0 });
         assert_eq!(panel.editing_entry(), None);
         assert!(matches!(

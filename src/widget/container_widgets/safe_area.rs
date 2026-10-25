@@ -70,7 +70,10 @@ impl SafeArea {
     }
     /// Sets the colour painted in the four inset margin bars.
     ///
-    /// Does not request a redraw, so a visible change needs an explicit repaint.
+    /// Requests a redraw on a real change: `draw` fills every inset band with this colour, so a
+    /// change that did not repaint stayed invisible until something else forced a frame. This
+    /// documentation used to say the opposite ("does not request a redraw"), which contradicted
+    /// the three lines below it.
     pub fn set_margin_color(&mut self, color: Color) {
         if self.margin_color == color {
             return;

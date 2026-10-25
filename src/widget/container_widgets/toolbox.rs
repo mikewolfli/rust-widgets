@@ -8,7 +8,9 @@ use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::metrics::effective_font;
 
-use crate::widget::capability::coercion::{expect_orientation, expect_usize, orientation_to_str};
+use crate::widget::capability::coercion::{
+    expect_orientation, expect_string, expect_usize, orientation_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -67,12 +69,57 @@ pub struct ToolBox {
     /// [`ToolBox::set_current_index`] or user input. `clear()` resets the index to `0`
     /// without emitting, because it also empties the page vector.
     ///
-    /// (An earlier version of this comment described a "collapse" notification;
-    /// a toolbox page has no collapsed state, so that contract was never real.)
+    /// This is the *selection* signal. The per-item open state is reported separately by
+    /// [`Self::item_expanded_changed`], because an item can open or close without the selection
+    /// moving (`ToolBoxMode::NonExclusive`).
     pub current_changed: Signal1<usize>,
+    /// Emitted with `(item_index, expanded)` whenever an item's page opens or closes.
+    pub item_expanded_changed: Signal1<(usize, bool)>,
+    /// How items' open states interact.
+    mode: ToolBoxMode,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
+/// How a tool box treats its items' open state.
+///
+/// # Why the modes exist
+///
+/// A tool box page used to have exactly one state: whichever item `current_index` named was shown.
+/// The reference control offers three policies, and they differ in *what closing one page does to
+/// the others*, which is a decision only the host can make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolBoxMode {
+    /// At most one item is open. Opening another collapses the one that was open.
+    #[default]
+    Exclusive,
+    /// Any number of items may be open at once; their pages share the content box.
+    NonExclusive,
+    /// At most one item is open, and a press on the open item collapses it — the page behaves like
+    /// a popup that the user dismisses by pressing its own tab again.
+    Popup,
+}
+
+impl ToolBoxMode {
+    /// The factory spelling of this mode, matching `TOOL_BOX_PROPERTIES`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ToolBoxMode::Exclusive => "exclusive",
+            ToolBoxMode::NonExclusive => "non_exclusive",
+            ToolBoxMode::Popup => "popup",
+        }
+    }
+
+    /// Parses a factory spelling into a mode.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "exclusive" => ToolBoxMode::Exclusive,
+            "non_exclusive" | "nonexclusive" => ToolBoxMode::NonExclusive,
+            "popup" => ToolBoxMode::Popup,
+            _ => return None,
+        })
+    }
+}
+
 /// Tool box item.
 pub struct ToolBoxItem {
     text: String,
@@ -82,6 +129,13 @@ pub struct ToolBoxItem {
     tooltip: String,
     enabled: bool,
     widget: Option<ObjectId>,
+    /// Whether this item's page is open.
+    ///
+    /// The flag is the item's own, not derived from `current_index`: in
+    /// [`ToolBoxMode::NonExclusive`] several items are open at once, so "which page is visible" is a
+    /// per-item answer. [`ToolBox::set_item_expanded`] is the entry that keeps the pages, the
+    /// geometry and the signal in step.
+    expanded: bool,
 }
 impl ToolBoxItem {
     /// Creates a new tool box item.
@@ -94,6 +148,7 @@ impl ToolBoxItem {
             tooltip: String::new(),
             enabled: true,
             widget: None,
+            expanded: false,
         }
     }
     /// Returns text.
@@ -175,6 +230,17 @@ impl ToolBoxItem {
     pub fn set_widget(&mut self, widget: Option<ObjectId>) {
         self.widget = widget;
     }
+    /// Whether this item's page is open.
+    pub fn is_expanded(&self) -> bool {
+        self.expanded
+    }
+    /// Sets whether this item's page is open.
+    ///
+    /// The value-level setter only: it cannot show or hide the page, place it, or tell anyone.
+    /// Use [`ToolBox::set_item_expanded`] for the container-level entry that does all three.
+    pub fn set_expanded(&mut self, expanded: bool) {
+        self.expanded = expanded;
+    }
 }
 impl ToolBox {
     /// Creates a tool box.
@@ -189,13 +255,20 @@ impl ToolBox {
             smooth_scroll: false,
             item_height: ITEM_HEIGHT,
             current_changed: Signal1::new(),
+            item_expanded_changed: Signal1::new(),
+            mode: ToolBoxMode::Exclusive,
             registry: None,
         }
     }
     /// Adds an item.
+    ///
+    /// The first item added to an empty tool box is open, which is the state the control has always
+    /// started in: an empty strip beside an empty page becomes a strip beside a page.
     pub fn add_item(&mut self, text: String, widget: Option<ObjectId>) -> usize {
+        let was_empty = self.items.is_empty();
         let mut item = ToolBoxItem::new(text);
         item.widget = widget;
+        item.expanded = was_empty;
         if let Some(widget_id) = widget {
             self.base.add_child_linked(widget_id);
         }
@@ -209,12 +282,14 @@ impl ToolBox {
     ///
     /// An `index` past the end appends rather than panicking, matching
     /// [`Self::add_item`] and the rest of the container family (`tab_bar`,
-    /// `pie_menu` clamp the same way).
+    /// `pie_menu` clamp the same way). The inserted item starts collapsed unless it is the first
+    /// item of an empty tool box (see [`Self::add_item`]).
     pub fn insert_item(&mut self, index: usize, text: String, widget: Option<ObjectId>) {
         let was_empty = self.items.is_empty();
         let index = index.min(self.items.len());
         let mut item = ToolBoxItem::new(text);
         item.widget = widget;
+        item.expanded = was_empty;
         if let Some(widget_id) = widget {
             self.base.add_child_linked(widget_id);
         }
@@ -233,12 +308,22 @@ impl ToolBox {
                 // See `StackedWidget::remove_widget`: a removed page must not stay visible.
                 crate::set_widget_visible(widget_id, false);
             }
+            let was_open = self.items[index].expanded;
             self.items.remove(index);
             if self.current_index >= index && self.current_index > 0 {
                 self.current_index -= 1;
             }
             if self.items.is_empty() {
                 self.current_index = 0;
+            } else if !self.items.iter().any(|item| item.expanded) {
+                // The visible page was the one removed. The control has always kept a page on
+                // screen, so the nearest slot takes over rather than leaving an empty content box.
+                let next = self.current_index.min(self.items.len() - 1);
+                self.items[next].expanded = true;
+                self.current_index = next;
+                if was_open {
+                    self.item_expanded_changed.emit((next, true));
+                }
             }
             self.clamp_scroll();
             self.sync_pages();
@@ -262,47 +347,180 @@ impl ToolBox {
     ///
     /// The new page's tab is scrolled into view if overflow had hidden it; the selection is not
     /// silently applied to a page the user cannot see the tab of.
+    ///
+    /// Selecting also opens the page: in [`ToolBoxMode::Exclusive`] and [`ToolBoxMode::Popup`] every
+    /// other item closes, and in [`ToolBoxMode::NonExclusive`] the others keep their state. A
+    /// selection change is reported through [`Self::current_changed`], and an open state that
+    /// moved through [`Self::item_expanded_changed`].
     pub fn set_current_index(&mut self, index: usize) {
         if index < self.items.len() && self.current_index != index {
             self.current_index = index;
             self.scroll_current_into_view();
+            self.open_exclusive(index);
             self.sync_pages();
             self.current_changed.emit(index);
             self.base.request_redraw();
         }
     }
 
-    /// Applies the page model to the mounted pages: the selected tab's page is shown and
-    /// fills [`Self::content_rect`], every other page is hidden.
+    /// The policy the items' open states follow.
+    pub fn mode(&self) -> ToolBoxMode {
+        self.mode
+    }
+
+    /// Sets the open-state policy.
     ///
-    /// # Why this is the control's job
+    /// Switching to a single-page mode closes every page but the selected one, so the policy is
+    /// true after the write rather than only for the next press. Switching to
+    /// [`ToolBoxMode::NonExclusive`] changes nothing: whatever is open stays open.
+    pub fn set_mode(&mut self, mode: ToolBoxMode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        if !matches!(mode, ToolBoxMode::NonExclusive) {
+            let keep = self.current_index.min(self.items.len().saturating_sub(1));
+            self.open_exclusive(keep);
+        }
+        self.sync_pages();
+        self.base.request_redraw();
+    }
+
+    /// Whether the item at `index` has an open page, or `None` for an unknown index.
+    pub fn item_expanded(&self, index: usize) -> Option<bool> {
+        self.items.get(index).map(|item| item.expanded)
+    }
+
+    /// The indices of the open items, in display order.
+    pub fn expanded_items(&self) -> Vec<usize> {
+        self.items.iter().enumerate().filter(|(_, item)| item.expanded).map(|(i, _)| i).collect()
+    }
+
+    /// Opens or closes the item at `index`, returning `false` for an unknown index.
     ///
-    /// A tool box shows one page beside its strip. Linking the page as a child was only
-    /// half the model: the tree painter draws every visible child, so the other pages
-    /// painted over the selected one (and over the strip). Hiding them is also what keeps
-    /// a click from reaching a page the user cannot see.
-    fn sync_pages(&self) {
-        #[cfg(not(alloc_frugal))]
-        {
-            for (index, item) in self.items.iter().enumerate() {
-                if let Some(widget_id) = item.widget {
-                    crate::set_widget_visible(widget_id, index == self.current_index);
-                }
+    /// # How the modes read this
+    ///
+    /// * [`ToolBoxMode::Exclusive`] — opening one item closes the rest; closing the open item is
+    ///   allowed and leaves every page closed.
+    /// * [`ToolBoxMode::NonExclusive`] — opening and closing are independent; several pages may be
+    ///   open and they share the content box.
+    /// * [`ToolBoxMode::Popup`] — opening one item closes the rest, and closing the open item is the
+    ///   gesture that dismisses the popup.
+    ///
+    /// The page's visibility and rectangle are applied from the item flag
+    /// ([`Self::sync_pages`]), and a real change is announced through
+    /// [`Self::item_expanded_changed`]; a repeated write is a no-op.
+    pub fn set_item_expanded(&mut self, index: usize, expanded: bool) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        if self.items[index].expanded == expanded {
+            return true;
+        }
+        if expanded {
+            let previous = self.current_index;
+            self.current_index = index;
+            self.open_exclusive(index);
+            self.items[index].expanded = expanded;
+            if previous != index {
+                self.current_changed.emit(index);
             }
-            self.place_current_page();
+        } else {
+            self.items[index].expanded = false;
+        }
+        self.scroll_current_into_view();
+        self.sync_pages();
+        self.base.request_redraw();
+        self.item_expanded_changed.emit((index, expanded));
+        true
+    }
+
+    /// Opens `keep` and closes every other item in the modes that allow one page only.
+    fn open_exclusive(&mut self, keep: usize) {
+        if matches!(self.mode, ToolBoxMode::NonExclusive) {
+            if let Some(item) = self.items.get_mut(keep) {
+                item.expanded = true;
+            }
+            return;
+        }
+        for (index, item) in self.items.iter_mut().enumerate() {
+            item.expanded = index == keep;
         }
     }
 
-    /// Places the selected page in the content box.
+    /// Applies the page model to the mounted pages: every open item's page is shown and fills its
+    /// share of [`Self::content_rect`], every other page is hidden.
     ///
-    /// The box comes from the same `content_rect` the painter uses, so a page and the
-    /// area drawn around it cannot disagree about where the page is.
-    fn place_current_page(&self) {
+    /// # Why this is the control's job
+    ///
+    /// A tool box shows the pages of its *open* items beside its strip. Linking a page as a child
+    /// was only half the model: the tree painter draws every visible child, so the closed pages
+    /// painted over the open one (and over the strip). Hiding them is also what keeps a click from
+    /// reaching a page the user cannot see.
+    fn sync_pages(&self) {
         #[cfg(not(alloc_frugal))]
         {
-            if let Some(widget_id) = self.current_widget() {
-                let rect = self.content_rect();
-                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+            for item in self.items.iter() {
+                if let Some(widget_id) = item.widget {
+                    crate::set_widget_visible(widget_id, item.expanded);
+                }
+            }
+            self.place_pages();
+        }
+    }
+
+    /// The rectangles the open pages occupy inside the content box.
+    ///
+    /// One open page fills the box, which is the only state the single-page modes produce. In
+    /// [`ToolBoxMode::NonExclusive`] several pages are open at once and they tile the box along its
+    /// long axis, each taking an equal share — the same "share the band" rule the strip uses.
+    fn page_rects(&self) -> Vec<(usize, Rect)> {
+        let open: Vec<usize> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.expanded)
+            .map(|(index, _)| index)
+            .collect();
+        if open.is_empty() {
+            return Vec::new();
+        }
+        let content = self.content_rect();
+        let count = open.len() as u32;
+        let share = content.height / count;
+        open.into_iter()
+            .enumerate()
+            .map(|(slot, index)| {
+                let offset = slot as u32 * share;
+                let height = if slot as u32 + 1 == count {
+                    content.height.saturating_sub(offset)
+                } else {
+                    share
+                };
+                (
+                    index,
+                    Rect::new(
+                        content.x,
+                        content.y.saturating_add_unsigned(offset),
+                        content.width,
+                        height,
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    /// Places the open pages in the content box.
+    ///
+    /// The box comes from the same `content_rect` the painter uses, so a page and the area drawn
+    /// around it cannot disagree about where the page is.
+    fn place_pages(&self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            for (index, rect) in self.page_rects() {
+                if let Some(widget_id) = self.items[index].widget {
+                    crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+                }
             }
         }
     }
@@ -372,7 +590,7 @@ impl ToolBox {
         // The other axis has a different extent and a different tab size, so an offset that was
         // legal in one is not necessarily legal in the other.
         self.clamp_scroll();
-        self.place_current_page();
+        self.place_pages();
         self.base.request_redraw();
     }
 
@@ -646,13 +864,13 @@ impl Widget for ToolBox {
         crate::core::Size::new(200, 250)
     }
 
-    /// Moves the tool box and re-places the visible page.
+    /// Moves the tool box and re-places the visible pages.
     ///
     /// The content box is a function of the control's rectangle (and of the orientation),
-    /// so a layout that moves the tool box has to move the page with it.
+    /// so a layout that moves the tool box has to move the pages with it.
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
-        self.place_current_page();
+        self.place_pages();
     }
 
     /// Eases the strip toward the selected tab when smooth scrolling is on.
@@ -699,6 +917,16 @@ impl Widget for ToolBox {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "item_expanded_changed" => Some(EventSignalRef::mapped(
+                "item_expanded_changed",
+                &self.item_expanded_changed,
+                |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::Bool(v.1),
+                    ]))
+                },
+            )),
             _ => None,
         }
     }
@@ -713,6 +941,7 @@ impl WidgetProperties for ToolBox {
             "orientation" => {
                 Ok(CapabilityValue::String(orientation_to_str(self.orientation()).to_string()))
             }
+            "mode" => Ok(CapabilityValue::String(self.mode().as_str().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -727,6 +956,13 @@ impl WidgetProperties for ToolBox {
                 self.set_orientation(expect_orientation(value)?);
                 Ok(())
             }
+            "mode" => {
+                let token = expect_string(value)?;
+                let mode =
+                    ToolBoxMode::from_name(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_mode(mode);
+                Ok(())
+            }
             // Derived from the item list.
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -735,7 +971,13 @@ impl WidgetProperties for ToolBox {
 
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `TOOL_BOX_PROPERTIES`.
-        property_names_of!["item_count", "current_index", "orientation", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "item_count",
+            "current_index",
+            "orientation",
+            "mode",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `tool_box` publishes.
@@ -799,7 +1041,16 @@ impl EventHandler for ToolBox {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 if let Some(index) = self.item_at_position(*pos) {
                     if self.items[index].enabled {
-                        self.set_current_index(index);
+                        // The three modes differ in what a press *means*: a selection in the
+                        // single-page modes, a toggle of that page in non-exclusive mode, and a
+                        // dismissal when the open page's own tab is pressed in popup mode.
+                        match self.mode {
+                            ToolBoxMode::Exclusive => self.set_current_index(index),
+                            ToolBoxMode::NonExclusive | ToolBoxMode::Popup => {
+                                let expanded = self.items[index].expanded;
+                                self.set_item_expanded(index, !expanded);
+                            }
+                        }
                     }
                 }
             }
@@ -841,12 +1092,30 @@ impl EventHandler for ToolBox {
             | Event::MouseMove { pos } => self.content_rect().contains(*pos),
             _ => true,
         };
-        // Forward content events only to the current widget.
+        // Forward content events only to the open page that owns the point; a coordinate-free event
+        // goes to the selected page, which is the one a keyboard path is about.
         if allow_child_event {
-            if let Some(widget_id) = self.current_widget() {
-                if let Some(ref reg) = self.registry {
-                    reg.borrow_mut().set_widget_geometry(widget_id, self.content_rect());
-                    reg.borrow_mut().forward_event(widget_id, event);
+            if let Some(ref reg) = self.registry {
+                match event {
+                    Event::MousePress { pos, .. }
+                    | Event::MouseRelease { pos, .. }
+                    | Event::MouseMove { pos }
+                    | Event::MouseDoubleClick { pos, .. }
+                    | Event::ContextMenu { pos } => {
+                        let hit = self
+                            .page_rects()
+                            .into_iter()
+                            .find(|(_, rect)| rect.contains(*pos))
+                            .and_then(|(index, _)| self.items[index].widget);
+                        if let Some(widget_id) = hit {
+                            reg.borrow_mut().forward_event(widget_id, event);
+                        }
+                    }
+                    _ => {
+                        if let Some(widget_id) = self.current_widget() {
+                            reg.borrow_mut().forward_event(widget_id, event);
+                        }
+                    }
                 }
             }
         }
@@ -900,23 +1169,22 @@ impl Draw for ToolBox {
                 .filter(|resolved| *resolved != page)
                 .unwrap_or_else(|| page.blend(&Color::BLACK, 0.25)),
         );
-        // Draw the current widget, clipped to the page. This happens *before* the tab strip so
-        // the tabs stay on top of their own surface: a vertical tool box's page starts where the
-        // tabs end, but a page that painted a border or a background of its own could still
+        // Every open page is drawn, clipped to its own share of the content box. In the single-page
+        // modes that is exactly the one page the selection names; in non-exclusive mode it is each
+        // open page in its own band. This happens *before* the tab strip so the tabs stay on top of
+        // their own surface: a page that painted a border or a background of its own could still
         // reach into the strip, and the tabs are the control's chrome rather than its content.
-        if let Some(widget_id) = self.current_widget() {
+        for (index, page_rect) in self.page_rects() {
+            let Some(widget_id) = self.items[index].widget else {
+                continue;
+            };
             if let Some(ref reg) = self.registry {
                 // Two acquisitions are deliberate, not an oversight: the guard must not be held
                 // across `draw_widget`, because a nested container on the page borrows the same
                 // registry to draw its own children and would panic as an aliased `RefCell`
                 // borrow. Each acquisition is O(1), so there is nothing to merge here (VIEW-N04).
-                reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
-                context.push_clip(
-                    content_rect.x,
-                    content_rect.y,
-                    content_rect.width,
-                    content_rect.height,
-                );
+                reg.borrow_mut().set_widget_geometry(widget_id, page_rect);
+                context.push_clip(page_rect.x, page_rect.y, page_rect.width, page_rect.height);
                 reg.borrow_mut().draw_widget(widget_id, context);
                 context.pop_clip();
             }

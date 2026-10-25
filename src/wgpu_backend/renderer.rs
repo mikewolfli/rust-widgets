@@ -166,6 +166,13 @@ struct RenderCache {
     mesh_indices: Option<VertexCache>,
 }
 
+// Retain headroom without exceeding the device limit; buffers remain grow-only.
+fn grown_buffer_capacity(current: u64, needed: u64, limit: u64) -> u64 {
+    let grown = current.saturating_add(current / 2).max(needed).max(4);
+    let rounded = grown.checked_add(65_535).map(|size| size / 65_536 * 65_536).unwrap_or(limit);
+    rounded.min(limit).max(needed.max(4))
+}
+
 impl RenderCache {
     /// The dynamic-offset stride for the colour arena: the device's
     /// `min_uniform_buffer_offset_alignment`, raised to hold the 16-byte colour
@@ -189,9 +196,17 @@ impl RenderCache {
             .ok_or_else(|| format!("{slots} colour slots overflow the uniform buffer size"))?;
         let needs_new = self.uniform.as_ref().map(|arena| arena.capacity < needed).unwrap_or(true);
         if needs_new {
+            if needed > device.limits().max_buffer_size {
+                return Err(format!("{needed} uniform bytes exceed the device buffer limit"));
+            }
+            let capacity = grown_buffer_capacity(
+                self.uniform.as_ref().map_or(0, |arena| arena.capacity),
+                needed,
+                device.limits().max_buffer_size,
+            );
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("rect_color_ubo"),
-                size: needed,
+                size: capacity,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -207,7 +222,7 @@ impl RenderCache {
                     }),
                 }],
             });
-            self.uniform = Some(UniformArena { buffer, bind_group, capacity: needed, stride });
+            self.uniform = Some(UniformArena { buffer, bind_group, capacity, stride });
         }
         Ok(())
     }
@@ -268,13 +283,18 @@ impl RenderCache {
     fn ensure_vertices(&mut self, device: &wgpu::Device, bytes: u64) {
         let needs_new = self.vertices.as_ref().map(|cache| cache.capacity < bytes).unwrap_or(true);
         if needs_new {
+            let capacity = grown_buffer_capacity(
+                self.vertices.as_ref().map_or(0, |cache| cache.capacity),
+                bytes,
+                device.limits().max_buffer_size,
+            );
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("rect_vertex_buffer"),
-                size: bytes.max(4),
+                size: capacity,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.vertices = Some(VertexCache { buffer, capacity: bytes.max(4) });
+            self.vertices = Some(VertexCache { buffer, capacity });
         }
     }
 
@@ -282,13 +302,18 @@ impl RenderCache {
     fn ensure_readback(&mut self, device: &wgpu::Device, size: u64) {
         let needs_new = self.readback.as_ref().map(|cache| cache.size < size).unwrap_or(true);
         if needs_new {
+            let capacity = grown_buffer_capacity(
+                self.readback.as_ref().map_or(0, |cache| cache.size),
+                size,
+                device.limits().max_buffer_size,
+            );
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("wgpu_readback"),
-                size: size.max(4),
+                size: capacity,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             });
-            self.readback = Some(ReadbackCache { buffer, size: size.max(4) });
+            self.readback = Some(ReadbackCache { buffer, size: capacity });
         }
     }
 
@@ -2264,6 +2289,25 @@ mod tests {
     fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
         let start = ((y * width + x) * 4) as usize;
         [pixels[start], pixels[start + 1], pixels[start + 2], pixels[start + 3]]
+    }
+
+    /// Growth is geometric and block-rounded, so a frame that needs a few more bytes reuses the
+    /// existing buffer instead of recreating it at the exact size (G-09).
+    #[test]
+    fn buffer_growth_leaves_headroom_and_respects_the_limit() {
+        assert_eq!(grown_buffer_capacity(0, 1, u64::MAX), 65_536);
+        let first = grown_buffer_capacity(0, 100 * 1024, u64::MAX);
+        assert!(first >= 100 * 1024);
+        assert_eq!(first % 65_536, 0, "capacities are whole 64 KiB blocks");
+
+        // A small increase must not force a new allocation.
+        let grown = grown_buffer_capacity(first, first + 16, u64::MAX);
+        assert!(grown > first, "growth is geometric, not exact-size");
+        assert_eq!(grown, first + first / 2, "the next step is 1.5x before rounding");
+
+        // The device limit caps the rounded capacity; the caller rejects a request that cannot
+        // fit at all before calling this.
+        assert_eq!(grown_buffer_capacity(0, 3, 4), 4);
     }
 
     /// The texture/view path renders without asking for pixels back (REND-02).

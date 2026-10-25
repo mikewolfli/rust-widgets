@@ -132,6 +132,8 @@ macro_rules! impl_properties_input {
             PropertySchema::new("value_text", PropertyValueKind::String, true, false),
             PropertySchema::new("special_value_text", PropertyValueKind::String, true, true),
             PropertySchema::new("wrapping", PropertyValueKind::Bool, true, true),
+            // Whether arrow/page keys move the value immediately or wait for the edit to commit.
+            PropertySchema::new("keyboard_tracking", PropertyValueKind::Bool, true, true),
             // The direction the field runs in. It moves the step column to the leading edge and
             // anchors the value to that same edge, so a caller in an RTL locale gets a spin box
             // whose number sits beside the buttons that change it. Declared in both directions so
@@ -182,6 +184,11 @@ macro_rules! impl_properties_input {
             PropertySchema::new("items", PropertyValueKind::StringList, true, true),
             PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("current_text", PropertyValueKind::String, true, true),
+            // The empty-state copy the field paints when there is no selection. Published so a
+            // host can localise it instead of accepting the built-in literal.
+            PropertySchema::new("placeholder_text", PropertyValueKind::String, true, true),
+            // The minimum width policy's character count. Zero keeps the historical floor.
+            PropertySchema::new("minimum_contents_length", PropertyValueKind::UInt, true, true),
             PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
             PropertySchema::new("max_visible_items", PropertyValueKind::UInt, true, true),
             // Whether the drop-down list is showing. Published so a host can read the state its
@@ -253,6 +260,9 @@ macro_rules! impl_properties_input {
             PropertySchema::new("placeholder_text", PropertyValueKind::String, true, true),
             PropertySchema::new("max_length", PropertyValueKind::UInt, true, true),
             PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
+            // Whether a selection may be dragged out of the field. On by default, matching the
+            // behaviour the field had before the switch existed.
+            PropertySchema::new("drag_enabled", PropertyValueKind::Bool, true, true),
             // How the field echoes its value. Published because the *masking* is the point of
             // `Password`/`NoEcho`: the copy and cut paths consult it (so a masked field copies
             // its mask rather than the plaintext), and a host that can set the text but not the
@@ -320,6 +330,7 @@ macro_rules! impl_properties_input {
             PropertySchema::new("thickness", PropertyValueKind::UInt, true, true),
             PropertySchema::new("speed", PropertyValueKind::Float, true, true),
             PropertySchema::new("size_ratio", PropertyValueKind::Float, true, true),
+            PropertySchema::enumerated("style", true, true, &["arc", "spokes"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -403,10 +414,22 @@ macro_rules! impl_properties_input {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("show_scrollbar", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("gfm_extensions", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("code_highlight", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("undo_stack_limit", PropertyValueKind::UInt, true, true),
         ];
 
         pub(crate) const SWITCH_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("checked", PropertyValueKind::Bool, true, true),
+            // Optional theme overrides: `null` keeps the role-derived colour.
+            PropertySchema::new("on_track_color", PropertyValueKind::Color, true, true),
+            PropertySchema::enumerated(
+                "switch_geometry",
+                true,
+                true,
+                &["material", "cupertino", "macos"],
+            ),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -594,6 +617,9 @@ macro_rules! impl_properties_input {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated("mode", true, true, &["date", "time", "datetime", "countdown"]),
+            PropertySchema::new("use_24_hour", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("minute_interval", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -616,6 +642,10 @@ macro_rules! impl_properties_input {
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("line_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
+            // Soft wrapping and the empty-state copy. Both are opt-in: the defaults keep the
+            // historical single-line, no-placeholder rendering.
+            PropertySchema::new("line_wrap", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("placeholder_text", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

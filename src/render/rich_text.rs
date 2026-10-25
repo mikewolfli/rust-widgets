@@ -7,6 +7,8 @@
 //! Use the `add_span` / `add_text` builders to compose styled text, then call
 //! `measure()` to obtain the overall dimensions.
 
+use core::cell::RefCell;
+
 use crate::compat::{MiniToString, String, Vec};
 use crate::core::Color;
 use crate::render::text_shaper::TextShaper;
@@ -79,12 +81,48 @@ pub struct TextSpan {
 pub struct RichText {
     /// The ordered list of text spans composing this rich text block.
     pub spans: Vec<TextSpan>,
+    /// Memo for the last [`RichText::measure`] call: `(key, (width, height))`.
+    ///
+    /// The key is the shaper's [`TextShaper::cache_identity`] combined with a fingerprint of
+    /// `spans`, so mutating the public span list invalidates the result without any setter (G-17).
+    measure_cache: RefCell<Option<(u64, (f32, f32))>>,
+}
+
+impl RichText {
+    /// Fingerprints everything `measure` reads: every span's text and style, in order.
+    fn measure_fingerprint(&self) -> u64 {
+        // FNV-1a. A short label is tens of bytes, so this is far cheaper than measuring it, and it
+        // needs no hasher allocation on any profile.
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut mix = |bytes: &[u8]| {
+            for byte in bytes {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        for span in &self.spans {
+            mix(span.text.as_bytes());
+            // A separator keeps `("ab", "c")` from hashing like `("a", "bc")`.
+            mix(&[0xff]);
+            let style = &span.style;
+            mix(style.font_family.as_bytes());
+            mix(&style.font_size.to_bits().to_le_bytes());
+            mix(&[style.color.r, style.color.g, style.color.b, style.color.a]);
+            mix(&[
+                u8::from(style.bold),
+                u8::from(style.italic),
+                u8::from(style.underline),
+                u8::from(style.strikethrough),
+            ]);
+        }
+        hash
+    }
 }
 
 impl RichText {
     /// Creates a new empty `RichText`.
     pub fn new() -> Self {
-        Self { spans: Vec::new() }
+        Self { spans: Vec::new(), measure_cache: RefCell::new(None) }
     }
 
     /// Adds a span of text with the given style.
@@ -133,6 +171,19 @@ impl RichText {
     /// Returns `(width, height)` in logical pixels.  Height is the maximum
     /// line height across all spans; width is the sum of the span widths.
     pub fn measure(&self, shaper: &dyn TextShaper) -> (f32, f32) {
+        // A shaper that cannot describe its state returns `0`; measuring unconditionally is the
+        // only correct answer for it, so the memo is bypassed rather than risk a wrong hit.
+        let identity = shaper.cache_identity();
+        let key =
+            if identity == 0 { 0 } else { identity ^ self.measure_fingerprint().rotate_left(17) };
+        if key != 0 {
+            if let Some((cached_key, result)) = *self.measure_cache.borrow() {
+                if cached_key == key {
+                    return result;
+                }
+            }
+        }
+
         let mut total_width = 0.0f32;
         let mut max_height = 0.0f32;
         for span in &self.spans {
@@ -142,7 +193,11 @@ impl RichText {
                 max_height = span_height;
             }
         }
-        (total_width, max_height)
+        let result = (total_width, max_height);
+        if key != 0 {
+            *self.measure_cache.borrow_mut() = Some((key, result));
+        }
+        result
     }
 }
 
@@ -206,6 +261,49 @@ mod tests {
         assert!((h - 33.6).abs() < 0.01); // 28 * 1.2
                                           // Width is sum: A at 14pt + B at 28pt
         assert!(w > 0.0);
+    }
+
+    /// A repeat measure reuses the memo; touching any span invalidates it (G-17).
+    #[test]
+    fn measure_is_memoised_and_invalidated_by_a_span_change() {
+        use crate::render::ShapedGlyphRun;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingShaper {
+            calls: AtomicUsize,
+        }
+        impl TextShaper for CountingShaper {
+            fn shape(&self, _text: &str, _font_size: f32) -> Vec<ShapedGlyphRun> {
+                Vec::new()
+            }
+            fn measure_width(&self, text: &str, font_size: f32) -> f32 {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                text.len() as f32 * font_size
+            }
+            fn measure_height(&self, _text: &str, font_size: f32) -> f32 {
+                font_size
+            }
+            fn char_advance(&self, _c: char, font_size: f32) -> f32 {
+                font_size
+            }
+            fn cache_identity(&self) -> u64 {
+                0x434f_554e_5449_4e47
+            }
+        }
+
+        let shaper = CountingShaper { calls: AtomicUsize::new(0) };
+        let mut rich = RichText::new();
+        rich.add_text("Hello");
+
+        let first = rich.measure(&shaper);
+        assert_eq!(shaper.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(rich.measure(&shaper), first, "an unchanged block must reuse the memo");
+        assert_eq!(shaper.calls.load(Ordering::Relaxed), 1, "the second measure must not reshape");
+
+        rich.spans[0].text.push('!');
+        let changed = rich.measure(&shaper);
+        assert_eq!(shaper.calls.load(Ordering::Relaxed), 2, "a changed span must be re-measured");
+        assert!(changed.0 > first.0);
     }
 
     #[test]

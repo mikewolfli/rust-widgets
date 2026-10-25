@@ -100,6 +100,24 @@ pub struct TabWidget {
     /// policy defines) and resolves the tab from the position with the same geometry the
     /// strip paints.
     pub context_menu_requested: Signal1<Point>,
+    /// Emitted with the tab index when a press lands on a visible tab in the strip.
+    ///
+    /// This is the completion `current_changed` cannot provide: a press on the tab that is
+    /// *already* selected changes no index, so a host that wants to react to the click itself (open a
+    /// document, focus an editor, reveal a panel) had no event to subscribe to.
+    pub tab_bar_clicked: Signal1<usize>,
+    /// Emitted with the tab index when a double click lands on a visible tab in the strip.
+    ///
+    /// The reference tab widget uses this gesture to detach a tab into a window or to rename it;
+    /// the control only reports it, because both policies belong to the host's tab model.
+    pub tab_bar_double_clicked: Signal1<usize>,
+    /// Whether the strip is drawn in document mode.
+    ///
+    /// Document mode is the "one flat row of tabs over one page" presentation: the strip uses the
+    /// control's own surface instead of a per-tab tint, and the current tab is marked by an accent
+    /// rule under its caption rather than by being filled with the page colour. It is a presentation
+    /// flag only — no index, page or hit test changes.
+    document_mode: bool,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Memoised preferred width per tab, keyed by the inputs the measurement reads.
@@ -160,6 +178,19 @@ pub struct Tab {
     tooltip: String,
     enabled: bool,
     widget: Option<ObjectId>,
+    /// Whether this tab is offered in the strip.
+    ///
+    /// A hidden tab keeps its position, its page and its index: it is not drawn, it occupies no
+    /// strip width, it cannot be pressed, and the selection skips over it. Hiding is therefore a
+    /// *presentation* fact, not a second model — the index a caller already holds still addresses
+    /// the same tab. See [`TabWidget::set_tab_visible`].
+    visible: bool,
+    /// Caller-owned payload, carried through moves and lookups untouched.
+    ///
+    /// A `TabWidget` item has no identity beyond its slot, and a host that keeps its own document
+    /// per tab needs somewhere to put the handle that survives a reorder. This is that slot; the
+    /// control never reads it.
+    data: Option<u64>,
 }
 /// Tab position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -242,6 +273,8 @@ impl Tab {
             tooltip: String::new(),
             enabled: true,
             widget: None,
+            visible: true,
+            data: None,
         }
     }
     /// Returns title.
@@ -328,6 +361,26 @@ impl Tab {
     pub fn set_widget(&mut self, widget: Option<ObjectId>) {
         self.widget = widget;
     }
+    /// Whether this tab is offered in the strip.
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+    /// Sets whether this tab is offered in the strip.
+    ///
+    /// The value-level setter only: it cannot recompute the strip or repair the selection, because
+    /// a `Tab` has no back-reference to the control that paints it. Use
+    /// [`TabWidget::set_tab_visible`], which does both.
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+    /// The caller-owned payload assigned to this tab.
+    pub fn data(&self) -> Option<u64> {
+        self.data
+    }
+    /// Sets the caller-owned payload. The control never interprets it.
+    pub fn set_data(&mut self, data: Option<u64>) {
+        self.data = data;
+    }
 }
 
 impl TabWidget {
@@ -351,6 +404,9 @@ impl TabWidget {
             pending_drag_tab: core::cell::Cell::new(None),
             drop_committed_here: core::cell::Cell::new(false),
             context_menu_requested: Signal1::new(),
+            tab_bar_clicked: Signal1::new(),
+            tab_bar_double_clicked: Signal1::new(),
+            document_mode: false,
             registry: None,
             tab_width_cache: RefCell::new(TabWidthCache::default()),
             overflow_scroll: 0,
@@ -443,6 +499,15 @@ impl TabWidget {
             if self.tabs.is_empty() {
                 self.current_index = 0;
             }
+            // A removal can leave the selection on a tab that is not offered (the repaired index
+            // may name a hidden one), and a hidden tab has no page on screen. The selection moves
+            // to the nearest visible tab; when none is left the index is kept and nothing shows,
+            // because there is nothing to select.
+            if self.current_index < self.tabs.len() && !self.tabs[self.current_index].visible {
+                if let Some(next) = self.nearest_visible_index(self.current_index) {
+                    self.current_index = next;
+                }
+            }
             self.sync_pages();
             self.base.request_redraw();
             if before != self.current_index {
@@ -465,8 +530,15 @@ impl TabWidget {
         self.current_index
     }
     /// Sets current tab index.
+    ///
+    /// A hidden tab is refused: selecting one would show the strip's state as "no tab is current"
+    /// while `selected_index()` kept naming a page that is not offered. An out-of-range index is
+    /// refused for the same reason it always was.
     pub fn set_current_index(&mut self, index: usize) {
-        if index < self.tabs.len() && self.current_index != index {
+        if index >= self.tabs.len() || !self.tabs[index].visible {
+            return;
+        }
+        if self.current_index != index {
             self.current_index = index;
             self.sync_pages();
             self.current_changed.emit(index);
@@ -508,6 +580,18 @@ impl TabWidget {
         }
         let index = u32::from_le_bytes([state[1], state[2], state[3], state[4]]) as usize;
         let index = index.min(self.tabs.len() - 1);
+        // A saved index may name a tab that is currently hidden. Restoring the *selection* means
+        // "this page is the visible one", so the nearest visible tab is what the blob can honestly
+        // restore; when every tab is hidden there is no selection to restore and the blob is
+        // refused rather than silently landing on a tab the user cannot see.
+        let index = if self.tabs[index].visible {
+            index
+        } else {
+            match self.nearest_visible_index(index) {
+                Some(visible) => visible,
+                None => return false,
+            }
+        };
         self.set_current_index(index);
         true
     }
@@ -546,7 +630,9 @@ impl TabWidget {
     fn sync_pages(&self) {
         for (index, tab) in self.tabs.iter().enumerate() {
             if let Some(widget_id) = tab.widget {
-                crate::set_widget_visible(widget_id, index == self.current_index);
+                // A hidden tab's page is hidden too: the tab is not offered, so its page is not
+                // part of the presented state.
+                crate::set_widget_visible(widget_id, index == self.current_index && tab.visible);
             }
         }
         self.place_current_page();
@@ -554,6 +640,108 @@ impl TabWidget {
     /// Returns mutable tab at index.
     pub fn tab_mut(&mut self, index: usize) -> Option<&mut Tab> {
         self.tabs.get_mut(index)
+    }
+
+    /// Whether the tab at `index` is offered in the strip, or `None` for an unknown index.
+    pub fn is_tab_visible(&self, index: usize) -> Option<bool> {
+        self.tabs.get(index).map(|tab| tab.visible)
+    }
+
+    /// Shows or hides the tab at `index`, returning `false` for an unknown index.
+    ///
+    /// # What hiding does, and what it does not
+    ///
+    /// A hidden tab is not drawn, occupies no strip width (so the run closes up and the overflow
+    /// rule sees one fewer tab), cannot be pressed, and its page is hidden. Its *index*, page and
+    /// payload are untouched: hiding is a presentation fact rather than a second model, so an index
+    /// a caller already holds keeps addressing the same tab.
+    ///
+    /// If the hidden tab was the selected one, the selection moves to the nearest visible tab (the
+    /// one after it, else the one before it) and `current_changed` is emitted — leaving the selection
+    /// on a tab that is not offered would make `selected_index()` report a page the user cannot see.
+    /// Hiding *every* tab leaves the index where it is and shows no page; there is nothing to select.
+    pub fn set_tab_visible(&mut self, index: usize, visible: bool) -> bool {
+        if index >= self.tabs.len() {
+            return false;
+        }
+        if self.tabs[index].visible == visible {
+            return true;
+        }
+        self.tabs[index].visible = visible;
+        let mut selection_changed = false;
+        if !visible && self.current_index == index {
+            if let Some(next) = self.nearest_visible_index(index) {
+                self.current_index = next;
+                selection_changed = true;
+            }
+        }
+        self.sync_pages();
+        self.base.request_redraw();
+        if selection_changed {
+            self.current_changed.emit(self.current_index);
+        }
+        true
+    }
+
+    /// The nearest visible tab to `from`, searching forward first and then backward.
+    fn nearest_visible_index(&self, from: usize) -> Option<usize> {
+        if let Some(next) = self.tabs.iter().skip(from).position(|tab| tab.visible) {
+            return Some(from + next);
+        }
+        self.tabs[..from.min(self.tabs.len())].iter().rposition(|tab| tab.visible)
+    }
+
+    /// The visible tab `delta` slots away from `from`, wrapping around the strip.
+    ///
+    /// Returns `None` when no other tab is visible: a one-tab strip has nowhere to step to, and a
+    /// strip with no visible tab has no selection to move.
+    fn step_visible_index(&self, from: usize, delta: isize) -> Option<usize> {
+        let count = self.tabs.len();
+        if count == 0 {
+            return None;
+        }
+        let start = from.min(count - 1) as isize;
+        for step in 1..=count as isize {
+            let candidate = (start + delta * step).rem_euclid(count as isize) as usize;
+            if self.tabs[candidate].visible {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// Returns whether the strip is drawn in document mode.
+    pub fn document_mode(&self) -> bool {
+        self.document_mode
+    }
+
+    /// Enables or disables document-mode strip painting.
+    ///
+    /// Requests a redraw on a real change, because the flag changes how the strip's surface and the
+    /// current tab's accent are painted. It changes nothing about indices, pages or hit testing.
+    pub fn set_document_mode(&mut self, document_mode: bool) {
+        if self.document_mode == document_mode {
+            return;
+        }
+        self.document_mode = document_mode;
+        self.base.request_redraw();
+    }
+
+    /// The payload carried by the tab at `index`.
+    pub fn tab_data(&self, index: usize) -> Option<u64> {
+        self.tabs.get(index).and_then(|tab| tab.data)
+    }
+
+    /// Sets the payload carried by the tab at `index`, returning `false` for an unknown index.
+    ///
+    /// The control stores and moves the value with its tab (a reorder takes the payload with it)
+    /// and never interprets it.
+    pub fn set_tab_data(&mut self, index: usize, data: Option<u64>) -> bool {
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return false;
+        };
+        tab.data = data;
+        true
     }
 
     /// Replaces the page widget of the tab at `index`, keeping the container's model in step.
@@ -832,6 +1020,11 @@ impl TabWidget {
     /// squeezing a child past a floor the child never had.
     ///
     /// Returns `(min, pref, max)` per tab, in strip order.
+    ///
+    /// A hidden tab reports `(0, 0, 0)`: it is not offered, so it neither claims a share of the
+    /// strip nor forces the overflow rule to divide one more way. The vector keeps one entry per
+    /// tab (rather than one per *visible* tab) so its positions still address `self.tabs` by
+    /// index — the run and the hit test both rely on that alignment.
     fn tab_width_hints(&self) -> crate::compat::Vec<(i32, i32, i32)> {
         let rect = self.geometry();
         let count = self.tabs.len();
@@ -839,27 +1032,44 @@ impl TabWidget {
             return crate::compat::Vec::new();
         }
         let measured = self.measured_tab_widths();
-        let total: i32 = measured.iter().sum::<i32>() + scaled_tab_spacing() * (count as i32 - 1);
+        let visible: crate::compat::Vec<usize> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| tab.visible)
+            .map(|(index, _)| index)
+            .collect();
+        if visible.is_empty() {
+            return crate::compat::vec![(0, 0, 0); count];
+        }
+        let spacing = scaled_tab_spacing();
+        let gaps = spacing * (visible.len() as i32 - 1);
+        let total: i32 = visible.iter().map(|index| measured[*index]).sum::<i32>() + gaps;
         let available = match self.tab_position {
             TabPosition::North | TabPosition::South => rect.width as i32,
             TabPosition::West | TabPosition::East => rect.height as i32,
         };
+        let mut hints = crate::compat::vec![(0, 0, 0); count];
         if total <= available {
             // The strip fits: the measurement is both the wish and the bound, so the three numbers
             // agree and the drawn run is exactly what it always was.
-            return measured.into_iter().map(|w| (w, w, w)).collect();
+            for index in visible {
+                hints[index] = (measured[index], measured[index], measured[index]);
+            }
+            return hints;
         }
-        // Overflow: share the strip equally so every tab remains inside it. The gap must come out of
-        // the band *before* the division, otherwise the last tab's trailing gap is charged to the
-        // tabs themselves and the run overshoots the strip by `TAB_SPACING` — which is what made the
-        // layout scale a second time even after this rule had run.
-        let gaps = scaled_tab_spacing() * (count as i32 - 1);
-        let share = ((available - gaps) / count as i32).max(MIN_TAB_WIDTH / 2);
+        // Overflow: share the strip equally among the tabs that are offered. The gap must come out
+        // of the band *before* the division, otherwise the last tab's trailing gap is charged to
+        // the tabs themselves and the run overshoots the strip.
+        let share = ((available - gaps) / visible.len() as i32).max(MIN_TAB_WIDTH / 2);
         // `pref == max == share` with `min` at the floor: the tab *wants* no more than its share, and
         // can survive down to the floor. A layout given this reaches the share itself rather than
         // having to squeeze past a floor that claimed to be the share.
         let floor = MIN_TAB_WIDTH / 2;
-        crate::compat::vec![(floor.min(share), share, share); count]
+        for index in visible {
+            hints[index] = (floor.min(share), share, share);
+        }
+        hints
     }
 
     /// The measured (and clamped) preferred width of every tab, from the cache when its key still
@@ -927,7 +1137,17 @@ impl TabWidget {
         let spacing = scaled_tab_spacing();
         let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::with_capacity(hints.len());
         let mut cursor = 0i32;
-        for (_, preferred, _) in &hints {
+        for (index, (_, preferred, _)) in hints.iter().enumerate() {
+            // A hidden tab keeps a slot in the run, so every later index still lines up with its
+            // rectangle, but the slot has no extent and consumes neither width nor a gap.
+            if !self.tabs.get(index).is_some_and(|tab| tab.visible) {
+                placed.push(if horizontal {
+                    Rect::new(cursor, 0, 0, TAB_HEIGHT as u32)
+                } else {
+                    Rect::new(0, cursor, TAB_HEIGHT as u32, 0)
+                });
+                continue;
+            }
             let rect = if horizontal {
                 Rect::new(cursor, 0, *preferred as u32, TAB_HEIGHT as u32)
             } else {
@@ -1021,6 +1241,47 @@ impl TabWidget {
             })
             .collect()
     }
+    /// The strip's own band — where the tabs are drawn, as opposed to the page below them.
+    ///
+    /// Derived from the same four `TabPosition` arms as [`Self::content_rect`], so the strip and
+    /// the page are complementary by construction. Document mode fills this band with the control's
+    /// surface; the per-tab painting sits on top of it.
+    fn tab_strip_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let tab_height = TAB_HEIGHT as u32;
+        match self.tab_position {
+            TabPosition::North => Rect::new(rect.x, rect.y, rect.width, tab_height),
+            TabPosition::South => {
+                Rect::new(rect.x, rect.y + rect.height as i32 - TAB_HEIGHT, rect.width, tab_height)
+            }
+            TabPosition::West => Rect::new(rect.x, rect.y, tab_height, rect.height),
+            TabPosition::East => {
+                Rect::new(rect.x + rect.width as i32 - TAB_HEIGHT, rect.y, tab_height, rect.height)
+            }
+        }
+    }
+
+    /// The rule document mode draws under the current tab, along the strip's inner edge.
+    fn document_rule_rect(&self, tab_rect: Rect) -> Rect {
+        let thickness: u32 = 2;
+        match self.tab_position {
+            TabPosition::North => Rect::new(
+                tab_rect.x,
+                tab_rect.y + tab_rect.height as i32 - thickness as i32,
+                tab_rect.width,
+                thickness,
+            ),
+            TabPosition::South => Rect::new(tab_rect.x, tab_rect.y, tab_rect.width, thickness),
+            TabPosition::West => Rect::new(
+                tab_rect.x + tab_rect.width as i32 - thickness as i32,
+                tab_rect.y,
+                thickness,
+                tab_rect.height,
+            ),
+            TabPosition::East => Rect::new(tab_rect.x, tab_rect.y, thickness, tab_rect.height),
+        }
+    }
+
     /// Returns content rectangle.
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
@@ -1072,9 +1333,21 @@ impl TabWidget {
     }
 
     /// The largest useful overflow offset.
+    ///
+    /// The run's end is the far edge of the last tab that has an extent along the strip. A hidden
+    /// tab still holds a slot in the run (so indices line up) but has no extent, and counting it
+    /// would let the strip scroll past its last visible tab by one gap.
     fn max_overflow_scroll(&self) -> i32 {
+        let horizontal = matches!(self.tab_position, TabPosition::North | TabPosition::South);
         let run = self.tab_run();
-        let end = run.last().map(|tab| tab.x + tab.width as i32).unwrap_or(0);
+        let end = run
+            .iter()
+            .filter(|tab| if horizontal { tab.width > 0 } else { tab.height > 0 })
+            .map(
+                |tab| if horizontal { tab.x + tab.width as i32 } else { tab.y + tab.height as i32 },
+            )
+            .max()
+            .unwrap_or(0);
         let strip = match self.tab_position {
             TabPosition::North | TabPosition::South => self.geometry().width as i32,
             TabPosition::West | TabPosition::East => self.geometry().height as i32,
@@ -1455,6 +1728,16 @@ impl Widget for TabWidget {
                     CapabilityValue::String(v.as_str().to_string())
                 }))
             }
+            "tab_bar_clicked" => {
+                Some(EventSignalRef::mapped("tab_bar_clicked", &self.tab_bar_clicked, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "tab_bar_double_clicked" => Some(EventSignalRef::mapped(
+                "tab_bar_double_clicked",
+                &self.tab_bar_double_clicked,
+                |v| CapabilityValue::UInt(*v as u64),
+            )),
             _ => None,
         }
     }
@@ -1603,6 +1886,7 @@ impl WidgetProperties for TabWidget {
             // contract. Both directions are here, over the same token vocabulary the schema row
             // declares.
             "tab_shape" => Ok(CapabilityValue::String(tab_shape_token(self.tab_shape).to_string())),
+            "document_mode" => Ok(CapabilityValue::Bool(self.document_mode())),
             _ => base_property_get(self, name),
         }
     }
@@ -1655,6 +1939,10 @@ impl WidgetProperties for TabWidget {
                 self.set_tab_shape(shape);
                 Ok(())
             }
+            "document_mode" => {
+                self.set_document_mode(expect_bool(value)?);
+                Ok(())
+            }
             // Derived from the tab list; the old writer had no arm for it either.
             "tab_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -1671,6 +1959,7 @@ impl WidgetProperties for TabWidget {
             "movable",
             "tab_position",
             "tab_shape",
+            "document_mode",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1733,10 +2022,24 @@ impl EventHandler for TabWidget {
                             }
                         }
                         self.set_current_index(index);
+                        // The press is reported even when it selected the tab that was already
+                        // current: a host reacting to the click itself (open a document, focus an
+                        // editor) has no other event to subscribe to, because `current_changed`
+                        // only fires on an index change.
+                        self.tab_bar_clicked.emit(index);
                         // Selecting on press and *arming* the drag are separate: the
                         // selection has already happened, and only a pointer that travels
                         // past the threshold turns the same gesture into a reorder.
                         self.begin_tab_drag(*pos);
+                    }
+                }
+            }
+            // A double click on a tab is a request about that tab (detach it, rename it), which is
+            // the host's policy: the control reports the index and changes nothing.
+            Event::MouseDoubleClick { pos, button, .. } if *button == 1 => {
+                if let Some(index) = self.tab_at_position(*pos) {
+                    if self.tabs[index].enabled {
+                        self.tab_bar_double_clicked.emit(index);
                     }
                 }
             }
@@ -1757,14 +2060,29 @@ impl EventHandler for TabWidget {
                 let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 if mods.contains(crate::shortcut::Modifiers::CTRL) && self.tabs.len() > 1 {
                     let forward = !mods.contains(crate::shortcut::Modifiers::SHIFT);
-                    let count = self.tabs.len();
-                    let next = if forward {
-                        (self.current_index + 1) % count
-                    } else {
-                        (self.current_index + count - 1) % count
-                    };
+                    let delta = if forward { 1 } else { -1 };
+                    // The step skips hidden tabs, so Ctrl+Tab cannot land on a tab the strip does
+                    // not offer.
+                    if let Some(next) = self.step_visible_index(self.current_index, delta) {
+                        self.set_current_index(next);
+                    }
+                }
+            }
+            // Arrow keys walk the strip when it holds the keyboard focus. Before this the only
+            // keyboard path was Ctrl+Tab, so a focused strip could not be navigated at all — which
+            // is the gesture a user reaches for first.
+            Event::KeyPress { key, .. }
+                if self.base.focus_reason().is_some()
+                    && (*key == crate::event::key_codes::LEFT
+                        || *key == crate::event::key_codes::RIGHT) =>
+            {
+                let delta = if *key == crate::event::key_codes::RIGHT { 1 } else { -1 };
+                if let Some(next) = self.step_visible_index(self.current_index, delta) {
                     self.set_current_index(next);
                 }
+                // The strip consumed the key: forwarding it to the page as well would move the
+                // page's own selection in the same gesture.
+                return;
             }
             Event::MouseRelease { .. } => self.end_tab_drag(),
             _ => {}
@@ -1828,12 +2146,29 @@ impl Draw for TabWidget {
         // stays at the content colour so it reads as connected to its page.
         let inactive_tab = content_background.blend(&text_color, 0.06);
         let disabled_tab = content_background.blend(&text_color, 0.14);
+        // Document mode paints one flat row: the strip takes the control's own surface and every
+        // tab sits on it, so the row reads as a single band rather than as a set of raised tabs.
+        let strip_background = resolved.blend(&text_color, 0.02);
+        let document_mode = self.document_mode;
         // A disabled tab's label is muted against the tab's own fill, which is what makes it
         // read as unavailable. This is used for the label; the fill above is the other half
         // of the same signal, so both come from the resolved pair.
         let disabled_text = text_color.blend(&disabled_tab, 0.5);
         // The close affordance is secondary chrome, not a second literal.
         let close_color = text_color.blend(&content_background, 0.4);
+        // The accent that marks the current tab in document mode comes from the theme's own accent
+        // token rather than a literal, so it follows an appearance switch.
+        let accent = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.accent)
+            .unwrap_or(Color::PRIMARY);
+
+        // Document mode fills the strip with the control's surface, so the row reads as one band
+        // instead of a set of raised tabs. The other modes leave the strip as it was — the window's
+        // own fill showing between the tabs.
+        if document_mode {
+            context.fill_rect(self.tab_strip_rect(), strip_background);
+        }
 
         // Draw content background
         context.fill_rect(content_rect, content_background);
@@ -1913,13 +2248,24 @@ impl Draw for TabWidget {
         for (i, tab_rect) in self.tab_rects().into_iter().enumerate() {
             if i < self.tabs.len() {
                 let tab = &self.tabs[i];
+                // A hidden tab still holds a slot in the run (so indices line up) but occupies no
+                // strip room and is not painted.
+                if !tab.visible {
+                    continue;
+                }
                 let is_current = i == self.current_index;
                 let is_enabled = tab.enabled;
                 // Draw tab background
                 let bg_color = if !is_enabled {
                     disabled_tab
                 } else if is_current {
-                    content_background
+                    if document_mode {
+                        strip_background
+                    } else {
+                        content_background
+                    }
+                } else if document_mode {
+                    strip_background
                 } else {
                     inactive_tab
                 };
@@ -1965,6 +2311,12 @@ impl Draw for TabWidget {
                         context.draw_rect(tab_rect, border_color);
                     }
                 };
+                // Document mode marks the current tab with an accent rule along the strip's inner
+                // edge: the tab is not filled with the page colour, so something has to say which
+                // one is current.
+                if document_mode && is_current && is_enabled {
+                    context.fill_rect(self.document_rule_rect(tab_rect), accent);
+                }
                 // Draw tab text.
                 //
                 // Centred on both axes and bounded to the tab. The previous form put the glyph

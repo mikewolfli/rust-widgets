@@ -6,7 +6,7 @@
 //! Items are arranged in a vertical waterfall across a configurable number of
 //! columns. Each item is drawn as a filled rounded rectangle with a label.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -26,10 +26,22 @@ pub struct MasonryItem {
     pub height: u32,
     /// Fill color of the item.
     pub color: Color,
+    /// A real control mounted in this card, if any.
+    ///
+    /// `None` keeps the historical card: the cell is painted from [`Self::label`] and
+    /// [`Self::color`] and nothing is mounted. When set, the layout links the control as its own
+    /// child (both directions, through [`BaseWidget::add_child_linked`]) and writes the cell's
+    /// rectangle into it on every arrangement, so the tree painter draws the control in the cell.
+    /// See [`MasonryLayout::set_item_widget`].
+    pub widget_id: Option<ObjectId>,
 }
 
-/// The vertical gap between two stacked cards, in logical pixels.
-const ITEM_SPACING: u32 = 4;
+/// The default vertical gap between two stacked cards, in logical pixels.
+///
+/// The per-control value is [`MasonryLayout::item_spacing`]; this is what a control uses until
+/// [`MasonryLayout::set_item_spacing`] says otherwise, and it is the value the waterfall used
+/// before the gap became configurable.
+const DEFAULT_ITEM_SPACING: u32 = 4;
 
 /// The corner radius every card is drawn with.
 ///
@@ -39,17 +51,24 @@ const ITEM_SPACING: u32 = 4;
 const CARD_CORNER_RADIUS: u32 = 6;
 
 /// A cached arrangement paired with the layout version that produced it.
-type CachedArrangement = Option<(u64, std::rc::Rc<Vec<(MasonryItem, Rect)>>)>;
+///
+/// The entries are `(item_index, rect)`, not `(item, rect)`: a cache rebuild used to clone every
+/// card's label into the cached vector, so a long list paid one `String` clone per card per
+/// invalidation. The index borrows the item from [`MasonryLayout::items`] on the way out, and the
+/// only way that can go stale is the item list changing — which bumps the version and rebuilds.
+type CachedArrangement = Option<(u64, std::rc::Rc<Vec<(usize, Rect)>>)>;
 
 /// MasonryLayout widget — a Pinterest-style waterfall grid.
 pub struct MasonryLayout {
     base: BaseWidget,
     columns: u32,
     items: Vec<MasonryItem>,
-    /// Bumped by every input that changes the arrangement (items, columns, geometry).
+    /// Bumped by every input that changes the arrangement (items, columns, geometry, spacing).
     layout_version: u64,
     /// Cached arrangement and the version it was produced under.
     cache: std::cell::RefCell<CachedArrangement>,
+    /// The vertical gap between two stacked cards in one column.
+    item_spacing: u32,
     /// Emitted with the item index when a card is clicked.
     pub item_clicked: Signal1<usize>,
 }
@@ -63,6 +82,7 @@ impl MasonryLayout {
             items: Vec::new(),
             layout_version: 0,
             cache: std::cell::RefCell::new(None),
+            item_spacing: DEFAULT_ITEM_SPACING,
             item_clicked: Signal1::new(),
         }
     }
@@ -80,6 +100,27 @@ impl MasonryLayout {
         }
         self.columns = columns;
         self.layout_version = self.layout_version.wrapping_add(1);
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The vertical gap between two stacked cards, in logical pixels.
+    pub fn item_spacing(&self) -> u32 {
+        self.item_spacing
+    }
+
+    /// Sets the vertical gap between two stacked cards.
+    ///
+    /// Zero is a legal value (cards touch); the gap is a caller choice rather than a floor, so it
+    /// is stored as given. The arrangement is versioned, so the next `draw`/`item_at` rebuilds it
+    /// instead of serving the previous gap out of the cache.
+    pub fn set_item_spacing(&mut self, spacing: u32) {
+        if self.item_spacing == spacing {
+            return;
+        }
+        self.item_spacing = spacing;
+        self.layout_version = self.layout_version.wrapping_add(1);
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -90,9 +131,78 @@ impl MasonryLayout {
 
     /// Adds an item to the masonry layout.
     pub fn add_item(&mut self, label: &str, height: u32, color: Color) {
-        self.items.push(MasonryItem { label: label.to_string(), height, color });
+        self.items.push(MasonryItem { label: label.to_string(), height, color, widget_id: None });
         self.layout_version = self.layout_version.wrapping_add(1);
+        self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Adds an item that hosts `widget` in its cell.
+    ///
+    /// The widget is mounted through [`Self::set_item_widget`], so it is linked as this control's
+    /// child and given the cell rectangle; the label and colour still paint the card face behind
+    /// it, which keeps the waterfall readable while the control fills the cell.
+    pub fn add_item_with_widget(
+        &mut self,
+        label: &str,
+        height: u32,
+        color: Color,
+        widget: Option<ObjectId>,
+    ) -> usize {
+        self.add_item(label, height, color);
+        let index = self.items.len().saturating_sub(1);
+        self.set_item_widget(index, widget);
+        index
+    }
+
+    /// Mounts `widget` (or clears it, with `None`) in the card at `index`.
+    ///
+    /// Returns `false` for an out-of-range index, so a caller cannot mistake a dropped mount for
+    /// a successful one. A replacement unlinks the previous control and hides it, exactly as
+    /// [`crate::widget::container_widgets::TabWidget::set_tab_widget`] does: a detached control
+    /// keeps its own visibility flag, and a host that renders by id would still paint it in the
+    /// old cell.
+    pub fn set_item_widget(&mut self, index: usize, widget: Option<ObjectId>) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        let previous = self.items[index].widget_id;
+        if previous == widget {
+            return true;
+        }
+        if let Some(previous) = previous {
+            self.base.remove_child_linked(previous);
+            crate::set_widget_visible(previous, false);
+        }
+        self.items[index].widget_id = widget;
+        if let Some(widget_id) = widget {
+            self.base.add_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, true);
+        }
+        self.layout_version = self.layout_version.wrapping_add(1);
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes the item at `index`, returning it.
+    ///
+    /// A removed card takes its mounted control out of the tree with it: the child link is
+    /// cleared in both directions and the control is hidden, so the waterfall does not keep
+    /// painting a widget whose cell no longer exists.
+    pub fn remove_item(&mut self, index: usize) -> Option<MasonryItem> {
+        if index >= self.items.len() {
+            return None;
+        }
+        let item = self.items.remove(index);
+        if let Some(widget_id) = item.widget_id {
+            self.base.remove_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, false);
+        }
+        self.layout_version = self.layout_version.wrapping_add(1);
+        self.base.request_layout();
+        self.base.request_redraw();
+        Some(item)
     }
 
     /// Removes all items from the layout.
@@ -100,8 +210,16 @@ impl MasonryLayout {
         if self.items.is_empty() {
             return;
         }
-        self.items.clear();
+        // Every mounted card control is unlinked before the list is dropped, so clearing the
+        // layout cannot leave children whose cells are gone (the same rule `remove_item` states).
+        for item in self.items.drain(..) {
+            if let Some(widget_id) = item.widget_id {
+                self.base.remove_child_linked(widget_id);
+                crate::set_widget_visible(widget_id, false);
+            }
+        }
         self.layout_version = self.layout_version.wrapping_add(1);
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -110,7 +228,7 @@ impl MasonryLayout {
     /// The draw path calls this every frame; `layout_items` used to walk the whole list
     /// (and rebuild every `MasonryItem`) on each of those frames. The cache is keyed by a
     /// version bumped by the three mutation entry points and by `set_geometry`.
-    fn layout_items_shared(&self) -> std::rc::Rc<Vec<(MasonryItem, Rect)>> {
+    fn layout_items_shared(&self) -> std::rc::Rc<Vec<(usize, Rect)>> {
         if let Some((version, cached)) = self.cache.borrow().as_ref() {
             if *version == self.layout_version {
                 return std::rc::Rc::clone(cached);
@@ -124,10 +242,34 @@ impl MasonryLayout {
     /// The item index under `point`, or `None` when the point misses every card.
     pub fn item_at(&self, point: Point) -> Option<usize> {
         let layout = self.layout_items_shared();
-        layout.iter().position(|(_, rect)| rect.contains_point(point))
+        layout.iter().find(|(_, rect)| rect.contains_point(point)).map(|(index, _)| *index)
     }
 
-    fn compute_items(&self) -> Vec<(MasonryItem, Rect)> {
+    /// Writes each mounted control's cell rectangle into it.
+    ///
+    /// # Why the write lives here and not in `compute_items`
+    ///
+    /// The arrangement is cached and may be served unchanged for many frames, while the *widget*
+    /// geometry still has to reach the control before the tree painter draws it. This walks the
+    /// cached arrangement (an `Rc`, cloned out of the cache, so no borrow is held) and writes
+    /// through the public geometry entry — the same half of the contract
+    /// `TabWidget::place_current_page` performs, rather than a second drawing path.
+    fn place_item_widgets(&self) {
+        let layout = self.layout_items_shared();
+        for (index, rect) in layout.iter() {
+            let Some(widget_id) = self.items.get(*index).and_then(|item| item.widget_id) else {
+                continue;
+            };
+            crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+        }
+    }
+
+    /// Lays the cards out, returning `(item_index, cell_rect)` in insertion order.
+    ///
+    /// The index is stored instead of a cloned item: the cached vector used to own a copy of every
+    /// `MasonryItem`, so a rebuild cloned every card's label `String`. The item is borrowed from
+    /// [`Self::items`] when it is needed, and a list change bumps the version and rebuilds.
+    fn compute_items(&self) -> Vec<(usize, Rect)> {
         if self.items.is_empty() {
             return Vec::new();
         }
@@ -135,13 +277,13 @@ impl MasonryLayout {
         let columns = self.columns.max(1);
         let rect = self.base.geometry();
         let col_w = rect.width / columns;
-        let spacing: u32 = ITEM_SPACING;
+        let spacing = self.item_spacing;
 
         // Track the current y-offset for each column.
         let mut col_heights = vec![0u32; columns as usize];
         let mut result = Vec::with_capacity(self.items.len());
 
-        for item in &self.items {
+        for (index, item) in self.items.iter().enumerate() {
             // Find the column with the smallest current height.
             let min_col = col_heights
                 .iter()
@@ -157,9 +299,9 @@ impl MasonryLayout {
             let item_height = item.height.max(20);
             let item_rect = Rect::new(x, y, col_w, item_height);
 
-            result.push((item.clone(), item_rect));
+            result.push((index, item_rect));
 
-            col_heights[min_col] = current_h.saturating_add(item_height + spacing);
+            col_heights[min_col] = current_h.saturating_add(item_height.saturating_add(spacing));
         }
 
         result
@@ -167,11 +309,14 @@ impl MasonryLayout {
 
     /// Calculate positions for all items (waterfall layout).
     ///
-    /// Returns an owned copy for callers that need one; the draw and hit-test paths share
-    /// the cached `Rc` instead.
+    /// Returns an owned copy of the arrangement paired with a clone of each card, for callers that
+    /// need both together; the draw and hit-test paths share the cached `Rc` of indices instead.
     #[cfg(test)]
     fn layout_items(&self) -> Vec<(MasonryItem, Rect)> {
-        (*self.layout_items_shared()).clone()
+        self.layout_items_shared()
+            .iter()
+            .filter_map(|(index, rect)| self.items.get(*index).map(|item| (item.clone(), *rect)))
+            .collect()
     }
 }
 
@@ -189,6 +334,8 @@ impl Widget for MasonryLayout {
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
         self.layout_version = self.layout_version.wrapping_add(1);
+        // The cells moved with the control, so the controls mounted in them have to move too.
+        self.place_item_widgets();
     }
 
     fn size_hint(&self) -> crate::core::Size {
@@ -197,6 +344,23 @@ impl Widget for MasonryLayout {
             crate::widget::metrics::dimensions::MASONRY_DEFAULT_HEIGHT,
         )
     }
+    /// Resolves a published event name to the signal this layout actually emits.
+    ///
+    /// The capability publishes `item_clicked` with a `UInt` payload and the
+    /// control emits the clicked tile's index as a `usize`, so the conversion
+    /// keeps the subscriber's number identical to the emitted one.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "item_clicked" => {
+                Some(EventSignalRef::mapped("item_clicked", &self.item_clicked, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            _ => None,
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -212,6 +376,7 @@ impl WidgetProperties for MasonryLayout {
         match name {
             "column_count" => Ok(CapabilityValue::UInt(self.columns() as u64)),
             "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
+            "item_spacing" => Ok(CapabilityValue::UInt(u64::from(self.item_spacing()))),
             _ => base_property_get(self, name),
         }
     }
@@ -222,6 +387,10 @@ impl WidgetProperties for MasonryLayout {
                 self.set_columns(expect_u32(value)?);
                 Ok(())
             }
+            "item_spacing" => {
+                self.set_item_spacing(expect_u32(value)?);
+                Ok(())
+            }
             // The item total is implied by how many items were added, so there is
             // nothing sensible to assign to it.
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
@@ -230,7 +399,7 @@ impl WidgetProperties for MasonryLayout {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["column_count", "item_count", BASE_PROPERTY_NAMES]
+        property_names_of!["column_count", "item_count", "item_spacing", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -260,6 +429,9 @@ impl Draw for MasonryLayout {
         let container_bg = base.blend(&ink, 0.04);
 
         let layout = self.layout_items_shared();
+        // The mounted controls are placed before they are painted: the tree painter draws a child
+        // at the child's own geometry, and the cell rectangle is this control's answer.
+        self.place_item_widgets();
 
         // The panel is drawn first so an empty layout still shows where the control is
         // rather than being indistinguishable from the frame behind it.
@@ -277,21 +449,30 @@ impl Draw for MasonryLayout {
         // they would land on whatever is behind it (BLUE21 D12). The clip is the control's own
         // rectangle, and `layout_items` unchanged; only what is *painted* is bounded.
         context.push_clip(rect.x, rect.y, rect.width, rect.height);
-        for (_item, item_rect) in layout.iter() {
+        for (index, item_rect) in layout.iter() {
             // A card that starts below the visible area is dropped rather than clipped: the
             // clip already handles the partial case, and skipping the fully-hidden ones keeps a
             // long list from emitting drawing commands for pixels nobody can see.
             if item_rect.y >= rect.y.saturating_add(rect.height as i32) {
                 continue;
             }
-            // Draw the item card background. `_item.color` is the per-card colour the
+            let Some(item) = self.items.get(*index) else {
+                continue;
+            };
+            // Draw the item card background. `item.color` is the per-card colour the
             // CALLER supplied — it identifies the card, so it is data and is passed
             // through untouched rather than resolved from the theme.
-            context.fill_rounded_rect(*item_rect, CARD_CORNER_RADIUS, _item.color);
+            context.fill_rounded_rect(*item_rect, CARD_CORNER_RADIUS, item.color);
+
+            // A cell with a mounted control has no label: the control is what fills the cell, and a
+            // caption drawn underneath it would be painted over by the child anyway.
+            if item.widget_id.is_some() {
+                continue;
+            }
 
             // Draw the label text centered in the item, in whichever ink is legible on
             // that card's own colour.
-            let text_color = _item.color.contrast_color();
+            let text_color = item.color.contrast_color();
             let text_x = item_rect.x + 6;
             // The cell's own line box, centred: a glyph origin is the box's top-left edge,
             // so the previous `item_rect.y + item_rect.height / 2 - 6` put that edge on the
@@ -300,7 +481,7 @@ impl Draw for MasonryLayout {
             let text_y = item_line.y;
             context.draw_text(
                 crate::core::Point::new(text_x, text_y),
-                &_item.label,
+                &item.label,
                 &font,
                 text_color,
                 HorizontalAlignment::Left,
@@ -342,6 +523,14 @@ impl EventHandler for MasonryLayout {
 mod tests {
     use super::*;
     use crate::core::Point;
+
+    /// The published name must resolve, and an unpublished one must not.
+    #[test]
+    fn published_item_clicked_resolves_to_a_signal() {
+        let layout = MasonryLayout::new(Rect::new(0, 0, 300, 500));
+        assert!(layout.event_signal_dyn("item_clicked").is_some());
+        assert!(layout.event_signal_dyn("no_such_event").is_none());
+    }
 
     #[test]
     fn masonry_creation() {

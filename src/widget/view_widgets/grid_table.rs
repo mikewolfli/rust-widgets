@@ -12,8 +12,8 @@ use std::sync::Arc;
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
-use crate::widget::capability::coercion::expect_usize;
+use crate::signal::{ConnectionScope, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -21,7 +21,7 @@ use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
-use super::data_source::IncrementalTableDataSource;
+use super::data_source::{DataRole, IncrementalTableDataSource};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -47,6 +47,43 @@ pub struct GridTableSortSpec {
     pub column: usize,
     /// `true` for descending order.
     pub descending: bool,
+}
+
+/// The identity of a materialised sort projection.
+///
+/// A sort walk reads every source row, so its result is kept until one of its inputs proves it
+/// stale: the source revision/generation (in-place changes), the row count, the sort specs, or the
+/// role the keys were read with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GridSortOrderKey {
+    revision: u64,
+    generation: u64,
+    rows: usize,
+    specs: Vec<(usize, bool)>,
+    role: DataRole,
+}
+
+/// A sort key normalised once per row and column.
+///
+/// Comparing the raw text per pair re-lowercased both operands and re-parsed both numbers on every
+/// comparison. A sort of `n` rows performs `O(n log n)` comparisons, so the normalised form is
+/// computed once per cell instead.
+fn normalise_sort_key(text: &str) -> (String, Option<f64>) {
+    let trimmed = text.trim();
+    (trimmed.to_lowercase(), trimmed.parse::<f64>().ok())
+}
+
+/// Compares two normalised keys, preferring a numeric order when both sides are numbers.
+fn compare_sort_keys(
+    left: &(String, Option<f64>),
+    right: &(String, Option<f64>),
+) -> core::cmp::Ordering {
+    if let (Some(left), Some(right)) = (left.1, right.1) {
+        if let Some(order) = left.partial_cmp(&right) {
+            return order;
+        }
+    }
+    left.0.cmp(&right.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +155,22 @@ pub struct GridTableWidget {
 
     // Sort
     sort_specs: Vec<GridTableSortSpec>,
+    /// Whether a header click is allowed to change the sort order.
+    sorting_enabled: bool,
+    /// The data role the sort keys are read with.
+    sort_role: DataRole,
+    /// Projected row -> source row when sorting is active; `None` means identity.
+    sort_order: Option<Vec<usize>>,
+    /// The inputs `sort_order` was built from.
+    sort_order_key: Option<GridSortOrderKey>,
+
+    // Data source change tracking
+    /// Whether `data_changed_signal` refreshes the view.
+    auto_refresh: bool,
+    /// Scoped subscription to the bound source's change signal.
+    data_source_connection_scope: ConnectionScope,
+    /// Advanced by `data_changed` for sources that do not expose a revision.
+    data_generation: Arc<std::sync::atomic::AtomicU64>,
 
     // Column resize tracking
     resizing_column: Option<usize>,
@@ -193,6 +246,13 @@ impl GridTableWidget {
             hovered_row: None,
             column_widths: Vec::new(),
             sort_specs: Vec::new(),
+            sorting_enabled: true,
+            sort_role: DataRole::Display,
+            sort_order: None,
+            sort_order_key: None,
+            auto_refresh: true,
+            data_source_connection_scope: ConnectionScope::new(),
+            data_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             resizing_column: None,
             resize_start_x: 0,
             resize_start_width: 0,
@@ -224,14 +284,60 @@ impl GridTableWidget {
         self.selected_columns.clear();
         self.sort_specs.clear();
         self.column_widths.clear();
+        self.sort_order = None;
+        self.sort_order_key = None;
+        self.data_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.bind_data_source_changes();
         self.update_visibility();
         self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Subscribes to the bound source's change signal when `auto_refresh` is on.
+    ///
+    /// The subscription is scoped: rebinding drops the previous one, so a replaced source cannot
+    /// keep waking this control. The generation counter is the cache key for sources that signal
+    /// changes but do not expose a monotonic `revision()`.
+    fn bind_data_source_changes(&mut self) {
+        self.data_source_connection_scope = ConnectionScope::new();
+        if !self.auto_refresh {
+            return;
+        }
+        let Some(source) = self.data_source.clone() else {
+            return;
+        };
+        let Some(data_changed) = source.data_changed_signal() else {
+            return;
+        };
+        let redraw = self.base.redraw_requested_signal().clone();
+        let layout = self.base.layout_requested_signal().clone();
+        let generation = Arc::clone(&self.data_generation);
+        data_changed.connect_scoped(&self.data_source_connection_scope, move || {
+            generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            redraw.emit();
+            layout.emit();
+        });
+    }
+
+    /// Whether the bound source's change signal is followed.
+    pub fn auto_refresh(&self) -> bool {
+        self.auto_refresh
+    }
+
+    /// Enables or disables following the bound source's change signal.
+    pub fn set_auto_refresh(&mut self, auto_refresh: bool) {
+        if self.auto_refresh == auto_refresh {
+            return;
+        }
+        self.auto_refresh = auto_refresh;
+        self.bind_data_source_changes();
         self.base.request_redraw();
     }
 
     /// Clears the data source and resets all local state.
     pub fn clear_data_source(&mut self) {
         self.data_source = None;
+        self.data_source_connection_scope = ConnectionScope::new();
         self.scroll_row = 0;
         self.scroll_column = 0;
         self.selected_cell = None;
@@ -240,6 +346,8 @@ impl GridTableWidget {
         self.selected_columns.clear();
         self.sort_specs.clear();
         self.column_widths.clear();
+        self.sort_order = None;
+        self.sort_order_key = None;
         self.visible_rows = 0;
         self.resizing_column = None;
         self.base.request_layout();
@@ -376,13 +484,29 @@ impl GridTableWidget {
     }
 
     /// The selected rows, in ascending order.
+    ///
+    /// A row is listed **once** even when several of its cells are selected. In cell mode the
+    /// selection is a set of cells, so projecting it to rows used to repeat a row for every
+    /// selected column; a host processing the returned rows hit the same row multiple times. The
+    /// cell projection stays available through [`Self::selected_cells`].
     pub fn selected_rows(&self) -> Vec<usize> {
         match self.selection_mode {
             GridTableSelectionMode::Row => self.selected_rows.iter().copied().collect(),
             GridTableSelectionMode::Cell => {
-                self.selected_cells.iter().map(|(row, _)| *row).collect()
+                let mut rows: Vec<usize> =
+                    self.selected_cells.iter().map(|(row, _)| *row).collect();
+                // `selected_cells` is a `BTreeSet<(row, column)>`, so equal rows are adjacent.
+                rows.dedup();
+                rows
             }
-            GridTableSelectionMode::Column => self.selected_columns.iter().copied().collect(),
+            GridTableSelectionMode::Column => {
+                // A selected column covers every row, which is what `selected_cells` reports too.
+                if self.selected_columns.is_empty() {
+                    Vec::new()
+                } else {
+                    (0..self.row_count()).collect()
+                }
+            }
             GridTableSelectionMode::None => Vec::new(),
         }
     }
@@ -546,7 +670,9 @@ impl GridTableWidget {
         for step in 0..rows {
             let row = (start + step) % rows;
             text.clear();
-            if source.fill_cell(row, 0, &mut text) && text.to_lowercase().starts_with(needle) {
+            if source.fill_cell(self.source_row(row), 0, &mut text)
+                && text.to_lowercase().starts_with(needle)
+            {
                 found = Some(row);
                 break;
             }
@@ -621,7 +747,15 @@ impl GridTableWidget {
     /// Toggles sort for the given column. If the column is already the primary
     /// sort, the direction is flipped. Otherwise it becomes the sole sort spec
     /// with ascending order.
+    ///
+    /// The stored specs are not a decoration: [`Self::ensure_sort_order`] materialises a projected
+    /// row -> source row map from them, and every read path resolves a row through it. The signal
+    /// is emitted after the map is rebuilt, so a subscriber cannot observe "sorted" before the
+    /// rows actually move.
     pub fn toggle_sort_column(&mut self, col: usize) {
+        if !self.sorting_enabled {
+            return;
+        }
         let cols = self.column_count();
         if col >= cols {
             return;
@@ -630,13 +764,169 @@ impl GridTableWidget {
         if let Some(existing) = self.sort_specs.iter_mut().find(|s| s.column == col) {
             existing.descending = !existing.descending;
             let desc = existing.descending;
+            self.sort_order = None;
+            self.sort_order_key = None;
+            self.ensure_sort_order();
             self.sort_changed.emit((col, desc));
         } else {
             self.sort_specs.clear();
             self.sort_specs.push(GridTableSortSpec { column: col, descending: false });
+            self.sort_order = None;
+            self.sort_order_key = None;
+            self.ensure_sort_order();
             self.sort_changed.emit((col, false));
         }
         self.base.request_redraw();
+    }
+
+    /// Whether a header click is allowed to change the sort order.
+    pub fn sorting_enabled(&self) -> bool {
+        self.sorting_enabled
+    }
+
+    /// Enables or disables header-driven sorting.
+    ///
+    /// When off, [`Self::toggle_sort_column`] is a no-op and the current specs are cleared, so the
+    /// header arrow cannot claim an order the rows do not have. [`Self::apply_sort`] remains a safe
+    /// call: it rebuilds the identity projection, which is what "not sorted" means.
+    pub fn set_sorting_enabled(&mut self, enabled: bool) {
+        if self.sorting_enabled == enabled {
+            return;
+        }
+        self.sorting_enabled = enabled;
+        if !enabled {
+            // The arrow is derived from the specs; keeping a spec that is not applied would show
+            // a sorted header over unsorted rows.
+            self.sort_specs.clear();
+        }
+        self.sort_order = None;
+        self.sort_order_key = None;
+        self.base.request_redraw();
+    }
+
+    /// The role sort keys are read with.
+    pub fn sort_role(&self) -> DataRole {
+        self.sort_role
+    }
+
+    /// Sets the role sort keys are read with.
+    ///
+    /// A model that stores a number in a display role still sorts numerically because the
+    /// comparison parses a numeric key when both sides are numbers; asking for `Edit` or a
+    /// `User` role lets a model expose a sort-only representation instead.
+    pub fn set_sort_role(&mut self, role: DataRole) {
+        if self.sort_role == role {
+            return;
+        }
+        self.sort_role = role;
+        self.sort_order = None;
+        self.sort_order_key = None;
+        self.base.request_redraw();
+    }
+
+    /// Rebuilds the projected row order from the current sort specs.
+    ///
+    /// Public because a model can change in place behind a source that only bumps `revision()`;
+    /// the next data read would notice, but a host that has just written cells can force the
+    /// projection immediately.
+    pub fn apply_sort(&mut self) {
+        self.sort_order = None;
+        self.sort_order_key = None;
+        self.ensure_sort_order();
+        self.base.request_redraw();
+    }
+
+    /// The source row painted at projected row `row`.
+    fn source_row(&self, row: usize) -> usize {
+        self.sort_order.as_ref().and_then(|order| order.get(row).copied()).unwrap_or(row)
+    }
+
+    /// Whether the cached order was built from the current revision/generation/row count/role.
+    ///
+    /// Deliberately allocation-free: this runs from every pointer event, so building a key vector
+    /// merely to compare it would make a mouse move allocate.
+    fn sort_order_inputs_match(&self, revision: u64, generation: u64, rows: usize) -> bool {
+        let Some(key) = self.sort_order_key.as_ref() else {
+            return false;
+        };
+        if key.revision != revision
+            || key.generation != generation
+            || key.rows != rows
+            || key.role != self.sort_role
+        {
+            return false;
+        }
+        let columns = self.column_count();
+        let mut expected = self.sort_specs.iter().filter(|spec| spec.column < columns);
+        let mut stored = key.specs.iter();
+        loop {
+            match (expected.next(), stored.next()) {
+                (Some(spec), Some((column, descending))) => {
+                    if spec.column != *column || spec.descending != *descending {
+                        return false;
+                    }
+                }
+                (None, None) => break,
+                _ => return false,
+            }
+        }
+        self.sort_order.as_ref().map(|order| order.len()).unwrap_or(rows) == rows
+    }
+
+    /// Materialises the projected row order when one of its inputs changed.
+    fn ensure_sort_order(&mut self) {
+        let revision = self.data_source.as_ref().map(|source| source.revision()).unwrap_or(0);
+        let generation = self.data_generation.load(std::sync::atomic::Ordering::Relaxed);
+        let rows = self.row_count();
+        if self.sort_order_inputs_match(revision, generation, rows) {
+            return;
+        }
+
+        let columns = self.column_count();
+        let specs: Vec<(usize, bool)> = self
+            .sort_specs
+            .iter()
+            .filter(|spec| spec.column < columns)
+            .map(|spec| (spec.column, spec.descending))
+            .collect();
+        let key = GridSortOrderKey { revision, generation, rows, specs, role: self.sort_role };
+        if !self.sorting_enabled || key.specs.is_empty() || rows == 0 {
+            self.sort_order = None;
+            self.sort_order_key = Some(key);
+            return;
+        }
+        let Some(source) = self.data_source.clone() else {
+            self.sort_order = None;
+            self.sort_order_key = Some(key);
+            return;
+        };
+
+        let mut keys: Vec<Vec<(String, Option<f64>)>> = Vec::with_capacity(key.specs.len());
+        for &(column, _) in &key.specs {
+            let mut per_row = Vec::with_capacity(key.rows);
+            for row in 0..key.rows {
+                let raw = source
+                    .data_role(row, column, self.sort_role)
+                    .or_else(|| source.data(row, column))
+                    .unwrap_or_default();
+                per_row.push(normalise_sort_key(&raw));
+            }
+            keys.push(per_row);
+        }
+
+        let mut order: Vec<usize> = (0..key.rows).collect();
+        order.sort_by(|&left, &right| {
+            for (index, spec) in key.specs.iter().enumerate() {
+                let ordering = compare_sort_keys(&keys[index][left], &keys[index][right]);
+                if ordering != core::cmp::Ordering::Equal {
+                    return if spec.1 { ordering.reverse() } else { ordering };
+                }
+            }
+            // Stable tie-break on the source row, so equal keys do not reorder between passes.
+            left.cmp(&right)
+        });
+        self.sort_order = Some(order);
+        self.sort_order_key = Some(key);
     }
 
     /// Returns a reference to the current sort specs.
@@ -1045,6 +1335,9 @@ impl WidgetProperties for GridTableWidget {
                 grid_table_selection_mode_to_str(self.selection_mode).to_string(),
             )),
             "sort_spec_count" => Ok(CapabilityValue::UInt(self.sort_specs().len() as u64)),
+            "sorting_enabled" => Ok(CapabilityValue::Bool(self.sorting_enabled())),
+            "sort_role" => Ok(CapabilityValue::String(data_role_to_str(self.sort_role()))),
+            "auto_refresh" => Ok(CapabilityValue::Bool(self.auto_refresh())),
             "selected_cell" => match self.selected_cell() {
                 Some((row, column)) => Ok(CapabilityValue::String(format!("{row},{column}"))),
                 None => Ok(CapabilityValue::Null),
@@ -1076,6 +1369,18 @@ impl WidgetProperties for GridTableWidget {
                 self.set_selection_mode(expect_grid_table_selection_mode(value)?);
                 Ok(())
             }
+            "sorting_enabled" => {
+                self.set_sorting_enabled(expect_bool(value)?);
+                Ok(())
+            }
+            "auto_refresh" => {
+                self.set_auto_refresh(expect_bool(value)?);
+                Ok(())
+            }
+            "sort_role" => {
+                self.set_sort_role(expect_data_role(value)?);
+                Ok(())
+            }
             // Counts and the selected cell are derived from the data source and
             // the live selection; there is no meaningful assignment for them.
             "has_data_source" | "row_count" | "column_count" | "sort_spec_count"
@@ -1095,6 +1400,9 @@ impl WidgetProperties for GridTableWidget {
             "selection_mode",
             "sort_spec_count",
             "selected_cell",
+            "sorting_enabled",
+            "sort_role",
+            "auto_refresh",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1147,6 +1455,37 @@ fn expect_grid_table_selection_mode(
             "row" => Ok(GridTableSelectionMode::Row),
             "column" => Ok(GridTableSelectionMode::Column),
             _ => Err(CapabilityAccessError::TypeMismatch),
+        },
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
+/// The published spelling of a [`DataRole`].
+fn data_role_to_str(role: DataRole) -> String {
+    match role {
+        DataRole::Display => "display".to_string(),
+        DataRole::AccessibleText => "accessible_text".to_string(),
+        DataRole::Edit => "edit".to_string(),
+        DataRole::Decoration => "decoration".to_string(),
+        DataRole::CheckState => "check_state".to_string(),
+        DataRole::User(id) => format!("user:{id}"),
+    }
+}
+
+/// Parses a published [`DataRole`] token.
+fn expect_data_role(value: CapabilityValue) -> Result<DataRole, CapabilityAccessError> {
+    match value {
+        CapabilityValue::String(token) => match token.as_str() {
+            "display" => Ok(DataRole::Display),
+            "accessible_text" => Ok(DataRole::AccessibleText),
+            "edit" => Ok(DataRole::Edit),
+            "decoration" => Ok(DataRole::Decoration),
+            "check_state" => Ok(DataRole::CheckState),
+            other => other
+                .strip_prefix("user:")
+                .and_then(|id| id.parse::<u32>().ok())
+                .map(DataRole::User)
+                .ok_or(CapabilityAccessError::TypeMismatch),
         },
         _ => Err(CapabilityAccessError::TypeMismatch),
     }
@@ -1250,6 +1589,10 @@ impl Draw for GridTableWidget {
         let cols = self.column_count();
         let rows = self.row_count();
 
+        // Resolve the projected row order before the paint walks read any cell, so a header click
+        // that changed `sort_specs` repaints the rows in their new order rather than only moving
+        // the arrow.
+        self.ensure_sort_order();
         self.ensure_column_widths(cols);
         self.update_visibility();
 
@@ -1424,7 +1767,7 @@ impl Draw for GridTableWidget {
 
                 // Cell text
                 cell_text.clear();
-                if source.fill_cell(abs_row, ci, &mut cell_text) {
+                if source.fill_cell(self.source_row(abs_row), ci, &mut cell_text) {
                     // The cell is the band. `cy + rh / 2` as a `draw_text` origin put the glyph
                     // box's *top* edge on the cell's middle line, drawing every value half a line
                     // low; `text_line` derives the centred box, and fitting keeps a long value
@@ -1479,6 +1822,9 @@ impl EventHandler for GridTableWidget {
         if !self.base.is_enabled() {
             return;
         }
+        // The hit test and the keyboard paths index the *projected* rows, so the sort map has to be
+        // current before either resolves a source row.
+        self.ensure_sort_order();
 
         match event {
             Event::MousePress { pos, button, modifiers } => {
@@ -1498,7 +1844,9 @@ impl EventHandler for GridTableWidget {
                 // Check header click for sorting
                 if let Some(col) = self.header_at_point(*pos) {
                     self.header_clicked.emit(col);
-                    self.toggle_sort_column(col);
+                    if self.sorting_enabled {
+                        self.toggle_sort_column(col);
+                    }
                     return;
                 }
 

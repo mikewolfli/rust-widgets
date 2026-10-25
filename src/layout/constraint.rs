@@ -7,7 +7,7 @@
 //! between widgets sequentially (not a full Cassowary solver). Each constraint
 //! references a target widget and describes how this widget relates to it.
 use super::Layout;
-use crate::compat::{Any, Vec};
+use crate::compat::{Any, HashMap, Rc, RefCell, Vec};
 use crate::core::{ObjectId, Rect};
 
 /// Describes the type of spatial relationship between two widgets.
@@ -73,12 +73,19 @@ pub struct ConstraintLayout {
     constraints: Vec<(ObjectId, ConstraintRef)>,
     /// The set of child widget IDs tracked by this layout.
     children: Vec<ObjectId>,
+    /// Cached topological order of `constraints`.
+    ///
+    /// The order changes only when a constraint is added or removed, and resolving it is the
+    /// expensive part of `update` (a full dependency scan per constraint). `None` means "not
+    /// computed"; a cyclic graph is not cached, because its fallback is declaration order and
+    /// the warning is part of the observable behaviour.
+    order_cache: RefCell<Option<Rc<Vec<usize>>>>,
 }
 
 impl ConstraintLayout {
     /// Create a new empty constraint layout.
     pub fn new() -> Self {
-        Self { constraints: Vec::new(), children: Vec::new() }
+        Self { constraints: Vec::new(), children: Vec::new(), order_cache: RefCell::new(None) }
     }
 
     /// Adds a constraint with an explicit priority.
@@ -99,6 +106,7 @@ impl ConstraintLayout {
             widget_id,
             ConstraintRef { target_id, constraint, offset, multiplier, priority },
         ));
+        self.invalidate_order();
     }
 
     /// Whether the constraint graph contains a cycle.
@@ -111,7 +119,24 @@ impl ConstraintLayout {
 
     /// Topologically orders the constraints by their target dependency, or `None` when
     /// the graph has a cycle.
-    fn resolve_order(&self) -> Option<Vec<usize>> {
+    ///
+    /// The result is cached: the constraints only change through the add/remove/clear
+    /// entry points, each of which invalidates the cache.
+    fn resolve_order(&self) -> Option<Rc<Vec<usize>>> {
+        if let Some(cached) = self.order_cache.borrow().as_ref() {
+            return Some(Rc::clone(cached));
+        }
+        let order = Rc::new(self.compute_resolve_order()?);
+        *self.order_cache.borrow_mut() = Some(Rc::clone(&order));
+        Some(order)
+    }
+
+    /// Drops the cached resolution order after a constraint mutation.
+    fn invalidate_order(&mut self) {
+        self.order_cache.get_mut().take();
+    }
+
+    fn compute_resolve_order(&self) -> Option<Vec<usize>> {
         const UNVISITED: u8 = 0;
         const VISITING: u8 = 1;
         const DONE: u8 = 2;
@@ -163,16 +188,19 @@ impl ConstraintLayout {
             widget_id,
             ConstraintRef { target_id, constraint, offset, multiplier, priority: 0 },
         ));
+        self.invalidate_order();
     }
 
     /// Remove all constraints associated with the given widget.
     pub fn remove_constraints(&mut self, widget_id: ObjectId) {
         self.constraints.retain(|(id, _)| *id != widget_id);
+        self.invalidate_order();
     }
 
     /// Remove all constraints.
     pub fn clear_constraints(&mut self) {
         self.constraints.clear();
+        self.invalidate_order();
     }
 
     /// Returns all constraints.
@@ -189,13 +217,9 @@ impl ConstraintLayout {
         widget_rect: &mut Rect,
         constraint: &ConstraintRef,
         parent_rect: Rect,
-        resolved: &[(ObjectId, Rect)],
+        resolved: &HashMap<ObjectId, Rect>,
     ) {
-        let target_rect = resolved
-            .iter()
-            .find(|(id, _)| *id == constraint.target_id)
-            .map(|(_, r)| *r)
-            .unwrap_or(parent_rect);
+        let target_rect = resolved.get(&constraint.target_id).copied().unwrap_or(parent_rect);
 
         match constraint.constraint {
             ConstraintType::LeftToLeft => {
@@ -301,6 +325,12 @@ impl Layout for ConstraintLayout {
         self
     }
 
+    /// Drops the cached resolution order, so the next `update` recomputes it from the
+    /// current constraint graph.
+    fn invalidate(&mut self) {
+        self.invalidate_order();
+    }
+
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
         if !self.children.contains(&widget_id) {
             self.children.push(widget_id);
@@ -320,9 +350,18 @@ impl Layout for ConstraintLayout {
         self.children.contains(&id)
     }
 
+    fn widget_count(&self) -> usize {
+        self.children.len()
+    }
+
+    fn index_of(&self, id: ObjectId) -> Option<usize> {
+        self.children.iter().position(|child| *child == id)
+    }
+
     fn clear(&mut self) {
         self.children.clear();
         self.constraints.clear();
+        self.invalidate_order();
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
@@ -335,47 +374,48 @@ impl Layout for ConstraintLayout {
         }
 
         // Resolve constraints sequentially. Start with a default rect for each child.
-        // Collect only widget IDs that have constraints.
-        let mut resolved: Vec<(ObjectId, Rect)> = Vec::new();
+        // The map is keyed by id so each constraint's target lookup is a hash lookup rather
+        // than a linear scan of the partially resolved vector.
+        let mut resolved: HashMap<ObjectId, Rect> = HashMap::new();
 
-        // First pass: seed resolved with parent rect for each constrained child.
+        // First pass: seed resolved with parent rect for each child.
         for &child_id in &self.children {
-            resolved.push((child_id, rect));
+            resolved.insert(child_id, rect);
         }
 
         // Apply constraints in dependency order, lowest priority first, so a stronger
         // constraint is the one that survives on a shared edge. A cycle is broken by
         // falling back to declaration order; the layout still terminates.
-        let order: Vec<usize> = match self.resolve_order() {
+        let order: Rc<Vec<usize>> = match self.resolve_order() {
             Some(order) => order,
             None => {
                 log::warn!(
                     "constraint layout has a dependency cycle; resolving in declaration order"
                 );
-                (0..self.constraints.len()).collect()
+                Rc::new((0..self.constraints.len()).collect())
             }
         };
         let mut ranked: Vec<(usize, i32)> =
-            order.into_iter().map(|index| (index, self.constraints[index].1.priority)).collect();
+            order.iter().map(|index| (*index, self.constraints[*index].1.priority)).collect();
         ranked.sort_by_key(|(_, priority)| *priority);
         for (index, _) in ranked {
             let (subject_id, constraint_ref) = &self.constraints[index];
-            if let Some(pos) = resolved.iter().position(|(id, _)| id == subject_id) {
-                let mut widget_rect = resolved[pos].1;
+            if let Some(mut widget_rect) = resolved.get(subject_id).copied() {
                 Self::resolve_rect(&mut widget_rect, constraint_ref, rect, &resolved);
-                resolved[pos].1 = widget_rect;
+                resolved.insert(*subject_id, widget_rect);
             }
         }
 
         // Second pass: for children that were referenced but have no constraint
         // defined, still emit them at the parent rect position.
+        let constrained: HashMap<ObjectId, ()> =
+            self.constraints.iter().map(|(id, _)| (*id, ())).collect();
         for &child_id in &self.children {
-            if let Some(pos) = resolved.iter().position(|(id, _)| *id == child_id) {
+            if let Some(widget_rect) = resolved.get(&child_id).copied() {
                 // If the child has no constraints, its rect will still be the parent rect.
                 // Only emit if it has at least one constraint (otherwise we'd double-emit rect-sized widgets).
-                let has_constraint = self.constraints.iter().any(|(id, _)| *id == child_id);
-                if has_constraint {
-                    widgets(child_id, resolved[pos].1);
+                if constrained.contains_key(&child_id) {
+                    widgets(child_id, widget_rect);
                 } else {
                     // No constraints for this child: fill parent.
                     widgets(child_id, rect);

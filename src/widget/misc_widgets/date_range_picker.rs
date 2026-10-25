@@ -13,13 +13,33 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TEXT_FIT_MARGIN};
 use crate::signal::Signal1;
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{expect_string, expect_string_list};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+use chrono::Datelike;
+
+/// A named shortcut range offered above the calendar grid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatePreset {
+    /// The chip's caption.
+    pub label: String,
+    /// Inclusive first day, or `None` when the preset only sets an anchor.
+    pub start: Option<(i32, u32, u32)>,
+    /// Inclusive last day, or `None`.
+    pub end: Option<(i32, u32, u32)>,
+}
+
+impl DatePreset {
+    /// Creates a preset from its label and endpoints.
+    pub fn new(label: impl Into<String>, start: (i32, u32, u32), end: (i32, u32, u32)) -> Self {
+        Self { label: label.into(), start: Some(start), end: Some(end) }
+    }
+}
 
 /// A selected date range: `(start_date, end_date)` each as `(year, month, day)`.
 pub(crate) type DateRange = (Option<(i32, u32, u32)>, Option<(i32, u32, u32)>);
@@ -54,24 +74,201 @@ pub struct DateRangePicker {
     start_date: Option<(i32, u32, u32)>,
     end_date: Option<(i32, u32, u32)>,
     hover_date: Option<(i32, u32, u32)>,
+    /// Preset chips offered above the grid.
+    presets: Vec<DatePreset>,
+    /// Whether a second consecutive month is painted beside the first.
+    double_month: bool,
+    /// Minimum nights between the endpoints; `None` for no minimum.
+    min_nights: Option<u32>,
+    /// Maximum nights between the endpoints; `None` for no maximum.
+    max_nights: Option<u32>,
     /// Emitted when the range changes, with `(start_date, end_date)`.
     pub range_changed: Signal1<DateRange>,
+    /// Emitted with the preset index when a preset chip is chosen.
+    pub preset_selected: Signal1<usize>,
 }
 
 impl DateRangePicker {
     /// Creates a new DateRangePicker widget with the given geometry.
     ///
-    /// The displayed month defaults to the current date's month (or 2025-01).
+    /// The displayed month is the current month.
     pub fn new(geometry: Rect) -> Self {
+        let today = chrono::Local::now().date_naive();
         Self {
             base: BaseWidget::new(WidgetKind::DateRangePicker, geometry, "DateRangePicker"),
-            display_year: 2025,
-            display_month: 1,
+            display_year: today.year(),
+            display_month: today.month(),
             start_date: None,
             end_date: None,
             hover_date: None,
+            presets: Vec::new(),
+            double_month: false,
+            min_nights: None,
+            max_nights: None,
             range_changed: Signal1::new(),
+            preset_selected: Signal1::new(),
         }
+    }
+
+    /// Points the grid at the current month without changing the selection.
+    pub fn set_current_month(&mut self) {
+        let today = chrono::Local::now().date_naive();
+        self.display_year = today.year();
+        self.display_month = today.month();
+        self.base.request_redraw();
+    }
+
+    /// Moves the grid to the current month and selects today as a single-day range.
+    pub fn go_to_today(&mut self) {
+        let today = chrono::Local::now().date_naive();
+        self.display_year = today.year();
+        self.display_month = today.month();
+        let date = (today.year(), today.month(), today.day());
+        self.start_date = Some(date);
+        self.end_date = Some(date);
+        self.emit_range_changed();
+        self.base.request_redraw();
+    }
+
+    /// The preset chips.
+    pub fn presets(&self) -> &[DatePreset] {
+        &self.presets
+    }
+
+    /// Replaces the preset chips.
+    pub fn set_presets(&mut self, presets: Vec<DatePreset>) {
+        if self.presets == presets {
+            return;
+        }
+        self.presets = presets;
+        self.base.request_redraw();
+    }
+
+    /// Whether a second consecutive month is painted.
+    pub fn double_month(&self) -> bool {
+        self.double_month
+    }
+
+    /// Enables or disables the side-by-side second month.
+    pub fn set_double_month(&mut self, enabled: bool) {
+        if self.double_month == enabled {
+            return;
+        }
+        self.double_month = enabled;
+        self.base.request_redraw();
+    }
+
+    /// The minimum nights constraint, if any.
+    pub fn min_nights(&self) -> Option<u32> {
+        self.min_nights
+    }
+
+    /// Sets the minimum nights constraint (`0` clears it).
+    pub fn set_min_nights(&mut self, nights: Option<u32>) {
+        let nights = nights.filter(|n| *n > 0);
+        if self.min_nights == nights {
+            return;
+        }
+        self.min_nights = nights;
+        self.base.request_redraw();
+    }
+
+    /// The maximum nights constraint, if any.
+    pub fn max_nights(&self) -> Option<u32> {
+        self.max_nights
+    }
+
+    /// Sets the maximum nights constraint (`0` clears it).
+    pub fn set_max_nights(&mut self, nights: Option<u32>) {
+        let nights = nights.filter(|n| *n > 0);
+        if self.max_nights == nights {
+            return;
+        }
+        self.max_nights = nights;
+        self.base.request_redraw();
+    }
+
+    /// The height the preset strip reserves.
+    fn preset_height(&self) -> u32 {
+        if self.presets.is_empty() {
+            0
+        } else {
+            PRESET_HEIGHT
+        }
+    }
+
+    /// The box of preset `index`, when presets are shown.
+    pub fn preset_rect(&self, index: usize) -> Option<Rect> {
+        if index >= self.presets.len() {
+            return None;
+        }
+        let rect = self.geometry();
+        let width = rect.width / self.presets.len() as u32;
+        Some(Rect::new(
+            rect.x + (index as u32 * width) as i32,
+            rect.y + 2,
+            width.saturating_sub(2),
+            PRESET_HEIGHT.saturating_sub(4),
+        ))
+    }
+
+    /// Chooses preset `index`, applying its dates and reporting the choice.
+    pub fn select_preset(&mut self, index: usize) {
+        let Some(preset) = self.presets.get(index).cloned() else {
+            return;
+        };
+        self.start_date = preset.start;
+        self.end_date = preset.end;
+        if let Some((year, month, _)) = preset.start.or(preset.end) {
+            self.display_year = year;
+            self.display_month = month;
+        }
+        self.emit_range_changed();
+        self.preset_selected.emit(index);
+        self.base.request_redraw();
+    }
+
+    /// The `(year, month)` shown by panel `panel` (`0` is the primary month).
+    fn panel_month(&self, panel: usize) -> (i32, u32) {
+        if panel == 0 {
+            return (self.display_year, self.display_month);
+        }
+        if self.display_month == 12 {
+            (self.display_year + 1, 1)
+        } else {
+            (self.display_year, self.display_month + 1)
+        }
+    }
+
+    /// Number of month panels painted.
+    fn panel_count(&self) -> usize {
+        if self.double_month {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// Whether a completed range satisfies the night constraints.
+    fn nights_allowed(&self, start: (i32, u32, u32), end: (i32, u32, u32)) -> bool {
+        let Some(nights) = Self::nights_between(start, end) else {
+            return false;
+        };
+        if self.min_nights.is_some_and(|minimum| nights < minimum) {
+            return false;
+        }
+        if self.max_nights.is_some_and(|maximum| nights > maximum) {
+            return false;
+        }
+        true
+    }
+
+    /// The night count between two dates, when both are real calendar days.
+    fn nights_between(start: (i32, u32, u32), end: (i32, u32, u32)) -> Option<u32> {
+        let a = chrono::NaiveDate::from_ymd_opt(start.0, start.1, start.2)?;
+        let b = chrono::NaiveDate::from_ymd_opt(end.0, end.1, end.2)?;
+        let nights = (b - a).num_days();
+        u32::try_from(nights).ok()
     }
 
     /// Returns the current start date, if set.
@@ -149,59 +346,71 @@ impl DateRangePicker {
         self.range_changed.emit((self.start_date, self.end_date));
     }
 
-    /// Returns the display month name.
-    fn month_name(&self) -> &str {
-        let idx = (self.display_month as usize).saturating_sub(1);
-        MONTH_NAMES[idx.min(11)]
-    }
-
-    /// Returns the number of days in the displayed month.
-    fn days_in_display_month(&self) -> u32 {
-        days_in_month(self.display_year, self.display_month)
+    /// Returns the number of days in panel `panel`'s month.
+    fn days_in_panel_month(&self, panel: usize) -> u32 {
+        let (year, month) = self.panel_month(panel);
+        days_in_month(year, month)
     }
 
     /// Returns the day of week for the 1st of the displayed month.
+    #[cfg(test)]
     fn first_day_of_week(&self) -> u32 {
         day_of_week(self.display_year, self.display_month, 1)
     }
 
-    /// Returns the day, month, year for a given cell position in the grid.
-    fn date_at_cell(&self, cell_index: usize) -> Option<(i32, u32, u32)> {
-        let first_dow = self.first_day_of_week() as usize;
-        let total_days = self.days_in_display_month() as usize;
+    /// Returns the day of week for the 1st of panel `panel`'s month.
+    fn first_day_of_panel(&self, panel: usize) -> u32 {
+        let (year, month) = self.panel_month(panel);
+        day_of_week(year, month, 1)
+    }
 
+    /// Returns the day, month, year for a cell in panel `panel`'s grid.
+    fn date_at_panel_cell(&self, panel: usize, cell_index: usize) -> Option<(i32, u32, u32)> {
+        let first_dow = self.first_day_of_panel(panel) as usize;
+        let total_days = self.days_in_panel_month(panel) as usize;
         if cell_index < first_dow || cell_index >= first_dow + total_days {
             return None;
         }
-
         let day = (cell_index - first_dow + 1) as u32;
-        Some((self.display_year, self.display_month, day))
+        let (year, month) = self.panel_month(panel);
+        Some((year, month, day))
+    }
+
+    /// Returns the day, month, year for a given cell position in the primary grid.
+    #[cfg(test)]
+    fn date_at_cell(&self, cell_index: usize) -> Option<(i32, u32, u32)> {
+        self.date_at_panel_cell(0, cell_index)
     }
 
     /// Returns the grid cell index under `pos`, or `None` when the point is outside the
     /// calendar grid.
     ///
     /// Shared by the press and hover paths so a pointer can never highlight a different
-    /// cell from the one a click would select.
-    fn cell_at_position(&self, pos: Point) -> Option<usize> {
-        let layout = self.grid_layout();
-        let rel_x = pos.x - layout.grid_left;
-        let rel_y = pos.y - layout.grid_top;
-        if rel_x < 0 || rel_y < 0 {
-            return None;
+    /// cell from the one a click would select. The returned index is `(panel, cell)`.
+    fn cell_at_position(&self, pos: Point) -> Option<(usize, usize)> {
+        for panel in 0..self.panel_count() {
+            let layout = self.grid_layout_for(panel);
+            let rel_x = pos.x - layout.grid_left;
+            let rel_y = pos.y - layout.grid_top;
+            if rel_x < 0 || rel_y < 0 {
+                continue;
+            }
+            let col = (rel_x as u32) / layout.column_pitch;
+            let row = (rel_y as u32) / layout.row_pitch;
+            if col >= 7 || row >= 6 {
+                continue;
+            }
+            let cell_idx = (row as usize) * 7 + (col as usize);
+            if cell_idx < layout.total_cells {
+                return Some((panel, cell_idx));
+            }
         }
-        let col = (rel_x as u32) / layout.column_pitch;
-        let row = (rel_y as u32) / layout.row_pitch;
-        if col >= 7 || row >= 6 {
-            return None;
-        }
-        let cell_idx = (row as usize) * 7 + (col as usize);
-        (cell_idx < layout.total_cells).then_some(cell_idx)
+        None
     }
 
     /// The date under `pos`, if the point is on a day cell.
     fn date_at_position(&self, pos: Point) -> Option<(i32, u32, u32)> {
-        self.cell_at_position(pos).and_then(|cell| self.date_at_cell(cell))
+        self.cell_at_position(pos).and_then(|(panel, cell)| self.date_at_panel_cell(panel, cell))
     }
 
     /// Checks if a date falls within the current selection range.
@@ -231,29 +440,28 @@ impl DateRangePicker {
     /// row — and the labels in it — past the control's bottom edge, where the raster
     /// backends clipped it and the SVG snapshot showed it leaving the picture. The nominal
     /// size is kept as the *maximum*, so a roomy control is unchanged.
+    #[cfg(test)]
     fn grid_layout(&self) -> GridLayout {
+        self.grid_layout_for(0)
+    }
+
+    /// The grid geometry for one month panel.
+    fn grid_layout_for(&self, panel: usize) -> GridLayout {
         let rect = self.geometry();
-        let total_days = self.days_in_display_month() as usize;
-        let first_dow = self.first_day_of_week() as usize;
+        let panels = self.panel_count() as u32;
+        let panel_width = rect.width / panels.max(1);
+        let panel_x = rect.x + (panel as u32 * panel_width) as i32;
+        let total_days = self.days_in_panel_month(panel) as usize;
+        let first_dow = self.first_day_of_panel(panel) as usize;
         let rows = ((first_dow + total_days).div_ceil(7) as u32).max(1);
-        let grid_left = rect.x + GRID_LEFT_INSET;
-        let grid_top = rect.y + HEADER_HEIGHT as i32 + DAY_HEADER_HEIGHT as i32;
+        let grid_left = panel_x + GRID_LEFT_INSET;
+        let preset = self.preset_height() as i32;
+        let grid_top = rect.y + preset + HEADER_HEIGHT as i32 + DAY_HEADER_HEIGHT as i32;
         let available_height = (rect.y + rect.height as i32 - grid_top).max(1) as u32;
-        // `rows` rows of `cell_size` with `CELL_SPACING` between them must fit, so the gaps
-        // are subtracted before the division. A floor of 1 keeps a degenerate box from
-        // producing a zero-sized cell the label would then be fitted into nothing.
         let gaps = CELL_SPACING * (rows - 1);
         let cell_size = (available_height.saturating_sub(gaps) / rows).clamp(1, NOMINAL_CELL);
-        // The **width** comes from the room the grid has across, not from the row height.
-        //
-        // `cell_size` is a *height* limit: it is `available_height / rows`. Using it for
-        // the columns too made a short, wide control draw a tiny grid in its top-left
-        // corner (a 240x120 census cell had 10 px columns in 240 px of room), and every
-        // day number then had 10 - 6 px to fit in, so the whole grid rendered as `...`.
-        // Seven columns across the available width is the same rule the advanced calendar
-        // uses and the one a reader expects.
         let available_width =
-            (rect.x + rect.width as i32 - grid_left - GRID_RIGHT_INSET).max(1) as u32;
+            (panel_x + panel_width as i32 - grid_left - GRID_RIGHT_INSET).max(1) as u32;
         let column_gaps = CELL_SPACING * 6;
         let cell_width = (available_width.saturating_sub(column_gaps) / 7).clamp(1, NOMINAL_CELL);
         GridLayout {
@@ -268,6 +476,8 @@ impl DateRangePicker {
     }
 }
 
+/// Reserved height of the preset chip strip.
+const PRESET_HEIGHT: u32 = 22;
 /// Reserved height of the month/year header band.
 const HEADER_HEIGHT: u32 = 40;
 /// Reserved height of the weekday row.
@@ -280,6 +490,12 @@ const GRID_RIGHT_INSET: i32 = 4;
 const CELL_SPACING: u32 = 2;
 /// The largest a calendar cell is allowed to be.
 const NOMINAL_CELL: u32 = 28;
+
+/// The month name for `month` (`1`–`12`), clamped into the table.
+fn month_name_for(month: u32) -> &'static str {
+    let idx = (month as usize).saturating_sub(1);
+    MONTH_NAMES[idx.min(11)]
+}
 
 /// The calendar grid's resolved geometry.
 struct GridLayout {
@@ -354,6 +570,11 @@ impl Widget for DateRangePicker {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
             }
+            "preset_selected" => {
+                Some(EventSignalRef::mapped("preset_selected", &self.preset_selected, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
             _ => None,
         }
     }
@@ -379,6 +600,22 @@ impl WidgetProperties for DateRangePicker {
                 Some(date) => CapabilityValue::String(format_iso_date(date)),
                 None => CapabilityValue::Null,
             }),
+            "presets" => Ok(CapabilityValue::Tuple(
+                self.presets
+                    .iter()
+                    .map(|preset| {
+                        CapabilityValue::String(format!(
+                            "{}|{}|{}",
+                            preset.label,
+                            preset.start.map(format_iso_date).unwrap_or_default(),
+                            preset.end.map(format_iso_date).unwrap_or_default()
+                        ))
+                    })
+                    .collect(),
+            )),
+            "double_month" => Ok(CapabilityValue::Bool(self.double_month)),
+            "min_nights" => Ok(CapabilityValue::UInt(self.min_nights.unwrap_or(0) as u64)),
+            "max_nights" => Ok(CapabilityValue::UInt(self.max_nights.unwrap_or(0) as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -393,12 +630,60 @@ impl WidgetProperties for DateRangePicker {
                 self.set_end_date(expect_optional_iso_date(value)?);
                 Ok(())
             }
+            "presets" => {
+                let items = expect_string_list(value)?;
+                let mut presets = Vec::new();
+                for entry in items {
+                    let mut parts = entry.splitn(3, '|');
+                    let label = parts.next().unwrap_or_default().to_string();
+                    let start =
+                        parts.next().filter(|text| !text.is_empty()).and_then(parse_iso_date);
+                    let end = parts.next().filter(|text| !text.is_empty()).and_then(parse_iso_date);
+                    presets.push(DatePreset { label, start, end });
+                }
+                self.set_presets(presets);
+                Ok(())
+            }
+            "double_month" => {
+                let enabled = match value {
+                    CapabilityValue::Bool(flag) => flag,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_double_month(enabled);
+                Ok(())
+            }
+            "min_nights" => {
+                let nights = match value {
+                    CapabilityValue::UInt(value) => value,
+                    CapabilityValue::Int(value) if value >= 0 => value as u64,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_min_nights(u32::try_from(nights).ok());
+                Ok(())
+            }
+            "max_nights" => {
+                let nights = match value {
+                    CapabilityValue::UInt(value) => value,
+                    CapabilityValue::Int(value) if value >= 0 => value as u64,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_max_nights(u32::try_from(nights).ok());
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["start_date", "end_date", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "start_date",
+            "end_date",
+            "presets",
+            "double_month",
+            "min_nights",
+            "max_nights",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -464,185 +749,173 @@ impl Draw for DateRangePicker {
             Color::BLACK,
         );
 
-        // Layout parameters, resolved from the month and the rectangle. See
-        // [`DateRangePicker::grid_layout`] for why the cell size is not a constant.
-        let layout = self.grid_layout();
-        let grid_left = layout.grid_left;
-        let grid_top = layout.grid_top;
-        let cell_size = layout.cell_size;
-        let cell_width = layout.cell_width;
-        let row_pitch = layout.row_pitch;
-        let column_pitch = layout.column_pitch;
+        // ── Preset chips ──
+        let preset_font = role_font(style, 10.0);
+        if !self.presets.is_empty() {
+            for index in 0..self.presets.len() {
+                let Some(chip) = self.preset_rect(index) else {
+                    continue;
+                };
+                context.fill_rounded_rect(chip, 4, surface.blend(&text_color, 0.08));
+                context.draw_text_fitted_cow(
+                    chip,
+                    self.presets[index].label.as_str(),
+                    &preset_font,
+                    text_color,
+                    HorizontalAlignment::Center,
+                );
+            }
+        }
 
-        // ── Month/Year header ──
-        //
-        // The label is fitted to the header band and centred **inside** it. The previous
-        // origin added `ascent` on top of a `y` that was already past the band, so the glyph
-        // box (which starts at the origin and extends down a full line) began near the band's
-        // bottom: the header read as sitting on the grid, and the last day row was pushed off
-        // the control entirely. `ascent` is *inside* the line box, not above it — the render
-        // origin is the glyph's top edge.
-        let header_band = Rect::new(rect.x + 20, rect.y + 6, rect.width.saturating_sub(40), 18);
+        // ── Month/Year headers ──
+        let header_top = rect.y + self.preset_height() as i32;
         let header_font = role_font(style, 14.0).with_bold(true);
-        let header_text = format!("{} {}", self.month_name(), self.display_year);
-        context.draw_text_fitted_cow(
-            header_band,
-            &header_text,
-            &header_font,
-            text_color,
-            HorizontalAlignment::Center,
-        );
+        let panels = self.panel_count();
+        let panel_width = rect.width / panels.max(1) as u32;
+        for panel in 0..panels {
+            let panel_x = rect.x + (panel as u32 * panel_width) as i32;
+            let (year, month) = self.panel_month(panel);
+            let header_band =
+                Rect::new(panel_x + 20, header_top + 6, panel_width.saturating_sub(40), 18);
+            let header_text = format!("{} {year}", month_name_for(month));
+            context.draw_text_fitted_cow(
+                header_band,
+                &header_text,
+                &header_font,
+                text_color,
+                HorizontalAlignment::Center,
+            );
+        }
 
         // Navigation arrows, each in its own strip at the band's ends so they cannot collide
-        // with a long month name.
-        //
-        // The glyphs are the filled triangles the rest of the toolkit navigates with
-        // (`calendar`, `image_gallery`) rather than `<`/`>`. Those two are the only
-        // characters in the registry that a serializer must escape: the SVG backend emits
-        // `&gt;`, and a bounds reader that counts the *source* text as the advance then
-        // measures five glyphs where one was drawn — which is what reported this arrow at
-        // `[224,8..253,20]`. A glyph that needs no escaping is the honest fix, since the
-        // drawn extent and the emitted text then agree.
-        //
-        // Both strips are anchored to the control's edges and the glyph is inset inside its
-        // strip, so the drawn extent is bounded by the rectangle rather than by the glyph's
-        // advance.
-        // The previous comment chose the filled triangles over `<`/`>` so the drawn extent and the
-        // emitted text would agree; that reasoning is what led here. The triangles were themselves
-        // the wrong character — no bundled face covers U+25C0/U+25B6, so they drew as 8x8 bitmap
-        // blocks. Both ends are now `ChevronLeft`/`ChevronRight` **icon outlines**, each inside its
-        // own strip anchored to the control's edge, so the drawn extent is bounded by the strip
-        // rather than by any glyph's advance.
-        //
-        // The height the square is sized from is the **line box** of a representative character, not
-        // a symbol glyph the control no longer draws: measuring `"◀"` sized the icon from a
-        // character that was about to become a bitmap block, which is a measurement of something the
-        // frame does not contain.
+        // with a long month name. Two icon outlines rather than triangle glyphs: no bundled face
+        // covers U+25C0/U+25B6, so those drew as 8x8 bitmap blocks.
         let nav_font = role_font(style, 12.0).with_bold(true);
         let nav_height = context.measure_text("M", &nav_font).height;
         let arrow_side = nav_height.max(1);
         crate::widget::draw_icon_at(
             context,
-            Rect::new(rect.x + 6, rect.y + 8, arrow_side, arrow_side),
+            Rect::new(rect.x + 6, header_top + 8, arrow_side, arrow_side),
             text_color,
             IconName::ChevronLeft,
         );
         crate::widget::draw_icon_at(
             context,
-            Rect::new(rect.x + rect.width as i32 - 20, rect.y + 8, arrow_side, arrow_side),
+            Rect::new(rect.x + rect.width as i32 - 20, header_top + 8, arrow_side, arrow_side),
             text_color,
             IconName::ChevronRight,
         );
 
-        // ── Day-of-week header ──
+        // ── Day-of-week headers and grids, one block per month panel ──
         let dow_font = role_font(style, 9.0);
-        // The weekday row is secondary chrome: derived from the resolved text colour
-        // so it stays legible against either surface.
-        let dow_color = surface.blend(&text_color, 0.55);
-        // Each weekday label is fitted inside its own column. `cell_x + 6` with a centred
-        // cell put the last column's label past the grid's right edge; deriving the column
-        // from `cell_size` and centring inside it keeps every label within its own cell.
-        let dow_height = context.measure_text("M", &dow_font).height;
-        for (i, day_name) in DAY_NAMES.iter().enumerate() {
-            let cell_x = grid_left + (i as u32 * column_pitch) as i32;
-            let cell_y = grid_top - DAY_HEADER_HEIGHT as i32;
-            // The fit box is the cell **plus both margins**: `draw_text_fitted` insets three
-            // pixels at each end, so handing it the bare cell asks it to fit a label into 6 px
-            // less than the cell the label is measured for — which is how a column that fits
-            // still renders as `...`.
-            let margin = TEXT_FIT_MARGIN as i32;
-            context.draw_text_fitted_cow(
-                Rect::new(cell_x - margin, cell_y + 4, cell_width + 2 * margin as u32, dow_height),
-                day_name,
-                &dow_font,
-                dow_color,
-                HorizontalAlignment::Center,
-            );
-        }
-
-        // ── Calendar grid ──
         let day_font = role_font(style, 10.0);
-        let total_cells = layout.total_cells;
-
-        // Two-digit day text is assembled into a stack buffer. The previous
-        // `day.to_string()` allocated once per visible cell per frame (up to 42
-        // allocations for a month grid that repaints on every hover move).
-        let mut day_buf = [0u8; 2];
-        for cell_idx in 0..total_cells {
-            let Some(date) = self.date_at_cell(cell_idx) else {
-                continue;
-            };
-            let day = date.2;
-            let day_text = if day < 10 {
-                day_buf[0] = b'0' + day as u8;
-                core::str::from_utf8(&day_buf[..1]).unwrap_or("")
-            } else {
-                day_buf[0] = b'0' + (day / 10) as u8;
-                day_buf[1] = b'0' + (day % 10) as u8;
-                core::str::from_utf8(&day_buf[..2]).unwrap_or("")
-            };
-
-            let row = cell_idx / 7;
-            let col = cell_idx % 7;
-            let cell_x = grid_left + (col as u32 * column_pitch) as i32;
-            let cell_y = grid_top + (row as u32 * row_pitch) as i32;
-
-            let cell_rect = Rect::new(cell_x, cell_y, cell_width, cell_size);
-
-            // Determine cell styling
-            let is_start = self.start_date == Some(date);
-            let is_end = self.end_date == Some(date);
-            let is_today = is_start || is_end;
-            let in_range = self.is_in_range(date);
-            let is_hover = self.hover_date == Some(date);
-
-            // Background
-            if in_range && is_enabled {
-                let range_color =
-                    if is_start || is_end { accent.with_alpha(200) } else { accent.with_alpha(60) };
-                context.fill_rounded_rect(cell_rect, 4, range_color);
-            } else if is_hover && is_enabled {
-                context.fill_rounded_rect(cell_rect, 4, surface.blend(&text_color, 0.16));
-            } else if is_today && is_enabled {
-                let today_color = if is_start || is_end {
-                    accent.with_alpha(200)
-                } else {
-                    surface.blend(&text_color, 0.14)
-                };
-                context.fill_rounded_rect(cell_rect, 4, today_color);
-            }
-
-            // Draw day number, fitted inside its own cell and centred on it. The origin is
-            // the glyph's top edge, so the vertical centre is half the *line box* — the old
-            // `(cell - height)/2 + ascent` began the glyph box half a line below the cell's
-            // middle, which walked the bottom row past the control's edge.
-            let day_metrics = context.measure_text(day_text, &day_font);
-            let day_y = cell_y + (cell_size as i32 - day_metrics.height as i32) / 2;
-
-            let day_color = if !is_enabled {
-                self.base.disabled_ink_on(text_color, surface)
-            } else if is_start || is_end {
-                // A date on the accent fill: the resolved surface colour is the
-                // legible counterpart of the accent in either appearance.
-                surface
-            } else if in_range {
-                accent
-            } else {
-                text_color
-            };
-            context.draw_text_fitted_cow(
-                Rect::new(
-                    cell_x - TEXT_FIT_MARGIN as i32,
-                    day_y,
-                    cell_width + 2 * TEXT_FIT_MARGIN,
-                    day_metrics.height,
-                ),
-                day_text,
-                &day_font,
-                day_color,
-                HorizontalAlignment::Center,
+        for panel in 0..panels {
+            draw_month_panel(
+                self, context, panel, &dow_font, &day_font, surface, text_color, accent, is_enabled,
             );
         }
+    }
+}
+
+/// Paints one month panel's weekday header and day grid.
+#[allow(clippy::too_many_arguments)]
+fn draw_month_panel(
+    picker: &DateRangePicker,
+    context: &mut RenderContext,
+    panel: usize,
+    dow_font: &crate::core::Font,
+    day_font: &crate::core::Font,
+    surface: Color,
+    text_color: Color,
+    accent: Color,
+    is_enabled: bool,
+) {
+    let layout = picker.grid_layout_for(panel);
+    let grid_left = layout.grid_left;
+    let grid_top = layout.grid_top;
+    let cell_size = layout.cell_size;
+    let cell_width = layout.cell_width;
+    let row_pitch = layout.row_pitch;
+    let column_pitch = layout.column_pitch;
+    let dow_color = surface.blend(&text_color, 0.55);
+    let dow_height = context.measure_text("M", dow_font).height;
+    let margin = TEXT_FIT_MARGIN as i32;
+    for (i, day_name) in DAY_NAMES.iter().enumerate() {
+        let cell_x = grid_left + (i as u32 * column_pitch) as i32;
+        let cell_y = grid_top - DAY_HEADER_HEIGHT as i32;
+        context.draw_text_fitted_cow(
+            Rect::new(cell_x - margin, cell_y + 4, cell_width + 2 * margin as u32, dow_height),
+            day_name,
+            dow_font,
+            dow_color,
+            HorizontalAlignment::Center,
+        );
+    }
+
+    let mut day_buf = [0u8; 2];
+    for cell_idx in 0..layout.total_cells {
+        let Some(date) = picker.date_at_panel_cell(panel, cell_idx) else {
+            continue;
+        };
+        let day = date.2;
+        let day_text = if day < 10 {
+            day_buf[0] = b'0' + day as u8;
+            core::str::from_utf8(&day_buf[..1]).unwrap_or("")
+        } else {
+            day_buf[0] = b'0' + (day / 10) as u8;
+            day_buf[1] = b'0' + (day % 10) as u8;
+            core::str::from_utf8(&day_buf[..2]).unwrap_or("")
+        };
+        let row = cell_idx / 7;
+        let col = cell_idx % 7;
+        let cell_x = grid_left + (col as u32 * column_pitch) as i32;
+        let cell_y = grid_top + (row as u32 * row_pitch) as i32;
+        let cell_rect = Rect::new(cell_x, cell_y, cell_width, cell_size);
+
+        let is_start = picker.start_date == Some(date);
+        let is_end = picker.end_date == Some(date);
+        let is_today = is_start || is_end;
+        let in_range = picker.is_in_range(date);
+        let is_hover = picker.hover_date == Some(date);
+
+        if in_range && is_enabled {
+            let range_color =
+                if is_start || is_end { accent.with_alpha(200) } else { accent.with_alpha(60) };
+            context.fill_rounded_rect(cell_rect, 4, range_color);
+        } else if is_hover && is_enabled {
+            context.fill_rounded_rect(cell_rect, 4, surface.blend(&text_color, 0.16));
+        } else if is_today && is_enabled {
+            let today_color = if is_start || is_end {
+                accent.with_alpha(200)
+            } else {
+                surface.blend(&text_color, 0.14)
+            };
+            context.fill_rounded_rect(cell_rect, 4, today_color);
+        }
+
+        let day_metrics = context.measure_text(day_text, day_font);
+        let day_y = cell_y + (cell_size as i32 - day_metrics.height as i32) / 2;
+        let day_color = if !is_enabled {
+            text_color.blend(&surface, 0.55)
+        } else if is_start || is_end {
+            surface
+        } else if in_range {
+            accent
+        } else {
+            text_color
+        };
+        context.draw_text_fitted_cow(
+            Rect::new(
+                cell_x - TEXT_FIT_MARGIN as i32,
+                day_y,
+                cell_width + 2 * TEXT_FIT_MARGIN,
+                day_metrics.height,
+            ),
+            day_text,
+            day_font,
+            day_color,
+            HorizontalAlignment::Center,
+        );
     }
 }
 
@@ -712,16 +985,19 @@ impl EventHandler for DateRangePicker {
                 return;
             }
 
-            // The same grid the draw uses, so a click lands in the cell under the pointer.
-            let layout = self.grid_layout();
-            let (grid_left, grid_top) = (layout.grid_left, layout.grid_top);
-            let (column_pitch, row_pitch) = (layout.column_pitch, layout.row_pitch);
+            // Preset chips take the press before the calendar behind them.
+            for index in 0..self.presets.len() {
+                if self.preset_rect(index).is_some_and(|chip| chip.contains_point(*pos)) {
+                    self.select_preset(index);
+                    return;
+                }
+            }
 
-            // Check header clicks for navigation
-            let header_rect_left = Rect::new(rect.x + 4, rect.y + 4, 20, HEADER_HEIGHT);
+            // The header strips move down by the preset row, matching the paint.
+            let header_top = rect.y + self.preset_height() as i32;
+            let header_rect_left = Rect::new(rect.x + 4, header_top + 4, 20, HEADER_HEIGHT);
             let header_rect_right =
-                Rect::new(rect.x + rect.width as i32 - 24, rect.y + 4, 20, HEADER_HEIGHT);
-
+                Rect::new(rect.x + rect.width as i32 - 24, header_top + 4, 20, HEADER_HEIGHT);
             if header_rect_left.contains_point(*pos) {
                 self.previous_month();
                 return;
@@ -731,61 +1007,45 @@ impl EventHandler for DateRangePicker {
                 return;
             }
 
-            // Check if click is on a cell in the grid
-            let rel_x = pos.x - grid_left;
-            let rel_y = pos.y - grid_top;
-            if rel_x < 0 || rel_y < 0 {
-                return;
-            }
-
-            let col = (rel_x as u32) / column_pitch;
-            let row = (rel_y as u32) / row_pitch;
-            if col >= 7 || row >= 6 {
-                // Click outside the grid — clear if only start is selected
+            let Some((panel, cell_idx)) = self.cell_at_position(*pos) else {
+                // Click outside the grid — clear if only start is selected.
                 if self.start_date.is_some() && self.end_date.is_none() {
                     self.clear_selection();
                 }
                 return;
-            }
-
-            let cell_idx = (row as usize) * 7 + (col as usize);
-            if cell_idx >= layout.total_cells {
+            };
+            let Some(clicked_date) = self.date_at_panel_cell(panel, cell_idx) else {
                 // A click in the blank tail of the last week belongs to no date; treating it
                 // as a selection would invent one.
-                return;
-            }
-            let Some(clicked_date) = self.date_at_cell(cell_idx) else {
                 return;
             };
 
             match (self.start_date, self.end_date) {
                 (None, _) => {
-                    // No selection — set start
                     self.start_date = Some(clicked_date);
                     self.emit_range_changed();
                     self.base.request_redraw();
                 }
                 (Some(start), None) => {
-                    // Start is set, no end yet — set end
                     let start_ord = date_to_ordinal(start);
                     let click_ord = date_to_ordinal(clicked_date);
-
-                    if click_ord > start_ord {
-                        self.end_date = Some(clicked_date);
+                    let (new_start, new_end) = if click_ord > start_ord {
+                        (start, clicked_date)
                     } else if click_ord < start_ord {
-                        // Clicked before start: swap: new start = clicked, end = old start
-                        self.start_date = Some(clicked_date);
-                        self.end_date = Some(start);
+                        (clicked_date, start)
                     } else {
-                        // Clicked same as start — clear
                         self.clear_selection();
                         return;
+                    };
+                    if !self.nights_allowed(new_start, new_end) {
+                        return;
                     }
+                    self.start_date = Some(new_start);
+                    self.end_date = Some(new_end);
                     self.emit_range_changed();
                     self.base.request_redraw();
                 }
                 (Some(_), Some(_)) => {
-                    // Both set — start new selection
                     self.start_date = Some(clicked_date);
                     self.end_date = None;
                     self.emit_range_changed();
@@ -802,17 +1062,23 @@ mod tests {
     use crate::widget::svg::render_to_svg;
 
     fn make_picker() -> DateRangePicker {
-        DateRangePicker::new(Rect::new(0, 0, 240, 260))
+        let mut picker = DateRangePicker::new(Rect::new(0, 0, 240, 260));
+        // The default now follows the wall clock (MISC-02); the geometry tests below pin the
+        // month so their cell arithmetic stays deterministic.
+        picker.display_year = 2025;
+        picker.display_month = 1;
+        picker
     }
 
     #[test]
     fn date_range_picker_default_creation() {
-        let picker = make_picker();
+        let picker = DateRangePicker::new(Rect::new(0, 0, 240, 260));
+        let today = chrono::Local::now().date_naive();
         assert_eq!(picker.kind(), WidgetKind::DateRangePicker);
         assert!(picker.start_date().is_none());
         assert!(picker.end_date().is_none());
-        assert_eq!(picker.display_year(), 2025);
-        assert_eq!(picker.display_month(), 1);
+        assert_eq!(picker.display_year(), today.year());
+        assert_eq!(picker.display_month(), today.month());
     }
 
     #[test]
@@ -841,15 +1107,22 @@ mod tests {
     #[test]
     fn date_range_picker_navigation() {
         let mut picker = make_picker();
-        assert_eq!(picker.display_month(), 1);
+        picker.set_current_month();
+        let today = chrono::Local::now().date_naive();
+        assert_eq!(picker.display_month(), today.month());
 
         picker.previous_month();
-        assert_eq!(picker.display_month(), 12);
-        assert_eq!(picker.display_year(), 2024);
+        let (year, month) = if today.month() == 1 {
+            (today.year() - 1, 12)
+        } else {
+            (today.year(), today.month() - 1)
+        };
+        assert_eq!(picker.display_month(), month);
+        assert_eq!(picker.display_year(), year);
 
         picker.next_month();
-        assert_eq!(picker.display_month(), 1);
-        assert_eq!(picker.display_year(), 2025);
+        assert_eq!(picker.display_month(), today.month());
+        assert_eq!(picker.display_year(), today.year());
     }
 
     #[test]
@@ -969,5 +1242,50 @@ mod tests {
             modifiers: 0,
         });
         assert!(picker.start_date().is_none());
+    }
+
+    #[test]
+    fn presets_double_month_and_night_bounds_are_live() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut picker = make_picker();
+        picker.set_presets(vec![DatePreset::new("Week", (2025, 1, 1), (2025, 1, 7))]);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&hits);
+        picker.preset_selected.connect(move |_| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        let chip = picker.preset_rect(0).expect("the preset chip exists");
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(chip.x + 2, chip.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(picker.start_date(), Some((2025, 1, 1)));
+        assert_eq!(picker.end_date(), Some((2025, 1, 7)));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        picker.set_double_month(true);
+        assert!(picker.double_month());
+        let svg = render_to_svg(&mut picker);
+        assert!(svg.starts_with("<svg"));
+
+        assert!(picker.nights_allowed((2025, 1, 1), (2025, 1, 2)));
+        picker.set_min_nights(Some(2));
+        assert!(!picker.nights_allowed((2025, 1, 1), (2025, 1, 2)));
+        assert!(picker.nights_allowed((2025, 1, 1), (2025, 1, 3)));
+        picker.set_max_nights(Some(3));
+        assert!(!picker.nights_allowed((2025, 1, 1), (2025, 1, 5)));
+    }
+
+    #[test]
+    fn go_to_today_selects_the_wall_clock_day() {
+        let mut picker = make_picker();
+        picker.go_to_today();
+        let today = chrono::Local::now().date_naive();
+        assert_eq!(picker.display_year(), today.year());
+        assert_eq!(picker.display_month(), today.month());
+        assert_eq!(picker.start_date(), Some((today.year(), today.month(), today.day())));
     }
 }

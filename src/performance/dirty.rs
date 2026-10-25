@@ -27,12 +27,15 @@ impl WidgetDirtyState {
     /// Marks a widget dirty and records the region needing repaint.
     ///
     /// The `rect` is in the same coordinate space the renderer expects for
-    /// damage regions. Re-marking an already-dirty widget **replaces** its rect
-    /// rather than unioning with it, so calling this repeatedly with a shrinking
-    /// rect can leave earlier damage unpainted.
+    /// damage regions. Re-marking an already-dirty widget **unions** the new rect
+    /// with the one already recorded, so a later, smaller report cannot erase
+    /// earlier damage that has not been painted yet (G-05).
     pub fn mark_dirty(&mut self, id: ObjectId, rect: Rect) {
         self.dirty_widgets.insert(id);
-        self.dirty_rects.insert(id, rect);
+        self.dirty_rects
+            .entry(id)
+            .and_modify(|existing| *existing = existing.union(&rect))
+            .or_insert(rect);
     }
     /// Clears the dirty flag and drops the remembered rect. No-op for an id
     /// that is not dirty.
@@ -75,3 +78,23 @@ impl WidgetDirtyState {
     }
 }
 crate::impl_default_via_new!(WidgetDirtyState);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Re-marking one widget accumulates damage instead of replacing it, so a later smaller
+    /// report cannot un-dirty an area that has not been painted yet (G-05).
+    #[test]
+    fn mark_dirty_unions_reports_for_the_same_widget() {
+        let mut state = WidgetDirtyState::new();
+        state.mark_dirty(7, Rect::new(10, 10, 20, 20));
+        state.mark_dirty(7, Rect::new(25, 25, 10, 10));
+
+        assert_eq!(state.get_dirty_rect(7), Some(&Rect::new(10, 10, 25, 25)));
+        assert_eq!(state.len(), 1, "a repeated mark still counts as one dirty widget");
+
+        state.mark_clean(7);
+        assert_eq!(state.get_dirty_rect(7), None);
+    }
+}

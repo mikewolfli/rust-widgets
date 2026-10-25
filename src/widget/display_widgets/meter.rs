@@ -90,6 +90,13 @@ pub struct Meter {
     dragging: bool,
     /// Suffix appended to the value in labels, e.g. `°C`.
     unit: String,
+    /// Scratch buffer for an arc's polyline vertices.
+    ///
+    /// Every arc on the ring is stroked as a sampled polyline, so the draw pass used to
+    /// `collect()` a new `Vec<Point>` per arc per frame — three or more allocations while the
+    /// needle was still. The sweep fills this buffer instead, hands it to the render command by
+    /// reference, and takes it back afterwards, so the capacity survives the frame.
+    sweep_points: Vec<Point>,
 }
 
 impl Meter {
@@ -110,6 +117,7 @@ impl Meter {
             discrete: false,
             dragging: false,
             unit: String::new(),
+            sweep_points: Vec::new(),
         }
     }
 
@@ -478,6 +486,7 @@ impl Meter {
     /// geometry: every vertex is a point the backend is given, so the drawn extent and the
     /// reported extent are the same set of coordinates.
     fn draw_gauge_arc(
+        points: &mut Vec<Point>,
         context: &mut RenderContext,
         center: Point,
         radius: u32,
@@ -488,7 +497,7 @@ impl Meter {
     ) {
         let start = deg_to_rad(arc_start_deg + offset);
         let end = deg_to_rad(arc_start_deg + arc_sweep_deg + offset);
-        Self::drag_sweep(context, center, radius, start, end, color);
+        Self::drag_sweep(points, context, center, radius, start, end, color);
     }
 
     /// Strokes the arc from `start_angle` to `end_angle` as a polyline on the circle.
@@ -496,7 +505,14 @@ impl Meter {
     /// The vertex count follows the swept angle, so a narrow threshold band costs a couple
     /// of segments while the 270° track stays smooth. Six degrees per segment is
     /// indistinguishable from a true arc at the radii this control draws at.
+    ///
+    /// `points` is the control's reusable vertex buffer. It is cleared and refilled here, then
+    /// handed to the command through [`RenderContext::execute_command_ref`] — the entry point that
+    /// leaves ownership with the caller — and reclaimed once the backend has consumed the
+    /// command. The emitted command, its vertices and their order are exactly what the old
+    /// `collect()` produced, so the picture is unchanged.
     fn drag_sweep(
+        points: &mut Vec<Point>,
         context: &mut RenderContext,
         center: Point,
         radius: u32,
@@ -510,22 +526,28 @@ impl Meter {
         }
         let segments = (sweep.abs() / Self::SEGMENT).ceil().max(1.0) as u32;
         let step = sweep / segments as f32;
-        let points = (0..=segments)
-            .map(|segment| {
-                let angle = start_angle + step * segment as f32;
-                Point::new(
-                    center.x + (radius as f32 * angle.cos()).round() as i32,
-                    center.y + (radius as f32 * angle.sin()).round() as i32,
-                )
-            })
-            .collect();
-        context.execute_command(RenderCommand::DrawPath {
-            points,
+        points.clear();
+        points.reserve(segments as usize + 1);
+        for segment in 0..=segments {
+            let angle = start_angle + step * segment as f32;
+            points.push(Point::new(
+                center.x + (radius as f32 * angle.cos()).round() as i32,
+                center.y + (radius as f32 * angle.sin()).round() as i32,
+            ));
+        }
+        let command = RenderCommand::DrawPath {
+            points: core::mem::take(points),
             closed: false,
             color,
             filled: false,
             width: 1,
-        });
+        };
+        context.execute_command_ref(&command);
+        // The command still owns the vector after the backend reads it, so it can go straight
+        // back into the control for the next arc (and the next frame).
+        if let RenderCommand::DrawPath { points: returned, .. } = command {
+            *points = returned;
+        }
     }
 
     /// Snaps `angle` onto the vertex grid that starts at `origin`.
@@ -768,6 +790,9 @@ impl Draw for Meter {
         // own colour to encode a range, so those are data, not chrome.
         let style = self.style();
         let theme = crate::style::resolved_theme_style_shared("meter");
+        // Resolved before the sweep buffers are borrowed mutably: `role_font` reads `style`, and
+        // the font is needed again after the arcs are drawn.
+        let value_font = role_font(style, 12.0);
         // The accent the gauge's value arc is drawn in. It is **not** read from
         // `style.background_color`: this control classifies as `WidgetRole::Accent`, so that field
         // carries the accent the role assigned it — but a role's fill is also what a *container*
@@ -807,6 +832,7 @@ impl Draw for Meter {
 
         // Draw the background track arc (270° sweep, light gray).
         Self::draw_gauge_arc(
+            &mut self.sweep_points,
             context,
             center,
             radius,
@@ -841,7 +867,15 @@ impl Draw for Meter {
             // the value arc drawn over it later passes through the same points and covers
             // it exactly instead of leaving a hairline of the band's colour along a vertex
             // drawn at a marginally different angle.
-            Self::drag_sweep(context, center, radius, band_start, band_end, band.color);
+            Self::drag_sweep(
+                &mut self.sweep_points,
+                context,
+                center,
+                radius,
+                band_start,
+                band_end,
+                band.color,
+            );
         }
 
         // Draw the value arc (colored arc from start to value position).
@@ -851,7 +885,15 @@ impl Draw for Meter {
         // same grid for the reason at the bands above.
         let value_end = Self::snap_to_grid(value_angle, start_angle);
         if self.value > self.min && (value_end - start_angle).abs() > 0.001 {
-            Self::drag_sweep(context, center, radius, start_angle, value_end, value_arc_color);
+            Self::drag_sweep(
+                &mut self.sweep_points,
+                context,
+                center,
+                radius,
+                start_angle,
+                value_end,
+                value_arc_color,
+            );
         }
 
         // Draw tick marks at regular intervals along the arc.
@@ -960,7 +1002,6 @@ impl Draw for Meter {
         // has no reason to allocate the reading every frame.
         let mut text = String::new();
         let _ = write!(text, "{}{}", self.value, self.unit);
-        let value_font = role_font(style, 12.0);
         let metrics = context.measure_text(&text, &value_font);
         let reading_reserve = Meter::reading_band();
         let band_top = rect.y + rect.height as i32 - reading_reserve;

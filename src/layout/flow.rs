@@ -183,6 +183,16 @@ impl FlowLayout {
     pub fn child_count(&self) -> usize {
         self.children.len()
     }
+
+    /// Reads every child's size hint once, in child order.
+    ///
+    /// Every size consumer in this file goes through here, so one layout pass measures a
+    /// child's hint once instead of once per consumer (`preferred_size` used to ask twice per
+    /// child, and `minimum_size`/`update` asked again).
+    fn child_sizes(&self) -> Vec<Size> {
+        self.children.iter().map(|child| child.size_hint()).collect()
+    }
+
     /// Computes a rectangle for each child, in the order the children were
     /// added.
     ///
@@ -192,7 +202,7 @@ impl FlowLayout {
     /// the remaining space is still placed at the next slot and is allowed to
     /// overflow when `wrap` is off.
     pub fn layout(&self, available_rect: Rect) -> Vec<Rect> {
-        let sizes: Vec<Size> = self.children.iter().map(|child| child.size_hint()).collect();
+        let sizes = self.child_sizes();
         self.layout_sized(available_rect, &sizes)
     }
     /// Lays `sizes` out, one entry per child, in flow order.
@@ -287,6 +297,7 @@ impl FlowLayout {
         // signed quantity. The old body cast it to `u32` first, which overflowed (debug panic)
         // or wrapped (release) for `spacing = -1`. Accumulate in `i64`, then clamp to zero.
         let count = self.children.len() as i32;
+        let sizes = self.child_sizes();
         let gap_total: i64 =
             if count > 1 { (count - 1) as i64 * self.config.spacing as i64 } else { 0 };
         // S-47: a negative padding is rejected at construction, and clamped here as a second
@@ -298,18 +309,14 @@ impl FlowLayout {
         match self.config.direction {
             FlowDirection::Horizontal => {
                 let width: i64 =
-                    self.children.iter().map(|c| c.size_hint().width as i64).sum::<i64>()
-                        + gap_total;
-                let height: i64 =
-                    self.children.iter().map(|c| c.size_hint().height as i64).max().unwrap_or(0);
+                    sizes.iter().map(|size| size.width as i64).sum::<i64>() + gap_total;
+                let height: i64 = sizes.iter().map(|size| size.height as i64).max().unwrap_or(0);
                 Size::new(clamp_extent(width + 2 * padding), clamp_extent(height + 2 * padding))
             }
             FlowDirection::Vertical => {
                 let height: i64 =
-                    self.children.iter().map(|c| c.size_hint().height as i64).sum::<i64>()
-                        + gap_total;
-                let width: i64 =
-                    self.children.iter().map(|c| c.size_hint().width as i64).max().unwrap_or(0);
+                    sizes.iter().map(|size| size.height as i64).sum::<i64>() + gap_total;
+                let width: i64 = sizes.iter().map(|size| size.width as i64).max().unwrap_or(0);
                 Size::new(clamp_extent(width + 2 * padding), clamp_extent(height + 2 * padding))
             }
         }
@@ -335,10 +342,10 @@ impl Layout for FlowLayout {
     /// wrapping is allowed) or the whole run on the main axis.
     fn minimum_size(&self) -> Size {
         let padding = (self.config.padding.max(0) as u32).saturating_mul(2);
+        let sizes = self.child_sizes();
         let mut main = 0u32;
         let mut cross = 0u32;
-        for child in &self.children {
-            let size = child.size_hint();
+        for size in &sizes {
             let (child_main, child_cross) = match self.config.direction {
                 FlowDirection::Horizontal => (size.width, size.height),
                 FlowDirection::Vertical => (size.height, size.width),
@@ -371,7 +378,7 @@ impl Layout for FlowLayout {
         if inner == 0 || self.children.is_empty() {
             return height;
         }
-        let sizes: Vec<Size> = self.children.iter().map(|child| child.size_hint()).collect();
+        let sizes = self.child_sizes();
         let lines = crate::layout::wrap::break_lines(
             &sizes,
             crate::layout::WrapDirection::Horizontal,
@@ -455,7 +462,7 @@ impl Layout for FlowLayout {
         let scale = context.layout_scale.max(context.font_scale);
         let spacing = (self.config.spacing as f32 * scale).round() as i32;
         let padding = (self.config.padding.max(0) as f32 * scale).round() as i32;
-        let sizes: Vec<Size> = self.children.iter().map(|child| child.size_hint()).collect();
+        let sizes = self.child_sizes();
         for (index, child_rect) in
             self.layout_sized_with(rect, &sizes, spacing, padding).into_iter().enumerate()
         {
@@ -471,6 +478,14 @@ impl Layout for FlowLayout {
 
     fn has_child(&self, id: ObjectId) -> bool {
         self.children.iter().any(|c| c.widget_id == id)
+    }
+
+    fn widget_count(&self) -> usize {
+        self.children.len()
+    }
+
+    fn index_of(&self, id: ObjectId) -> Option<usize> {
+        self.children.iter().position(|child| child.widget_id == id)
     }
 
     fn clear(&mut self) {

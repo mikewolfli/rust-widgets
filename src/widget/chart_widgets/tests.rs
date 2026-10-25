@@ -18,7 +18,7 @@
 use crate::core::{Color, Rect};
 use crate::widget::chart_widgets::charts::{BarChart, LineChart};
 use crate::widget::chart_widgets::svg::{MemoryChartContext, SvgChartContext};
-use crate::widget::chart_widgets::types::{ChartSeries, DataPoint};
+use crate::widget::chart_widgets::types::{Axis, AxisEdge, ChartSeries, DataPoint};
 use crate::widget::chart_widgets::Chart;
 fn stable_hash64(input: &str) -> u64 {
     // FNV-1a 64-bit stable hash for deterministic snapshot checks.
@@ -265,4 +265,39 @@ fn svg_snapshot_bar_chart_stable() {
     // Same re-pin as the line chart's snapshot, for the same clamped rightmost axis label.
     let expected = 7394511860554466859u64;
     assert_eq!(got, expected, "bar snapshot hash changed: {got}");
+}
+
+/// A cartesian engine chart accepts a zoom window and an attached secondary axis, and the
+/// difference is visible in the emitted commands rather than merely stored.
+#[test]
+fn a_cartesian_chart_accepts_zoom_scroll_and_an_attached_axis() {
+    let mut chart = LineChart::new();
+    chart.add_series(sample_series(
+        "series",
+        Color::PRIMARY,
+        &[(0.0, 1.0), (1.0, 3.0), (2.0, 2.0)],
+    ));
+    let mut plain = MemoryChartContext::default();
+    chart.draw(Rect::new(0, 0, 240, 160), &mut plain);
+
+    assert!(chart.zoom_in(Rect::new(0, 0, 1, 2)));
+    assert!(!chart.zoom_in(Rect::new(0, 0, 0, 2)), "a zero-width window is refused");
+    let mut zoomed = MemoryChartContext::default();
+    chart.draw(Rect::new(0, 0, 240, 160), &mut zoomed);
+    assert_ne!(plain.commands, zoomed.commands, "the zoom window must reach the plot");
+
+    chart.scroll(0.5, 0.0);
+    let mut scrolled = MemoryChartContext::default();
+    chart.draw(Rect::new(0, 0, 240, 160), &mut scrolled);
+    assert_ne!(zoomed.commands, scrolled.commands, "a pan moves the window");
+
+    chart.zoom_reset();
+    chart.attach_axis(Axis::new("secondary").with_range(0.0, 10.0), AxisEdge::Right);
+    let mut with_axis = MemoryChartContext::default();
+    chart.draw(Rect::new(0, 0, 240, 160), &mut with_axis);
+    assert!(
+        with_axis.commands.iter().any(|command| command.contains("secondary")),
+        "the attached axis caption is drawn: {:?}",
+        with_axis.commands
+    );
 }

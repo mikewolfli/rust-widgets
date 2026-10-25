@@ -20,7 +20,8 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{point_on_circle, RenderContext};
-use crate::widget::capability::coercion::{expect_bool, expect_u32};
+use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -33,6 +34,52 @@ const HOUR_MARKS: u32 = 12;
 const MINUTE_MARKS: u32 = 60;
 /// The four dial numerals, each with the hour position it belongs at.
 const DIAL_NUMERALS: [(&str, f32); 4] = [("12", 0.0), ("3", 3.0), ("6", 6.0), ("9", 9.0)];
+
+/// Where the face's time comes from.
+///
+/// [`Manual`](Self::Manual) is the historical contract: the host feeds every change through
+/// [`Clock::set_time`]. [`System`](Self::System) lets the clock's `tick` method read the machine
+/// clock, so a face that is never fed still runs — and in both modes the `tick` signal is emitted
+/// once a second so a host can mirror the reading without polling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClockTimeSource {
+    /// The host owns the time; `Widget::tick` only reports elapsed seconds.
+    #[default]
+    Manual,
+    /// `Widget::tick` reads the system clock (UTC) once a frame.
+    System,
+}
+
+impl ClockTimeSource {
+    /// The token this source is published as.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::System => "system",
+        }
+    }
+
+    /// Parses a published token. `None` for a spelling this control does not publish.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "manual" => Some(Self::Manual),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+}
+
+/// The current UTC time as `(hour, minute, second, millisecond)`.
+fn system_time_of_day() -> Option<(u32, u32, u32, u32)> {
+    let elapsed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?;
+    let millis_of_day = (elapsed.as_millis() % 86_400_000) as u32;
+    Some((
+        millis_of_day / 3_600_000,
+        (millis_of_day % 3_600_000) / 60_000,
+        (millis_of_day % 60_000) / 1_000,
+        millis_of_day % 1_000,
+    ))
+}
 
 /// Clock — an analog clock face.
 ///
@@ -48,6 +95,31 @@ pub struct Clock {
     show_seconds: bool,
     show_numerals: bool,
     hand_shading: bool,
+    /// The dial numeral face and the metrics derived from it, kept across frames.
+    ///
+    /// The face size follows the face radius, so this is a one-entry cache rather than a
+    /// `OnceLock`: it records the size and device scale that produced it and is rebuilt
+    /// when either changes.
+    numeral_cache: Option<NumeralCache>,
+    /// Where the time comes from; see [`ClockTimeSource`].
+    time_source: ClockTimeSource,
+    /// Milliseconds accumulated toward the next whole second the `tick` signal reports.
+    pending_ms: u32,
+    /// Emitted once per whole second the clock's `tick` method advances, with that second count.
+    pub tick: Signal1<u32>,
+}
+
+/// A dial numeral face with the measurements `draw_numerals` positions the glyphs by.
+struct NumeralCache {
+    /// `f32::to_bits` of the point size the face was built at.
+    size_bits: u32,
+    /// `f32::to_bits` of the logical DPI scale the metrics were measured under.
+    dpi_scale_bits: u32,
+    font: Font,
+    /// Width of the numeral band, including the two-pixel margin per side.
+    box_width: u32,
+    /// Height of the numeral band.
+    height: u32,
 }
 
 impl Clock {
@@ -62,6 +134,10 @@ impl Clock {
             show_seconds: false,
             show_numerals: false,
             hand_shading: false,
+            numeral_cache: None,
+            time_source: ClockTimeSource::Manual,
+            pending_ms: 0,
+            tick: Signal1::new(),
         }
     }
 
@@ -186,12 +262,57 @@ impl Clock {
     ///
     /// When enabled, each hand is painted three times: a dark 1 px shadow offset down and
     /// right, the hand itself, and a 1 px lightened stroke along one side.
+    /// Sets whether the hands paint a shadow and a highlight.
     pub fn set_hand_shading(&mut self, enabled: bool) {
         if self.hand_shading == enabled {
             return;
         }
         self.hand_shading = enabled;
         self.base.request_redraw();
+    }
+
+    /// Where the face's time comes from.
+    pub fn time_source(&self) -> ClockTimeSource {
+        self.time_source
+    }
+
+    /// Selects where the face's time comes from.
+    ///
+    /// Switching to [`ClockTimeSource::System`] does not change the reading immediately: the next
+    /// `tick` call installs the machine clock's time. Switching back to
+    /// [`ClockTimeSource::Manual`] leaves the last reading in place for the host to overwrite.
+    pub fn set_time_source(&mut self, source: ClockTimeSource) {
+        if self.time_source == source {
+            return;
+        }
+        self.time_source = source;
+        self.pending_ms = 0;
+        self.base.request_redraw();
+    }
+
+    /// Advances the face by `delta_ms` and reports whether anything was repainted.
+    ///
+    /// With [`ClockTimeSource::System`] the reading is taken from the machine clock (UTC) every
+    /// frame. Independently of the source, whole seconds are reported through the `tick` signal —
+    /// one emission per second's worth of elapsed time — so a host mirroring the face does not
+    /// have to poll it.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        let mut repainted = false;
+        if self.time_source == ClockTimeSource::System {
+            if let Some((hour, minute, second, millis)) = system_time_of_day() {
+                let before = (self.hour, self.minute, self.second, self.millis);
+                self.set_time_with_millis(hour, minute, second, millis);
+                repainted = before != (self.hour, self.minute, self.second, self.millis);
+            }
+        }
+        self.pending_ms = self.pending_ms.saturating_add(delta_ms);
+        let elapsed_seconds = self.pending_ms / 1_000;
+        if elapsed_seconds > 0 {
+            self.pending_ms -= elapsed_seconds * 1_000;
+            self.tick.emit(elapsed_seconds);
+            repainted = true;
+        }
+        repainted
     }
 
     /// The centre and radius the face is drawn at.
@@ -228,12 +349,32 @@ impl Clock {
     }
 
     /// Paints the four dial numerals inside the face.
-    fn draw_numerals(&self, ctx: &mut RenderContext, center: Point, radius: f32, ink: Color) {
+    fn draw_numerals(&mut self, ctx: &mut RenderContext, center: Point, radius: f32, ink: Color) {
         let size = (radius * 0.14).clamp(8.0, 20.0);
-        let font = Font::simple("Arial", size);
-        let advance = ctx.measure_text("12", &font).width.max(1);
-        let height = ctx.measure_text("12", &font).height.max(1);
-        let box_width = advance.saturating_add(4);
+        let size_bits = size.to_bits();
+        let dpi_scale_bits = ctx.dpi_scale().to_bits();
+        // The face is a constructor call per frame otherwise, and the two measurements
+        // below are the same answer until the radius or the device scale moves.
+        let cache_valid = self.numeral_cache.as_ref().is_some_and(|cache| {
+            cache.size_bits == size_bits && cache.dpi_scale_bits == dpi_scale_bits
+        });
+        if !cache_valid {
+            let font = Font::simple("Arial", size);
+            let metrics = ctx.measure_text("12", &font);
+            self.numeral_cache = Some(NumeralCache {
+                size_bits,
+                dpi_scale_bits,
+                font,
+                box_width: metrics.width.max(1).saturating_add(4),
+                height: metrics.height.max(1),
+            });
+        }
+        let Some(cache) = self.numeral_cache.as_ref() else {
+            return;
+        };
+        let font = &cache.font;
+        let box_width = cache.box_width;
+        let height = cache.height;
         let numeral_ink = ink.with_alpha_f32(0.85);
         for (label, position) in DIAL_NUMERALS {
             let anchor = point_on_circle(
@@ -249,7 +390,7 @@ impl Clock {
                 box_width,
                 height,
             );
-            ctx.draw_text_line(band, label, &font, numeral_ink, HorizontalAlignment::Center);
+            ctx.draw_text_line(band, label, font, numeral_ink, HorizontalAlignment::Center);
         }
     }
 
@@ -305,8 +446,29 @@ impl Widget for Clock {
         Size::new(140, 140)
     }
 
+    /// One frame of the clock: the system time (when selected) and the per-second report.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        Clock::tick(self, delta_ms)
+    }
+
+    /// A system-sourced clock free-runs; a manual one is driven by its host.
+    fn is_animating(&self) -> bool {
+        self.time_source == ClockTimeSource::System
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Resolves a published event name to the signal the clock emits.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "tick" => Some(EventSignalRef::mapped("tick", &self.tick, |value| {
+                CapabilityValue::UInt(u64::from(*value))
+            })),
+            _ => None,
+        }
+    }
 }
 
 impl WidgetProperties for Clock {
@@ -316,6 +478,7 @@ impl WidgetProperties for Clock {
             "minute" => Ok(CapabilityValue::UInt(u64::from(self.minute))),
             "second" => Ok(CapabilityValue::UInt(u64::from(self.second))),
             "show_seconds" => Ok(CapabilityValue::Bool(self.show_seconds)),
+            "time_source" => Ok(CapabilityValue::String(self.time_source().token().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -338,12 +501,26 @@ impl WidgetProperties for Clock {
                 self.set_show_seconds(expect_bool(value)?);
                 Ok(())
             }
+            "time_source" => {
+                let token = expect_string(value)?;
+                let source =
+                    ClockTimeSource::from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_time_source(source);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["hour", "minute", "second", "show_seconds", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "hour",
+            "minute",
+            "second",
+            "show_seconds",
+            "time_source",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

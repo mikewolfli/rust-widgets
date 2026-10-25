@@ -3,6 +3,8 @@
 
 //! MiniChart widget — simplified line/bar chart for mini builds (BLUE13 R2.10).
 
+use core::fmt::Write as _;
+
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 // The cartesian-engine widgets draw their axes from one shared derivation in
@@ -83,6 +85,13 @@ pub struct MiniChart {
     animate_data: bool,
     /// Drives the entrance scale from `0.0` to `1.0`.
     entrance: crate::style::PropertyDriver,
+    /// The hover caption's text, reused across frames.
+    ///
+    /// The caption is one number; rebuilding it with `to_string()` on every frame allocated a
+    /// fresh string for a value that changes only when the hovered point does.
+    hover_caption: String,
+    /// The `(index, value)` [`Self::hover_caption`] was rendered from.
+    hover_caption_key: Option<(usize, u32)>,
 }
 
 impl MiniChart {
@@ -101,6 +110,8 @@ impl MiniChart {
             // At rest at the settled end: with the option off the series is never scaled, and
             // turning it on resets the driver deliberately.
             entrance: crate::style::PropertyDriver::at(1.0, crate::style::MotionSlot::Normal),
+            hover_caption: String::new(),
+            hover_caption_key: None,
         }
     }
 
@@ -336,6 +347,27 @@ impl Widget for MiniChart {
     /// Whether the entrance animation still owes frames.
     fn is_animating(&self) -> bool {
         self.animate_data && self.entrance.is_moving()
+    }
+
+    /// Resolves the published event name to the signal the control emits.
+    ///
+    /// The payload is declared `UInt` with an optional shape, so a hover delivers
+    /// the point index and leaving the plot delivers `Null` — the same value an
+    /// absent optional property uses, which keeps "no hovered point"
+    /// distinguishable from "point 0".
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "hovered_point_changed" => Some(EventSignalRef::mapped(
+                "hovered_point_changed",
+                &self.hovered_point_changed,
+                |v| match v {
+                    Some(index) => CapabilityValue::UInt(*index as u64),
+                    None => CapabilityValue::Null,
+                },
+            )),
+            _ => None,
+        }
     }
 
     impl_draw_bridge!();
@@ -674,9 +706,17 @@ impl Draw for MiniChart {
                     axis_color,
                     1,
                 );
+                // The caption is written only when the point it names changes; a pointer resting
+                // on one point reuses the buffer instead of building the same string per frame.
+                let key = (index, point.value);
+                if self.hover_caption_key != Some(key) {
+                    self.hover_caption.clear();
+                    let _ = write!(self.hover_caption, "{}", point.value);
+                    self.hover_caption_key = Some(key);
+                }
                 context.draw_text(
                     Point::new(x + 4, chart_origin_y + 12),
-                    &point.value.to_string(),
+                    self.hover_caption.as_str(),
                     &Font::simple("sans-serif", 10.0),
                     line_color,
                     HorizontalAlignment::Left,
@@ -697,6 +737,14 @@ mod tests {
     use crate::core::{Color, Rect, Size};
     use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
     use crate::theme::AppearanceMode;
+
+    /// The one published name must resolve, and an unpublished one must not.
+    #[test]
+    fn published_hovered_point_event_resolves_to_a_signal() {
+        let chart = MiniChart::new(Rect::new(0, 0, 200, 150));
+        assert!(chart.event_signal_dyn("hovered_point_changed").is_some());
+        assert!(chart.event_signal_dyn("no_such_event").is_none());
+    }
 
     #[test]
     fn mini_chart_creation() {

@@ -79,6 +79,10 @@ pub struct VolumeChart {
     /// clipped. A caller can raise it to `1.0` for a pane with no headroom wanted.
     headroom: f64,
     hovered_index: Option<usize>,
+    /// The bars shown, or `None` for every bar. Kept in step with the K-line pane by the host.
+    view: Option<(usize, usize)>,
+    /// Emitted with the visible `[start, end)` bar range after every view change.
+    pub view_changed: Signal1<(usize, usize)>,
     /// Emitted with the bar index when a volume bar is clicked.
     pub bar_clicked: Signal1<usize>,
     /// Emitted with the bar index as the pointer moves across bars.
@@ -94,6 +98,8 @@ impl VolumeChart {
             color_mode: VolumeColorMode::default(),
             headroom: 0.92,
             hovered_index: None,
+            view: None,
+            view_changed: Signal1::new(),
             bar_clicked: Signal1::new(),
             bar_hovered: Signal1::new(),
         }
@@ -107,10 +113,50 @@ impl VolumeChart {
     /// Replaces the series and requests a repaint.
     pub fn set_series(&mut self, series: PriceSeries) {
         self.series = series;
+        self.view = self.clamped_view(self.view);
         if self.hovered_index.is_some_and(|index| index >= self.series.len()) {
             self.hovered_index = None;
         }
         self.base.request_redraw();
+    }
+
+    /// The visible bar range, or `None` when every bar is shown.
+    pub fn view_range(&self) -> Option<(usize, usize)> {
+        self.view
+    }
+
+    /// Restricts the pane to `range`, the same contract the K-line pane uses.
+    pub fn set_view_range(&mut self, range: Option<(usize, usize)>) {
+        let range = self.clamped_view(range);
+        if self.view == range {
+            return;
+        }
+        self.view = range;
+        let (start, end) = self.view_bounds();
+        self.view_changed.emit((start, end));
+        self.base.request_redraw();
+    }
+
+    /// Restores the full series view.
+    pub fn reset_view(&mut self) {
+        self.set_view_range(None);
+    }
+
+    fn clamped_view(&self, range: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        range.map(|(start, end)| {
+            let total = self.series.len();
+            let start = start.min(total.saturating_sub(1));
+            let end = end.clamp(start + 1, total.max(start + 1));
+            (start, end)
+        })
+    }
+
+    /// The visible `(start, end)` bar indices.
+    fn view_bounds(&self) -> (usize, usize) {
+        match self.view {
+            Some((start, end)) => (start.min(self.series.len()), end.min(self.series.len())),
+            None => (0, self.series.len()),
+        }
     }
 
     /// The colour policy.
@@ -214,6 +260,14 @@ impl Widget for VolumeChart {
             "bar_hovered" => Some(EventSignalRef::mapped("bar_hovered", &self.bar_hovered, |v| {
                 CapabilityValue::UInt(*v as u64)
             })),
+            "view_changed" => {
+                Some(EventSignalRef::mapped("view_changed", &self.view_changed, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }
@@ -228,8 +282,13 @@ impl EventHandler for VolumeChart {
         match event {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
                 let area = self.plot_area();
-                let index_axis = area.index_axis(self.series.len());
-                let next = index_axis.index_at(pos.x).filter(|index| *index < self.series.len());
+                let (start, end) = self.view_bounds();
+                let visible = end.saturating_sub(start);
+                let index_axis = area.index_axis(visible);
+                let next = index_axis
+                    .index_at(pos.x)
+                    .map(|index| start + index)
+                    .filter(|index| *index < end);
                 if next != self.hovered_index {
                     if let Some(index) = next {
                         self.bar_hovered.emit(index);
@@ -243,9 +302,13 @@ impl EventHandler for VolumeChart {
             }
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
                 let area = self.plot_area();
-                let index_axis = area.index_axis(self.series.len());
-                if let Some(index) =
-                    index_axis.index_at(pos.x).filter(|index| *index < self.series.len())
+                let (start, end) = self.view_bounds();
+                let visible = end.saturating_sub(start);
+                let index_axis = area.index_axis(visible);
+                if let Some(index) = index_axis
+                    .index_at(pos.x)
+                    .map(|index| start + index)
+                    .filter(|index| *index < end)
                 {
                     self.bar_clicked.emit(index);
                 }
@@ -269,50 +332,71 @@ impl Draw for VolumeChart {
         context.fill_rect(area.rect, chrome.surface);
 
         let bars = self.series.bars();
-        let max_volume = self.series.max_volume();
+        let (start, end) = self.view_bounds();
+        let visible = &bars[start..end];
+        let max_volume = visible
+            .iter()
+            .filter(|bar| bar.volume.is_finite())
+            .map(|bar| bar.volume)
+            .fold(0.0f64, f64::max);
         // Empty, or every volume zero or unusable: there is no scale to draw against, and a
         // zero-height bar for each would be invisible anyway. The pane still owes the reader
         // its frame, so this is where the grid and the message go rather than a bare return
         // that left a solid slab behind.
-        if bars.is_empty() || max_volume <= 0.0 {
+        if visible.is_empty() || max_volume <= 0.0 {
             draw_empty_pane(context, &area, chrome, &role_font(self.style(), 12.0));
             return;
         }
         let usable_height = (area.rect.height as f64 * self.headroom).max(1.0);
-        let index_axis = area.index_axis(bars.len());
+        let index_axis = area.index_axis(visible.len());
         let body_width = index_axis.body_width();
         let baseline = area.bottom();
 
         // The volume gridlines, drawn under the bars: without a scale a histogram is a row
         // of coloured blocks whose relative heights cannot be read as quantities.
+        let axis_font = role_font(self.style(), 10.0);
+        let label_left = area.rect.x - area.left_margin;
+        let label_width = (area.label_x() - label_left).max(0) as u32;
         for step in 0..=3 {
+            let fraction = step as f64 / 3.0;
             let y = area.rect.y + area.rect.height as i32 * step / 3;
             context.draw_line(
                 crate::core::Point { x: area.rect.x, y },
                 crate::core::Point { x: area.right(), y },
                 chrome.grid,
             );
+            // The quantity that gridline stands for, so the bars have a readable scale.
+            let value = max_volume * (1.0 - fraction);
+            let text = alloc::format!("{value:.0}");
+            let line_height = context.measure_text(&text, &axis_font).height.max(1);
+            context.draw_text_fitted_cow(
+                Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height),
+                &text,
+                &axis_font,
+                chrome.ink.with_alpha(190),
+                crate::core::HorizontalAlignment::Right,
+            );
         }
 
-        for (index, bar) in bars.iter().enumerate() {
+        for (offset, bar) in visible.iter().enumerate() {
             if !bar.volume.is_finite() || bar.volume <= 0.0 {
                 continue;
             }
             let height = (bar.volume / max_volume * usable_height).round().max(1.0) as u32;
             context.fill_rect(
                 Rect::new(
-                    index_axis.x_for(index),
+                    index_axis.x_for(offset),
                     baseline - height as i32,
                     body_width as u32,
                     height,
                 ),
-                self.bar_color(index),
+                self.bar_color(start + offset),
             );
         }
 
         // A crosshair marking the hovered column, matching the price pane's.
-        if let Some(index) = self.hovered_index.filter(|index| *index < bars.len()) {
-            let x = index_axis.center_for(index);
+        if let Some(index) = self.hovered_index.filter(|index| *index >= start && *index < end) {
+            let x = index_axis.center_for(index - start);
             context.draw_line_stroke(
                 crate::core::Point { x, y: area.rect.y },
                 crate::core::Point { x, y: area.bottom() },
@@ -519,6 +603,32 @@ mod tests {
     }
 
     /// An empty series draws without panicking.
+    /// A view range is honoured by the drawn bars and by hit testing, so this pane can
+    /// share the K-line pane's horizontal range.
+    #[test]
+    fn a_view_range_restricts_the_pane_and_reports_changes() {
+        let mut chart = VolumeChart::new(Rect::new(0, 0, 240, 80));
+        let mut series = PriceSeries::new();
+        for value in [1.0, 2.0, 3.0, 4.0, 5.0] {
+            series.push(Bar::flat(0.0, value));
+        }
+        chart.set_series(series);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        chart.view_changed.connect(move |range| sink.lock().unwrap().push(*range));
+
+        chart.set_view_range(Some((2, 4)));
+        assert_eq!(chart.view_range(), Some((2, 4)));
+        assert_eq!(*seen.lock().unwrap(), vec![(2, 4)]);
+
+        // The left half of the pane now addresses bar 2, not bar 0.
+        let area = chart.plot_area();
+        let click = area.rect.x + 1;
+        assert_eq!(area.index_axis(2).index_at(click).map(|index| 2 + index), Some(2));
+        chart.reset_view();
+        assert_eq!(*seen.lock().unwrap(), vec![(2, 4), (0, 5)]);
+    }
+
     #[test]
     fn an_empty_series_draws_without_panicking() {
         let mut chart = VolumeChart::new(Rect::new(0, 0, 320, 160));

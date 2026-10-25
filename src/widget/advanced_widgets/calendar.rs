@@ -10,7 +10,8 @@ use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::access::weekday_to_str;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_naive_date, expect_string, expect_weekday, naive_date_to_string,
+    expect_bool, expect_naive_date, expect_string, expect_string_list, expect_weekday,
+    naive_date_to_string,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -32,6 +33,24 @@ fn advance_month(date: chrono::NaiveDate, delta: i32) -> Option<chrono::NaiveDat
     chrono::NaiveDate::from_ymd_opt(new_year, new_month as u32, day)
 }
 
+/// Every date from `a` to `b` inclusive, in ascending order.
+///
+/// A range selection is materialised as dates rather than kept as a pair so the paint path has
+/// one membership test for every mode (see [`Calendar::is_date_selected`]).
+fn range_between(a: chrono::NaiveDate, b: chrono::NaiveDate) -> Vec<chrono::NaiveDate> {
+    let (start, end) = if a <= b { (a, b) } else { (b, a) };
+    let mut dates = Vec::new();
+    let mut cursor = start;
+    while cursor <= end {
+        dates.push(cursor);
+        match cursor.succ_opt() {
+            Some(next) => cursor = next,
+            None => break,
+        }
+    }
+    dates
+}
+
 /// Return the number of days in a given month/year.
 fn max_days_in_month(year: i32, month: u32) -> u32 {
     match month {
@@ -48,6 +67,38 @@ fn max_days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
+/// How a [`Calendar`] interprets a user selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalendarSelectionMode {
+    /// One date at a time (the historical behaviour).
+    Single,
+    /// Clicking a day toggles it in the selected set.
+    Multi,
+    /// The first click anchors the range and the second completes it.
+    Range,
+}
+
+impl CalendarSelectionMode {
+    /// The token this mode publishes through the property contract.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Multi => "multi",
+            Self::Range => "range",
+        }
+    }
+
+    /// Parses [`Self::as_str`].
+    pub fn from_token(token: &str) -> Option<Self> {
+        match crate::widget::capability::coercion::normalize_key(token).as_str() {
+            "single" => Some(Self::Single),
+            "multi" | "multiple" => Some(Self::Multi),
+            "range" => Some(Self::Range),
+            _ => None,
+        }
+    }
+}
+
 /// Calendar widget — full-featured month-view date picker.
 ///
 /// Layout (top to bottom):
@@ -60,6 +111,12 @@ fn max_days_in_month(year: i32, month: u32) -> u32 {
 pub struct Calendar {
     base: BaseWidget,
     selected_date: chrono::NaiveDate,
+    /// Every selected date, ascending. Always contains `selected_date` while a selection exists.
+    selected_dates: Vec<chrono::NaiveDate>,
+    /// How a click is interpreted; see [`CalendarSelectionMode`].
+    selection_mode: CalendarSelectionMode,
+    /// The first click of an in-progress range selection.
+    selection_anchor: Option<chrono::NaiveDate>,
     /// The "displayed" month — the month currently shown in the grid
     /// (may differ from `selected_date` after month navigation).
     display_month: chrono::NaiveDate,
@@ -131,6 +188,9 @@ impl Calendar {
         Self {
             base: BaseWidget::new(WidgetKind::Calendar, geometry, "Calendar"),
             selected_date: today,
+            selected_dates: vec![today],
+            selection_mode: CalendarSelectionMode::Single,
+            selection_anchor: None,
             display_month: today,
             today,
             // SAFETY: 1900-01-01 is a valid Gregorian date.
@@ -182,6 +242,55 @@ impl Calendar {
         self.selected_date
     }
 
+    /// Returns every selected date, ascending.
+    pub fn selected_dates(&self) -> &[chrono::NaiveDate] {
+        &self.selected_dates
+    }
+
+    /// How user clicks are interpreted.
+    pub fn selection_mode(&self) -> CalendarSelectionMode {
+        self.selection_mode
+    }
+
+    /// Changes the selection mode.
+    ///
+    /// Switching to single keeps only the primary selection; multi and range keep the current
+    /// dates so a caller can switch modes without losing what the user chose.
+    pub fn set_selection_mode(&mut self, mode: CalendarSelectionMode) {
+        if self.selection_mode == mode {
+            return;
+        }
+        self.selection_mode = mode;
+        self.selection_anchor = None;
+        if mode == CalendarSelectionMode::Single {
+            self.selected_dates.clear();
+            self.selected_dates.push(self.selected_date);
+        } else if self.selected_dates.is_empty() {
+            self.selected_dates.push(self.selected_date);
+        }
+        self.selected_dates.sort_unstable();
+        self.selected_dates.dedup();
+        self.base.request_redraw();
+    }
+
+    /// Clears every selected date.
+    ///
+    /// `selected_date` keeps its value because the field is not optional; it simply stops being
+    /// painted as selected. A later click starts a fresh selection.
+    pub fn clear_selection(&mut self) {
+        if self.selected_dates.is_empty() && self.selection_anchor.is_none() {
+            return;
+        }
+        self.selected_dates.clear();
+        self.selection_anchor = None;
+        self.base.request_redraw();
+    }
+
+    /// Whether `date` is in the selected set.
+    pub fn is_date_selected(&self, date: chrono::NaiveDate) -> bool {
+        self.selected_dates.binary_search(&date).is_ok()
+    }
+
     /// Returns the currently displayed month (the month shown in the grid).
     pub fn display_month(&self) -> chrono::NaiveDate {
         self.display_month
@@ -226,13 +335,42 @@ impl Calendar {
         }
     }
     /// Sets selected date and syncs the displayed month to match.
+    ///
+    /// In `Single` mode this replaces the selection. In `Multi` mode the date is added to the
+    /// selected set (a programmatic setter never removes a date). In `Range` mode a first call
+    /// anchors a range and a second call completes it.
     pub fn set_selected_date(&mut self, date: chrono::NaiveDate) {
-        if self.selected_date != date && date >= self.minimum_date && date <= self.maximum_date {
-            self.selected_date = date;
-            self.show_page(date);
-            self.selection_changed.emit(date);
-            self.base.request_redraw();
+        if date < self.minimum_date || date > self.maximum_date {
+            return;
         }
+        if self.selected_date == date && self.is_date_selected(date) {
+            return;
+        }
+        self.selected_date = date;
+        match self.selection_mode {
+            CalendarSelectionMode::Single => {
+                self.selected_dates.clear();
+                self.selected_dates.push(date);
+            }
+            CalendarSelectionMode::Multi => {
+                if let Err(index) = self.selected_dates.binary_search(&date) {
+                    self.selected_dates.insert(index, date);
+                }
+            }
+            CalendarSelectionMode::Range => match self.selection_anchor.take() {
+                Some(anchor) if anchor != date => {
+                    self.selected_dates = range_between(anchor, date);
+                }
+                _ => {
+                    self.selected_dates.clear();
+                    self.selected_dates.push(date);
+                    self.selection_anchor = Some(date);
+                }
+            },
+        }
+        self.show_page(date);
+        self.selection_changed.emit(date);
+        self.base.request_redraw();
     }
     /// Returns minimum date.
     pub fn minimum_date(&self) -> chrono::NaiveDate {
@@ -297,6 +435,19 @@ impl Calendar {
         self.grid_visible = visible;
         self.base.request_redraw();
     }
+    /// Whether the week-number gutter is shown.
+    ///
+    /// This is the name the horizontal-calendar contract uses for the vertical header's gutter;
+    /// the two accessors address the same strip.
+    pub fn show_week_numbers(&self) -> bool {
+        self.vertical_header_visible
+    }
+
+    /// Shows or hides the week-number gutter.
+    pub fn set_show_week_numbers(&mut self, show: bool) {
+        self.set_vertical_header_visible(show);
+    }
+
     /// Returns whether navigation bar is visible.
     pub fn is_navigation_bar_visible(&self) -> bool {
         self.navigation_bar_visible
@@ -448,7 +599,42 @@ impl Calendar {
         if self.is_date_disabled(date) {
             return;
         }
-        self.set_selected_date(date);
+        match self.selection_mode {
+            CalendarSelectionMode::Single => self.set_selected_date(date),
+            CalendarSelectionMode::Multi => {
+                if let Ok(index) = self.selected_dates.binary_search(&date) {
+                    self.selected_dates.remove(index);
+                    if self.selected_date == date {
+                        if let Some(first) = self.selected_dates.first().copied() {
+                            self.selected_date = first;
+                        }
+                    }
+                    self.selection_changed.emit(date);
+                    self.base.request_redraw();
+                } else {
+                    self.set_selected_date(date);
+                }
+            }
+            CalendarSelectionMode::Range => match self.selection_anchor {
+                Some(anchor) => {
+                    self.selected_dates = range_between(anchor, date);
+                    self.selected_date = date;
+                    self.selection_anchor = None;
+                    self.show_page(date);
+                    self.selection_changed.emit(date);
+                    self.base.request_redraw();
+                }
+                None => {
+                    self.selection_anchor = Some(date);
+                    self.selected_date = date;
+                    self.selected_dates.clear();
+                    self.selected_dates.push(date);
+                    self.show_page(date);
+                    self.selection_changed.emit(date);
+                    self.base.request_redraw();
+                }
+            },
+        }
     }
 
     /// Whether the month/year title opens navigation menus.
@@ -917,6 +1103,16 @@ impl WidgetProperties for Calendar {
                 Ok(CapabilityValue::String(weekday_to_str(self.first_day_of_week()).to_string()))
             }
             "grid_visible" => Ok(CapabilityValue::Bool(self.is_grid_visible())),
+            "show_week_numbers" => Ok(CapabilityValue::Bool(self.show_week_numbers())),
+            "selection_mode" => {
+                Ok(CapabilityValue::String(self.selection_mode().as_str().to_string()))
+            }
+            "selected_dates" => Ok(CapabilityValue::Tuple(
+                self.selected_dates()
+                    .iter()
+                    .map(|date| CapabilityValue::String(naive_date_to_string(*date)))
+                    .collect(),
+            )),
             "navigation_bar_visible" => Ok(CapabilityValue::Bool(self.is_navigation_bar_visible())),
             "horizontal_header_visible" => {
                 Ok(CapabilityValue::Bool(self.is_horizontal_header_visible()))
@@ -951,6 +1147,34 @@ impl WidgetProperties for Calendar {
                 self.set_grid_visible(expect_bool(value)?);
                 Ok(())
             }
+            "show_week_numbers" => {
+                self.set_show_week_numbers(expect_bool(value)?);
+                Ok(())
+            }
+            "selection_mode" => {
+                let token = expect_string(value)?;
+                let mode = CalendarSelectionMode::from_token(&token)
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_selection_mode(mode);
+                Ok(())
+            }
+            "selected_dates" => {
+                let mut dates = Vec::new();
+                for text in expect_string_list(value)? {
+                    dates.push(crate::widget::capability::coercion::expect_naive_date(
+                        CapabilityValue::String(text),
+                    )?);
+                }
+                self.selected_dates = dates;
+                self.selected_dates.sort_unstable();
+                self.selected_dates.dedup();
+                if let Some(last) = self.selected_dates.last().copied() {
+                    self.selected_date = last;
+                    self.show_page(last);
+                }
+                self.base.request_redraw();
+                Ok(())
+            }
             "navigation_bar_visible" => {
                 self.set_navigation_bar_visible(expect_bool(value)?);
                 Ok(())
@@ -978,6 +1202,9 @@ impl WidgetProperties for Calendar {
             "maximum_date",
             "first_day_of_week",
             "grid_visible",
+            "show_week_numbers",
+            "selection_mode",
+            "selected_dates",
             "navigation_bar_visible",
             "horizontal_header_visible",
             "vertical_header_visible",
@@ -1573,11 +1800,11 @@ impl Draw for Calendar {
                     if !blocked
                         && self.hovered_date == Some(date)
                         && date != today
-                        && date != self.selected_date
+                        && !self.is_date_selected(date)
                     {
                         context.fill_rect(cell_rect, calendar_bg.blend(&text_color, 0.06));
                     }
-                    if date == today && date == self.selected_date {
+                    if date == today && self.is_date_selected(date) {
                         // Selected + today: blend selected bg over today bg not possible,
                         // so use a composite visual: fill today bg first, then selected overlay
                         context.fill_rect(today_band, today_bg);
@@ -1598,7 +1825,7 @@ impl Draw for Calendar {
                         context.fill_rect(today_band, today_bg);
                         // Today border
                         context.draw_rect(today_band, today_border);
-                    } else if date == self.selected_date {
+                    } else if self.is_date_selected(date) {
                         context.fill_rect(cell_rect, selected_bg);
                     } else if !in_range {
                         // Outside range — dimmed. A dimmed *surface*, so a theme's
@@ -1633,7 +1860,7 @@ impl Draw for Calendar {
                     // hardcoded pair to keep in sync.
                     let day_color = if blocked {
                         dim_color
-                    } else if date == self.selected_date {
+                    } else if self.is_date_selected(date) {
                         let tint = calendar_bg.blend(&selected_bg, selected_bg.a as f32 / 255.0);
                         tint.contrast_color()
                     } else if date == today {
@@ -2463,5 +2690,40 @@ mod tests {
             cal.tick(16);
         }
         assert!(!cal.is_animating(), "the reveal settles");
+    }
+
+    #[test]
+    fn multi_and_range_modes_share_the_selected_dates() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 280, 240));
+        assert_eq!(cal.selection_mode(), CalendarSelectionMode::Single);
+
+        cal.set_selection_mode(CalendarSelectionMode::Multi);
+        cal.clear_selection();
+        cal.set_selected_date(date(2026, 6, 1));
+        cal.set_selected_date(date(2026, 6, 3));
+        assert_eq!(cal.selected_dates(), &[date(2026, 6, 1), date(2026, 6, 3)]);
+        assert!(cal.is_date_selected(date(2026, 6, 3)));
+        cal.set_selected_date(date(2026, 6, 1));
+        assert_eq!(cal.selected_dates(), &[date(2026, 6, 1), date(2026, 6, 3)]);
+        cal.clear_selection();
+        assert!(cal.selected_dates().is_empty());
+
+        cal.set_selection_mode(CalendarSelectionMode::Range);
+        cal.set_selected_date(date(2026, 6, 10));
+        cal.set_selected_date(date(2026, 6, 12));
+        assert_eq!(
+            cal.selected_dates(),
+            &[date(2026, 6, 10), date(2026, 6, 11), date(2026, 6, 12)]
+        );
+    }
+
+    #[test]
+    fn the_week_number_property_addresses_the_gutter() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 280, 240));
+        assert!(!cal.show_week_numbers());
+        cal.set_show_week_numbers(true);
+        assert!(cal.show_week_numbers());
+        assert!(cal.is_vertical_header_visible());
+        assert_eq!(cal.get("show_week_numbers"), Ok(CapabilityValue::Bool(true)));
     }
 }

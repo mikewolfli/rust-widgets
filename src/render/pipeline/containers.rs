@@ -49,15 +49,22 @@ const TEXT_METRICS_CACHE_LIMIT: usize = 2048;
 /// A repaint asks for the same captions frame after frame, which is the set this keeps.
 const TEXT_SHAPES_CACHE_LIMIT: usize = 512;
 
-/// A cached measurement: the two fingerprints of `(text, font, scale)` and the answer.
-type TextMetricsCache = HashMap<(u64, u64), TextMetrics>;
+/// A cached measurement: the two fingerprints of `(text, font, scale)`, the text epoch it was
+/// built under, and the answer.
+///
+/// The epoch travels with each entry instead of gating the whole table. Invalidating used to
+/// `clear()` everything, so a DPI change or a font registration threw the entire hot set away and
+/// the next frame re-shaped every visible string (G-15). A mismatch now just misses that one key
+/// and it is replaced on the next measurement.
+type TextMetricsCache = HashMap<(u64, u64), (u64, TextMetrics)>;
 
-/// Shaped runs for one text epoch, keyed by the same measurement fingerprint as the metrics.
+/// Shaped runs, keyed by the same measurement fingerprint as the metrics.
 ///
 /// The values are `Rc<ShapedText>`: a hit is a refcount bump. `ShapedText` owns a
 /// `Vec<TextCluster>` whose every entry owns a `String`, so an owned cache value made each hit
-/// clone the whole run to hand back a value nothing mutates (REND-03).
-type ShapeCache = RefCell<(u64, HashMap<(u64, u64), Rc<ShapedText>>)>;
+/// clone the whole run to hand back a value nothing mutates (REND-03). Each entry also records the
+/// epoch its run was shaped under (G-15).
+type ShapeCache = HashMap<(u64, u64), (u64, Rc<ShapedText>)>;
 
 thread_local! {
     // Two independently seeded hashes rather than an owning key: the pair is computed from the
@@ -65,14 +72,12 @@ thread_local! {
     // match between different inputs effectively impossible. A cache miss is the only way an
     // input can reach the shaping path, so a collision would show as a wrong width, not as
     // corruption.
-    static TEXT_METRICS: RefCell<(u64, TextMetricsCache)> =
-        RefCell::new((0, HashMap::new()));
+    static TEXT_METRICS: RefCell<TextMetricsCache> = RefCell::new(HashMap::new());
     // Insertion order, for FIFO eviction. The caches used to `clear()` when full, so one entry
     // over the bound discarded the whole working set and the next frame re-shaped everything.
     static TEXT_METRICS_ORDER: RefCell<VecDeque<(u64, u64)>> =
         const { RefCell::new(VecDeque::new()) };
-    static TEXT_SHAPES: ShapeCache =
-        RefCell::new((0, HashMap::new()));
+    static TEXT_SHAPES: RefCell<ShapeCache> = RefCell::new(HashMap::new());
     static TEXT_SHAPES_ORDER: RefCell<VecDeque<(u64, u64)>> =
         const { RefCell::new(VecDeque::new()) };
 }
@@ -127,6 +132,68 @@ fn text_measurement_fingerprint(text: &str, font: &Font, scale: f32) -> (u64, u6
     font.family().hash(&mut second);
 
     (first.finish(), second.finish())
+}
+
+/// The number of samples in a resolved gradient ramp.
+///
+/// One table is built per distinct ramp and then shared: every pixel of a gradient fill used to
+/// rebuild all 256 samples, which is 256 stop searches plus a 1 KB stack array per control per
+/// frame (G-16). The ramp depends only on the stops, so a thread-local content-keyed cache is the
+/// right lifetime for it.
+const GRADIENT_LUT_SIZE: usize = 256;
+
+/// How many resolved ramps one thread caches before evicting the oldest.
+const GRADIENT_LUT_CACHE_LIMIT: usize = 16;
+
+thread_local! {
+    /// Resolved gradient ramps, keyed by a fingerprint of their stops, in insertion order.
+    static GRADIENT_LUTS: RefCell<GradientLutCache> = RefCell::new((VecDeque::new(), HashMap::new()));
+}
+
+/// Resolved ramps plus the FIFO order their keys are evicted in.
+type GradientLutCache = (VecDeque<u64>, HashMap<u64, Rc<[Color; GRADIENT_LUT_SIZE]>>);
+
+/// Fingerprints the ramp (the stop list), which is the only input a resolved table depends on.
+fn gradient_ramp_fingerprint(gradient: &Gradient) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    gradient.stops.len().hash(&mut hasher);
+    for stop in &gradient.stops {
+        stop.position.to_bits().hash(&mut hasher);
+        stop.color.r.hash(&mut hasher);
+        stop.color.g.hash(&mut hasher);
+        stop.color.b.hash(&mut hasher);
+        stop.color.a.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Returns the resolved 256-sample ramp for `gradient`, building it at most once per content.
+fn gradient_ramp_lut(gradient: &Gradient) -> Rc<[Color; GRADIENT_LUT_SIZE]> {
+    let key = gradient_ramp_fingerprint(gradient);
+    GRADIENT_LUTS.with(|cache| {
+        let existing = {
+            let cache = cache.borrow();
+            cache.1.get(&key).cloned()
+        };
+        if let Some(lut) = existing {
+            return lut;
+        }
+        let mut lut = [Color::BLACK; GRADIENT_LUT_SIZE];
+        for (index, slot) in lut.iter_mut().enumerate() {
+            *slot = gradient.interpolate(index as f32 / (GRADIENT_LUT_SIZE - 1) as f32);
+        }
+        let lut = Rc::new(lut);
+        let mut cache = cache.borrow_mut();
+        if cache.0.len() >= GRADIENT_LUT_CACHE_LIMIT {
+            if let Some(oldest) = cache.0.pop_front() {
+                cache.1.remove(&oldest);
+            }
+        }
+        cache.0.push_back(key);
+        cache.1.insert(key, Rc::clone(&lut));
+        lut
+    })
 }
 
 impl SoftwareSurface {
@@ -301,7 +368,7 @@ impl SoftwareSurface {
         let key = text_measurement_fingerprint(text, font, scale);
         if let Some(hit) = TEXT_METRICS.with(|cache| {
             let cache = cache.borrow();
-            (cache.0 == epoch).then(|| cache.1.get(&key).cloned()).flatten()
+            cache.get(&key).and_then(|(built, metrics)| (*built == epoch).then_some(*metrics))
         }) {
             return hit;
         }
@@ -312,21 +379,19 @@ impl SoftwareSurface {
         note_measurement_built();
         TEXT_METRICS.with(|cache| {
             let mut cache = cache.borrow_mut();
-            if cache.0 != epoch {
-                cache.0 = epoch;
-                cache.1.clear();
-                let _ = TEXT_METRICS_ORDER.try_with(|order| order.borrow_mut().clear());
-            }
-            TEXT_METRICS_ORDER.with(|order| {
-                let mut order = order.borrow_mut();
-                if order.len() >= TEXT_METRICS_CACHE_LIMIT {
-                    if let Some(oldest) = order.pop_front() {
-                        cache.1.remove(&oldest);
+            let is_new = !cache.contains_key(&key);
+            if is_new {
+                TEXT_METRICS_ORDER.with(|order| {
+                    let mut order = order.borrow_mut();
+                    if order.len() >= TEXT_METRICS_CACHE_LIMIT {
+                        if let Some(oldest) = order.pop_front() {
+                            cache.remove(&oldest);
+                        }
                     }
-                }
-                order.push_back(key);
-            });
-            cache.1.insert(key, metrics);
+                    order.push_back(key);
+                });
+            }
+            cache.insert(key, (epoch, metrics));
         });
         metrics
     }
@@ -352,7 +417,7 @@ impl SoftwareSurface {
         // back a value nobody mutates.
         if let Some(hit) = TEXT_SHAPES.with(|cache| {
             let cache = cache.borrow();
-            (cache.0 == epoch).then(|| cache.1.get(&key).cloned()).flatten()
+            cache.get(&key).and_then(|(built, shaped)| (*built == epoch).then(|| Rc::clone(shaped)))
         }) {
             return hit;
         }
@@ -360,21 +425,19 @@ impl SoftwareSurface {
         note_shape_built();
         TEXT_SHAPES.with(|cache| {
             let mut cache = cache.borrow_mut();
-            if cache.0 != epoch {
-                cache.0 = epoch;
-                cache.1.clear();
-                let _ = TEXT_SHAPES_ORDER.try_with(|order| order.borrow_mut().clear());
-            }
-            TEXT_SHAPES_ORDER.with(|order| {
-                let mut order = order.borrow_mut();
-                if order.len() >= TEXT_SHAPES_CACHE_LIMIT {
-                    if let Some(oldest) = order.pop_front() {
-                        cache.1.remove(&oldest);
+            let is_new = !cache.contains_key(&key);
+            if is_new {
+                TEXT_SHAPES_ORDER.with(|order| {
+                    let mut order = order.borrow_mut();
+                    if order.len() >= TEXT_SHAPES_CACHE_LIMIT {
+                        if let Some(oldest) = order.pop_front() {
+                            cache.remove(&oldest);
+                        }
                     }
-                }
-                order.push_back(key);
-            });
-            cache.1.insert(key, Rc::clone(&shaped));
+                    order.push_back(key);
+                });
+            }
+            cache.insert(key, (epoch, Rc::clone(&shaped)));
         });
         shaped
     }
@@ -390,17 +453,14 @@ impl SoftwareSurface {
         let y1 = y1.min(size.height);
         let frame = self.buffer.back_mut();
 
-        // Resolve the ramp once into a 256-entry table. Every pixel previously ran
-        // `Gradient::interpolate`, which searches the stops and lerps each channel; for a
-        // full-window gradient that was width×height stop searches per frame. Sampling a
-        // fixed table is both cheaper and consistent across the three gradient types.
-        const LUT_SIZE: usize = 256;
-        let mut lut = [Color::BLACK; LUT_SIZE];
-        for (index, slot) in lut.iter_mut().enumerate() {
-            *slot = gradient.interpolate(index as f32 / (LUT_SIZE - 1) as f32);
-        }
+        // Resolve the ramp through the shared per-content cache. Every pixel previously ran
+        // `Gradient::interpolate`, and the 256-entry table itself was rebuilt for each fill; both
+        // are now paid once per distinct ramp (G-16). Sampling a fixed table is also what keeps the
+        // three gradient types visually consistent.
+        let lut = gradient_ramp_lut(gradient);
         let lut_index = |pos: f32| -> usize {
-            ((pos.clamp(0.0, 1.0) * (LUT_SIZE - 1) as f32) as usize).min(LUT_SIZE - 1)
+            ((pos.clamp(0.0, 1.0) * (GRADIENT_LUT_SIZE - 1) as f32) as usize)
+                .min(GRADIENT_LUT_SIZE - 1)
         };
 
         // Linear geometry is constant across the whole rectangle: hoist it and walk the

@@ -32,6 +32,37 @@ const BACK_BUTTON_WIDTH: u32 = 80;
 /// affordance reads as an icon beside the text instead of a stray character within it.
 const ARROW_ICON_SIZE: u32 = 18;
 
+/// One leading or trailing navigation-bar item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NavBarItem {
+    /// Caption; may be empty for an icon-only action.
+    pub label: String,
+    /// Optional icon drawn before the caption.
+    pub icon: Option<IconName>,
+}
+
+impl NavBarItem {
+    /// A text-only item.
+    pub fn new(label: impl Into<String>) -> Self {
+        Self { label: label.into(), icon: None }
+    }
+
+    /// The same item with an icon.
+    pub fn with_icon(mut self, icon: IconName) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// The width the item's own ink needs at `font`, including its icon slot.
+    fn ink_width(&self, font: &crate::core::Font) -> u32 {
+        let icon = if self.icon.is_some() { ICON_ITEM_SIZE + 4 } else { 0 };
+        icon + crate::widget::metrics::estimate_text_width(&self.label, font, 1.0)
+    }
+}
+
+/// The edge length of an icon inside a bar item.
+const ICON_ITEM_SIZE: u32 = 18;
+
 /// iOS-style large title navigation bar.
 ///
 /// Renders a translucent background with an optional large title and a
@@ -39,6 +70,8 @@ const ARROW_ICON_SIZE: u32 = 18;
 pub struct CupertinoNavigationBar {
     base: BaseWidget,
     title: String,
+    /// Secondary line shown above the title in the large-title state (iOS `prompt`).
+    prompt: String,
     large_title: bool,
     /// How far the large title is **shown**, `1.0` full and `0.0` collapsed to the compact bar.
     ///
@@ -51,9 +84,15 @@ pub struct CupertinoNavigationBar {
     back_button_visible: bool,
     back_button_text: String,
     /// Custom leading items drawn after the back affordance.
-    leading_items: Vec<String>,
+    leading_items: Vec<NavBarItem>,
     /// Custom trailing items drawn from the bar's trailing edge inward.
-    trailing_items: Vec<String>,
+    trailing_items: Vec<NavBarItem>,
+    /// A scroll-driven offset added to the collapse fraction, `-1.0..=1.0`.
+    ///
+    /// This is a bypass around the animated driver: a host that owns the scroll offset sets it
+    /// directly, so the title folds continuously with the content instead of waiting for a
+    /// boolean target to animate.
+    collapse_offset: f32,
     /// The x where an edge-swipe back gesture started.
     edge_drag_x: Option<f32>,
     /// Emitted when the back button is pressed.
@@ -72,6 +111,7 @@ impl CupertinoNavigationBar {
         Self {
             base,
             title: String::new(),
+            prompt: String::new(),
             large_title: true,
             // Born at the target end, because the default is a bar that is already large. A driver
             // built at `0.0` would make a freshly constructed bar animate *away* from its own
@@ -81,6 +121,7 @@ impl CupertinoNavigationBar {
             back_button_text: "Back".to_string(),
             leading_items: Vec::new(),
             trailing_items: Vec::new(),
+            collapse_offset: 0.0,
             edge_drag_x: None,
             back_pressed: Signal1::new(),
             leading_item_pressed: Signal1::new(),
@@ -106,6 +147,47 @@ impl CupertinoNavigationBar {
     /// Returns the title text.
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// The secondary line above the title.
+    pub fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
+    /// Sets the secondary line shown above the large title.
+    pub fn set_prompt(&mut self, prompt: &str) {
+        if self.prompt == prompt {
+            return;
+        }
+        self.prompt = prompt.to_string();
+        self.base.request_redraw();
+    }
+
+    /// The scroll-driven collapse offset added to the animated fraction.
+    pub fn collapse_offset(&self) -> f32 {
+        self.collapse_offset
+    }
+
+    /// Sets a scroll-driven collapse offset, bypassing the animated driver.
+    ///
+    /// `-1.0` fully collapses a settled large title and `1.0` fully expands a settled compact one;
+    /// the sum is clamped into `0.0..=1.0`. Nothing is animated, so this is the path for a host
+    /// that already has the scroll position and wants the title to follow it exactly.
+    pub fn set_collapse_offset(&mut self, offset: f32) {
+        if !offset.is_finite() {
+            return;
+        }
+        let offset = offset.clamp(-1.0, 1.0);
+        if self.collapse_offset == offset {
+            return;
+        }
+        self.collapse_offset = offset;
+        self.base.request_redraw();
+    }
+
+    /// The collapse fraction after the scroll offset is applied.
+    pub fn effective_collapse(&self) -> f32 {
+        (self.collapse.value() + self.collapse_offset).clamp(0.0, 1.0)
     }
 
     /// Returns whether large title mode is enabled.
@@ -183,6 +265,16 @@ impl CupertinoNavigationBar {
 
     /// Replaces the custom items shown after the back affordance.
     pub fn set_leading_items(&mut self, items: Vec<String>) {
+        self.set_leading_actions(items.into_iter().map(NavBarItem::new).collect());
+    }
+
+    /// Returns the custom leading items' captions.
+    pub fn leading_items(&self) -> Vec<String> {
+        self.leading_items.iter().map(|item| item.label.clone()).collect()
+    }
+
+    /// Replaces the leading items, allowing each to carry an icon.
+    pub fn set_leading_actions(&mut self, items: Vec<NavBarItem>) {
         if self.leading_items == items {
             return;
         }
@@ -190,13 +282,23 @@ impl CupertinoNavigationBar {
         self.base.request_redraw();
     }
 
-    /// Returns the custom leading items.
-    pub fn leading_items(&self) -> &[String] {
+    /// The leading items, including their icons.
+    pub fn leading_actions(&self) -> &[NavBarItem] {
         &self.leading_items
     }
 
     /// Replaces the custom items shown at the trailing edge.
     pub fn set_trailing_items(&mut self, items: Vec<String>) {
+        self.set_trailing_actions(items.into_iter().map(NavBarItem::new).collect());
+    }
+
+    /// Returns the custom trailing items' captions.
+    pub fn trailing_items(&self) -> Vec<String> {
+        self.trailing_items.iter().map(|item| item.label.clone()).collect()
+    }
+
+    /// Replaces the trailing items, allowing each to carry an icon.
+    pub fn set_trailing_actions(&mut self, items: Vec<NavBarItem>) {
         if self.trailing_items == items {
             return;
         }
@@ -204,8 +306,8 @@ impl CupertinoNavigationBar {
         self.base.request_redraw();
     }
 
-    /// Returns the custom trailing items.
-    pub fn trailing_items(&self) -> &[String] {
+    /// The trailing items, including their icons.
+    pub fn trailing_actions(&self) -> &[NavBarItem] {
         &self.trailing_items
     }
 
@@ -214,7 +316,7 @@ impl CupertinoNavigationBar {
         let height = lerp_u32(
             dimensions::NAV_BAR_HEIGHT,
             dimensions::NAV_BAR_LARGE_HEIGHT,
-            self.collapse.value(),
+            self.effective_collapse(),
         );
         ControlMetrics::top_band(self.geometry(), height)
     }
@@ -318,7 +420,9 @@ impl WidgetProperties for CupertinoNavigationBar {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "prompt" => Ok(CapabilityValue::String(self.prompt().to_string())),
             "large_title" => Ok(CapabilityValue::Bool(self.is_large_title())),
+            "collapse_offset" => Ok(CapabilityValue::Float(self.collapse_offset() as f64)),
             _ => base_property_get(self, name),
         }
     }
@@ -329,8 +433,20 @@ impl WidgetProperties for CupertinoNavigationBar {
                 self.set_title(&expect_string(value)?);
                 Ok(())
             }
+            "prompt" => {
+                self.set_prompt(&expect_string(value)?);
+                Ok(())
+            }
             "large_title" => {
                 self.set_large_title(expect_bool(value)?);
+                Ok(())
+            }
+            "collapse_offset" => {
+                let offset = match value {
+                    CapabilityValue::Float(offset) => offset as f32,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_collapse_offset(offset);
                 Ok(())
             }
             _ => base_property_set(self, name, value),
@@ -338,7 +454,7 @@ impl WidgetProperties for CupertinoNavigationBar {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "large_title", BASE_PROPERTY_NAMES]
+        property_names_of!["title", "prompt", "large_title", "collapse_offset", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -410,7 +526,7 @@ impl Draw for CupertinoNavigationBar {
         // fraction instead of the boolean: at `1.0` this is exactly `NAV_BAR_LARGE_HEIGHT` and at
         // `0.0` exactly `NAV_BAR_HEIGHT`, so a settled bar is byte-identical to the un-animated
         // one and only the frames in between are new.
-        let collapse = self.collapse.value();
+        let collapse = self.effective_collapse();
         let bar_height =
             lerp_u32(dimensions::NAV_BAR_HEIGHT, dimensions::NAV_BAR_LARGE_HEIGHT, collapse);
         let bar_rect = ControlMetrics::top_band(rect, bar_height);
@@ -454,8 +570,30 @@ impl Draw for CupertinoNavigationBar {
             // whatever height the band was clamped to; the `+ 22` this replaces was a literal for
             // the 44 px bar and landed elsewhere on any other.
             let line = context.text_line(bar_rect, &title_font);
+            // The prompt is a second, smaller line above the title in the large-title state. It
+            // fades out with the large title rather than being clipped abruptly; the title is
+            // nudged down by the line it adds so the two never overlap.
+            let mut title_top = line.y;
+            if !self.prompt.is_empty() && collapse > 0.5 {
+                let prompt_font = role_font(style, 11.0);
+                let prompt_metrics = context.measure_text(&self.prompt, &prompt_font);
+                let prompt_y = bar_rect.y + 4;
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        bar_rect.x + 16,
+                        prompt_y,
+                        bar_rect.width.saturating_sub(32),
+                        prompt_metrics.height,
+                    ),
+                    &self.prompt,
+                    &prompt_font,
+                    ink.blend(&bar, 0.25),
+                    HorizontalAlignment::Left,
+                );
+                title_top += prompt_metrics.height as i32;
+            }
             context.draw_text(
-                Point::new(title_x, line.y),
+                Point::new(title_x, title_top),
                 &self.title,
                 &title_font,
                 ink,
@@ -501,39 +639,59 @@ impl Draw for CupertinoNavigationBar {
         // ── Custom leading and trailing items ──
         let item_font = role_font(style, 17.0);
         let action = primary.contrast_color().blend(&primary, 0.85);
-        let leading_widths: Vec<u32> = self
-            .leading_items
-            .iter()
-            .map(|label| context.measure_text(label, &item_font).width)
-            .collect();
-        for (index, label) in self.leading_items.iter().enumerate() {
+        let leading_widths: Vec<u32> =
+            self.leading_items.iter().map(|item| item.ink_width(&item_font)).collect();
+        for (index, item) in self.leading_items.iter().enumerate() {
             if let Some(x) = self.leading_item_x(index, &leading_widths) {
                 let line = context.text_line(bar_rect, &item_font);
-                context.draw_text(
-                    Point::new(x, line.y),
-                    label,
-                    &item_font,
-                    action,
-                    HorizontalAlignment::Left,
-                );
+                let mut ink_x = x;
+                if let Some(icon) = item.icon {
+                    let icon_y = line.y + (line.height as i32 - ICON_ITEM_SIZE as i32) / 2;
+                    crate::widget::draw_icon_at(
+                        context,
+                        Rect::new(ink_x, icon_y, ICON_ITEM_SIZE, ICON_ITEM_SIZE),
+                        action,
+                        icon,
+                    );
+                    ink_x += ICON_ITEM_SIZE as i32 + 4;
+                }
+                if !item.label.is_empty() {
+                    context.draw_text(
+                        Point::new(ink_x, line.y),
+                        &item.label,
+                        &item_font,
+                        action,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
         }
-        let trailing_widths: Vec<u32> = self
-            .trailing_items
-            .iter()
-            .map(|label| context.measure_text(label, &item_font).width)
-            .collect();
-        for (index, label) in self.trailing_items.iter().enumerate() {
+        let trailing_widths: Vec<u32> =
+            self.trailing_items.iter().map(|item| item.ink_width(&item_font)).collect();
+        for (index, item) in self.trailing_items.iter().enumerate() {
             if let Some(right) = self.trailing_item_x(index, &trailing_widths) {
                 let width = trailing_widths.get(index).copied().unwrap_or(0) as i32;
                 let line = context.text_line(bar_rect, &item_font);
-                context.draw_text(
-                    Point::new(right - width, line.y),
-                    label,
-                    &item_font,
-                    action,
-                    HorizontalAlignment::Left,
-                );
+                let mut ink_x = right - width;
+                if let Some(icon) = item.icon {
+                    let icon_y = line.y + (line.height as i32 - ICON_ITEM_SIZE as i32) / 2;
+                    crate::widget::draw_icon_at(
+                        context,
+                        Rect::new(ink_x, icon_y, ICON_ITEM_SIZE, ICON_ITEM_SIZE),
+                        action,
+                        icon,
+                    );
+                    ink_x += ICON_ITEM_SIZE as i32 + 4;
+                }
+                if !item.label.is_empty() {
+                    context.draw_text(
+                        Point::new(ink_x, line.y),
+                        &item.label,
+                        &item_font,
+                        action,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
         }
     }
@@ -587,11 +745,8 @@ impl EventHandler for CupertinoNavigationBar {
 
                 // Custom items are hit-tested against the boxes they were painted in.
                 let font = role_font(self.base.style(), 17.0);
-                let measure = |label: &str| -> u32 {
-                    crate::widget::metrics::estimate_text_width(label, &font, 1.0)
-                };
-                let leading_widths: Vec<u32> =
-                    self.leading_items.iter().map(|label| measure(label)).collect();
+                let measure = |item: &NavBarItem| -> u32 { item.ink_width(&font) };
+                let leading_widths: Vec<u32> = self.leading_items.iter().map(measure).collect();
                 for index in 0..self.leading_items.len() {
                     if let Some(x) = self.leading_item_x(index, &leading_widths) {
                         let width = leading_widths[index];
@@ -602,8 +757,7 @@ impl EventHandler for CupertinoNavigationBar {
                         }
                     }
                 }
-                let trailing_widths: Vec<u32> =
-                    self.trailing_items.iter().map(|label| measure(label)).collect();
+                let trailing_widths: Vec<u32> = self.trailing_items.iter().map(measure).collect();
                 for index in 0..self.trailing_items.len() {
                     if let Some(right) = self.trailing_item_x(index, &trailing_widths) {
                         let width = trailing_widths[index] as i32;
@@ -802,6 +956,33 @@ mod tests {
         });
         bar.handle_event(&Event::MousePress { pos: Point::new(4, 30), button: 1, modifiers: 0 });
         bar.handle_event(&Event::MouseRelease { pos: Point::new(80, 30), button: 1 });
-        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(fired.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_scroll_offset_moves_the_collapse_without_animating() {
+        let mut bar = CupertinoNavigationBar::new(Rect::new(0, 0, 375, 96));
+        assert!((bar.effective_collapse() - 1.0).abs() < f32::EPSILON);
+        bar.set_collapse_offset(-0.5);
+        assert!((bar.effective_collapse() - 0.5).abs() < 1e-6);
+        assert!(!bar.is_animating(), "a scroll offset bypasses the animated driver");
+        let svg = render_to_svg(&mut bar);
+        assert!(svg.starts_with("<svg"));
+    }
+
+    #[test]
+    fn a_prompt_is_a_second_title_line_and_icons_are_drawn() {
+        let mut bar = CupertinoNavigationBar::new(Rect::new(0, 0, 375, 120));
+        bar.set_title("Inbox");
+        bar.set_prompt("12 unread");
+        bar.set_leading_actions(vec![NavBarItem::new("Edit").with_icon(IconName::Check)]);
+        bar.set_trailing_actions(vec![NavBarItem::new("").with_icon(IconName::Cross)]);
+        assert_eq!(bar.leading_actions().len(), 1);
+        assert_eq!(bar.trailing_actions()[0].icon, Some(IconName::Cross));
+        assert_eq!(bar.leading_items(), vec!["Edit".to_string()]);
+        let svg = render_to_svg(&mut bar);
+        // Text is emitted as glyph outlines carrying `data-text`, not as literal characters.
+        let text_runs = svg.matches("data-text=\"1\"").count();
+        assert!(text_runs >= 2, "the title and the prompt are both painted: {svg}");
     }
 }

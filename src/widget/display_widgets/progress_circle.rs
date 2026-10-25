@@ -8,14 +8,18 @@
 //! mode (showing actual progress) and indeterminate mode (animated spinning arc).
 //! The track and progress colors, as well as stroke width, are customizable.
 
-use crate::core::{Color, Point, Rect, Size};
+use core::fmt::Write as _;
+
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::signal::Signal1;
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_u32};
+use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -80,6 +84,17 @@ pub struct ProgressCircle {
     /// belongs to the control: the frame bus advances it through [`ProgressCircle::tick`], and a
     /// paused or idle app simply does not advance it.
     sweep: f32,
+    /// Emitted with the aimed-at value whenever [`ProgressCircle::set_value`] changes it.
+    pub value_changed: Signal1<f32>,
+    /// Emitted with the new flag when [`ProgressCircle::set_indeterminate`] changes it.
+    pub indeterminate_changed: Signal1<bool>,
+    /// Whether the current value is painted as text in the ring's hole.
+    show_center_text: bool,
+    /// The template the centre text is rendered from.
+    ///
+    /// `{percent}` is replaced with the value as a rounded percentage and `{value}` with
+    /// the value in `0.0..=1.0` to two decimals; every other character is copied through.
+    center_text_format: String,
 }
 
 impl ProgressCircle {
@@ -109,6 +124,10 @@ impl ProgressCircle {
             stroke_width: 4.0,
             diameter: geometry.width.min(geometry.height),
             sweep: 0.0,
+            value_changed: Signal1::new(),
+            indeterminate_changed: Signal1::new(),
+            show_center_text: false,
+            center_text_format: "{percent}%".to_string(),
         }
     }
 
@@ -137,6 +156,7 @@ impl ProgressCircle {
             self.value_animation.jump_to(clamped);
         }
         self.request_frame_repaint(None);
+        self.value_changed.emit(clamped);
     }
 
     /// Returns whether the indicator is in indeterminate (spinning) mode.
@@ -156,6 +176,7 @@ impl ProgressCircle {
             self.sweep = 0.0;
         }
         self.request_frame_repaint(None);
+        self.indeterminate_changed.emit(indeterminate);
     }
 
     /// Submits one animated frame as damage bounded by the painted box plus the
@@ -328,6 +349,64 @@ impl ProgressCircle {
         self.base.request_redraw();
     }
 
+    /// Whether the current value is painted as text in the ring's hole.
+    pub fn show_center_text(&self) -> bool {
+        self.show_center_text
+    }
+
+    /// Turns the centre value text on or off.
+    pub fn set_show_center_text(&mut self, show: bool) {
+        if self.show_center_text == show {
+            return;
+        }
+        self.show_center_text = show;
+        self.base.request_redraw();
+    }
+
+    /// The template the centre text is rendered from.
+    pub fn center_text_format(&self) -> &str {
+        &self.center_text_format
+    }
+
+    /// Replaces the centre-text template.
+    ///
+    /// See [`Self::center_text_format`] for the two placeholders the template understands.
+    pub fn set_center_text_format(&mut self, format: impl Into<String>) {
+        let format = format.into();
+        if self.center_text_format == format {
+            return;
+        }
+        self.center_text_format = format;
+        self.base.request_redraw();
+    }
+
+    /// Renders the centre text into `out`.
+    ///
+    /// Only determinate mode has a reading to print, so an indeterminate ring writes nothing.
+    fn write_center_text(&self, out: &mut String) {
+        if !self.show_center_text || self.indeterminate {
+            return;
+        }
+        let value = self.value_animation.value();
+        let mut rest = self.center_text_format.as_str();
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let tail = &rest[open..];
+            if let Some(stripped) = tail.strip_prefix("{percent}") {
+                let _ = write!(out, "{}", (value * 100.0).round() as u32);
+                rest = stripped;
+            } else if let Some(stripped) = tail.strip_prefix("{value}") {
+                let _ = write!(out, "{value:.2}");
+                rest = stripped;
+            } else {
+                // An unknown brace is literal text rather than a reason to drop the rest.
+                out.push('{');
+                rest = &tail[1..];
+            }
+        }
+        out.push_str(rest);
+    }
+
     /// Computes the center point and radius of the progress circle.
     fn center_and_radius(&self) -> Option<(Point, f32)> {
         let rect = self.geometry();
@@ -373,6 +452,24 @@ impl Widget for ProgressCircle {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Resolves a published event name to the signal the ring emits.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "value_changed" => {
+                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |value| {
+                    CapabilityValue::Float(f64::from(*value))
+                }))
+            }
+            "indeterminate_changed" => Some(EventSignalRef::mapped(
+                "indeterminate_changed",
+                &self.indeterminate_changed,
+                |value| CapabilityValue::Bool(*value),
+            )),
+            _ => None,
+        }
+    }
 }
 
 /// `ProgressCircle`'s property contract.
@@ -390,6 +487,10 @@ impl WidgetProperties for ProgressCircle {
             "progress_color" => Ok(CapabilityValue::Color(self.progress_color())),
             "diameter" => Ok(CapabilityValue::UInt(self.diameter() as u64)),
             "indeterminate" => Ok(CapabilityValue::Bool(self.is_indeterminate())),
+            "show_center_text" => Ok(CapabilityValue::Bool(self.show_center_text())),
+            "center_text_format" => {
+                Ok(CapabilityValue::String(self.center_text_format().to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -426,6 +527,14 @@ impl WidgetProperties for ProgressCircle {
                 self.set_indeterminate(expect_bool(value)?);
                 Ok(())
             }
+            "show_center_text" => {
+                self.set_show_center_text(expect_bool(value)?);
+                Ok(())
+            }
+            "center_text_format" => {
+                self.set_center_text_format(expect_string(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -437,6 +546,8 @@ impl WidgetProperties for ProgressCircle {
             "progress_color",
             "diameter",
             "indeterminate",
+            "show_center_text",
+            "center_text_format",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -533,47 +644,76 @@ impl Draw for ProgressCircle {
         } else {
             // The arc paints the driver's current value, not its target: that difference is the
             // tween. After the driver settles the two are equal, so a still ring is unchanged.
+            //
+            // The arc is skipped rather than returning from `draw` when it has nothing to paint,
+            // because the centre reading below belongs to a 0% ring too.
             let value = self.value_animation.value();
-            if value <= 0.0 {
-                return;
+            if value > 0.0 {
+                // In determinate mode, draw the progress arc from 12 o'clock
+                // -PI/2 (12 o'clock) to -PI/2 + 2*PI*value
+                let start_angle = -std::f32::consts::FRAC_PI_2;
+                // A non-zero value starts after a `TRACK_GAP`, so the arc's two ends are distinct
+                // from the track's two ends even at the smallest visible value. The gap is converted
+                // from pixels to radians at the drawn radius, so the visible breaking is the same
+                // size on a small ring and a large one.
+                let gap_radians = TRACK_GAP / radius.max(1.0);
+                let start_angle = start_angle + gap_radians;
+                let end_angle = -std::f32::consts::FRAC_PI_2 + 2.0 * std::f32::consts::PI * value;
+                // The arc must never run backwards or past its own start when the value is small
+                // enough that the gap would swallow it; a zero-or-negative sweep is nothing to draw.
+                if end_angle > start_angle {
+                    // A sweep too small to advance a pixel is skipped rather than emitted as a stream
+                    // of zero-length lines. This guard used to be the only thing standing between a
+                    // tiny `value` and 40 degenerate `<line>` elements, because the helper's vertex
+                    // rounding collapsed every sample onto one pixel. `draw_arc_segments` now derives
+                    // its sample count from the arc's own pixel length and drops any chord whose
+                    // endpoints round together, so it is degenerate-safe on its own; the explicit
+                    // check stays because "no arc at all" is a decision about *this* control's
+                    // contract (a rounded-away sweep is nothing to draw), and stating it here keeps
+                    // the intent readable without relying on a helper's internals.
+                    let sweep_px = (radius * (end_angle - start_angle)).round() as u32;
+                    if sweep_px > 0 {
+                        let prog_color = if is_enabled {
+                            self.progress_color
+                        } else {
+                            Color::DISABLED_FOREGROUND
+                        };
+                        crate::render::draw_arc_segments(
+                            context,
+                            center,
+                            radius,
+                            start_angle,
+                            end_angle,
+                            prog_color,
+                            stroke_w.max(1),
+                        );
+                    }
+                }
             }
-            // In determinate mode, draw the progress arc from 12 o'clock
-            // -PI/2 (12 o'clock) to -PI/2 + 2*PI*value
-            let start_angle = -std::f32::consts::FRAC_PI_2;
-            // A non-zero value starts after a `TRACK_GAP`, so the arc's two ends are distinct
-            // from the track's two ends even at the smallest visible value. The gap is converted
-            // from pixels to radians at the drawn radius, so the visible breaking is the same
-            // size on a small ring and a large one.
-            let gap_radians = TRACK_GAP / radius.max(1.0);
-            let start_angle = start_angle + gap_radians;
-            let end_angle = -std::f32::consts::FRAC_PI_2 + 2.0 * std::f32::consts::PI * value;
-            // The arc must never run backwards or past its own start when the value is small
-            // enough that the gap would swallow it; a zero-or-negative sweep is nothing to draw.
-            if end_angle <= start_angle {
-                return;
-            }
+        }
 
-            // A sweep too small to advance a pixel is skipped rather than emitted as a stream
-            // of zero-length lines. This guard used to be the only thing standing between a
-            // tiny `value` and 40 degenerate `<line>` elements, because the helper's vertex
-            // rounding collapsed every sample onto one pixel. `draw_arc_segments` now derives
-            // its sample count from the arc's own pixel length and drops any chord whose
-            // endpoints round together, so it is degenerate-safe on its own; the explicit
-            // check stays because "no arc at all" is a decision about *this* control's
-            // contract (a rounded-away sweep is nothing to draw), and stating it here keeps
-            // the intent readable without relying on a helper's internals.
-            let sweep_px = (radius * (end_angle - start_angle)).round() as u32;
-            if sweep_px > 0 {
-                let prog_color =
-                    if is_enabled { self.progress_color } else { Color::DISABLED_FOREGROUND };
-                crate::render::draw_arc_segments(
-                    context,
-                    center,
-                    radius,
-                    start_angle,
-                    end_angle,
-                    prog_color,
-                    stroke_w.max(1),
+        // The centre reading, drawn last so it sits inside the ring rather than under it. It is
+        // opt-in (`show_center_text` defaults to `false`) and determinate-only, because an
+        // indeterminate ring has no reading to print. The text is dropped when it cannot fit in
+        // the hole, for the same reason `Arc` drops its own: a reading that covers the progress it
+        // reports is worse than no reading.
+        let mut text = String::new();
+        self.write_center_text(&mut text);
+        if !text.is_empty() {
+            let hole = (radius - self.stroke_width / 2.0).max(0.0);
+            let font = effective_font(self.base.style());
+            let metrics = context.measure_text(&text, font);
+            if (metrics.width as f32) <= hole * 2.0 && (metrics.height as f32) <= hole * 2.0 {
+                let ink = self.base.style().text_color.unwrap_or(self.progress_color);
+                context.draw_text(
+                    Point::new(
+                        center.x - (metrics.width as i32 / 2),
+                        center.y - (metrics.height as i32 / 2),
+                    ),
+                    text.as_str(),
+                    font,
+                    ink,
+                    HorizontalAlignment::Left,
                 );
             }
         }

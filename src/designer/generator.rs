@@ -164,6 +164,46 @@ impl Availability {
     }
 }
 
+/// Why a [`GenerationGap`] was recorded.
+///
+/// # Why an enumerated reason exists
+///
+/// `GenerationGap::reason` is human-readable prose, and prose is the wrong thing to branch on.
+/// The generator used to report every refusal as "unsupported", which made a wire whose event
+/// name the runtime would reject indistinguishable from a control that cannot be constructed.
+/// The token is written at the front of `reason`, so existing consumers keep their string while a
+/// caller that needs the category can ask [`GenerationGap::reason_kind`] instead of matching text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationGapReason {
+    /// The document asked for something this generator cannot express.
+    Unsupported,
+    /// A container holds more children than the target's storage accepts.
+    CapacityOverflow,
+    /// Availability could not be settled under the running profile.
+    CrossProfile,
+    /// A declared `events:` name is not one the control publishes, so no wire can resolve it.
+    UnresolvableEvent,
+}
+
+impl GenerationGapReason {
+    /// The stable token written at the front of a gap's reason.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::CapacityOverflow => "capacity-overflow",
+            Self::CrossProfile => "cross-profile",
+            Self::UnresolvableEvent => "unresolvable-event",
+        }
+    }
+
+    /// The reason this token names, if it is one this version knows.
+    pub fn from_token(token: &str) -> Option<Self> {
+        [Self::Unsupported, Self::CapacityOverflow, Self::CrossProfile, Self::UnresolvableEvent]
+            .into_iter()
+            .find(|reason| reason.token() == token)
+    }
+}
+
 /// One thing the generator could not do, with the reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenerationGap {
@@ -173,6 +213,17 @@ pub struct GenerationGap {
     pub widget: String,
     /// Why it could not be generated.
     pub reason: String,
+}
+
+impl GenerationGap {
+    /// The category this gap belongs to, when its reason carries a known token.
+    ///
+    /// A gap recorded before reasons were tokenised has no token and returns `None`; that is an
+    /// honest "uncategorised" answer rather than a guess from its prose.
+    pub fn reason_kind(&self) -> Option<GenerationGapReason> {
+        let token = self.reason.split(':').next()?.trim();
+        GenerationGapReason::from_token(token)
+    }
 }
 
 /// What one generation run produced and what it could not.
@@ -231,6 +282,13 @@ impl GenerationReport {
         self.unsupported.is_empty()
             && self.capacity_overflow.is_empty()
             && self.cross_profile_caveats.is_empty()
+    }
+
+    /// Gaps whose reason is an event name that cannot be resolved.
+    pub fn unresolvable_events(&self) -> impl Iterator<Item = &GenerationGap> {
+        self.unsupported
+            .iter()
+            .filter(|gap| gap.reason_kind() == Some(GenerationGapReason::UnresolvableEvent))
     }
 
     /// A one-line summary a designer can show without reading the whole report.
@@ -618,6 +676,18 @@ fn push_fmt(out: &mut String, args: core::fmt::Arguments<'_>) {
 
 /// Emits one `Node::new(..)` expression, recursing into children.
 #[allow(clippy::too_many_arguments)]
+/// Whether `event` is a name `widget`'s capability publishes.
+///
+/// The capability table is derived from the published-name census and is exactly the list
+/// `connect_event` validates against, so this answers "can a wire to this name ever resolve?"
+/// rather than the weaker "is the control constructible?".
+fn event_is_published(widget: &str, event: &str) -> bool {
+    WidgetFactory::shared()
+        .capability(widget)
+        .and_then(|capability| crate::widget::capability::find_event_schema(capability, event))
+        .is_some()
+}
+
 fn emit_node(
     project: &JsonProject,
     request: &GenerationRequest,
@@ -659,6 +729,24 @@ fn emit_node(
             widget: node.widget.clone(),
             reason: availability_reason(availability),
         });
+    }
+
+    // A node that references a command the project does not declare would be generated with an
+    // id that no registry can resolve. Report the dangling reference rather than writing a wire
+    // that looks valid and silently does nothing.
+    if let Some(action_id) = node.action_id.as_deref() {
+        if project.action(action_id).is_none() {
+            report.unsupported.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "{}: `action_id` `{action_id}` on {} references no command in the project's \
+                     `actions` section",
+                    GenerationGapReason::Unsupported.token(),
+                    node_label(path, &node.widget)
+                ),
+            });
+        }
     }
 
     report.nodes_emitted += 1;
@@ -950,6 +1038,26 @@ fn emit_node(
     // because the name had been validated at generation time and therefore looked fine.
     // `examples/probe_generated_wires.rs` measured it: two declared wires, zero emitted.
     for (key, handler) in node.declared_handlers() {
+        // A wire is only useful if `event_signal_dyn` can resolve the name. Mode 1 already asks
+        // this question (`JsonLoader::control_publishes`) and refuses the binding; the generator
+        // used to emit the prop regardless, so a document bound to an unconverted event produced
+        // a program that reported a clean run and failed at `connect_event`. The capability table
+        // is the same published-name source the loader consults, so this check cannot drift from
+        // what the runtime accepts.
+        if !event_is_published(&node.widget, &key) {
+            report.unsupported.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "{}: `events.{key}` on {} is not a published event, so `event_signal_dyn` \
+                     cannot resolve it and the generated wire `{handler}` would be refused at run \
+                     time",
+                    GenerationGapReason::UnresolvableEvent.token(),
+                    node_label(path, &node.widget)
+                ),
+            });
+            continue;
+        }
         // `events` is an *object* in the document (`{ event: handler }`), so each published name
         // becomes one prop rather than the whole map being stored under one key. The name is
         // kept verbatim: the library validates it against the control's capability and reports a
@@ -2189,6 +2297,7 @@ mod tests {
             wire_declaration: None,
             marker_declarations: crate::compat::vec![],
             children: crate::compat::vec![],
+            action_id: None,
         };
 
         let huge =

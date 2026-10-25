@@ -151,6 +151,16 @@ pub fn ancestor_chain(
     parent_of: &dyn Fn(ObjectId) -> Option<ObjectId>,
 ) -> Vec<ObjectId> {
     let mut chain = Vec::new();
+    fill_ancestor_chain(target, parent_of, &mut chain);
+    chain
+}
+
+fn fill_ancestor_chain(
+    target: ObjectId,
+    parent_of: &dyn Fn(ObjectId) -> Option<ObjectId>,
+    chain: &mut Vec<ObjectId>,
+) {
+    chain.clear();
     let mut current = parent_of(target);
     // The bound is generous for a UI tree and finite for a cyclic one.
     for _ in 0..1024 {
@@ -161,7 +171,40 @@ pub fn ancestor_chain(
         current = parent_of(parent);
     }
     chain.reverse();
-    chain
+}
+
+thread_local! {
+    static ANCESTOR_BUFFER: core::cell::RefCell<Vec<ObjectId>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+struct AncestorBuffer(Vec<ObjectId>);
+
+impl Drop for AncestorBuffer {
+    fn drop(&mut self) {
+        self.0.clear();
+        let _ = ANCESTOR_BUFFER.try_with(|slot| {
+            // Drops run LIFO, so the outermost loan runs last and its storage is what the next
+            // top-level dispatch reuses. Returning it unconditionally (rather than keeping
+            // whichever buffer happens to be larger) is what makes a caller's buffer address
+            // stable across a nested dispatch; a nested buffer is simply dropped instead of
+            // displacing the outer one.
+            *slot.borrow_mut() = core::mem::take(&mut self.0);
+        });
+    }
+}
+
+pub(crate) fn with_ancestor_chain<R>(
+    target: ObjectId,
+    parent_of: &dyn Fn(ObjectId) -> Option<ObjectId>,
+    f: impl FnOnce(&[ObjectId]) -> R,
+) -> R {
+    // Lend the buffer out without holding the TLS borrow across callbacks. Nested dispatch gets
+    // its own buffer, and Drop returns storage even when a parent resolver or handler panics.
+    let mut buffer =
+        AncestorBuffer(ANCESTOR_BUFFER.with(|slot| core::mem::take(&mut *slot.borrow_mut())));
+    fill_ancestor_chain(target, parent_of, &mut buffer.0);
+    f(&buffer.0)
 }
 
 #[cfg(test)]
@@ -239,6 +282,27 @@ mod tests {
         consume_event();
         let propagation = route_event(1, &[], &Event::Paint, &mut |_, _, _| {});
         assert_eq!(propagation, Propagation::Continue);
+    }
+
+    #[test]
+    fn cached_ancestor_storage_survives_nested_dispatch_and_unwind() {
+        let parent = |id| if id > 1 { Some(id - 1) } else { None };
+        let address = with_ancestor_chain(4, &parent, |outer| {
+            assert_eq!(outer, &[1, 2, 3]);
+            with_ancestor_chain(3, &parent, |inner| assert_eq!(inner, &[1, 2]));
+            assert_eq!(outer, &[1, 2, 3]);
+            outer.as_ptr() as usize
+        });
+        with_ancestor_chain(4, &parent, |chain| assert_eq!(chain.as_ptr() as usize, address));
+        let outcome = std::panic::catch_unwind(|| {
+            with_ancestor_chain(4, &parent, |_| panic!("handler failure"));
+        });
+        assert!(outcome.is_err());
+        with_ancestor_chain(4, &parent, |chain| {
+            assert_eq!(chain, &[1, 2, 3]);
+            assert_eq!(chain.as_ptr() as usize, address);
+        });
+        with_ancestor_chain(5, &|_| Some(5), |chain| assert_eq!(chain.len(), 1024));
     }
 
     /// The ancestor chain is root-first and bounded.

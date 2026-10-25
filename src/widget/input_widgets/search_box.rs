@@ -21,11 +21,41 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
-use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// Width of the magnifier glyph drawn in the field's leading slot.
+const SEARCH_BOX_ICON_SIZE: u32 = 14;
+/// Inset between the field's leading edge and the magnifier.
+const SEARCH_BOX_ICON_MARGIN: u32 = 10;
+/// Gap between the magnifier and the value's box.
+const SEARCH_BOX_ICON_GAP: u32 = 6;
+/// Diameter of the clear button's hit circle.
+const SEARCH_BOX_CLEAR_BUTTON: u32 = 16;
+/// Inset between the clear button and the field's trailing edge.
+const SEARCH_BOX_CLEAR_MARGIN: u32 = 8;
+/// Narrowest a search field may be, so an empty one is still a field.
+const SEARCH_BOX_MIN_WIDTH: u32 = 120;
+
+/// The leading space the magnifier takes out of the field.
+///
+/// The paint path, the text box and the size hint all read this one sum, so a wider glyph
+/// cannot be sized for and painted over the value.
+fn leading_slot() -> u32 {
+    SEARCH_BOX_ICON_MARGIN + SEARCH_BOX_ICON_SIZE + SEARCH_BOX_ICON_GAP
+}
+
+/// The trailing space the value may need when the clear button is present.
+///
+/// The hint reserves the whole slot even for an empty value, so sizing does not change when
+/// the first character is typed and the button appears. The paint path reserves it only while
+/// there is text to clear, because there is no button to paint otherwise.
+fn trailing_slot() -> u32 {
+    SEARCH_BOX_CLEAR_MARGIN + SEARCH_BOX_CLEAR_BUTTON + SEARCH_BOX_CLEAR_MARGIN
+}
 
 /// SearchBox widget with search icon, placeholder, and clear button.
 pub struct SearchBox {
@@ -43,6 +73,13 @@ pub struct SearchBox {
     alignment: crate::core::Alignment,
     /// Emitted when the text changes, providing the new text value.
     pub text_changed: Signal1<String>,
+    /// Emitted with the query when Enter is pressed.
+    ///
+    /// This is the box's *submission*, as distinct from `text_changed`'s every-keystroke
+    /// notification: a search host wants to run the query once per Enter, not once per
+    /// character. The same name [`crate::widget::SearchBar`] publishes, so a host can treat the
+    /// two controls the same way.
+    pub search_submitted: Signal1<String>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
@@ -66,6 +103,7 @@ impl SearchBox {
             focused: false,
             alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
+            search_submitted: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
@@ -418,7 +456,18 @@ impl Widget for SearchBox {
         // A search box is a text field with a magnifier in it, so it reports the field's
         // own minimum height — the same 48 a `lineedit` reports, which is what stops the
         // two entry controls in one form being different sizes.
-        crate::core::Size::new(200, dimensions::SEARCH_BOX_FIELD_HEIGHT)
+        //
+        // The width is measured rather than fixed at 200: a hint that ignored the placeholder
+        // clipped a localised "Search…" longer than the default, and one that ignored the
+        // current value made a query wider than the field the layout had already chosen. Both
+        // strings are measured and the wider one wins, so the hint cannot shrink when the
+        // caller types a longer query than the placeholder it replaced.
+        let font = effective_font(self.style());
+        let placeholder_width = estimate_text_width(&self.placeholder, font, 1.0);
+        let text_width = estimate_text_width(&self.text, font, 1.0);
+        let content = placeholder_width.max(text_width);
+        let width = (leading_slot() + content + trailing_slot()).max(SEARCH_BOX_MIN_WIDTH);
+        crate::core::Size::new(width, dimensions::SEARCH_BOX_FIELD_HEIGHT)
     }
 
     /// A focused field owes frames for as long as its caret blinks.
@@ -443,6 +492,11 @@ impl Widget for SearchBox {
         match name {
             "text_changed" => {
                 Some(EventSignalRef::mapped("text_changed", &self.text_changed, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
+            "search_submitted" => {
+                Some(EventSignalRef::mapped("search_submitted", &self.search_submitted, |v| {
                     CapabilityValue::String(v.clone())
                 }))
             }
@@ -541,17 +595,19 @@ impl Draw for SearchBox {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        let icon_size = 14;
-        let icon_margin = 10;
-        let clear_btn_size = 16;
-        let clear_margin = 8;
-        let text_x = rect.x + icon_margin + icon_size + 6;
-        let text_width = if self.text.is_empty() {
-            rect.width as i32 - (icon_margin + icon_size + 6 + clear_margin)
+        let icon_size = SEARCH_BOX_ICON_SIZE as i32;
+        let icon_margin = SEARCH_BOX_ICON_MARGIN as i32;
+        let clear_btn_size = SEARCH_BOX_CLEAR_BUTTON as i32;
+        let clear_margin = SEARCH_BOX_CLEAR_MARGIN as i32;
+        let text_x = rect.x + leading_slot() as i32;
+        // The clear button only paints when there is text, but its margin is reserved either
+        // way so the value's box does not jump when the first character arrives.
+        let trailing = if self.text.is_empty() {
+            SEARCH_BOX_CLEAR_MARGIN as i32
         } else {
-            rect.width as i32
-                - (icon_margin + icon_size + 6 + clear_margin + clear_btn_size + clear_margin)
+            clear_margin + clear_btn_size + clear_margin
         };
+        let text_width = rect.width as i32 - leading_slot() as i32 - trailing;
         let text_rect = Rect::new(text_x, rect.y, text_width.max(1) as u32, rect.height);
         let center_y = rect.y + rect.height as i32 / 2;
 
@@ -783,8 +839,8 @@ impl EventHandler for SearchBox {
                 // have been painted in the field but clickable where the rectangle was.
                 if !self.text.is_empty() {
                     let rect = self.field_rect();
-                    let clear_margin = 8;
-                    let clear_btn_size = 16;
+                    let clear_margin = SEARCH_BOX_CLEAR_MARGIN as i32;
+                    let clear_btn_size = SEARCH_BOX_CLEAR_BUTTON as i32;
                     let center_y = rect.y + rect.height as i32 / 2;
                     let clear_cx = rect.x + rect.width as i32 - clear_margin - clear_btn_size / 2;
                     let clear_cy = center_y;
@@ -842,8 +898,13 @@ impl EventHandler for SearchBox {
                     39 => self.move_caret(1, shift),
                     36 => self.move_caret_to(0, shift),
                     35 => self.move_caret_to(self.text.len(), shift),
-                    13 | 27 => {
-                        // Enter / Escape — lose focus.
+                    13 => {
+                        // Enter submits the query, then the field gives up focus. Escape only
+                        // gives up focus: abandoning a search is not submitting it.
+                        self.search_submitted.emit(self.text.clone());
+                        self.set_focused(false);
+                    }
+                    27 => {
                         self.set_focused(false);
                     }
                     _ => {

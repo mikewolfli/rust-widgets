@@ -402,6 +402,23 @@ impl Widget for Flex {
         }
     }
 
+    /// Resolves a published event name to the signal this layout actually emits.
+    ///
+    /// The capability publishes `item_clicked` with a `UInt` payload and the
+    /// control emits the clicked item's index as a `usize`, so the conversion
+    /// keeps the subscriber's number identical to the emitted one.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "item_clicked" => {
+                Some(EventSignalRef::mapped("item_clicked", &self.item_clicked, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            _ => None,
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -506,6 +523,9 @@ pub struct FlowLayout {
     wrap: bool,
     /// Reading direction forwarded to the flow engine; left-to-right by default.
     text_direction: TextDirection,
+    /// Bumped by every input that changes the arrangement.
+    rect_version: u64,
+    rect_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<Rect>>)>>,
     /// Emitted with the item index when an item is clicked.
     pub item_clicked: Signal1<usize>,
 }
@@ -526,6 +546,8 @@ impl FlowLayout {
             padding: 8,
             wrap: true,
             text_direction: TextDirection::default(),
+            rect_version: 1,
+            rect_cache: std::cell::RefCell::new(None),
             item_clicked: Signal1::new(),
         }
     }
@@ -541,6 +563,7 @@ impl FlowLayout {
             return;
         }
         self.text_direction = direction;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -553,6 +576,7 @@ impl FlowLayout {
     /// Appends an item and requests a redraw.
     pub fn add_item(&mut self, item: FlexItemSpec) {
         self.items.push(item);
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -563,6 +587,7 @@ impl FlowLayout {
             return;
         }
         self.items.clear();
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -578,6 +603,7 @@ impl FlowLayout {
             return;
         }
         self.direction = direction;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -593,6 +619,7 @@ impl FlowLayout {
             return;
         }
         self.alignment = alignment;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -607,6 +634,7 @@ impl FlowLayout {
             return;
         }
         self.spacing = spacing;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -622,6 +650,7 @@ impl FlowLayout {
             return;
         }
         self.padding = padding;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -637,12 +666,31 @@ impl FlowLayout {
             return;
         }
         self.wrap = wrap;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
 
     /// The rectangle each item occupies, in item order.
+    ///
+    /// The engine runs only when an input changed; the draw path and `item_at` share the same
+    /// cached vector, so a repaint or a pointer event does not rebuild the flow.
     pub fn item_rects(&self) -> Vec<Rect> {
+        (*self.cached_item_rects()).clone()
+    }
+
+    fn cached_item_rects(&self) -> std::rc::Rc<Vec<Rect>> {
+        if let Some((version, rects)) = self.rect_cache.borrow().as_ref() {
+            if *version == self.rect_version {
+                return std::rc::Rc::clone(rects);
+            }
+        }
+        let rects = std::rc::Rc::new(self.compute_item_rects());
+        *self.rect_cache.borrow_mut() = Some((self.rect_version, std::rc::Rc::clone(&rects)));
+        rects
+    }
+
+    fn compute_item_rects(&self) -> Vec<Rect> {
         let mut engine = FlowEngine::with_config(FlowLayoutConfig {
             direction: self.direction,
             alignment: self.alignment,
@@ -668,7 +716,7 @@ impl FlowLayout {
 
     /// The item index under `point`.
     pub fn item_at(&self, point: Point) -> Option<usize> {
-        self.item_rects().iter().position(|rect| rect.contains_point(point))
+        self.cached_item_rects().iter().position(|rect| rect.contains_point(point))
     }
 }
 
@@ -681,6 +729,11 @@ impl Widget for FlowLayout {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.rect_version = self.rect_version.wrapping_add(1);
     }
 
     fn size_hint(&self) -> Size {
@@ -704,6 +757,23 @@ impl Widget for FlowLayout {
             Size::new(main, cross)
         } else {
             Size::new(cross, main)
+        }
+    }
+
+    /// Resolves a published event name to the signal this layout actually emits.
+    ///
+    /// The capability publishes `item_clicked` with a `UInt` payload and the
+    /// control emits the clicked item's index as a `usize`, so the conversion
+    /// keeps the subscriber's number identical to the emitted one.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "item_clicked" => {
+                Some(EventSignalRef::mapped("item_clicked", &self.item_clicked, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            _ => None,
         }
     }
 
@@ -773,7 +843,7 @@ impl WidgetProperties for FlowLayout {
 impl Draw for FlowLayout {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
-        let rects = self.item_rects();
+        let rects = self.cached_item_rects();
         paint_items(ctx, &self.base, "flow_layout", outer, &rects, &self.items);
     }
 }
@@ -809,6 +879,9 @@ pub struct WrapLayout {
     padding: u32,
     /// Reading direction forwarded to the wrap engine; left-to-right by default.
     text_direction: TextDirection,
+    /// Bumped by every input that changes the arrangement.
+    rect_version: u64,
+    rect_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<Rect>>)>>,
     /// Emitted with the item index when an item is clicked.
     pub item_clicked: Signal1<usize>,
 }
@@ -826,6 +899,8 @@ impl WrapLayout {
             run_spacing: None,
             padding: 8,
             text_direction: TextDirection::default(),
+            rect_version: 1,
+            rect_cache: std::cell::RefCell::new(None),
             item_clicked: Signal1::new(),
         }
     }
@@ -838,6 +913,7 @@ impl WrapLayout {
     /// Appends an item and requests a redraw.
     pub fn add_item(&mut self, item: FlexItemSpec) {
         self.items.push(item);
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -848,6 +924,7 @@ impl WrapLayout {
             return;
         }
         self.items.clear();
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -863,6 +940,7 @@ impl WrapLayout {
             return;
         }
         self.direction = direction;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -878,6 +956,7 @@ impl WrapLayout {
             return;
         }
         self.alignment = alignment;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -892,6 +971,7 @@ impl WrapLayout {
             return;
         }
         self.spacing = spacing;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -907,6 +987,7 @@ impl WrapLayout {
             return;
         }
         self.run_spacing = run_spacing;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -922,6 +1003,7 @@ impl WrapLayout {
             return;
         }
         self.padding = padding;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -937,12 +1019,31 @@ impl WrapLayout {
             return;
         }
         self.text_direction = direction;
+        self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
 
     /// The rectangle each item occupies, in item order.
+    ///
+    /// The engine runs only when an input changed; the draw path and `item_at` share the same
+    /// cached vector, so a repaint or a pointer event does not rebuild the wrap.
     pub fn item_rects(&self) -> Vec<Rect> {
+        (*self.cached_item_rects()).clone()
+    }
+
+    fn cached_item_rects(&self) -> std::rc::Rc<Vec<Rect>> {
+        if let Some((version, rects)) = self.rect_cache.borrow().as_ref() {
+            if *version == self.rect_version {
+                return std::rc::Rc::clone(rects);
+            }
+        }
+        let rects = std::rc::Rc::new(self.compute_item_rects());
+        *self.rect_cache.borrow_mut() = Some((self.rect_version, std::rc::Rc::clone(&rects)));
+        rects
+    }
+
+    fn compute_item_rects(&self) -> Vec<Rect> {
         let mut engine = WrapEngine::new(
             self.direction,
             self.alignment,
@@ -969,7 +1070,7 @@ impl WrapLayout {
 
     /// The item index under `point`.
     pub fn item_at(&self, point: Point) -> Option<usize> {
-        self.item_rects().iter().position(|rect| rect.contains_point(point))
+        self.cached_item_rects().iter().position(|rect| rect.contains_point(point))
     }
 }
 
@@ -982,6 +1083,11 @@ impl Widget for WrapLayout {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.rect_version = self.rect_version.wrapping_add(1);
     }
 
     fn size_hint(&self) -> Size {
@@ -1005,6 +1111,23 @@ impl Widget for WrapLayout {
             Size::new(main, cross)
         } else {
             Size::new(cross, main)
+        }
+    }
+
+    /// Resolves a published event name to the signal this layout actually emits.
+    ///
+    /// The capability publishes `item_clicked` with a `UInt` payload and the
+    /// control emits the clicked item's index as a `usize`, so the conversion
+    /// keeps the subscriber's number identical to the emitted one.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "item_clicked" => {
+                Some(EventSignalRef::mapped("item_clicked", &self.item_clicked, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            _ => None,
         }
     }
 
@@ -1083,7 +1206,7 @@ impl WidgetProperties for WrapLayout {
 impl Draw for WrapLayout {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
-        let rects = self.item_rects();
+        let rects = self.cached_item_rects();
         paint_items(ctx, &self.base, "wrap_layout", outer, &rects, &self.items);
     }
 }
@@ -1260,6 +1383,20 @@ fn wrap_alignment_from_token(token: &str) -> Option<WrapAlignment> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// All three layouts publish `item_clicked`, so each must resolve it separately.
+    #[test]
+    fn published_item_clicked_resolves_on_every_layout() {
+        let flex = Flex::new(Rect::new(0, 0, 300, 100));
+        let flow = FlowLayout::new(Rect::new(0, 0, 300, 100));
+        let wrap = WrapLayout::new(Rect::new(0, 0, 300, 100));
+        assert!(flex.event_signal_dyn("item_clicked").is_some(), "flex must resolve");
+        assert!(flow.event_signal_dyn("item_clicked").is_some(), "flow_layout must resolve");
+        assert!(wrap.event_signal_dyn("item_clicked").is_some(), "wrap_layout must resolve");
+        assert!(flex.event_signal_dyn("no_such_event").is_none());
+        assert!(flow.event_signal_dyn("no_such_event").is_none());
+        assert!(wrap.event_signal_dyn("no_such_event").is_none());
+    }
 
     fn spec(label: &str, width: u32, height: u32) -> FlexItemSpec {
         FlexItemSpec::new(label, Size::new(width, height))

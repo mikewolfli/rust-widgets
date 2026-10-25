@@ -11,13 +11,14 @@
 //! about (and its concurrency argued) without the public API in view, and the public module can
 //! change its shape without touching the lock.
 //!
-//! # Why a plain mutex, given the draw path
+//! # Why the lookup does not take the lock
 //!
-//! A registered icon is looked up by name once per `Icon::draw`. The crate's constraints forbid
-//! shared mutable state on the draw path, and this is a narrow, deliberate exception — the same one
-//! the font registry makes: the state is a small table whose entries are `Copy`, the lock is held
-//! for a name comparison and a copy-out, and it is never held across rasterisation. The alternative
-//! (a lock-free table) would be more code for a lookup that happens once per widget per frame.
+//! A registered icon is looked up by name once per `Icon::draw`, on every painting thread. The
+//! table is written only by `register_icon`/`clear_registered_icons`, which are host setup calls,
+//! so the read path keeps a **per-thread snapshot** of the table and refreshes it only when a
+//! process-wide revision says the table changed ([`REGISTRY_REVISION`]). A steady-state lookup is
+//! therefore one atomic load, one thread-local read and a scan of at most
+//! [`MAX_REGISTERED_ICONS`] `Copy` entries — no mutex, and no allocation (G-33).
 //!
 //! # Why this is compiled whether or not `icons` is on
 //!
@@ -26,7 +27,11 @@
 //! host's registered outline — gating this on `icons` would make the registry a feature of a
 //! feature, which is not what a host asked for.
 
-use crate::compat::Mutex;
+#[cfg(not(test))]
+use crate::compat::atomic::{AtomicU64, AtomicUsize, Ordering};
+#[cfg(test)]
+use crate::compat::atomic::{AtomicU64, Ordering};
+use crate::compat::{Mutex, RefCell};
 use crate::widget::display_widgets::icon::IconData;
 use crate::widget::icon_registry::MAX_REGISTERED_ICONS;
 
@@ -36,6 +41,10 @@ use crate::widget::icon_registry::MAX_REGISTERED_ICONS;
 /// [`register_icon_data`] entry point, so an existing host's table is unchanged. A second
 /// registration under the same name with a higher density (for example `2` for a `@2x`
 /// source) is stored in its own slot and selected when the widget's scale factor calls for it.
+///
+/// `Slot` is plain data (`&'static` values and a `Copy` payload), so the whole table can be copied
+/// into a thread-local snapshot without allocating. See the module docs on the revision cache.
+#[derive(Clone, Copy)]
 struct Slot {
     name: &'static str,
     data: IconData,
@@ -43,6 +52,7 @@ struct Slot {
 }
 
 /// The registry table and how many slots are occupied.
+#[derive(Clone, Copy)]
 struct Registry {
     slots: [Option<Slot>; MAX_REGISTERED_ICONS],
     len: usize,
@@ -60,6 +70,56 @@ impl Registry {
 
 #[cfg(not(test))]
 static REGISTRY: Mutex<Registry> = Mutex::new(Registry::new());
+
+/// Process-wide revision of the registry contents.
+///
+/// Bumped after every write (registration, replacement and clear), so a reader can tell whether
+/// its thread-local snapshot is still current. The writer publishes the table under the mutex and
+/// then bumps this with release ordering; a reader that observes the new revision takes the lock
+/// before copying, which is what makes the snapshot consistent with the revision it records.
+static REGISTRY_REVISION: AtomicU64 = AtomicU64::new(0);
+
+// This thread's snapshot of the registry, tagged with the revision it came from.
+thread_local! {
+    static SNAPSHOT: RefCell<Snapshot> = RefCell::new(Snapshot { revision: u64::MAX, table: Registry::new() });
+}
+
+struct Snapshot {
+    revision: u64,
+    table: Registry,
+}
+
+/// Publishes a completed write to every reader.
+fn bump_registry_revision() {
+    REGISTRY_REVISION.fetch_add(1, Ordering::Release);
+}
+
+/// Runs `f` against this thread's current snapshot, refreshing it when the registry changed.
+///
+/// The snapshot is borrowed, not copied: the table is small but a draw-path lookup runs once per
+/// icon per frame, and copying every slot on every lookup would spend more than the name scan
+/// saves. `f` must only read (nothing in it calls back into this module).
+fn with_snapshot<R>(f: impl FnOnce(&Registry) -> R) -> Option<R> {
+    let revision = REGISTRY_REVISION.load(Ordering::Acquire);
+    SNAPSHOT
+        .try_with(|cached| {
+            let mut cached = cached.borrow_mut();
+            if cached.revision != revision {
+                cached.table = *crate::compat::lock(registry());
+                cached.revision = revision;
+            }
+            f(&cached.table)
+        })
+        .ok()
+}
+
+/// How many names the process-wide registry holds, readable without the lock.
+///
+/// The overwhelmingly common case is **zero registrations**: a host that never calls
+/// `register_icon` should not pay a mutex acquisition for every fallback icon it draws. The count
+/// is the fast path; the table itself is still guarded for the registered case (G-33).
+#[cfg(not(test))]
+static REGISTERED_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 // The registry a test build resolves against.
 //
@@ -123,6 +183,8 @@ pub(crate) fn register_icon_data_with_density(
         if let Some(existing) = slot {
             if existing.name == name && existing.density == density {
                 *slot = Some(Slot { name, data, density });
+                // Replacement changes what a lookup returns, so it publishes too.
+                bump_registry_revision();
                 return true;
             }
         }
@@ -132,6 +194,9 @@ pub(crate) fn register_icon_data_with_density(
     }
     registry.slots[len] = Some(Slot { name, data, density });
     registry.len = len + 1;
+    #[cfg(not(test))]
+    REGISTERED_COUNT.fetch_add(1, Ordering::Relaxed);
+    bump_registry_revision();
     true
 }
 
@@ -141,12 +206,22 @@ pub(crate) fn clear_registered_icon_data() -> usize {
     let removed = registry.len;
     registry.slots = [const { None }; MAX_REGISTERED_ICONS];
     registry.len = 0;
+    #[cfg(not(test))]
+    REGISTERED_COUNT.store(0, Ordering::Relaxed);
+    bump_registry_revision();
     removed
 }
 
 /// How many icons are registered.
 pub(crate) fn registered_icon_data_count() -> usize {
-    crate::compat::lock(registry()).len
+    #[cfg(not(test))]
+    {
+        REGISTERED_COUNT.load(Ordering::Relaxed)
+    }
+    #[cfg(test)]
+    {
+        crate::compat::lock(registry()).len
+    }
 }
 
 /// The outline registered under `name`, or `None`.
@@ -165,7 +240,18 @@ pub(crate) fn lookup_registered(name: &str) -> Option<IconData> {
 /// the name. Below `2` the density-`1` source is preferred. The fallback is deliberate: a
 /// name registered only at `@2x` still draws at a normal scale rather than disappearing.
 pub(crate) fn lookup_registered_scaled(name: &str, scale_factor: f32) -> Option<IconData> {
-    let registry = crate::compat::lock(registry());
+    // No registration means no host icon, and the table is empty for the whole process: answer
+    // without reading the snapshot at all. This is the draw path for every build that ships only
+    // the bundled table, which is the common case (G-33).
+    #[cfg(not(test))]
+    if REGISTERED_COUNT.load(Ordering::Relaxed) == 0 {
+        return None;
+    }
+    with_snapshot(|registry| lookup_in(registry, name, scale_factor)).flatten()
+}
+
+/// The scan shared by the snapshot lookup and the tests.
+fn lookup_in(registry: &Registry, name: &str, scale_factor: f32) -> Option<IconData> {
     let slots = registry.slots[..registry.len].iter().flatten();
     // Collect the best candidate in one pass without allocating: a linear scan over at most
     // `MAX_REGISTERED_ICONS` entries is what the registry was designed around.
@@ -190,4 +276,35 @@ pub(crate) fn lookup_registered_scaled(name: &str, scale_factor: f32) -> Option<
             .min_by_key(|slot| slot.density);
     }
     best.map(|slot| slot.data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A replacement and a clear must reach the draw path through the revision snapshot.
+    ///
+    /// This is the correctness half of G-33: the lookup no longer takes the registry lock, so the
+    /// only thing that can make a long-lived thread see a change is the revision check. A snapshot
+    /// that never refreshed would keep drawing the first registration forever.
+    #[test]
+    fn a_snapshot_sees_replacement_and_clear() {
+        clear_registered_icon_data();
+        let name = "g33_snapshot_probe";
+        static FIRST: [&str; 1] = ["M0 0L1 1"];
+        static SECOND: [&str; 1] = ["M0 0L2 2"];
+
+        assert!(register_icon_data(name, &FIRST, 24));
+        assert_eq!(lookup_registered(name).map(|data| data.paths), Some(&FIRST[..]));
+
+        assert!(register_icon_data(name, &SECOND, 24));
+        assert_eq!(
+            lookup_registered(name).map(|data| data.paths),
+            Some(&SECOND[..]),
+            "a replacement must invalidate the thread's snapshot"
+        );
+
+        assert_eq!(clear_registered_icon_data(), 1);
+        assert_eq!(lookup_registered(name), None, "a clear must invalidate the snapshot");
+    }
 }

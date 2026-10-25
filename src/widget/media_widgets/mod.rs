@@ -26,10 +26,17 @@ pub mod lottie_widget;
 pub mod rive_widget;
 pub mod video_player;
 
-pub use animated_image::{AnimatedFrame, AnimatedImage, AnimatedImageFormat};
+pub use animated_image::{
+    AnimatedFrame, AnimatedFrameProvider, AnimatedImage, AnimatedImageFormat, PlaybackDirection,
+};
 pub use audio_visualizer::AudioVisualizer;
-pub use camera_preview::CameraPreview;
+pub use camera_preview::{CameraDevice, CameraFrame, CameraPreview, PixelFormat};
 pub use hero_animation::HeroAnimation;
-pub use lottie_widget::LottieWidget;
-pub use rive_widget::{RiveInput, RiveInputValue, RiveWidget};
-pub use video_player::VideoPlayer;
+pub use lottie_widget::{
+    LottieDirection, LottieFontProvider, LottieImage, LottieImageLayer, LottieImageProvider,
+    LottieTextLayer, LottieWidget,
+};
+pub use rive_widget::{RiveInput, RiveInputValue, RiveState, RiveWidget};
+pub use video_player::{
+    AudioTrack, SubtitleTrack, VideoFrame, VideoMetadata, VideoPipelineState, VideoPlayer,
+};

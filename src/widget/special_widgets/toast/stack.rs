@@ -12,7 +12,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::PopupReveal;
-use crate::widget::metrics::{effective_font, ControlMetrics};
+use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -24,6 +24,20 @@ pub enum ToastAnchor {
     BottomLeft,
     /// Top-right, the placement a notification banner uses.
     TopRight,
+    /// Top-left.
+    TopLeft,
+    /// Bottom-right.
+    BottomRight,
+}
+
+/// Which end of the stack receives the newest toast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToastStackingDirection {
+    /// The newest toast is the lowest row, the historical behaviour.
+    #[default]
+    NewestAtBottom,
+    /// The newest toast is the highest row.
+    NewestAtTop,
 }
 
 /// Toast stack with keyboard/mouse activation and dismiss.
@@ -53,6 +67,14 @@ pub struct ToastStack {
     /// caller that asked for motion opts in with [`ToastStack::set_animate_exit`].
     animate_exit: bool,
     anchor: ToastAnchor,
+    /// Which end of the stack receives the newest toast.
+    stacking_direction: ToastStackingDirection,
+    /// The maximum number of toasts kept at once; the oldest is expired beyond it.
+    max_visible: usize,
+    /// The stack's own monotonic millisecond clock, advanced by `tick`.
+    now_ms: u64,
+    /// When each toast was pushed, aligned with `toasts`.
+    shown_at_ms: Vec<u64>,
     /// How many of the oldest rows are scrolled out of view.
     scroll_offset: usize,
     /// Whether rows paint a translucent (vibrant) fill.
@@ -63,6 +85,8 @@ pub struct ToastStack {
     pub toast_dismissed: Signal1<String>,
     /// Emitted with the toast id when its action button is pressed.
     pub toast_action: Signal1<String>,
+    /// Emitted with the id of a toast removed by its ttl or by the visible cap.
+    pub toast_expired: Signal1<String>,
 }
 
 impl ToastStack {
@@ -78,11 +102,16 @@ impl ToastStack {
             closing: None,
             animate_exit: false,
             anchor: ToastAnchor::BottomLeft,
+            stacking_direction: ToastStackingDirection::default(),
+            max_visible: 5,
+            now_ms: 0,
+            shown_at_ms: Vec::new(),
             scroll_offset: 0,
             translucent: false,
             toast_activated: Signal1::new(),
             toast_dismissed: Signal1::new(),
             toast_action: Signal1::new(),
+            toast_expired: Signal1::new(),
         }
     }
 
@@ -114,6 +143,38 @@ impl ToastStack {
     /// Returns the stack's anchor.
     pub fn anchor(&self) -> ToastAnchor {
         self.anchor
+    }
+
+    /// Which end of the stack receives the newest toast.
+    pub fn stacking_direction(&self) -> ToastStackingDirection {
+        self.stacking_direction
+    }
+
+    /// Sets which end of the stack receives the newest toast.
+    pub fn set_stacking_direction(&mut self, direction: ToastStackingDirection) {
+        if self.stacking_direction == direction {
+            return;
+        }
+        self.stacking_direction = direction;
+        self.base.request_redraw();
+    }
+
+    /// The maximum number of toasts kept at once.
+    pub fn max_visible(&self) -> usize {
+        self.max_visible
+    }
+
+    /// Caps the stack; pushing past the cap expires the oldest toast.
+    pub fn set_max_visible(&mut self, max_visible: usize) {
+        let max_visible = max_visible.max(1);
+        if self.max_visible == max_visible {
+            return;
+        }
+        self.max_visible = max_visible;
+        while self.toasts.len() > self.max_visible {
+            self.remove_oldest(true);
+        }
+        self.base.request_redraw();
     }
 
     /// Makes the rows translucent, so the window shows through them.
@@ -162,21 +223,102 @@ impl ToastStack {
 
     /// Adds a toast to the stack.
     pub fn push(&mut self, item: ToastItem) {
+        self.push_at(item, self.now_ms);
+    }
+
+    /// Adds a toast stamped with `now_ms` on the stack's own clock.
+    ///
+    /// Use this when the host feeds `expire_toasts` an absolute time: the timestamp the
+    /// ttl counts from is then the same domain the expiry check reads.
+    pub fn push_at(&mut self, item: ToastItem, now_ms: u64) {
+        self.now_ms = self.now_ms.max(now_ms);
         self.toasts.push(item);
+        self.shown_at_ms.push(self.now_ms);
         self.selected_index = Some(self.toasts.len() - 1);
         // The new row starts fully below its seat and rises into it. `jump_to(false)` before
         // aiming at open, so the first painted frame is the start of the movement rather than a
         // snap to the middle of it.
         self.reveal.jump_to(false);
         self.reveal.set_open(true);
+        while self.toasts.len() > self.max_visible {
+            self.remove_oldest(true);
+        }
+        self.clamp_scroll();
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Removes the oldest toast, reporting it as expired when `emit` is set.
+    fn remove_oldest(&mut self, emit: bool) {
+        if self.toasts.is_empty() {
+            return;
+        }
+        let item = self.toasts.remove(0);
+        if !self.shown_at_ms.is_empty() {
+            self.shown_at_ms.remove(0);
+        }
+        if let Some(index) = self.selected_index.as_mut() {
+            *index = index.saturating_sub(1);
+        }
+        if emit {
+            self.toast_expired.emit(item.id);
+        }
+    }
+
+    /// Removes every toast whose ttl has elapsed by `now_ms`, returning how many left.
+    ///
+    /// `now_ms` is read on the stack's own millisecond clock — the one `tick` advances and
+    /// `push_at` stamps against. A toast whose `ttl_ms` is zero never expires.
+    pub fn expire_toasts(&mut self, now_ms: u64) -> usize {
+        self.now_ms = self.now_ms.max(now_ms);
+        let mut removed = 0usize;
+        let mut index = 0usize;
+        while index < self.toasts.len() {
+            let ttl = self.toasts[index].ttl_ms as u64;
+            let shown = self.shown_at_ms.get(index).copied().unwrap_or(0);
+            if ttl > 0 && self.now_ms >= shown.saturating_add(ttl) {
+                let item = self.toasts.remove(index);
+                if index < self.shown_at_ms.len() {
+                    self.shown_at_ms.remove(index);
+                }
+                if let Some(selected) = self.selected_index.as_mut() {
+                    if *selected > index {
+                        *selected -= 1;
+                    } else if *selected == index {
+                        *selected = self.toasts.len().saturating_sub(1);
+                    }
+                }
+                if self.closing == Some(index) {
+                    self.closing = None;
+                }
+                self.toast_expired.emit(item.id);
+                removed += 1;
+            } else {
+                index += 1;
+            }
+        }
+        if self.toasts.is_empty() {
+            self.selected_index = None;
+        }
+        self.clamp_scroll();
+        if removed > 0 {
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+        removed
+    }
+
+    fn clamp_scroll(&mut self) {
+        let max = self.toasts.len().saturating_sub(self.visible_row_count());
+        self.scroll_offset = self.scroll_offset.min(max);
     }
 
     /// Clears all toasts.
     pub fn clear(&mut self) {
         self.toasts.clear();
+        self.shown_at_ms.clear();
         self.selected_index = None;
+        self.scroll_offset = 0;
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -244,6 +386,9 @@ impl ToastStack {
         }
         let id = self.toasts[index].id.clone();
         self.toasts.remove(index);
+        if index < self.shown_at_ms.len() {
+            self.shown_at_ms.remove(index);
+        }
         self.toast_dismissed.emit(id);
         if self.toasts.is_empty() {
             self.selected_index = None;
@@ -255,6 +400,13 @@ impl ToastStack {
         self.base.request_layout();
         self.base.request_redraw();
         true
+    }
+
+    /// The measured trailing band an action's label occupies inside `row`.
+    fn action_rect_for(&self, row: Rect, label: &str, font: &crate::core::Font) -> Rect {
+        let width = estimate_text_width(label, font, 1.0) as u32 + 12;
+        let width = width.min(row.width);
+        Rect::new(row.x + row.width as i32 - width as i32 - 4, row.y, width, row.height)
     }
 
     /// The region the stack actually occupies: the bottom of the control's rectangle, as many
@@ -274,32 +426,29 @@ impl ToastStack {
     fn stack_band(&self) -> Rect {
         let rows = (self.toasts.len() as u32).max(1);
         let height = rows.saturating_mul(self.row_height);
-        match self.anchor {
-            ToastAnchor::BottomLeft => ControlMetrics::bottom_band(self.geometry(), height),
-            ToastAnchor::TopRight => {
-                let rect = self.geometry();
-                let width = rect.width;
-                let height = height.min(rect.height);
-                Rect::new(rect.x, rect.y, width, height)
+        let rect = self.geometry();
+        // A left/right anchor is only meaningful when the band is narrower than the control;
+        // the cap keeps a banner from spanning an ultrawide window.
+        let width = rect.width.min(360);
+        let x = match self.anchor {
+            ToastAnchor::BottomLeft | ToastAnchor::TopLeft => rect.x,
+            ToastAnchor::BottomRight | ToastAnchor::TopRight => {
+                rect.x + rect.width.saturating_sub(width) as i32
             }
-        }
+        };
+        let y = match self.anchor {
+            ToastAnchor::BottomLeft | ToastAnchor::BottomRight => {
+                rect.y + rect.height.saturating_sub(height.min(rect.height)) as i32
+            }
+            ToastAnchor::TopLeft | ToastAnchor::TopRight => rect.y,
+        };
+        Rect::new(x, y, width, height.min(rect.height))
     }
 
     fn row_at(&self, pos: Point) -> Option<usize> {
-        let band = self.stack_band();
-        if pos.x < band.x
-            || pos.x >= band.x + band.width as i32
-            || pos.y < band.y
-            || pos.y >= band.y + band.height as i32
-        {
-            return None;
-        }
-
-        let bottom = band.y + band.height as i32;
-        for index in 0..self.toasts.len() {
-            let top = bottom - ((index + 1) as i32 * self.row_height as i32);
-            if pos.y >= top && pos.y < top + self.row_height as i32 {
-                return Some(self.toasts.len() - 1 - index);
+        for index in self.scroll_offset..self.toasts.len() {
+            if self.row_rect(index).contains_point(pos) {
+                return Some(index);
             }
         }
         None
@@ -308,9 +457,16 @@ impl ToastStack {
     /// The rectangle a toast row is painted at.
     fn row_rect(&self, index: usize) -> Rect {
         let band = self.stack_band();
-        let bottom = band.y + band.height as i32;
         let visual_order = self.toasts.len().saturating_sub(1 + index);
-        let y = bottom - ((visual_order + 1) as i32 * self.row_height as i32);
+        let y = match self.stacking_direction {
+            ToastStackingDirection::NewestAtBottom => {
+                let bottom = band.y + band.height as i32;
+                bottom - ((visual_order + 1) as i32 * self.row_height as i32)
+            }
+            ToastStackingDirection::NewestAtTop => {
+                band.y + visual_order as i32 * self.row_height as i32
+            }
+        };
         Rect::new(
             band.x + 4,
             y + 2,
@@ -339,6 +495,9 @@ impl Widget for ToastStack {
     /// Advances the newest toast's rise-in; `true` while it still owes frames.
     fn tick(&mut self, delta_ms: u32) -> bool {
         let mut moving = self.reveal.tick(delta_ms);
+        self.now_ms = self.now_ms.saturating_add(delta_ms as u64);
+        let expired = self.expire_toasts(self.now_ms);
+        moving |= expired > 0;
         if self.closing.is_some() {
             moving |= self.exit.tick(delta_ms);
             if !self.exit.is_animating() {
@@ -384,6 +543,11 @@ impl Widget for ToastStack {
                     crate::widget::capability::CapabilityValue::String(v.clone())
                 }))
             }
+            "toast_expired" => {
+                Some(EventSignalRef::mapped("toast_expired", &self.toast_expired, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
             _ => None,
         }
     }
@@ -404,6 +568,23 @@ impl WidgetProperties for ToastStack {
                 None => Ok(CapabilityValue::Null),
             },
             "row_height" => Ok(CapabilityValue::UInt(self.row_height as u64)),
+            "max_visible" => Ok(CapabilityValue::UInt(self.max_visible as u64)),
+            "anchor" => Ok(CapabilityValue::String(
+                match self.anchor {
+                    ToastAnchor::BottomLeft => "bottom_left",
+                    ToastAnchor::BottomRight => "bottom_right",
+                    ToastAnchor::TopLeft => "top_left",
+                    ToastAnchor::TopRight => "top_right",
+                }
+                .to_string(),
+            )),
+            "stacking_direction" => Ok(CapabilityValue::String(
+                match self.stacking_direction {
+                    ToastStackingDirection::NewestAtBottom => "newest_at_bottom",
+                    ToastStackingDirection::NewestAtTop => "newest_at_top",
+                }
+                .to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -422,12 +603,53 @@ impl WidgetProperties for ToastStack {
                 _ => Err(CapabilityAccessError::TypeMismatch),
             },
             "toast_count" | "selected_id" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "max_visible" => match value {
+                CapabilityValue::UInt(max) => {
+                    self.set_max_visible(usize::try_from(max).unwrap_or(usize::MAX));
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "anchor" => match value {
+                CapabilityValue::String(token) => {
+                    let anchor = match token.as_str() {
+                        "bottom_left" => ToastAnchor::BottomLeft,
+                        "bottom_right" => ToastAnchor::BottomRight,
+                        "top_left" => ToastAnchor::TopLeft,
+                        "top_right" => ToastAnchor::TopRight,
+                        _ => return Err(CapabilityAccessError::OutOfRange),
+                    };
+                    self.set_anchor(anchor);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "stacking_direction" => match value {
+                CapabilityValue::String(token) => {
+                    let direction = match token.as_str() {
+                        "newest_at_bottom" => ToastStackingDirection::NewestAtBottom,
+                        "newest_at_top" => ToastStackingDirection::NewestAtTop,
+                        _ => return Err(CapabilityAccessError::OutOfRange),
+                    };
+                    self.set_stacking_direction(direction);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["toast_count", "selected_id", "row_height", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "toast_count",
+            "selected_id",
+            "row_height",
+            "max_visible",
+            "anchor",
+            "stacking_direction",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `toast_stack` publishes.
@@ -478,7 +700,14 @@ impl EventHandler for ToastStack {
                         self.toasts.get(index).is_some_and(|item| item.action_label.is_some());
                     if has_action {
                         let row = self.row_rect(index);
-                        if pos.x >= row.x + row.width as i32 - 72 {
+                        let label = self
+                            .toasts
+                            .get(index)
+                            .and_then(|item| item.action_label.as_deref())
+                            .unwrap_or("");
+                        let font = effective_font(self.base.style());
+                        let action = self.action_rect_for(row, label, font);
+                        if action.contains_point(*pos) {
                             let id = self.toasts[index].id.clone();
                             self.toast_action.emit(id);
                             return;
@@ -573,23 +802,15 @@ impl Draw for ToastStack {
         context.draw_rect(band, border);
 
         // Bottom-up: the newest toast is the lowest row, which is the end the stack grows from.
-        let bottom = band.y + band.height as i32;
+        let font = effective_font(style);
         for (index, item) in self.toasts.iter().enumerate() {
             if index < self.scroll_offset {
                 continue;
             }
-            let visual_order = self.toasts.len() - 1 - index;
-            let y = bottom - ((visual_order + 1) as i32 * self.row_height as i32);
-            if y < band.y {
+            let row = self.row_rect(index);
+            if row.y + row.height as i32 <= band.y || row.y >= band.y + band.height as i32 {
                 continue;
             }
-
-            let row = Rect::new(
-                band.x + 4,
-                y + 2,
-                band.width.saturating_sub(8),
-                self.row_height.saturating_sub(4),
-            );
             // # Why only the newest row moves
             //
             // The reveal is re-aimed on every `push`, so applying it to every row would make the
@@ -630,21 +851,28 @@ impl Draw for ToastStack {
             .map(|token| token.blend(&bg, 0.15))
             .unwrap_or_else(|| bg.blend(&text_color, 0.6));
             context.fill_rect(Rect::new(row.x + 6, row.y + 9, 8, 8), badge);
-            context.draw_text(
-                Point::new(row.x + 20, row.y + 17),
+            // The action band is measured from its own label, and the message is fitted into
+            // what is left. The action used to be a fixed 72 px tail regardless of its label,
+            // and the message used a plain `draw_text`, so a long message ran under the action
+            // (and into the next row's frame) while a short action wasted the reserved tail.
+            let action =
+                item.action_label.as_deref().map(|label| self.action_rect_for(row, label, font));
+            let message_right =
+                action.map(|rect| rect.x - row.x - 4).unwrap_or(row.width as i32 - 8).max(0);
+            context.draw_text_fitted_cow(
+                Rect::new(row.x + 20, row.y, message_right as u32, row.height),
                 &item.message,
-                effective_font(style),
+                font,
                 text_color,
                 HorizontalAlignment::Left,
             );
-            if let Some(label) = item.action_label.as_deref() {
-                // The action sits in the trailing band the hit test reserves, right-aligned so
-                // its label ends where the row's padding does.
-                let action = Rect::new(row.x + row.width as i32 - 72, row.y, 68, row.height);
+            if let (Some(label), Some(action)) = (item.action_label.as_deref(), action) {
+                // The action sits in the measured trailing band, right-aligned so its label
+                // ends where the row's padding does.
                 context.draw_text_line_cow(
                     action,
                     label,
-                    effective_font(style),
+                    font,
                     text_color,
                     HorizontalAlignment::Right,
                 );

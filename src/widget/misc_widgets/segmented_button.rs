@@ -27,6 +27,20 @@ const SEGMENT_ICON_SIDE: u32 = 14;
 /// Gap between that slot and the caption.
 const SEGMENT_ICON_GAP: u32 = 4;
 
+/// Process-wide ownership of a mutually exclusive segmented-button group.
+///
+/// A group is identified by a caller-chosen string; the entry records which control last
+/// selected a segment and a generation counter so every member can tell whether its local
+/// selection is still the authoritative one. A global map is what makes two controls that
+/// know nothing about each other able to share one selection without a host-owned registry.
+fn segmented_groups(
+) -> &'static std::sync::Mutex<std::collections::BTreeMap<String, (u64, u64, Option<usize>)>> {
+    static GROUPS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<String, (u64, u64, Option<usize>)>>,
+    > = std::sync::OnceLock::new();
+    GROUPS.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
+}
+
 /// A single segment in a segmented button group.
 #[derive(Debug, Clone)]
 pub struct Segment {
@@ -89,6 +103,10 @@ pub struct SegmentedButton {
     /// click handler).
     selected: Vec<usize>,
     allows_multiple: bool,
+    /// Mutually exclusive group id; controls with the same id share one selection.
+    group_id: Option<String>,
+    /// The group generation this control last observed.
+    group_generation: u64,
     /// Emitted when the selected segment changes. Payload is the newly selected index.
     pub selected_changed: Signal1<usize>,
 }
@@ -101,6 +119,8 @@ impl SegmentedButton {
             segments: Vec::new(),
             selected: Vec::new(),
             allows_multiple: false,
+            group_id: None,
+            group_generation: 0,
             selected_changed: Signal1::new(),
         }
     }
@@ -111,6 +131,9 @@ impl SegmentedButton {
     /// selected index — the one a caller that only knows the single-selection API should act on.
     /// Use [`Self::selected_indices`] to read the whole set.
     pub fn selected_index(&self) -> Option<usize> {
+        if self.group_owned_elsewhere() {
+            return None;
+        }
         self.selected.first().copied()
     }
 
@@ -119,12 +142,66 @@ impl SegmentedButton {
     /// The read-back for multi-select: `selected_index` cannot express a set, so a caller that
     /// turned on [`Self::set_allows_multiple`] had no way to learn which segments were chosen.
     pub fn selected_indices(&self) -> &[usize] {
+        if self.group_owned_elsewhere() {
+            return &[];
+        }
         &self.selected
     }
 
     /// Returns whether `index` is selected.
     pub fn is_selected(&self, index: usize) -> bool {
-        self.selected.contains(&index)
+        !self.group_owned_elsewhere() && self.selected.contains(&index)
+    }
+
+    /// The mutually exclusive group this control belongs to.
+    pub fn group_id(&self) -> Option<&str> {
+        self.group_id.as_deref()
+    }
+
+    /// Joins a mutually exclusive group, or leaves it with `None`.
+    ///
+    /// Joining does not clear the local selection; the next selection in any member wins and
+    /// causes the other members to report no selection (see [`Self::group_owned_elsewhere`]).
+    pub fn set_group_id(&mut self, group: Option<String>) {
+        if self.group_id == group {
+            return;
+        }
+        self.group_id = group.filter(|name| !name.is_empty());
+        self.group_generation = 0;
+        self.base.request_redraw();
+    }
+
+    /// Whether another control in this group made the authoritative selection.
+    fn group_owned_elsewhere(&self) -> bool {
+        let Some(group) = self.group_id.as_deref() else {
+            return false;
+        };
+        let Ok(groups) = segmented_groups().lock() else {
+            return false;
+        };
+        match groups.get(group) {
+            Some((generation, owner, _)) => {
+                *generation > self.group_generation && *owner != self.base.id()
+            }
+            None => false,
+        }
+    }
+
+    /// Publishes this control's selection as the group's current value.
+    fn publish_group_selection(&mut self) {
+        let Some(group) = self.group_id.clone() else {
+            return;
+        };
+        let Ok(mut groups) = segmented_groups().lock() else {
+            return;
+        };
+        let entry = groups.entry(group).or_insert((0, self.base.id(), None));
+        entry.0 = entry.0.wrapping_add(1);
+        entry.1 = self.base.id();
+        entry.2 = self.selected.first().copied();
+        self.group_generation = entry.0;
+        // A selection in one member changes the painted state of every other member.
+        crate::widget::runtime::arm_global_repaint();
     }
 
     /// Sets the selected segment index, replacing any previous selection.
@@ -138,6 +215,7 @@ impl SegmentedButton {
             if let Some(idx) = self.selected.first().copied() {
                 self.selected_changed.emit(idx);
             }
+            self.publish_group_selection();
             self.base.request_redraw();
         }
     }
@@ -159,6 +237,7 @@ impl SegmentedButton {
             if let Some(idx) = self.selected.first().copied() {
                 self.selected_changed.emit(idx);
             }
+            self.publish_group_selection();
             self.base.request_redraw();
         }
     }
@@ -340,6 +419,10 @@ impl WidgetProperties for SegmentedButton {
             )),
             "allows_multiple" => Ok(CapabilityValue::Bool(self.allows_multiple())),
             "segment_count" => Ok(CapabilityValue::UInt(self.segment_count() as u64)),
+            "group_id" => Ok(match self.group_id() {
+                Some(group) => CapabilityValue::String(group.to_string()),
+                None => CapabilityValue::Null,
+            }),
             _ => base_property_get(self, name),
         }
     }
@@ -376,6 +459,13 @@ impl WidgetProperties for SegmentedButton {
                 Ok(())
             }
             "segment_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "group_id" => {
+                match value {
+                    CapabilityValue::Null => self.set_group_id(None),
+                    other => self.set_group_id(Some(expect_string(other)?)),
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -386,6 +476,7 @@ impl WidgetProperties for SegmentedButton {
             "selected_indices",
             "allows_multiple",
             "segment_count",
+            "group_id",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -946,5 +1037,25 @@ mod tests {
             fitted_caption("Day", 35, &mut measure),
             crate::compat::Cow::Borrowed("Day")
         ));
+    }
+
+    #[test]
+    fn a_group_id_makes_two_controls_mutually_exclusive() {
+        let mut first = SegmentedButton::new(Rect::new(0, 0, 200, 32));
+        let mut second = SegmentedButton::new(Rect::new(0, 0, 200, 32));
+        first.add_segment(Segment::new("Day"));
+        first.add_segment(Segment::new("Week"));
+        second.add_segment(Segment::new("Day"));
+        second.add_segment(Segment::new("Week"));
+        first.set_group_id(Some("range".to_string()));
+        second.set_group_id(Some("range".to_string()));
+
+        first.set_selected_index(Some(0));
+        assert!(first.is_selected(0));
+        second.set_selected_index(Some(1));
+        assert!(second.is_selected(1));
+        assert!(!first.is_selected(0), "the second control now owns the group");
+        assert_eq!(first.selected_index(), None);
+        assert_eq!(second.selected_index(), Some(1));
     }
 }

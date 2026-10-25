@@ -92,6 +92,10 @@ pub(crate) struct MacPalette {
     pub(crate) minimize: Color,
     /// The zoom control's fill.
     pub(crate) zoom: Color,
+    /// The face of a window whose window is not key (inactive).
+    pub(crate) inactive_surface: Color,
+    /// The ink of an inactive window, dimmer than [`Self::ink`].
+    pub(crate) inactive_ink: Color,
 }
 
 /// The palette the macOS controls draw with.
@@ -115,6 +119,8 @@ pub(crate) fn palette() -> MacPalette {
             close: theme.colors.error,
             minimize: theme.colors.warning,
             zoom: theme.colors.success,
+            inactive_surface: theme.colors.surface_container.blend(&theme.colors.foreground, 0.05),
+            inactive_ink: theme.colors.foreground.blend(&theme.colors.surface_container, 0.42),
         },
         None => MacPalette {
             surface: Color::rgb(236, 236, 238),
@@ -126,6 +132,8 @@ pub(crate) fn palette() -> MacPalette {
             close: Color::rgb(255, 95, 87),
             minimize: Color::rgb(255, 189, 46),
             zoom: Color::rgb(40, 200, 64),
+            inactive_surface: Color::rgb(242, 242, 244),
+            inactive_ink: Color::rgb(110, 110, 115),
         },
     }
 }

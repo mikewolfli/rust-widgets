@@ -40,13 +40,17 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// Side of a finder pattern (and of its separator ring) in modules.
 const FINDER_SIZE: u32 = 7;
 
-/// The two error-correction levels this encoder implements.
+/// The four error-correction levels the QR specification defines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QrEcLevel {
     /// Recovers about 7% of codewords.
     L,
     /// Recovers about 15% of codewords.
     M,
+    /// Recovers about 25% of codewords.
+    Q,
+    /// Recovers about 30% of codewords.
+    H,
 }
 
 impl QrEcLevel {
@@ -55,6 +59,29 @@ impl QrEcLevel {
         match self {
             Self::L => 0b01,
             Self::M => 0b00,
+            Self::Q => 0b11,
+            Self::H => 0b10,
+        }
+    }
+
+    /// The token this level publishes through the property contract.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::L => "L",
+            Self::M => "M",
+            Self::Q => "Q",
+            Self::H => "H",
+        }
+    }
+
+    /// Parses [`Self::as_str`].
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token.trim().to_ascii_uppercase().as_str() {
+            "L" => Some(Self::L),
+            "M" => Some(Self::M),
+            "Q" => Some(Self::Q),
+            "H" => Some(Self::H),
+            _ => None,
         }
     }
 }
@@ -152,24 +179,44 @@ fn block_spec(version: u8, ec: QrEcLevel) -> Option<BlockSpec> {
         match (version, ec) {
             (1, QrEcLevel::L) => (19, 7, 1, 19, 1),
             (1, QrEcLevel::M) => (16, 10, 1, 16, 1),
+            (1, QrEcLevel::Q) => (13, 13, 1, 13, 1),
+            (1, QrEcLevel::H) => (9, 17, 1, 9, 1),
             (2, QrEcLevel::L) => (34, 10, 1, 34, 1),
             (2, QrEcLevel::M) => (28, 16, 1, 28, 1),
+            (2, QrEcLevel::Q) => (22, 22, 1, 22, 1),
+            (2, QrEcLevel::H) => (16, 28, 1, 16, 1),
             (3, QrEcLevel::L) => (55, 15, 1, 55, 1),
             (3, QrEcLevel::M) => (44, 26, 1, 44, 1),
+            (3, QrEcLevel::Q) => (34, 18, 2, 17, 2),
+            (3, QrEcLevel::H) => (26, 22, 2, 13, 2),
             (4, QrEcLevel::L) => (80, 20, 1, 80, 1),
             (4, QrEcLevel::M) => (64, 18, 2, 32, 2),
+            (4, QrEcLevel::Q) => (48, 26, 2, 24, 2),
+            (4, QrEcLevel::H) => (36, 16, 4, 9, 4),
             (5, QrEcLevel::L) => (108, 26, 1, 108, 1),
             (5, QrEcLevel::M) => (86, 24, 2, 43, 2),
+            (5, QrEcLevel::Q) => (62, 18, 4, 15, 2),
+            (5, QrEcLevel::H) => (46, 22, 4, 11, 2),
             (6, QrEcLevel::L) => (136, 18, 2, 68, 2),
             (6, QrEcLevel::M) => (108, 16, 4, 27, 4),
+            (6, QrEcLevel::Q) => (76, 24, 4, 19, 4),
+            (6, QrEcLevel::H) => (60, 28, 4, 15, 4),
             (7, QrEcLevel::L) => (156, 20, 2, 78, 2),
             (7, QrEcLevel::M) => (124, 18, 4, 31, 4),
+            (7, QrEcLevel::Q) => (88, 18, 6, 14, 2),
+            (7, QrEcLevel::H) => (66, 26, 5, 13, 4),
             (8, QrEcLevel::L) => (194, 24, 2, 97, 2),
             (8, QrEcLevel::M) => (154, 22, 4, 38, 2),
+            (8, QrEcLevel::Q) => (110, 22, 6, 18, 4),
+            (8, QrEcLevel::H) => (86, 26, 6, 14, 4),
             (9, QrEcLevel::L) => (232, 30, 2, 116, 2),
             (9, QrEcLevel::M) => (182, 22, 5, 36, 3),
+            (9, QrEcLevel::Q) => (132, 20, 8, 16, 4),
+            (9, QrEcLevel::H) => (100, 24, 8, 12, 4),
             (10, QrEcLevel::L) => (274, 18, 4, 68, 2),
             (10, QrEcLevel::M) => (216, 26, 5, 43, 4),
+            (10, QrEcLevel::Q) => (154, 24, 8, 19, 6),
+            (10, QrEcLevel::H) => (122, 28, 8, 15, 6),
             _ => return None,
         };
     Some(BlockSpec { data_codewords, ec_per_block, num_blocks, short_data_codewords, short_blocks })
@@ -285,8 +332,15 @@ fn build_codewords(data: &[u8], version: u8, spec: BlockSpec) -> Result<Vec<u8>,
 }
 
 /// Chooses the smallest version whose data capacity holds `data_len` payload bytes.
-fn choose_version(data_len: usize, ec: QrEcLevel) -> Result<u8, QrEncodeError> {
-    for version in 1u8..=10 {
+fn choose_version_in(
+    data_len: usize,
+    ec: QrEcLevel,
+    min_version: u8,
+    max_version: u8,
+) -> Result<u8, QrEncodeError> {
+    let min_version = min_version.clamp(1, 10);
+    let max_version = max_version.clamp(min_version, 10);
+    for version in min_version..=max_version {
         // The 8-bit count indicator of versions 1–9 cannot describe more than 255 bytes.
         if version <= 9 && data_len > 255 {
             continue;
@@ -737,10 +791,11 @@ fn read_format_bits(matrix: &QrMatrix) -> u16 {
 /// format information with the level it actually used.
 fn decode_ec_level(matrix: &QrMatrix) -> QrEcLevel {
     let unmasked = read_format_bits(matrix) ^ 0x5412;
-    if (unmasked >> 13) & 0x03 == 1 {
-        QrEcLevel::L
-    } else {
-        QrEcLevel::M
+    match (unmasked >> 13) & 0x03 {
+        0b01 => QrEcLevel::L,
+        0b11 => QrEcLevel::Q,
+        0b10 => QrEcLevel::H,
+        _ => QrEcLevel::M,
     }
 }
 
@@ -772,8 +827,21 @@ fn best_mask(matrix: &QrMatrix) -> u8 {
 }
 
 /// Encodes `data` as a byte-mode QR symbol, choosing the smallest fitting version.
+///
+/// Test-only constructor for the default version window.
+#[cfg(test)]
 fn encode_byte_mode(data: &[u8], ec: QrEcLevel) -> Result<QrMatrix, QrEncodeError> {
-    let version = choose_version(data.len(), ec)?;
+    encode_byte_mode_in(data, ec, 1, 10)
+}
+
+/// Encodes `data` within an explicit version window.
+fn encode_byte_mode_in(
+    data: &[u8],
+    ec: QrEcLevel,
+    min_version: u8,
+    max_version: u8,
+) -> Result<QrMatrix, QrEncodeError> {
+    let version = choose_version_in(data.len(), ec, min_version, max_version)?;
     let spec = block_spec(version, ec).ok_or_else(|| {
         QrEncodeError(format!(
             "no Reed-Solomon block layout for QR version {version} at EC level {ec:?}"
@@ -890,6 +958,16 @@ pub struct QRCode {
     /// The reason the current `data` could not be encoded, if any. When set, `draw` renders an
     /// explicit error placeholder and never a fake code.
     encode_error: Option<String>,
+    /// Error-correction level used by the encoder.
+    ec_level: QrEcLevel,
+    /// Smallest QR version the encoder may choose.
+    min_version: u8,
+    /// Largest QR version the encoder may choose.
+    max_version: u8,
+    /// Caller-supplied module colour, or `None` to follow the theme's ink.
+    foreground_color: Option<Color>,
+    /// Caller-supplied quiet-zone colour, or `None` to follow the theme's background.
+    background_color: Option<Color>,
 }
 
 impl QRCode {
@@ -902,6 +980,11 @@ impl QRCode {
             quiet_zone: 2,
             matrix: QrMatrix::blank(matrix_size(1)),
             encode_error: None,
+            ec_level: QrEcLevel::L,
+            min_version: 1,
+            max_version: 10,
+            foreground_color: None,
+            background_color: None,
         };
         widget.reencode();
         widget
@@ -929,7 +1012,12 @@ impl QRCode {
 
     /// Re-encodes `data`, recording an error instead of keeping a stale or fabricated matrix.
     fn reencode(&mut self) {
-        match encode_byte_mode(self.data.as_bytes(), QrEcLevel::L) {
+        match encode_byte_mode_in(
+            self.data.as_bytes(),
+            self.ec_level,
+            self.min_version,
+            self.max_version,
+        ) {
             Ok(matrix) => {
                 self.matrix = matrix;
                 self.encode_error = None;
@@ -944,6 +1032,67 @@ impl QRCode {
     /// Returns the current module size in pixels.
     pub fn module_size(&self) -> u32 {
         self.module_size
+    }
+
+    /// The error-correction level currently used.
+    pub fn ec_level(&self) -> QrEcLevel {
+        self.ec_level
+    }
+
+    /// Sets the error-correction level and re-encodes.
+    pub fn set_ec_level(&mut self, level: QrEcLevel) {
+        if self.ec_level == level {
+            return;
+        }
+        self.ec_level = level;
+        self.reencode();
+        self.base.request_redraw();
+    }
+
+    /// The version window the encoder may choose from.
+    pub fn version_range(&self) -> (u8, u8) {
+        (self.min_version, self.max_version)
+    }
+
+    /// Sets the version window (clamped to the supported `1..=10`) and re-encodes.
+    pub fn set_version_range(&mut self, min_version: u8, max_version: u8) {
+        let min_version = min_version.clamp(1, 10);
+        let max_version = max_version.clamp(min_version, 10);
+        if self.min_version == min_version && self.max_version == max_version {
+            return;
+        }
+        self.min_version = min_version;
+        self.max_version = max_version;
+        self.reencode();
+        self.base.request_redraw();
+    }
+
+    /// The caller-supplied module colour, if any.
+    pub fn foreground_color(&self) -> Option<Color> {
+        self.foreground_color
+    }
+
+    /// Sets the module colour; `None` follows the theme.
+    pub fn set_foreground_color(&mut self, color: Option<Color>) {
+        if self.foreground_color == color {
+            return;
+        }
+        self.foreground_color = color;
+        self.base.request_redraw();
+    }
+
+    /// The caller-supplied quiet-zone colour, if any.
+    pub fn background_color(&self) -> Option<Color> {
+        self.background_color
+    }
+
+    /// Sets the quiet-zone colour; `None` follows the theme.
+    pub fn set_background_color(&mut self, color: Option<Color>) {
+        if self.background_color == color {
+            return;
+        }
+        self.background_color = color;
+        self.base.request_redraw();
     }
 
     /// Returns the size of the **quiet zone** — the light margin around the symbol — in
@@ -1024,6 +1173,17 @@ impl WidgetProperties for QRCode {
             "data" => Ok(CapabilityValue::String(self.data().to_string())),
             "size" => Ok(CapabilityValue::UInt(self.size() as u64)),
             "quiet_zone" => Ok(CapabilityValue::UInt(self.quiet_zone() as u64)),
+            "ec_level" => Ok(CapabilityValue::String(self.ec_level.as_str().to_string())),
+            "min_version" => Ok(CapabilityValue::UInt(u64::from(self.min_version))),
+            "max_version" => Ok(CapabilityValue::UInt(u64::from(self.max_version))),
+            "foreground_color" => Ok(match self.foreground_color {
+                Some(c) => CapabilityValue::Color(c),
+                None => CapabilityValue::Null,
+            }),
+            "background_color" => Ok(match self.background_color {
+                Some(c) => CapabilityValue::Color(c),
+                None => CapabilityValue::Null,
+            }),
             _ => base_property_get(self, name),
         }
     }
@@ -1044,12 +1204,55 @@ impl WidgetProperties for QRCode {
                 self.set_quiet_zone(expect_usize(value)? as u32);
                 Ok(())
             }
+            "ec_level" => {
+                let token = expect_string(value)?;
+                let level =
+                    QrEcLevel::from_token(&token).ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_ec_level(level);
+                Ok(())
+            }
+            "min_version" => {
+                let min = expect_usize(value)?.min(10) as u8;
+                self.set_version_range(min, self.max_version);
+                Ok(())
+            }
+            "max_version" => {
+                let max = expect_usize(value)?.clamp(1, 10) as u8;
+                self.set_version_range(self.min_version, max);
+                Ok(())
+            }
+            "foreground_color" => {
+                match value {
+                    CapabilityValue::Null => self.set_foreground_color(None),
+                    CapabilityValue::Color(color) => self.set_foreground_color(Some(color)),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
+            "background_color" => {
+                match value {
+                    CapabilityValue::Null => self.set_background_color(None),
+                    CapabilityValue::Color(color) => self.set_background_color(Some(color)),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["data", "size", "quiet_zone", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "data",
+            "size",
+            "quiet_zone",
+            "ec_level",
+            "min_version",
+            "max_version",
+            "foreground_color",
+            "background_color",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -1068,12 +1271,14 @@ impl Draw for QRCode {
         // re-entrant).
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("qr_code");
-        let surface = style
+        let surface = self
             .background_color
+            .or(style.background_color)
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::WHITE);
-        let module_color = style
-            .text_color
+        let module_color = self
+            .foreground_color
+            .or(style.text_color)
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
         let border_color = style
@@ -1493,5 +1698,26 @@ mod tests {
             assert!(!matrix.get((n - 1 - c) as u32, 7), "bottom-left separator is light");
             assert!(!matrix.get(7, (n - 1 - c) as u32), "top-right separator is light");
         }
+    }
+
+    #[test]
+    fn all_four_ec_levels_encode_and_the_property_round_trips() {
+        for level in [QrEcLevel::L, QrEcLevel::M, QrEcLevel::Q, QrEcLevel::H] {
+            let matrix = encode_byte_mode(b"EC-LEVEL", level)
+                .unwrap_or_else(|err| panic!("{level:?} must encode: {err:?}"));
+            assert!(matrix.size >= matrix_size(1) && matrix.size <= matrix_size(2));
+            assert_eq!(decode_ec_level(&matrix), level);
+        }
+        let mut qr = QRCode::new(Rect::new(0, 0, 120, 120));
+        qr.set_data("colours");
+        qr.set_ec_level(QrEcLevel::H);
+        assert_eq!(qr.ec_level(), QrEcLevel::H);
+        qr.set_version_range(4, 6);
+        assert_eq!(qr.version_range(), (4, 6));
+        qr.set_foreground_color(Some(Color::rgb(10, 20, 30)));
+        qr.set_background_color(Some(Color::rgb(240, 240, 240)));
+        let svg = crate::widget::svg::render_to_svg(&mut qr);
+        assert!(svg.starts_with("<svg"));
+        assert_eq!(qr.get("ec_level"), Ok(CapabilityValue::String("H".to_string())));
     }
 }

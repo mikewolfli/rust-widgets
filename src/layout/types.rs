@@ -235,6 +235,38 @@ pub trait Layout {
         false
     }
 
+    /// Number of child widgets managed by this layout.
+    ///
+    /// The default counts [`child_ids`](Self::child_ids); a layout that can answer without
+    /// materialising the id vector should override it.
+    fn widget_count(&self) -> usize {
+        self.child_ids().len()
+    }
+
+    /// Position of `id` in [`child_ids`](Self::child_ids) order.
+    ///
+    /// This is the index the child is addressed by in [`update`](Self::update)'s emission
+    /// order, not necessarily an index into a layout-specific internal list. Returns `None`
+    /// when the layout does not manage `id`.
+    fn index_of(&self, id: ObjectId) -> Option<usize> {
+        self.child_ids().iter().position(|child| *child == id)
+    }
+
+    /// The rectangle `id` would receive inside `rect`.
+    ///
+    /// A single-point query for a caller that needs one child's geometry: the default runs
+    /// [`update`](Self::update) and captures the matching emission, which is the only channel
+    /// the trait has for child rectangles. Returns `None` when the layout does not place `id`.
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        let mut found = None;
+        self.update(rect, &mut |child, child_rect| {
+            if child == id && found.is_none() {
+                found = Some(child_rect);
+            }
+        });
+        found
+    }
+
     /// Removes all children from this layout.
     /// Default implementation does nothing (layouts without children).
     fn clear(&mut self) {

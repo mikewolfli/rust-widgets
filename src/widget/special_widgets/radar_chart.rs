@@ -132,6 +132,8 @@ pub struct RadarChart {
     base: BaseWidget,
     axes: Vec<String>,
     series: Vec<Vec<f64>>,
+    /// Display names, index-aligned with `series`. An empty entry falls back to `Series N`.
+    series_names: Vec<String>,
     /// Whether the value rings and the spoke lines are drawn.
     show_grid: bool,
     /// Whether axis names are drawn around the perimeter.
@@ -169,6 +171,7 @@ impl RadarChart {
             base: BaseWidget::new(WidgetKind::RadarChart, geometry, "RadarChart"),
             axes: Vec::new(),
             series: Vec::new(),
+            series_names: Vec::new(),
             show_grid: true,
             show_axis_labels: true,
             show_legend: true,
@@ -301,6 +304,47 @@ impl RadarChart {
     /// Returns the number of series.
     pub fn series_count(&self) -> usize {
         self.series.len()
+    }
+
+    /// Returns the series display names as configured.
+    ///
+    /// Entries are index-aligned with the series and may be shorter; a series with no name still
+    /// draws, under the `Series N` fallback.
+    pub fn series_names(&self) -> &[String] {
+        &self.series_names
+    }
+
+    /// Replaces the series display names.
+    pub fn set_series_names(&mut self, names: Vec<String>) {
+        if self.series_names == names {
+            return;
+        }
+        self.series_names = names;
+        self.base.request_redraw();
+    }
+
+    /// Names one series, returning `false` when the index is not a series.
+    ///
+    /// # Why a name is a separate row from the values
+    ///
+    /// The legend and the hover read-out had to call every series `Series N`, because the only thing
+    /// the chart knew about a series was its values. A name is the one datum the *reader* needs that
+    /// the numbers do not carry.
+    pub fn set_series_name(&mut self, index: usize, name: impl Into<String>) -> bool {
+        if index >= self.series.len() {
+            return false;
+        }
+        if self.series_names.len() <= index {
+            self.series_names.resize(index + 1, String::new());
+        }
+        self.series_names[index] = name.into();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The display name of series `index`, or `None` when it has none.
+    fn series_name(&self, index: usize) -> Option<&str> {
+        self.series_names.get(index).map(String::as_str).filter(|name| !name.is_empty())
     }
 
     /// Adds one series, returning its index.
@@ -568,6 +612,12 @@ impl WidgetProperties for RadarChart {
                 Some(axis) => CapabilityValue::UInt(axis as u64),
                 None => CapabilityValue::Null,
             }),
+            "series_names" => Ok(CapabilityValue::Tuple(
+                self.series_names()
+                    .iter()
+                    .map(|name| CapabilityValue::String(name.clone()))
+                    .collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -584,6 +634,11 @@ impl WidgetProperties for RadarChart {
             }
             "show_legend" => {
                 self.set_show_legend(expect_bool(value)?);
+                Ok(())
+            }
+            "series_names" => {
+                let names = crate::widget::capability::coercion::expect_string_list(value)?;
+                self.set_series_names(names);
                 Ok(())
             }
             // `hovered_axis` is written through the pointer, not through the
@@ -605,6 +660,7 @@ impl WidgetProperties for RadarChart {
             "show_axis_labels",
             "show_legend",
             "hovered_axis",
+            "series_names",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -661,8 +717,11 @@ impl Draw for RadarChart {
         if self.show_axis_labels {
             self.draw_axis_labels(context, center, radius, axis_count);
         }
+        // One vertex buffer for every series: each series cleared it, so the paint allocated a
+        // fresh vector per series per frame for a fixed number of points.
+        let mut vertices: Vec<Point> = Vec::with_capacity(axis_count);
         for series_index in 0..self.series.len() {
-            self.draw_series(context, center, radius, max, series_index);
+            self.draw_series(context, center, radius, max, series_index, &mut vertices);
         }
         // The hovered vertex is marked so the pointer's nearest point is visible before a
         // click commits to it.
@@ -860,6 +919,7 @@ impl RadarChart {
         radius: u32,
         max: f64,
         series_index: usize,
+        vertices: &mut Vec<Point>,
     ) {
         let Some(values) = self.series.get(series_index) else {
             return;
@@ -870,27 +930,32 @@ impl RadarChart {
         }
         let color = Self::series_color(series_index);
         let scale = self.reveal_scale();
-        let vertices: Vec<Point> = (0..axis_count)
-            .map(|axis| {
-                let angle = self.axis_angle(axis);
-                // A missing dimension reads as zero, which lands on the centre,
-                // matching `value_at` returning `None` for it.
-                let value = values.get(axis).copied().unwrap_or(0.0);
-                let axis_max = self.axis_maximum(axis).unwrap_or(max);
-                let scaled_radius = (radius as f32 * scale).max(0.0) as u32;
-                self.vertex(center, scaled_radius, angle, value, axis_max)
-            })
-            .collect();
+        vertices.clear();
+        for axis in 0..axis_count {
+            let angle = self.axis_angle(axis);
+            // A missing dimension reads as zero, which lands on the centre,
+            // matching `value_at` returning `None` for it.
+            let value = values.get(axis).copied().unwrap_or(0.0);
+            let axis_max = self.axis_maximum(axis).unwrap_or(max);
+            let scaled_radius = (radius as f32 * scale).max(0.0) as u32;
+            vertices.push(self.vertex(center, scaled_radius, angle, value, axis_max));
+        }
 
         // Fill first, then stroke: the render context has no filled-polygon
         // primitive, so the fill is a fan of triangles from the centre — exact for a
         // star-shaped polygon, which a radar polygon always is because every vertex
         // lies on a ray from the centre.
+        //
+        // One radial line per vertex, then one edge per vertex. The previous loop painted
+        // `center→from`, `center→to` and `from→to` for every edge, so each radial line was drawn
+        // twice (once as the previous edge's `to`, once as this edge's `from`) — twice the ink for
+        // the same fan, and the adjacent-segment overlap made the spokes look darker than the rim.
+        for vertex in vertices.iter() {
+            context.draw_line(center, *vertex, color);
+        }
         for axis in 0..axis_count {
             let from = vertices[axis];
             let to = vertices[(axis + 1) % axis_count];
-            context.draw_line(center, from, color);
-            context.draw_line(center, to, color);
             context.draw_line(from, to, color);
         }
         for axis in 0..axis_count {
@@ -898,7 +963,7 @@ impl RadarChart {
             let to = vertices[(axis + 1) % axis_count];
             context.draw_line_stroke(from, to, color, 2);
         }
-        for vertex in &vertices {
+        for vertex in vertices.iter() {
             context.fill_circle(*vertex, 2, color);
         }
     }
@@ -919,7 +984,12 @@ impl RadarChart {
         for index in 0..self.series.len() {
             context.fill_rect(Rect::new(x, y, SWATCH, SWATCH), Self::series_color(index));
             label.clear();
-            let _ = write!(label, "Series {}", index + 1);
+            match self.series_name(index) {
+                Some(name) => label.push_str(name),
+                None => {
+                    let _ = write!(label, "Series {}", index + 1);
+                }
+            }
             // The legend strip is fixed at 90 px on the right, so the text is fitted to
             // what remains of it beside the swatch: an unfitted `Series 12` ran past the
             // control's right edge and only the raster backends hid it.
@@ -974,7 +1044,16 @@ impl RadarChart {
             let marker = self.vertex(center, radius, angle, value, max);
             context.fill_circle(marker, 4, Self::series_color(series_index));
             label.clear();
-            let _ = write!(label, "{value:.1}");
+            // A named series is identified by its name; an unnamed one keeps the old bare value, so
+            // the read-out cannot invent a label the caller did not give it.
+            match self.series_name(series_index) {
+                Some(name) => {
+                    let _ = write!(label, "{name}: {value:.1}");
+                }
+                None => {
+                    let _ = write!(label, "{value:.1}");
+                }
+            }
             context.draw_text(
                 Point { x: outer.x + 4, y: text_y },
                 &label,
@@ -1438,5 +1517,105 @@ mod tests {
         let rgba = render(&mut chart, Size::new(320, 320));
         assert!(!rgba.is_empty());
         assert_eq!(chart.value_at(0, 2), None);
+    }
+
+    #[test]
+    fn series_names_replace_the_generic_legend_label() {
+        let mut chart = chart();
+        assert_eq!(chart.series_name(0), None);
+        assert!(chart.set_series_name(0, "Current"));
+        assert_eq!(chart.series_name(0), Some("Current"));
+        assert!(!chart.set_series_name(9, "Missing"), "there is no series 9");
+
+        // The property is the same row, as a list of strings.
+        chart
+            .set(
+                "series_names",
+                CapabilityValue::Tuple(vec![CapabilityValue::String("Current".to_string())]),
+            )
+            .expect("a string list is accepted");
+        assert_eq!(chart.get("series_names").unwrap(), {
+            CapabilityValue::Tuple(vec![CapabilityValue::String("Current".to_string())])
+        });
+    }
+
+    /// A recorder that keeps every render command, so the paint's line count is observable.
+    struct Recorder {
+        commands: Vec<crate::render::RenderCommand>,
+        inner: SoftwarePaintBackend,
+    }
+
+    impl PaintBackend for Recorder {
+        fn begin_frame(&mut self, clear: Color) {
+            self.inner.begin_frame(clear);
+        }
+        fn end_frame(&mut self) {
+            self.inner.end_frame();
+        }
+        fn execute_command(&mut self, command: &crate::render::RenderCommand) {
+            self.commands.push(command.clone());
+            self.inner.execute_command(command);
+        }
+        fn size(&self) -> Size {
+            self.inner.size()
+        }
+        fn set_size(&mut self, size: Size) {
+            self.inner.set_size(size);
+        }
+        fn dpi_scale(&self) -> f32 {
+            self.inner.dpi_scale()
+        }
+        fn set_dpi_scale(&mut self, scale: f32) {
+            self.inner.set_dpi_scale(scale);
+        }
+        fn measure_text(&self, text: &str, font: &crate::core::Font) -> crate::render::TextMetrics {
+            self.inner.measure_text(text, font)
+        }
+        fn shape_text(
+            &self,
+            text: &str,
+            font: &crate::core::Font,
+        ) -> crate::compat::Rc<crate::render::ShapedText> {
+            self.inner.shape_text(text, font)
+        }
+        fn frame_rgba(&self) -> &[u8] {
+            self.inner.frame_rgba()
+        }
+        fn apply_render_config(&mut self, config: crate::render::SoftwareRenderConfig) {
+            self.inner.apply_render_config(config)
+        }
+    }
+
+    /// SP-36: the fan fill paints one radial line per vertex, not one per edge per endpoint.
+    ///
+    /// The old loop drew `center→from`, `center→to` and `from→to` for every edge, so each radial
+    /// line was emitted twice. With the grid, labels, legend and hover all off, one series of `n`
+    /// dimensions must therefore emit exactly `2n` plain lines: `n` radials and `n` edges.
+    #[test]
+    fn fan_fill_draws_each_radial_once() {
+        let mut chart = RadarChart::new(Rect::new(0, 0, 320, 320));
+        chart.set_axes(vec!["A".to_string(), "B".to_string(), "C".to_string(), "D".to_string()]);
+        chart.add_series(vec![10.0, 20.0, 30.0, 40.0]);
+        chart.set_show_grid(false);
+        chart.set_show_axis_labels(false);
+        chart.set_show_legend(false);
+
+        let mut recorder = Recorder {
+            commands: Vec::new(),
+            inner: SoftwarePaintBackend::new(Size::new(320, 320), 1.0),
+        };
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            chart.draw(&mut context);
+        }
+        recorder.end_frame();
+
+        let lines = recorder
+            .commands
+            .iter()
+            .filter(|command| matches!(command, crate::render::RenderCommand::DrawLine { .. }))
+            .count();
+        assert_eq!(lines, 8, "4 dimensions must emit 4 radials + 4 edges, got {lines} plain lines");
     }
 }

@@ -69,8 +69,16 @@ pub struct DepthChart {
     ask_color: Color,
     /// Emitted with the price level under the pointer.
     pub level_hovered: crate::signal::Signal1<f64>,
+    /// Emitted with the price level when a row is clicked.
+    pub level_clicked: crate::signal::Signal1<f64>,
     /// The price of the level the pointer is nearest, once snapped.
     hovered_level: Option<f64>,
+    /// The usable levels and the accumulated curve, rebuilt when the book or depth changes.
+    bid_levels: Vec<BookLevel>,
+    ask_levels: Vec<BookLevel>,
+    curve_cache: Vec<DepthPoint>,
+    max_cumulative_cache: f64,
+    price_bounds_cache: (f64, f64),
 }
 
 impl DepthChart {
@@ -83,8 +91,64 @@ impl DepthChart {
             bid_color: Color::rgb(38, 166, 91),
             ask_color: Color::rgb(220, 68, 70),
             level_hovered: crate::signal::Signal1::new(),
+            level_clicked: crate::signal::Signal1::new(),
             hovered_level: None,
+            bid_levels: Vec::new(),
+            ask_levels: Vec::new(),
+            curve_cache: Vec::new(),
+            max_cumulative_cache: 0.0,
+            price_bounds_cache: (f64::NAN, f64::NAN),
         }
+    }
+
+    /// Rebuilds the filtered levels, the accumulated curve and the two scales.
+    fn rebuild(&mut self) {
+        self.bid_levels = self.plottable_levels(DepthSide::Bid);
+        self.ask_levels = self.plottable_levels(DepthSide::Ask);
+        self.curve_cache.clear();
+        let mut running = 0.0;
+        for level in &self.bid_levels {
+            running += level.quantity;
+            self.curve_cache.push(DepthPoint {
+                price: level.price,
+                cumulative_quantity: running,
+                side: DepthSide::Bid,
+            });
+        }
+        let mut running = 0.0;
+        for level in &self.ask_levels {
+            running += level.quantity;
+            self.curve_cache.push(DepthPoint {
+                price: level.price,
+                cumulative_quantity: running,
+                side: DepthSide::Ask,
+            });
+        }
+        let peak = |levels: &[BookLevel]| levels.iter().map(|level| level.quantity).sum::<f64>();
+        self.max_cumulative_cache = peak(&self.bid_levels).max(peak(&self.ask_levels));
+        self.price_bounds_cache = Self::compute_price_bounds(&self.bid_levels, &self.ask_levels);
+        if let Some(price) = self.hovered_level {
+            if !self.curve_cache.iter().any(|point| point.price == price) {
+                self.hovered_level = None;
+            }
+        }
+    }
+
+    fn compute_price_bounds(bids: &[BookLevel], asks: &[BookLevel]) -> (f64, f64) {
+        let mut low = f64::INFINITY;
+        let mut high = f64::NEG_INFINITY;
+        for level in bids.iter().chain(asks.iter()) {
+            low = low.min(level.price);
+            high = high.max(level.price);
+        }
+        if low > high {
+            return (f64::NAN, f64::NAN);
+        }
+        if high <= low {
+            let magnitude = low.abs().max(1.0) * 0.001;
+            return (low - magnitude, high + magnitude);
+        }
+        (low, high)
     }
 
     /// The plot area for this control's geometry.
@@ -109,6 +173,7 @@ impl DepthChart {
     /// Replaces the book and requests a repaint.
     pub fn set_book(&mut self, book: OrderBook) {
         self.book = book;
+        self.rebuild();
         self.base.request_redraw();
     }
 
@@ -127,6 +192,7 @@ impl DepthChart {
             return;
         }
         self.depth = depth;
+        self.rebuild();
         self.base.request_redraw();
     }
 
@@ -148,26 +214,7 @@ impl DepthChart {
     /// growing as the price moves away from the touch. Asks follow the same rule. The
     /// caller drawing its own annotation gets the same numbers the curve was drawn from.
     pub fn curve(&self) -> Vec<DepthPoint> {
-        let mut points = Vec::new();
-        let mut running = 0.0;
-        for level in self.plottable_levels(DepthSide::Bid) {
-            running += level.quantity;
-            points.push(DepthPoint {
-                price: level.price,
-                cumulative_quantity: running,
-                side: DepthSide::Bid,
-            });
-        }
-        let mut running = 0.0;
-        for level in self.plottable_levels(DepthSide::Ask) {
-            running += level.quantity;
-            points.push(DepthPoint {
-                price: level.price,
-                cumulative_quantity: running,
-                side: DepthSide::Ask,
-            });
-        }
-        points
+        self.curve_cache.clone()
     }
 
     /// The price of the level the pointer is currently nearest, if any.
@@ -182,7 +229,7 @@ impl DepthChart {
     /// book for an approximate match. Snapping answers the question the signal asks.
     fn nearest_level(&self, price: f64) -> Option<f64> {
         let mut best: Option<(f64, f64)> = None;
-        for point in self.curve() {
+        for point in &self.curve_cache {
             let distance = (point.price - price).abs();
             if best.is_none_or(|(_, near)| distance < near) {
                 best = Some((point.price, distance));
@@ -238,15 +285,7 @@ impl DepthChart {
     /// the y axis carries the accumulation. Scaling against a single level would push the
     /// curve off the top of the pane at its far end.
     fn max_cumulative(&self) -> f64 {
-        let mut best = 0.0_f64;
-        for side in [DepthSide::Bid, DepthSide::Ask] {
-            let mut running = 0.0;
-            for level in self.plottable_levels(side) {
-                running += level.quantity;
-            }
-            best = best.max(running);
-        }
-        best
+        self.max_cumulative_cache
     }
 
     /// Draws one side's step curve.
@@ -263,7 +302,10 @@ impl DepthChart {
         color: Color,
         max_cumulative: f64,
     ) {
-        let levels = self.plottable_levels(side);
+        let levels = match side {
+            DepthSide::Bid => &self.bid_levels,
+            DepthSide::Ask => &self.ask_levels,
+        };
         if levels.is_empty() || max_cumulative <= 0.0 {
             return;
         }
@@ -284,7 +326,7 @@ impl DepthChart {
         let mut previous: Option<(i32, i32)> = None;
         let mut running = 0.0;
         // Walk away from the touch, so the curve starts at the spread and grows outward.
-        for level in &levels {
+        for level in levels {
             running += level.quantity;
             let x = to_x(level.price);
             let y = to_y(running);
@@ -329,7 +371,7 @@ impl DepthChart {
         let wash = color.blend(&self.chrome().surface, 0.80);
         let mut running = 0.0;
         let mut previous_x: Option<i32> = None;
-        for level in &levels {
+        for level in levels {
             running += level.quantity;
             let x = to_x(level.price);
             let y = to_y(running);
@@ -362,22 +404,7 @@ impl DepthChart {
     /// amount around the single price, which is the same degradation `PriceAxis::new` uses,
     /// and the lone level then draws through the middle of the pane.
     fn price_bounds(&self) -> (f64, f64) {
-        let mut low = f64::INFINITY;
-        let mut high = f64::NEG_INFINITY;
-        for side in [DepthSide::Bid, DepthSide::Ask] {
-            for level in self.plottable_levels(side) {
-                low = low.min(level.price);
-                high = high.max(level.price);
-            }
-        }
-        if low > high {
-            return (f64::NAN, f64::NAN);
-        }
-        if high <= low {
-            let magnitude = low.abs().max(1.0) * 0.001;
-            return (low - magnitude, high + magnitude);
-        }
-        (low, high)
+        self.price_bounds_cache
     }
 }
 
@@ -420,6 +447,11 @@ impl Widget for DepthChart {
                     CapabilityValue::Float(*v)
                 }))
             }
+            "level_clicked" => {
+                Some(EventSignalRef::mapped("level_clicked", &self.level_clicked, |v| {
+                    CapabilityValue::Float(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -428,24 +460,47 @@ impl Widget for DepthChart {
 impl crate::event::EventHandler for DepthChart {
     fn handle_event(&mut self, event: &crate::event::Event) {
         use crate::event::Event;
-        if let Event::MouseMove { pos } | Event::PointerMove { pos, .. } = event {
-            let area = self.plot_area();
-            let (low, high) = self.price_bounds();
-            if high > low && area.rect.width > 0 {
-                let fraction = (pos.x - area.rect.x) as f64 / area.rect.width as f64;
-                if (0.0..=1.0).contains(&fraction) {
-                    let pointer = low + fraction * (high - low);
-                    // Snap to a resting level: the signal names an order's price, not an
-                    // arbitrary coordinate between two of them.
-                    if let Some(level) = self.nearest_level(pointer) {
-                        if self.hovered_level != Some(level) {
+        match event {
+            Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
+                let area = self.plot_area();
+                let (low, high) = self.price_bounds();
+                if high > low && area.rect.width > 0 {
+                    let fraction = (pos.x - area.rect.x) as f64 / area.rect.width as f64;
+                    if (0.0..=1.0).contains(&fraction) {
+                        let pointer = low + fraction * (high - low);
+                        // Snap to a resting level: the signal names an order's price, not an
+                        // arbitrary coordinate between two of them.
+                        if let Some(level) = self.nearest_level(pointer) {
+                            if self.hovered_level != Some(level) {
+                                self.hovered_level = Some(level);
+                                self.level_hovered.emit(level);
+                                self.base.request_redraw();
+                            }
+                        }
+                    }
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_level.take().is_some() {
+                    self.base.request_redraw();
+                }
+            }
+            Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
+                let area = self.plot_area();
+                let (low, high) = self.price_bounds();
+                if high > low && area.rect.width > 0 {
+                    let fraction = (pos.x - area.rect.x) as f64 / area.rect.width as f64;
+                    if (0.0..=1.0).contains(&fraction) {
+                        let pointer = low + fraction * (high - low);
+                        if let Some(level) = self.nearest_level(pointer) {
                             self.hovered_level = Some(level);
-                            self.level_hovered.emit(level);
+                            self.level_clicked.emit(level);
                             self.base.request_redraw();
                         }
                     }
                 }
             }
+            _ => {}
         }
         self.base.handle_event(event);
     }
@@ -475,12 +530,27 @@ impl Draw for DepthChart {
         // A price/quantity scale: the curve's whole reading is "how much is available by
         // here", which is a comparison against the baseline, so the gridlines are what turn
         // it from a shape into a quantity.
+        let axis_font = role_font(self.style(), 10.0);
+        let label_left = area.rect.x - area.left_margin;
+        let label_width = (area.label_x() - label_left).max(0) as u32;
         for step in 0..=3 {
             let y = area.rect.y + area.rect.height as i32 * step / 3;
             context.draw_line(
                 crate::core::Point { x: area.rect.x, y },
                 crate::core::Point { x: area.right(), y },
                 chrome.grid,
+            );
+            // The quantity this gridline stands for, so a curve's height is readable.
+            let fraction = 1.0 - step as f64 / 3.0;
+            let value = max_cumulative * fraction;
+            let text = format!("{value:.0}");
+            let line_height = context.measure_text(&text, &axis_font).height.max(1);
+            context.draw_text_fitted_cow(
+                Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height),
+                &text,
+                &axis_font,
+                chrome.ink.with_alpha(190),
+                HorizontalAlignment::Right,
             );
         }
 
@@ -516,6 +586,36 @@ impl Draw for DepthChart {
                         HorizontalAlignment::Left,
                     );
                 }
+            }
+        }
+
+        // The hovered level gets a visible mark and its quantity, so the already-emitted
+        // `level_hovered` signal is not information the picture withholds.
+        if let Some(level) = self.hovered_level {
+            let (low, high) = self.price_bounds();
+            if high > low {
+                let fraction = (level - low) / (high - low);
+                let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
+                let quantity = self
+                    .curve_cache
+                    .iter()
+                    .find(|point| point.price == level)
+                    .map(|point| point.cumulative_quantity)
+                    .unwrap_or(0.0);
+                let fraction_y = (quantity / max_cumulative).clamp(0.0, 1.0);
+                let y = area.bottom() - (fraction_y * area.rect.height as f64).round() as i32;
+                context.fill_circle(crate::core::Point { x, y }, 3, chrome.crosshair);
+                let text = format!("{level:.2} · {quantity:.0}");
+                let font = role_font(self.style(), 10.0);
+                let width = context.measure_text(&text, &font).width as i32;
+                let x_text = (x + 6).min(area.right() - width).max(area.rect.x);
+                context.draw_text(
+                    crate::core::Point { x: x_text, y: (y - 14).max(area.rect.y) },
+                    &text,
+                    &font,
+                    chrome.ink,
+                    HorizontalAlignment::Left,
+                );
             }
         }
     }

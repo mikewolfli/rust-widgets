@@ -11,7 +11,7 @@ use crate::action::Action as CmdAction;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::shortcut::{Key, Modifiers, PlatformShortcutStyle, Shortcut};
+use crate::shortcut::{Key, Modifiers, PlatformShortcutStyle, Shortcut, ShortcutManager};
 use crate::signal::{ConnectionHandle, GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -66,6 +66,26 @@ impl MenuRole {
             Self::Window => "window",
             Self::Help => "help",
         }
+    }
+
+    /// Reads the token written by [`Self::as_str`].
+    ///
+    /// An unknown token is `None` rather than `None` the variant: a typo and the legitimate
+    /// "ordinary entry" role must not collapse into the same answer.
+    pub fn from_token(token: &str) -> Option<Self> {
+        Some(match token {
+            "none" => Self::None,
+            "about" => Self::About,
+            "preferences" => Self::Preferences,
+            "quit" => Self::Quit,
+            "hide" => Self::Hide,
+            "hide_others" => Self::HideOthers,
+            "show_all" => Self::ShowAll,
+            "services" => Self::Services,
+            "window" => Self::Window,
+            "help" => Self::Help,
+            _ => return None,
+        })
     }
 }
 
@@ -276,9 +296,10 @@ impl Action {
     }
     /// Whether a key event matches the installed binding.
     ///
-    /// Both arguments use the same convention as [`Event::KeyPress`]. A binding
-    /// written with [`Modifiers::PRIMARY`] therefore matches Command on macOS and
-    /// Control elsewhere, exactly like the rest of the shortcut system.
+    /// Both arguments use the same convention as [`Event::KeyPress`]. The platform modifier rule
+    /// is **not** re-implemented here: [`ShortcutManager::matches_binding`] is the single decision
+    /// point, so a standalone action, a registered menu binding, and the global registry can
+    /// never disagree about whether a chord matches.
     pub fn matches_shortcut(&self, key: u32, modifiers: u32) -> bool {
         let Some(binding) = self.shortcut_key.as_ref() else {
             return false;
@@ -286,29 +307,37 @@ impl Action {
         let Some(pressed) = Key::from_key_code(key) else {
             return false;
         };
-        if binding.key != pressed {
+        ShortcutManager::matches_binding(binding, pressed, Modifiers::from_event_bits(modifiers))
+    }
+
+    /// Dispatches one key press to this action, returning whether it fired.
+    ///
+    /// This is the host entry point the generator and the widget event loop share: call it for
+    /// every key press and it triggers the action exactly when the binding matches and the
+    /// command is enabled. It exists so a real accelerator does not depend on the host routing
+    /// `KeyPress` to this particular widget.
+    pub fn dispatch_shortcut(&mut self, key: u32, modifiers: u32) -> bool {
+        if !self.matches_shortcut(key, modifiers) || !self.cmd.is_enabled() {
             return false;
         }
-        // The event bitmask and the shortcut bitmask are not identical: a Command
-        // press also carries the Control bit, and on Windows/Linux a Control press
-        // is that platform's primary accelerator. Normalizing here keeps a
-        // `Shortcut::primary` binding reachable on every host, which is the same
-        // rule the global shortcut manager applies.
-        let style = PlatformShortcutStyle::current();
-        let mut pressed = Modifiers::from_event_bits(modifiers);
-        if style == PlatformShortcutStyle::Mac
-            && pressed.contains(Modifiers::PRIMARY)
-            && pressed.contains(Modifiers::CTRL)
-        {
-            pressed = pressed.without(Modifiers::CTRL);
-        }
-        if binding.modifiers == pressed {
-            return true;
-        }
-        style == PlatformShortcutStyle::Desktop
-            && pressed.contains(Modifiers::CTRL)
-            && !pressed.contains(Modifiers::PRIMARY)
-            && binding.modifiers == pressed.without(Modifiers::CTRL) | Modifiers::PRIMARY
+        self.trigger();
+        true
+    }
+
+    /// Registers this action's binding in the global shortcut registry.
+    ///
+    /// Registration is what brings the action under conflict detection and lets a host dispatch
+    /// through one table. The action id is explicit because a widget action is not guaranteed to
+    /// have a [`Action::command_id`] yet.
+    pub fn register_shortcut(
+        &self,
+        manager: &mut ShortcutManager,
+        action_id: impl Into<String>,
+    ) -> bool {
+        let Some(binding) = self.shortcut_key.as_ref() else {
+            return false;
+        };
+        manager.register(action_id, binding.clone(), self.text.clone())
     }
     /// Delegates to inner [`CmdAction::is_checkable`].
     pub fn is_checkable(&self) -> bool {
@@ -461,6 +490,52 @@ impl Action {
             // We emit widget-level triggered with current checked state.
             self.triggered.emit(self.cmd.is_checked());
         }
+    }
+
+    /// Serializes this action's presentation and command state.
+    ///
+    /// Unlike the widget-free [`crate::action::Action`], this type owns a real binding and a menu
+    /// role, so both travel here — which is the shape a menu document needs to describe a command
+    /// completely. The record is [`crate::action::ActionDefinition`], so the two action types share
+    /// one JSON spelling.
+    pub fn to_json(&self) -> String {
+        let definition = crate::action::ActionDefinition {
+            id: crate::compat::String::from(self.command_id().unwrap_or("")),
+            text: self.text.clone(),
+            checkable: self.cmd.is_checkable(),
+            checked: self.cmd.is_checked(),
+            enabled: self.base.is_enabled(),
+            shortcut: self.shortcut.clone(),
+            role: crate::compat::String::from(self.menu_role.as_str()),
+        };
+        definition.to_json()
+    }
+
+    /// Rebuilds an action from [`Self::to_json`].
+    ///
+    /// Geometry is required because a widget needs one; it is not part of the serialized record.
+    /// An unparsable shortcut is reported rather than silently dropped: a document that names an
+    /// accelerator the build cannot bind is wrong, not empty.
+    pub fn from_json(text: &str, geometry: Rect) -> Result<Self, String> {
+        let definition = crate::action::ActionDefinition::from_json(text)?;
+        let role = MenuRole::from_token(&definition.role)
+            .ok_or_else(|| crate::compat::format!("`{}` is not a menu role", definition.role))?;
+        let mut action = Self::new(definition.text, geometry);
+        action.set_command_id(definition.id);
+        action.set_checkable(definition.checkable);
+        action.set_checked(definition.checked);
+        action.base.set_enabled(definition.enabled);
+        action.set_menu_role(role);
+        if !definition.shortcut.is_empty() {
+            let binding = Shortcut::from_string(&definition.shortcut).ok_or_else(|| {
+                crate::compat::format!(
+                    "`{}` is not a shortcut this build understands",
+                    definition.shortcut
+                )
+            })?;
+            action.set_shortcut_key(binding);
+        }
+        Ok(action)
     }
 }
 /// A named set of actions that can enforce mutual exclusion.
@@ -770,8 +845,8 @@ impl EventHandler for Action {
         }
         match event {
             Event::MousePress { button, .. } if *button == 1 => self.trigger(),
-            Event::KeyPress { key, modifiers } if self.matches_shortcut(*key, *modifiers) => {
-                self.trigger();
+            Event::KeyPress { key, modifiers } => {
+                self.dispatch_shortcut(*key, *modifiers);
             }
             Event::MouseEnter { .. } => {
                 // The base already recorded the hover; this arm only repaints and

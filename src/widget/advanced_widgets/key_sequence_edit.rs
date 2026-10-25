@@ -9,6 +9,7 @@ use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
+use crate::widget::capability::types::CapabilityValue;
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -147,6 +148,11 @@ pub struct KeySequenceEdit {
     /// history. Not emitted by [`KeySequenceEdit::set_key_sequence`] when the
     /// incoming sequence equals the current one.
     pub key_sequence_changed: Signal1<KeySequence>,
+    /// Sequences already bound elsewhere; a recorded/assigned sequence matching one emits
+    /// [`Self::conflict_detected`].
+    conflicting_sequences: Vec<KeySequence>,
+    /// Emitted with the sequence that collides with [`Self::conflicting_sequences`].
+    pub conflict_detected: Signal1<KeySequence>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<KeySequence>>,
     restoring_history: bool,
@@ -166,6 +172,8 @@ impl KeySequenceEdit {
             alignment: crate::core::Alignment::Left,
             editing_finished: GenericSignal::new(),
             key_sequence_changed: Signal1::new(),
+            conflicting_sequences: Vec::new(),
+            conflict_detected: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(KeySequence::empty())),
             restoring_history: false,
@@ -223,8 +231,21 @@ impl KeySequenceEdit {
                 "key_sequence_edit",
             )));
         }
-        self.key_sequence_changed.emit(seq);
+        self.key_sequence_changed.emit(seq.clone());
+        if !seq.is_empty() && self.conflicting_sequences.contains(&seq) {
+            self.conflict_detected.emit(seq);
+        }
         self.base.request_redraw();
+    }
+
+    /// Replaces the set of already-bound sequences used for conflict detection.
+    pub fn set_conflicting_sequences(&mut self, sequences: Vec<KeySequence>) {
+        self.conflicting_sequences = sequences;
+    }
+
+    /// The sequences treated as already bound.
+    pub fn conflicting_sequences(&self) -> &[KeySequence] {
+        &self.conflicting_sequences
     }
     /// Clears the sequence, as if [`KeySequence::empty`] had been set.
     ///
@@ -397,6 +418,33 @@ impl Widget for KeySequenceEdit {
         crate::core::Size::new(150, 28)
     }
     impl_draw_bridge!();
+
+    /// Resolves the control's published events to its signals.
+    ///
+    /// `sequence_changed` is the capability spelling of the control's `key_sequence_changed`;
+    /// both name the same event so a document and a Rust caller cannot subscribe to different
+    /// things.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "sequence_changed" | "key_sequence_changed" => {
+                Some(EventSignalRef::mapped("sequence_changed", &self.key_sequence_changed, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([CapabilityValue::String(
+                        v.to_display_string(),
+                    )]))
+                }))
+            }
+            "conflict_detected" => {
+                Some(EventSignalRef::mapped("conflict_detected", &self.conflict_detected, |v| {
+                    CapabilityValue::String(v.to_display_string())
+                }))
+            }
+            "editing_finished" => {
+                Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
+            }
+            _ => None,
+        }
+    }
 }
 impl EventHandler for KeySequenceEdit {
     fn handle_event(&mut self, event: &Event) {
@@ -1041,5 +1089,26 @@ mod tests {
         second.set_chords(vec![KeySequence::new(0x01, 86, "V")]);
         assert!(!first.conflicts_with(&second));
         assert_eq!(first.sequence_len(), 2, "set_chords keeps every chord");
+    }
+
+    #[test]
+    fn sequence_changed_and_conflict_detected_are_routable() {
+        use crate::widget::Widget;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut editor = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+        let taken = KeySequence::new(0x01, 83, "S");
+        editor.set_conflicting_sequences(vec![taken.clone()]);
+        let fires = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&fires);
+        editor.conflict_detected.connect(move |_| {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        editor.set_key_sequence(taken);
+        assert_eq!(fires.load(Ordering::SeqCst), 1);
+        assert!(editor.event_signal_dyn("sequence_changed").is_some());
+        assert!(editor.event_signal_dyn("conflict_detected").is_some());
+        assert!(editor.event_signal_dyn("nope").is_none());
     }
 }

@@ -36,6 +36,12 @@ pub enum DrawerSide {
 /// affordance *looks* like, and a 20 px band is what a pointing device can actually grab.
 const DRAWER_EDGE_STRIP: u32 = 20;
 
+/// The header band's height, in pixels.
+const DRAWER_HEADER_HEIGHT: u32 = 60;
+
+/// The footer band's height, in pixels, when a footer widget is installed.
+const DRAWER_FOOTER_HEIGHT: u32 = 48;
+
 /// A single item in the navigation drawer, consisting of an icon and a label.
 #[derive(Clone, Debug)]
 pub struct DrawerItem {
@@ -96,6 +102,16 @@ pub struct NavigationDrawer {
     pub closed: GenericSignal,
     /// Emitted when an item is selected, with the index of the selected item.
     pub item_selected: Signal1<usize>,
+    /// Per-item badge text, parallel to `items`.
+    item_badges: Vec<Option<String>>,
+    /// Optional widget painted in the header band in place of the default title.
+    header_widget: Option<Box<dyn Widget>>,
+    /// Optional widget painted in the footer band.
+    footer_widget: Option<Box<dyn Widget>>,
+    /// Whether item separators are painted.
+    section_separator_visible: bool,
+    /// Emitted when the header band is pressed.
+    pub header_clicked: GenericSignal,
 }
 
 impl NavigationDrawer {
@@ -122,6 +138,11 @@ impl NavigationDrawer {
             opened: GenericSignal::new(),
             closed: GenericSignal::new(),
             item_selected: Signal1::new(),
+            item_badges: Vec::new(),
+            header_widget: None,
+            footer_widget: None,
+            section_separator_visible: true,
+            header_clicked: GenericSignal::new(),
         }
     }
 
@@ -188,7 +209,87 @@ impl NavigationDrawer {
     pub fn add_item(&mut self, icon: &str, label: &str) {
         self.items.push(DrawerItem { icon: icon.to_string(), label: label.to_string() });
         self.item_icon_sources.push(None);
+        self.item_badges.push(None);
         self.base.request_redraw();
+    }
+
+    /// Sets a badge on an item; an empty string clears it.
+    pub fn set_item_badge(&mut self, index: usize, text: &str) -> bool {
+        let Some(slot) = self.item_badges.get_mut(index) else {
+            return false;
+        };
+        let badge = if text.is_empty() { None } else { Some(text.to_string()) };
+        if *slot == badge {
+            return true;
+        }
+        *slot = badge;
+        self.base.request_redraw();
+        true
+    }
+
+    /// The badge on `index`, when there is one.
+    pub fn item_badge(&self, index: usize) -> Option<&str> {
+        self.item_badges.get(index).and_then(|badge| badge.as_deref())
+    }
+
+    /// Installs a widget for the drawer's header band, replacing the default title.
+    pub fn set_header_widget(&mut self, widget: Option<Box<dyn Widget>>) {
+        self.header_widget = widget;
+        self.base.request_redraw();
+    }
+
+    /// Returns the header widget, if any.
+    pub fn header_widget(&self) -> Option<&dyn Widget> {
+        self.header_widget.as_deref()
+    }
+
+    /// Installs a widget for the drawer's footer band.
+    pub fn set_footer_widget(&mut self, widget: Option<Box<dyn Widget>>) {
+        self.footer_widget = widget;
+        self.base.request_redraw();
+    }
+
+    /// Returns the footer widget, if any.
+    pub fn footer_widget(&self) -> Option<&dyn Widget> {
+        self.footer_widget.as_deref()
+    }
+
+    /// Whether item separators are painted.
+    pub fn section_separator_visible(&self) -> bool {
+        self.section_separator_visible
+    }
+
+    /// Shows or hides the separators between item rows.
+    pub fn set_section_separator_visible(&mut self, visible: bool) {
+        if self.section_separator_visible == visible {
+            return;
+        }
+        self.section_separator_visible = visible;
+        self.base.request_redraw();
+    }
+
+    /// The footer band's height, zero when no footer widget is installed.
+    fn footer_height(&self) -> u32 {
+        if self.footer_widget.is_some() {
+            DRAWER_FOOTER_HEIGHT
+        } else {
+            0
+        }
+    }
+
+    /// The header widget's band inside `panel`, when a header widget is installed.
+    fn header_band(&self, panel: Rect) -> Option<Rect> {
+        self.header_widget
+            .as_ref()
+            .map(|_| Rect::new(panel.x, panel.y, panel.width, DRAWER_HEADER_HEIGHT))
+    }
+
+    /// The footer widget's band inside `panel`, when a footer widget is installed.
+    fn footer_band(&self, panel: Rect) -> Option<Rect> {
+        self.footer_widget.as_ref().map(|_| {
+            let height = self.footer_height();
+            Rect::new(panel.x, panel.y + panel.height as i32 - height as i32, panel.width, height)
+        })
     }
 
     /// Assigns a typed icon source to an existing drawer item index.
@@ -366,6 +467,7 @@ impl Widget for NavigationDrawer {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "header_clicked" => Some(EventSignalRef::unit("header_clicked", &self.header_clicked)),
             _ => None,
         }
     }
@@ -383,6 +485,9 @@ impl WidgetProperties for NavigationDrawer {
         match name {
             "open" => Ok(CapabilityValue::Bool(self.is_open())),
             "width" => Ok(CapabilityValue::Float(f64::from(self.panel_width()))),
+            "section_separator_visible" => {
+                Ok(CapabilityValue::Bool(self.section_separator_visible()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -401,12 +506,20 @@ impl WidgetProperties for NavigationDrawer {
                 self.set_panel_width(expect_f32(value)? as u32);
                 Ok(())
             }
+            "section_separator_visible" => {
+                let visible = match value {
+                    CapabilityValue::Bool(visible) => visible,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_section_separator_visible(visible);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["open", "width", BASE_PROPERTY_NAMES]
+        property_names_of!["open", "width", "section_separator_visible", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -542,30 +655,38 @@ impl Draw for NavigationDrawer {
         context.push_clip(panel_rect.x, panel_rect.y, panel_rect.width, panel_rect.height);
 
         // Draw header area
-        let header_height: u32 = 60;
+        let header_height = DRAWER_HEADER_HEIGHT;
         let header_rect = Rect::new(rect.x, rect.y, panel_width, header_height);
         context.fill_rect(header_rect, header_color);
 
-        // Draw header title text, fitted to the visible panel: during the slide the
-        // title must not read past the panel's own edge.
+        // Draw header title text — or the host's header widget, which replaces it rather than
+        // painting over it. The header band used to be a hardcoded "Navigation" label with no
+        // slot for an avatar, a title block or a search field.
         let font = role_font(style, 16.0).with_bold(true);
-        let header_text = "Navigation";
-        let header_text_x = rect.x + 16;
-        // The origin is the glyph box's top edge, so centring on the header is half the line
-        // box; the old `+ ascent/2` sat the title half a line below the header's middle.
-        let header_line = context.text_line(header_rect, &font);
-        context.draw_text_fitted_cow(
-            Rect::new(
-                header_text_x,
-                header_line.y,
-                panel_width.saturating_sub(24),
-                header_line.height.max(1),
-            ),
-            header_text,
-            &font,
-            ink,
-            HorizontalAlignment::Left,
-        );
+        if let Some(header) = self.header_widget.as_deref_mut() {
+            header.set_geometry(header_rect);
+            if let Some(drawable) = crate::widget::draw_bridge::draw_of(header) {
+                drawable.draw(context);
+            }
+        } else {
+            let header_text = "Navigation";
+            let header_text_x = rect.x + 16;
+            // The origin is the glyph box's top edge, so centring on the header is half the line
+            // box; the old `+ ascent/2` sat the title half a line below the header's middle.
+            let header_line = context.text_line(header_rect, &font);
+            context.draw_text_fitted_cow(
+                Rect::new(
+                    header_text_x,
+                    header_line.y,
+                    panel_width.saturating_sub(24),
+                    header_line.height.max(1),
+                ),
+                header_text,
+                &font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
 
         // Draw items vertically
         let item_height: u32 = 48;
@@ -573,12 +694,13 @@ impl Draw for NavigationDrawer {
         let icon_font = role_font(style, 16.0);
         let item_metrics = context.measure_text("A", &item_font);
         let start_y = rect.y + header_height as i32;
+        let items_bottom = rect.y + rect.height as i32 - self.footer_height() as i32;
 
         for (i, item) in self.items.iter().enumerate() {
             let y_offset = start_y + (i as i32 * item_height as i32);
-            // Rows beginning below the panel are skipped outright: the clip below would
-            // hide them, but skipping keeps the draw list bounded to the visible rows.
-            if y_offset >= rect.y + rect.height as i32 {
+            // Rows beginning below the items area are skipped outright: the footer must not be
+            // covered by a row that happens to be next in the list.
+            if y_offset + item_height as i32 > items_bottom {
                 break;
             }
             let item_rect = Rect::new(rect.x, y_offset, panel_width, item_height);
@@ -637,12 +759,56 @@ impl Draw for NavigationDrawer {
             }
 
             // Draw divider line between items
-            if i > 0 {
+            if i > 0 && self.section_separator_visible {
                 let divider_y = y_offset;
                 context.fill_rect(
                     Rect::new(rect.x + 16, divider_y, panel_width.saturating_sub(32), 1),
                     divider_color,
                 );
+            }
+
+            // Badge: a small capsule at the row's trailing edge. Drawer items had no badge
+            // channel at all, so a count could not be surfaced on the drawer's own list.
+            if let Some(badge) = self.item_badges.get(i).and_then(|badge| badge.as_deref()) {
+                if !badge.is_empty() {
+                    let badge_fill =
+                        crate::style::semantic_color(crate::style::SemanticColor::Error)
+                            .unwrap_or(accent);
+                    let metrics = context.measure_text(badge, &item_font);
+                    let height = item_font.size().max(10.0) as u32 + 4;
+                    let width = (metrics.width + 8).max(height);
+                    let badge_rect = Rect::new(
+                        rect.x + panel_width as i32 - width as i32 - 16,
+                        y_offset + (item_height as i32 - height as i32) / 2,
+                        width,
+                        height,
+                    );
+                    context.fill_rounded_rect(badge_rect, height / 2, badge_fill);
+                    context.draw_text(
+                        Point::new(badge_rect.x + 4, context.text_line(badge_rect, &item_font).y),
+                        badge,
+                        &item_font,
+                        badge_fill.contrast_color(),
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
+        }
+
+        // Footer band: a host-supplied widget pinned to the panel's foot, so an account row or
+        // a settings action no longer has to be faked as one more item.
+        if self.footer_widget.is_some() {
+            let footer = Rect::new(
+                rect.x,
+                rect.y + rect.height as i32 - self.footer_height() as i32,
+                panel_width,
+                self.footer_height(),
+            );
+            if let Some(widget) = self.footer_widget.as_deref_mut() {
+                widget.set_geometry(footer);
+                if let Some(drawable) = crate::widget::draw_bridge::draw_of(widget) {
+                    drawable.draw(context);
+                }
             }
         }
 
@@ -711,6 +877,26 @@ impl EventHandler for NavigationDrawer {
                 if *button != 1 {
                     return;
                 }
+                // The header and footer bands belong to their installed widgets, so a press
+                // there is routed to the slot before the drawer's own gesture starts.
+                if let Some(band) = self.header_band(panel_band) {
+                    if band.contains_point(*pos) {
+                        if let Some(header) = self.header_widget.as_deref_mut() {
+                            header.set_geometry(band);
+                            header.handle_event(event);
+                        }
+                        return;
+                    }
+                }
+                if let Some(band) = self.footer_band(panel_band) {
+                    if band.contains_point(*pos) {
+                        if let Some(footer) = self.footer_widget.as_deref_mut() {
+                            footer.set_geometry(band);
+                            footer.handle_event(event);
+                        }
+                        return;
+                    }
+                }
                 // Record where the gesture began: only a gesture that starts on the scrim may
                 // dismiss on release. A drag from the panel that happens to end outside it is
                 // not a dismissal.
@@ -724,6 +910,25 @@ impl EventHandler for NavigationDrawer {
             Event::MouseRelease { pos, button } => {
                 if *button != 1 {
                     return;
+                }
+                if let Some(band) = self.header_band(panel_band) {
+                    if band.contains_point(*pos) {
+                        if let Some(header) = self.header_widget.as_deref_mut() {
+                            header.set_geometry(band);
+                            header.handle_event(event);
+                        }
+                        self.header_clicked.emit();
+                        return;
+                    }
+                }
+                if let Some(band) = self.footer_band(panel_band) {
+                    if band.contains_point(*pos) {
+                        if let Some(footer) = self.footer_widget.as_deref_mut() {
+                            footer.set_geometry(band);
+                            footer.handle_event(event);
+                        }
+                        return;
+                    }
                 }
                 if self.drag.is_some() {
                     self.drag_to(pos.x as f32);
@@ -746,12 +951,19 @@ impl EventHandler for NavigationDrawer {
 
                 // Item selection uses the panel's own band, so a right-side drawer selects at
                 // the coordinates it paints at rather than at the left edge.
-                let header_height: u32 = 60;
+                let header_height = DRAWER_HEADER_HEIGHT;
                 let item_height: u32 = 48;
                 let start_y = panel_band.y + header_height as i32;
+                let items_bottom =
+                    panel_band.y + panel_band.height as i32 - self.footer_height() as i32;
                 if panel_band.contains_point(*pos) {
                     let relative_y = pos.y - start_y;
-                    if relative_y >= 0 {
+                    if relative_y < 0 {
+                        // The header band is its own affordance: a host can put a whole widget
+                        // there, and this signal is how a plain header reports a tap.
+                        self.header_clicked.emit();
+                    }
+                    if relative_y >= 0 && pos.y < items_bottom {
                         let item_index = (relative_y as u32) / item_height;
                         if (item_index as usize) < self.items.len() {
                             self.set_selected_index(item_index as usize);

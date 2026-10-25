@@ -157,7 +157,7 @@ pub const ANIMATION_FRAME_EVENT_NAME: &str = "animation_frame";
 // the buffer grow with the backlog, and an arbitrarily large High/Normal stream pushed the
 // next platform pump, frame tasks and Idle work arbitrarily far out. The three constants
 // below bound one turn's work; whatever a turn does not reach stays in the queue (or is
-// re-queued in order) and is delivered on a later turn — bounded and eventually delivered,
+// retained locally in order) and is delivered on a later turn — bounded and eventually delivered,
 // never silently dropped.
 
 /// Maximum events pulled from the queue into a turn's dispatch buffer (D09-EVT-04).
@@ -326,13 +326,14 @@ fn deliver_event(
     match parents {
         None => deliver_one(target, event),
         Some(lookup) => {
-            let ancestors = crate::event::propagation::ancestor_chain(target, lookup.as_ref());
-            let _ = crate::event::propagation::route_event(
-                target,
-                &ancestors,
-                event,
-                &mut |node, ev, _phase| deliver_one(node, ev),
-            );
+            crate::event::propagation::with_ancestor_chain(target, lookup.as_ref(), |ancestors| {
+                let _ = crate::event::propagation::route_event(
+                    target,
+                    ancestors,
+                    event,
+                    &mut |node, ev, _phase| deliver_one(node, ev),
+                );
+            });
         }
     }
 }
@@ -346,6 +347,10 @@ pub struct EventLoop {
     // Send/Sync — that is intentional for the mini (single-threaded) profile.
     #[cfg_attr(alloc_frugal, allow(clippy::arc_with_non_send_sync))]
     queue: Arc<Mutex<EventQueue>>,
+    /// Budget-deferred events survive stop/start without a channel round trip. The total is
+    /// bounded by `PER_TURN_EVENT_DRAIN_CAP`; accepted events are never dropped on overflow.
+    #[cfg(not(alloc_frugal))]
+    deferred_events: Arc<Mutex<[Vec<(ObjectId, Event)>; 3]>>,
     /// Independent sender for posting events without locking the queue.
     /// Avoids deadlock with the event loop thread which holds the queue mutex
     /// while blocked on `dequeue_blocking()`.
@@ -467,6 +472,8 @@ impl EventLoop {
         Self {
             queue: Arc::new(Mutex::new(queue)),
             sender,
+            #[cfg(not(alloc_frugal))]
+            deferred_events: Arc::new(Mutex::new([Vec::new(), Vec::new(), Vec::new()])),
             running: Arc::new(Mutex::new(false)),
             thread_handle: None,
             dispatch_fn: None,
@@ -555,9 +562,9 @@ impl EventLoop {
         // The three per-priority dispatch buffers live for the whole loop and are cleared each
         // turn. Declaring them inside the `while` body made every non-empty turn allocate from
         // empty, which during animations meant one to three heap allocations per frame.
-        let mut high_events: Vec<(ObjectId, Event)> = Vec::new();
-        let mut normal_events: Vec<(ObjectId, Event)> = Vec::new();
-        let mut idle_events: Vec<(ObjectId, Event)> = Vec::new();
+        let deferred_events = Arc::clone(&self.deferred_events);
+        let [mut high_events, mut normal_events, mut idle_events] =
+            core::mem::take(&mut *lock(&deferred_events));
         let handle = thread::spawn(move || {
             while *lock(&running) {
                 // Phase 0: Pump native platform events (e.g., Wayland dispatch)
@@ -587,17 +594,18 @@ impl EventLoop {
                     // buffers (D09-EVT-04). Draining a bounded prefix — rather than everything —
                     // keeps the transient buffer bounded under a sustained producer; the rest
                     // stays queued and is picked up next turn, so ordering is preserved.
-                    high_events.clear();
-                    normal_events.clear();
-                    idle_events.clear();
+                    // Resume older events before appending new ones at the same priority. Count
+                    // the retained tail against the cap, so a slow handler cannot grow local storage.
+                    let pending = high_events.len() + normal_events.len() + idle_events.len();
                     // One lock acquisition and one refill for the whole bounded prefix. The
                     // per-event `dequeue` this replaces took the queue mutex n times a turn.
                     let mut had_work = lock(&queue).drain_into(
                         &mut high_events,
                         &mut normal_events,
                         &mut idle_events,
-                        PER_TURN_EVENT_DRAIN_CAP,
-                    ) > 0;
+                        PER_TURN_EVENT_DRAIN_CAP.saturating_sub(pending),
+                    ) > 0
+                        || pending > 0;
 
                     // One dispatch helper shared by the High and Normal phases, so both honour the
                     // same animation-frame cancellation and gesture-routing rules (and neither is a
@@ -675,8 +683,7 @@ impl EventLoop {
                     };
 
                     // Phase 1b: Dispatch High-priority events first, within a time budget. Events
-                    // the budget does not reach are re-queued (High) so they are delivered next
-                    // turn rather than dropped; the buffer is already bounded by the drain cap.
+                    // the budget does not reach stay in their local buffer for the next turn.
                     let mut processed = 0usize;
                     let budget_start = std::time::Instant::now();
                     while processed < high_events.len() {
@@ -687,12 +694,7 @@ impl EventLoop {
                         dispatch_one(*target, event);
                         processed += 1;
                     }
-                    if processed < high_events.len() {
-                        let sender = lock(&queue).sender();
-                        for (target, event) in high_events.drain(processed..) {
-                            let _ = sender.post_with_priority(target, event, EventPriority::High);
-                        }
-                    }
+                    high_events.drain(..processed);
 
                     // Phase 1c: Dispatch Normal-priority events second, also budgeted. A cancelled
                     // animation frame is discarded before any dispatch, so a host that cancelled
@@ -708,16 +710,11 @@ impl EventLoop {
                         dispatch_one(*target, event);
                         processed += 1;
                     }
-                    if processed < normal_events.len() {
-                        let sender = lock(&queue).sender();
-                        for (target, event) in normal_events.drain(processed..) {
-                            let _ = sender.post_with_priority(target, event, EventPriority::Normal);
-                        }
-                    }
+                    normal_events.drain(..processed);
 
                     // Phase 1e: Process buffered idle events with a 5ms time budget.
                     // This prevents idle processing from starving frame-critical work. Whatever
-                    // the budget does not allow is re-queued, not dropped: idle means deferred,
+                    // the budget does not allow stays local: idle means deferred,
                     // not discarded.
                     if !idle_events.is_empty() {
                         #[cfg(not(alloc_frugal))]
@@ -736,12 +733,7 @@ impl EventLoop {
                             processed += 1;
                         }
                         // Deliver the remainder on a later, quieter iteration, in order.
-                        if processed < idle_events.len() {
-                            let sender = lock(&queue).sender();
-                            for (target, event) in idle_events.drain(processed..) {
-                                let _ = sender.post_idle(target, event);
-                            }
-                        }
+                        idle_events.drain(..processed);
                     }
 
                     // Phase 1e: Tick deferred idle tasks, under the same 5ms budget as
@@ -830,6 +822,7 @@ impl EventLoop {
                     }
                 }
             }
+            *lock(&deferred_events) = [high_events, normal_events, idle_events];
         });
         self.thread_handle = Some(handle);
     }

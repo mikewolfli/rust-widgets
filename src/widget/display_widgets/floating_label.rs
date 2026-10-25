@@ -149,6 +149,16 @@ impl FloatingLabel {
     /// Also updates the floating label state based on whether text is non-empty.
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
+        self.commit_text_change();
+    }
+
+    /// Finishes a text edit made directly on `self.text`.
+    ///
+    /// The derivations and the signal are the same for every edit route, so a key-press path
+    /// does not have to build a whole new `String` just to hand it back to [`Self::set_text`].
+    /// The signal payload is still an owned copy, because `Signal1<String>` hands subscribers a
+    /// value they keep; that is the one clone an edit has to pay.
+    fn commit_text_change(&mut self) {
         self.update_label_state();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
@@ -229,14 +239,14 @@ impl FloatingLabel {
     /// its value. Filtering here rather than in each event arm keeps the `TextInput`
     /// and `ImeCommit` paths identical.
     fn append_committed_text(&mut self, text: &str) {
-        let mut committed = String::new();
-        committed.extend(text.chars().filter(|ch| !ch.is_control()));
-        if committed.is_empty() {
+        // Appended in place: filtering into a temporary and then cloning the field made a
+        // committed character cost two whole-string copies. Only the emit below still copies.
+        let before = self.text.len();
+        self.text.extend(text.chars().filter(|ch| !ch.is_control()));
+        if self.text.len() == before {
             return;
         }
-        let mut new_text = self.text.clone();
-        new_text.push_str(&committed);
-        self.set_text(new_text);
+        self.commit_text_change();
     }
 
     /// Sets the focused state. When focused, the label floats above.
@@ -744,16 +754,17 @@ impl EventHandler for FloatingLabel {
                     // inserted the character, so the raw key must not be applied again.
                     if self.is_focused() && !self.text_input_seen {
                         let c = char::from_u32(*key).unwrap_or(' ');
-                        let mut new_text = self.text.clone();
-                        new_text.push(c);
-                        self.set_text(new_text);
+                        // Edited in place; `set_text` would clone the whole value first.
+                        self.text.push(c);
+                        self.commit_text_change();
                     }
                 } else if *key == KEYCODE_BACKSPACE {
                     // Backspace
                     if self.is_focused() && !self.text.is_empty() {
-                        let mut new_text = self.text.clone();
-                        new_text.pop();
-                        self.set_text(new_text);
+                        // `pop` removes one char, so a multi-byte grapheme boundary is not cut
+                        // in the middle of a code point; no whole-string copy is made.
+                        self.text.pop();
+                        self.commit_text_change();
                     }
                 }
             }

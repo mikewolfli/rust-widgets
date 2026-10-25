@@ -38,7 +38,7 @@
 //! tint is the theme's accent blended into the resolved surface, which is what makes the
 //! wrapper follow an appearance switch without a hardcoded colour.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::layout::LayoutParams;
 use crate::layout::{AspectRatioLayout, AxisHints, CenterLayout, Hints, Layout};
@@ -52,22 +52,29 @@ use crate::{impl_widget_property_hooks, property_names_of};
 
 // ── Shared content model ────────────────────────────────────────────────────
 
-/// The single content a wrapper positions: a label and the size it asks for.
+/// The single content a wrapper positions: a label, the size it asks for, and optionally a real
+/// control mounted in that box.
 ///
 /// `size` is what the wrapper reports from [`Widget::size_hint`] and what `Center`'s
 /// factors are applied to. It is deliberately the *content's* size, not the wrapper's: a
 /// wrapper that claimed its own geometry as its hint would give a shrink-wrapping parent
 /// nothing to shrink to.
+///
+/// `child` is the control that fills the content box, if one was mounted. A wrapper previously
+/// carried only a caption: it painted a placeholder frame and could not take part in the widget
+/// tree, so a fixed box, a padded box or a centred box could not hold a real control. The slot
+/// is the id of a mounted child; [`Widget`]'s geometry entry places it in the content rectangle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Content {
     label: String,
     size: Size,
+    child: Option<ObjectId>,
 }
 
 impl Content {
-    /// An empty content box with no size.
+    /// An empty content box with no size and no mounted control.
     pub fn new() -> Self {
-        Self { label: String::new(), size: Size::new(0, 0) }
+        Self { label: String::new(), size: Size::new(0, 0), child: None }
     }
 
     /// The label drawn in the content area.
@@ -78,6 +85,11 @@ impl Content {
     /// The size the content asks for.
     pub fn size(&self) -> Size {
         self.size
+    }
+
+    /// The control mounted in the content area, if any.
+    pub fn child(&self) -> Option<ObjectId> {
+        self.child
     }
 
     /// Replaces the label. Returns whether this changed anything.
@@ -143,6 +155,70 @@ impl Default for Content {
 // The three content property names, restated as literals in each control's
 // `property_names_of!` list because that macro takes literals. Kept here so a reader can see
 // the set in one place.
+
+// ── Mounting a real control ─────────────────────────────────────────────────
+
+/// Mounts `widget` in `slot`, replacing whatever the slot held.
+///
+/// The link is written in **both** directions through [`BaseWidget::add_child_linked`]: `add_child`
+/// alone leaves the child believing it has no parent, so a tree walk from the root never reaches a
+/// wrapper's content. A replacement unlinks and hides the previous control, because a detached
+/// control keeps its own visibility flag and a host that renders by id would still paint it in the
+/// box it no longer fills (the same rule `TabWidget::set_tab_widget` follows).
+///
+/// Returns whether the slot changed.
+fn mount_content_child(
+    base: &mut BaseWidget,
+    slot: &mut Option<ObjectId>,
+    widget: Option<ObjectId>,
+) -> bool {
+    if *slot == widget {
+        return false;
+    }
+    if let Some(previous) = slot.take() {
+        base.remove_child_linked(previous);
+        crate::set_widget_visible(previous, false);
+    }
+    *slot = widget;
+    if let Some(widget_id) = widget {
+        base.add_child_linked(widget_id);
+        crate::set_widget_visible(widget_id, true);
+    }
+    true
+}
+
+/// Writes `rect` into the control mounted in `slot`, if any.
+///
+/// This is the placement half of the contract, not a drawing path: the tree painter already draws
+/// mounted children, and it draws each one at its own geometry. Writing through the public
+/// geometry entry is what keeps that geometry equal to the box the wrapper's rule produced.
+fn place_mounted_child(slot: Option<ObjectId>, rect: Rect) {
+    if let Some(widget_id) = slot {
+        crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+    }
+}
+
+/// Reads the `widget` property: an id, or `Null` for "nothing mounted".
+///
+/// Ids travel as `UInt` (the variant `mdi_area`'s `active_subwindow` reads back), so a document can
+/// write one and a designer reads the same representation. The whole 64-bit id range is accepted
+/// rather than narrowed to a `u32`, because an id is not a size.
+fn expect_object_id(value: CapabilityValue) -> Result<Option<ObjectId>, CapabilityAccessError> {
+    match value {
+        CapabilityValue::Null => Ok(None),
+        CapabilityValue::UInt(raw) => Ok(Some(ObjectId::from(raw))),
+        CapabilityValue::Int(raw) if raw >= 0 => Ok(Some(ObjectId::from(raw as u64))),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
+/// The `widget` property's readable form.
+fn object_id_value(slot: Option<ObjectId>) -> CapabilityValue {
+    match slot {
+        Some(id) => CapabilityValue::UInt(id),
+        None => CapabilityValue::Null,
+    }
+}
 
 // ── Painting ────────────────────────────────────────────────────────────────
 
@@ -226,7 +302,7 @@ fn paint_wrapper(
     ctx.fill_rounded_rect(content, radius, tint);
     ctx.draw_rounded_rect_stroke(content, radius, palette.accent.with_alpha_f32(0.55), 1);
 
-    if content_box.label().is_empty() {
+    if content_box.label().is_empty() || content_box.child().is_some() {
         return;
     }
     // Bounded text: the label is fitted to the content area, so a long one is truncated with
@@ -261,6 +337,12 @@ pub struct Spacer {
     flex: u32,
     base_size: u32,
     paint_hint: bool,
+    /// A control mounted in the spacer's own box, if any.
+    ///
+    /// A spacer is normally empty, but a layout that needs "this much room, and a status line in
+    /// it" had no way to express the second half: the wrapper family positions one content box, and
+    /// a spacer is the box with no rule of its own. The child fills the spacer's whole rectangle.
+    content_child: Option<ObjectId>,
 }
 
 impl Spacer {
@@ -271,6 +353,7 @@ impl Spacer {
             flex: 1,
             base_size: 0,
             paint_hint: true,
+            content_child: None,
         }
     }
 
@@ -317,6 +400,23 @@ impl Spacer {
         self.paint_hint = paint_hint;
         self.base.request_redraw();
     }
+
+    /// The control mounted in the spacer's box, if any.
+    pub fn widget(&self) -> Option<ObjectId> {
+        self.content_child
+    }
+
+    /// Mounts `widget` (or clears it, with `None`) in the spacer's box.
+    ///
+    /// The child is linked in both directions and fills the spacer's own rectangle — a spacer has
+    /// no content rule, so its box *is* the content box.
+    pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        if mount_content_child(&mut self.base, &mut self.content_child, widget) {
+            place_mounted_child(self.content_child, self.geometry());
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+    }
 }
 
 impl Widget for Spacer {
@@ -357,6 +457,7 @@ impl WidgetProperties for Spacer {
             "flex" => Ok(CapabilityValue::UInt(u64::from(self.flex))),
             "base_size" => Ok(CapabilityValue::UInt(u64::from(self.base_size))),
             "paint_hint" => Ok(CapabilityValue::Bool(self.paint_hint)),
+            "widget" => Ok(object_id_value(self.content_child)),
             _ => base_property_get(self, name),
         }
     }
@@ -375,17 +476,23 @@ impl WidgetProperties for Spacer {
                 self.set_paint_hint(expect_bool(value)?);
                 Ok(())
             }
+            "widget" => {
+                self.set_widget(expect_object_id(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["flex", "base_size", "paint_hint", BASE_PROPERTY_NAMES]
+        property_names_of!["flex", "base_size", "paint_hint", "widget", BASE_PROPERTY_NAMES]
     }
 }
 
 impl Draw for Spacer {
     fn draw(&mut self, ctx: &mut RenderContext) {
+        // The mounted control fills the spacer's box; the hint frame is drawn under it.
+        place_mounted_child(self.content_child, self.geometry());
         if !self.paint_hint {
             // The whole contract in an application: occupy the room, paint nothing.
             return;
@@ -466,6 +573,25 @@ impl Center {
     /// The content this control positions.
     pub fn content(&self) -> &Content {
         &self.content
+    }
+
+    /// The control mounted as this wrapper's content, if any.
+    pub fn widget(&self) -> Option<ObjectId> {
+        self.content.child
+    }
+
+    /// Mounts `widget` (or clears it, with `None`) as this control's content.
+    ///
+    /// The control is linked in both directions and fills [`Self::content_rect`], which is the
+    /// placement half of the contract: the tree painter draws mounted children, so no second
+    /// drawing path is introduced. `set_widget` requests a layout, because the content box is what
+    /// the child now occupies and the wrapper's own hint has changed shape.
+    pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        if mount_content_child(&mut self.base, &mut self.content.child, widget) {
+            place_mounted_child(self.content.child, self.content_rect());
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
     }
 
     /// Replaces the content label.
@@ -553,6 +679,7 @@ impl WidgetProperties for Center {
         match name {
             "width_factor" => Ok(CapabilityValue::Float(f64::from(self.width_factor))),
             "height_factor" => Ok(CapabilityValue::Float(f64::from(self.height_factor))),
+            "widget" => Ok(object_id_value(self.content.child)),
             _ => base_property_get(self, name),
         }
     }
@@ -575,6 +702,10 @@ impl WidgetProperties for Center {
                 self.set_height_factor(expect_f32(value)?);
                 Ok(())
             }
+            "widget" => {
+                self.set_widget(expect_object_id(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -586,6 +717,7 @@ impl WidgetProperties for Center {
             "content_height",
             "width_factor",
             "height_factor",
+            "widget",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -595,6 +727,7 @@ impl Draw for Center {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
         let content = self.content_rect();
+        place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "center", outer, content, &self.content);
     }
 }
@@ -734,6 +867,25 @@ impl Align {
         &self.content
     }
 
+    /// The control mounted as this wrapper's content, if any.
+    pub fn widget(&self) -> Option<ObjectId> {
+        self.content.child
+    }
+
+    /// Mounts `widget` (or clears it, with `None`) as this control's content.
+    ///
+    /// The control is linked in both directions and fills [`Self::content_rect`], which is the
+    /// placement half of the contract: the tree painter draws mounted children, so no second
+    /// drawing path is introduced. `set_widget` requests a layout, because the content box is what
+    /// the child now occupies and the wrapper's own hint has changed shape.
+    pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        if mount_content_child(&mut self.base, &mut self.content.child, widget) {
+            place_mounted_child(self.content.child, self.content_rect());
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+    }
+
     /// Replaces the content label.
     pub fn set_content_label(&mut self, label: String) {
         if self.content.set_label(label) {
@@ -806,6 +958,7 @@ impl WidgetProperties for Align {
         }
         match name {
             "alignment" => Ok(CapabilityValue::String(self.alignment.token().to_string())),
+            "widget" => Ok(object_id_value(self.content.child)),
             _ => base_property_get(self, name),
         }
     }
@@ -827,6 +980,10 @@ impl WidgetProperties for Align {
                 self.set_alignment(alignment);
                 Ok(())
             }
+            "widget" => {
+                self.set_widget(expect_object_id(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -837,6 +994,7 @@ impl WidgetProperties for Align {
             "content_width",
             "content_height",
             "alignment",
+            "widget",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -846,6 +1004,7 @@ impl Draw for Align {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
         let content = self.content_rect();
+        place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "align", outer, content, &self.content);
     }
 }
@@ -883,6 +1042,25 @@ impl SizedBox {
     /// The content this control positions.
     pub fn content(&self) -> &Content {
         &self.content
+    }
+
+    /// The control mounted as this wrapper's content, if any.
+    pub fn widget(&self) -> Option<ObjectId> {
+        self.content.child
+    }
+
+    /// Mounts `widget` (or clears it, with `None`) as this control's content.
+    ///
+    /// The control is linked in both directions and fills [`Self::content_rect`], which is the
+    /// placement half of the contract: the tree painter draws mounted children, so no second
+    /// drawing path is introduced. `set_widget` requests a layout, because the content box is what
+    /// the child now occupies and the wrapper's own hint has changed shape.
+    pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        if mount_content_child(&mut self.base, &mut self.content.child, widget) {
+            place_mounted_child(self.content.child, self.content_rect());
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
     }
 
     /// Replaces the content label.
@@ -961,6 +1139,7 @@ impl WidgetProperties for SizedBox {
         match name {
             "box_width" => Ok(CapabilityValue::UInt(u64::from(self.fixed.width))),
             "box_height" => Ok(CapabilityValue::UInt(u64::from(self.fixed.height))),
+            "widget" => Ok(object_id_value(self.content.child)),
             _ => base_property_get(self, name),
         }
     }
@@ -983,6 +1162,10 @@ impl WidgetProperties for SizedBox {
                 self.set_box_size(Size::new(self.fixed.width, height));
                 Ok(())
             }
+            "widget" => {
+                self.set_widget(expect_object_id(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -994,6 +1177,7 @@ impl WidgetProperties for SizedBox {
             "content_height",
             "box_width",
             "box_height",
+            "widget",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1003,6 +1187,7 @@ impl Draw for SizedBox {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
         let content = self.content_rect();
+        place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "sized_box", outer, content, &self.content);
     }
 }
@@ -1046,6 +1231,25 @@ impl Padding {
     /// The content this control positions.
     pub fn content(&self) -> &Content {
         &self.content
+    }
+
+    /// The control mounted as this wrapper's content, if any.
+    pub fn widget(&self) -> Option<ObjectId> {
+        self.content.child
+    }
+
+    /// Mounts `widget` (or clears it, with `None`) as this control's content.
+    ///
+    /// The control is linked in both directions and fills [`Self::content_rect`], which is the
+    /// placement half of the contract: the tree painter draws mounted children, so no second
+    /// drawing path is introduced. `set_widget` requests a layout, because the content box is what
+    /// the child now occupies and the wrapper's own hint has changed shape.
+    pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        if mount_content_child(&mut self.base, &mut self.content.child, widget) {
+            place_mounted_child(self.content.child, self.content_rect());
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
     }
 
     /// Replaces the content label.
@@ -1126,6 +1330,7 @@ impl WidgetProperties for Padding {
             "padding_right" => Ok(CapabilityValue::UInt(u64::from(self.right))),
             "padding_bottom" => Ok(CapabilityValue::UInt(u64::from(self.bottom))),
             "padding_left" => Ok(CapabilityValue::UInt(u64::from(self.left))),
+            "widget" => Ok(object_id_value(self.content.child)),
             _ => base_property_get(self, name),
         }
     }
@@ -1160,6 +1365,10 @@ impl WidgetProperties for Padding {
                 self.set_insets(top, right, bottom, expect_u32(value)?);
                 Ok(())
             }
+            "widget" => {
+                self.set_widget(expect_object_id(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1173,6 +1382,7 @@ impl WidgetProperties for Padding {
             "padding_right",
             "padding_bottom",
             "padding_left",
+            "widget",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1182,6 +1392,7 @@ impl Draw for Padding {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
         let content = self.content_rect();
+        place_mounted_child(self.content.child, content);
         // The inset bands are this control's own chrome, so they get a hairline frame; the
         // content area is filled by the shared painter. `Padding` is the one wrapper whose
         // outer frame would otherwise be indistinguishable from a plain container.
@@ -1225,6 +1436,24 @@ impl Expanded {
     /// The content this control positions.
     pub fn content(&self) -> &Content {
         &self.content
+    }
+
+    /// The control mounted as this wrapper's content, if any.
+    pub fn widget(&self) -> Option<ObjectId> {
+        self.content.child
+    }
+
+    /// Mounts `widget` (or clears it, with `None`) as this control's content.
+    ///
+    /// The control is linked in both directions and fills [`Self::content_rect`], which is the
+    /// placement half of the contract: the tree painter draws mounted children, so no second
+    /// drawing path is introduced.
+    pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        if mount_content_child(&mut self.base, &mut self.content.child, widget) {
+            place_mounted_child(self.content.child, self.content_rect());
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
     }
 
     /// Replaces the content label.
@@ -1300,6 +1529,7 @@ impl WidgetProperties for Expanded {
         }
         match name {
             "flex" => Ok(CapabilityValue::UInt(u64::from(self.flex))),
+            "widget" => Ok(object_id_value(self.content.child)),
             _ => base_property_get(self, name),
         }
     }
@@ -1319,6 +1549,10 @@ impl WidgetProperties for Expanded {
                 self.set_flex(expect_u32(value)?);
                 Ok(())
             }
+            "widget" => {
+                self.set_widget(expect_object_id(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1329,6 +1563,7 @@ impl WidgetProperties for Expanded {
             "content_width",
             "content_height",
             "flex",
+            "widget",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1338,6 +1573,7 @@ impl Draw for Expanded {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
         let content = self.content_rect();
+        place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "expanded", outer, content, &self.content);
     }
 }
@@ -1458,6 +1694,24 @@ impl Flexible {
     pub fn content_rect(&self) -> Rect {
         self.geometry()
     }
+
+    /// The control mounted as this wrapper's content, if any.
+    pub fn widget(&self) -> Option<ObjectId> {
+        self.content.child
+    }
+
+    /// Mounts `widget` (or clears it, with `None`) as this control's content.
+    ///
+    /// The control is linked in both directions and fills [`Self::content_rect`], which is the
+    /// placement half of the contract: the tree painter draws mounted children, so no second
+    /// drawing path is introduced.
+    pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        if mount_content_child(&mut self.base, &mut self.content.child, widget) {
+            place_mounted_child(self.content.child, self.content_rect());
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+    }
 }
 
 impl Widget for Flexible {
@@ -1508,6 +1762,7 @@ impl WidgetProperties for Flexible {
         match name {
             "flex" => Ok(CapabilityValue::UInt(u64::from(self.flex))),
             "fit" => Ok(CapabilityValue::String(self.fit.token().to_string())),
+            "widget" => Ok(object_id_value(self.content.child)),
             _ => base_property_get(self, name),
         }
     }
@@ -1533,6 +1788,10 @@ impl WidgetProperties for Flexible {
                 self.set_fit(fit);
                 Ok(())
             }
+            "widget" => {
+                self.set_widget(expect_object_id(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1544,6 +1803,7 @@ impl WidgetProperties for Flexible {
             "content_height",
             "flex",
             "fit",
+            "widget",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1553,6 +1813,7 @@ impl Draw for Flexible {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
         let content = self.content_rect();
+        place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "flexible", outer, content, &self.content);
     }
 }
@@ -1588,6 +1849,24 @@ impl IntrinsicWidth {
     /// The content this control positions.
     pub fn content(&self) -> &Content {
         &self.content
+    }
+
+    /// The control mounted as this wrapper's content, if any.
+    pub fn widget(&self) -> Option<ObjectId> {
+        self.content.child
+    }
+
+    /// Mounts `widget` (or clears it, with `None`) as this control's content.
+    ///
+    /// The control is linked in both directions and fills [`Self::content_rect`], which is the
+    /// placement half of the contract: the tree painter draws mounted children, so no second
+    /// drawing path is introduced.
+    pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        if mount_content_child(&mut self.base, &mut self.content.child, widget) {
+            place_mounted_child(self.content.child, self.content_rect());
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
     }
 
     /// Replaces the content label.
@@ -1643,7 +1922,10 @@ impl WidgetProperties for IntrinsicWidth {
         if let Some(value) = self.content.get(name) {
             return Ok(value);
         }
-        base_property_get(self, name)
+        match name {
+            "widget" => Ok(object_id_value(self.content.child)),
+            _ => base_property_get(self, name),
+        }
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
@@ -1654,11 +1936,23 @@ impl WidgetProperties for IntrinsicWidth {
             }
             return result;
         }
-        base_property_set(self, name, value)
+        match name {
+            "widget" => {
+                self.set_widget(expect_object_id(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["content", "content_width", "content_height", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "content",
+            "content_width",
+            "content_height",
+            "widget",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -1666,6 +1960,7 @@ impl Draw for IntrinsicWidth {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
         let content = self.content_rect();
+        place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "intrinsic_width", outer, content, &self.content);
     }
 }
@@ -1708,6 +2003,24 @@ impl AspectRatio {
     /// The content this control positions.
     pub fn content(&self) -> &Content {
         &self.content
+    }
+
+    /// The control mounted as this wrapper's content, if any.
+    pub fn widget(&self) -> Option<ObjectId> {
+        self.content.child
+    }
+
+    /// Mounts `widget` (or clears it, with `None`) as this control's content.
+    ///
+    /// The control is linked in both directions and fills [`Self::content_rect`], which is the
+    /// placement half of the contract: the tree painter draws mounted children, so no second
+    /// drawing path is introduced.
+    pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        if mount_content_child(&mut self.base, &mut self.content.child, widget) {
+            place_mounted_child(self.content.child, self.content_rect());
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
     }
 
     /// Replaces the content label.
@@ -1829,6 +2142,7 @@ impl WidgetProperties for AspectRatio {
         match name {
             "ratio" => Ok(CapabilityValue::Float(f64::from(self.ratio))),
             "respect_parent" => Ok(CapabilityValue::Bool(self.respect_parent)),
+            "widget" => Ok(object_id_value(self.content.child)),
             _ => base_property_get(self, name),
         }
     }
@@ -1849,6 +2163,10 @@ impl WidgetProperties for AspectRatio {
                 self.set_respect_parent(expect_bool(value)?);
                 Ok(())
             }
+            "widget" => {
+                self.set_widget(expect_object_id(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1860,6 +2178,7 @@ impl WidgetProperties for AspectRatio {
             "content_height",
             "ratio",
             "respect_parent",
+            "widget",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1980,8 +2299,13 @@ impl Draw for AspectRatio {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
         let content = self.content_rect();
+        place_mounted_child(self.content.child, content);
         paint_wrapper(ctx, &self.base, "aspect_ratio", outer, content, &self.content);
-        paint_ratio_guides(ctx, &self.base, "aspect_ratio", content, self.ratio);
+        // The guides announce the shape the box bounds; a mounted control covers them, so they are
+        // only painted for the placeholder spellings.
+        if self.content.child.is_none() {
+            paint_ratio_guides(ctx, &self.base, "aspect_ratio", content, self.ratio);
+        }
     }
 }
 

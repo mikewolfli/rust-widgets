@@ -69,7 +69,7 @@ pub use stepper::Stepper;
 #[cfg(widgets_unstripped)]
 pub use tabwidget::TabWidget;
 #[cfg(widgets_unstripped)]
-pub use toolbox::ToolBox;
+pub use toolbox::{ToolBox, ToolBoxMode};
 
 /// `Toolbox` — the container-side spelling of the `ToolBox` control.
 ///

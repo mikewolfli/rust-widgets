@@ -6,8 +6,61 @@
 //! Allows matching widgets by kind, class name, ID, and state,
 //! enabling CSS-like cascading style sheets for the widget system.
 
-use crate::compat::{Box, String, Vec};
+use crate::compat::{Box, HashMap, String, Vec};
 use crate::widget::WidgetKind;
+
+/// The narrowing key a rule is stored under.
+///
+/// Matching starts from the element's own tag/class/id and only looks at rules filed under one of
+/// those (or under `Any`), instead of scanning every rule in the sheet (G-22).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum SelectorIndexKey {
+    Kind(WidgetKind),
+    Class(String),
+    Id(String),
+    /// A selector with no tag/class/id constraint: universal, state-only, or a compound whose
+    /// only constraints are those.
+    Any,
+}
+
+/// The most selective simple selector in `selector` that the styled element itself must satisfy.
+///
+/// For a combinator only the **subject** (right-hand compound) is a fact about the element, so the
+/// ancestor side never narrows the index. For an `And`, any one constituent is enough: an element
+/// that matches the compound must satisfy every constituent, so filing under one of them cannot
+/// hide the rule from a matching element.
+fn selector_index_key(selector: &Selector) -> SelectorIndexKey {
+    match selector {
+        Selector::Kind(kind) => SelectorIndexKey::Kind(*kind),
+        Selector::Class(class) => SelectorIndexKey::Class(class.clone()),
+        Selector::Id(id) => SelectorIndexKey::Id(id.clone()),
+        Selector::State(_) | Selector::Universal => SelectorIndexKey::Any,
+        Selector::And(parts) => {
+            if let Some(id) = parts.iter().find_map(|part| match part {
+                Selector::Id(id) => Some(id.clone()),
+                _ => None,
+            }) {
+                return SelectorIndexKey::Id(id);
+            }
+            if let Some(class) = parts.iter().find_map(|part| match part {
+                Selector::Class(class) => Some(class.clone()),
+                _ => None,
+            }) {
+                return SelectorIndexKey::Class(class);
+            }
+            if let Some(kind) = parts.iter().find_map(|part| match part {
+                Selector::Kind(kind) => Some(*kind),
+                _ => None,
+            }) {
+                return SelectorIndexKey::Kind(kind);
+            }
+            SelectorIndexKey::Any
+        }
+        Selector::Descendant { subject, .. } | Selector::Child { subject, .. } => {
+            selector_index_key(subject)
+        }
+    }
+}
 
 /// A CSS-style selector that can match widgets by kind, class, ID, and state.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -201,12 +254,16 @@ pub struct ElementRef<'a> {
 #[derive(Debug, Clone)]
 pub struct StyleSheet {
     rules: Vec<StyleRule>,
+    /// Rule indices by the narrowing key described on [`SelectorIndexKey`]. Rebuilt whenever the
+    /// rule list changes; the list is built once at startup, so an add may pay O(n) to keep both
+    /// structures in step (G-22).
+    index: HashMap<SelectorIndexKey, Vec<usize>>,
 }
 
 impl StyleSheet {
     /// Creates a stylesheet with no rules.
     pub fn new() -> Self {
-        Self { rules: Vec::new() }
+        Self { rules: Vec::new(), index: HashMap::new() }
     }
 
     /// Adds a rule and keeps the list sorted by ascending specificity.
@@ -219,6 +276,41 @@ impl StyleSheet {
     pub fn add_rule(&mut self, rule: StyleRule) {
         self.rules.push(rule);
         self.rules.sort_by_key(|r| r.specificity);
+        self.rebuild_index();
+    }
+
+    /// Rebuilds the inverted index so its stored positions follow the sorted rule list.
+    fn rebuild_index(&mut self) {
+        self.index.clear();
+        for (position, rule) in self.rules.iter().enumerate() {
+            self.index.entry(selector_index_key(&rule.selector)).or_default().push(position);
+        }
+    }
+
+    /// Indices of the rules whose narrowing key can match this element, in cascade order.
+    fn candidate_indices(
+        &self,
+        kind: WidgetKind,
+        class: Option<&str>,
+        id: Option<&str>,
+    ) -> Vec<usize> {
+        let mut candidates = Vec::new();
+        for key in [
+            Some(SelectorIndexKey::Kind(kind)),
+            class.map(|class| SelectorIndexKey::Class(String::from(class))),
+            id.map(|id| SelectorIndexKey::Id(String::from(id))),
+            Some(SelectorIndexKey::Any),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(indices) = self.index.get(&key) {
+                candidates.extend_from_slice(indices);
+            }
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        candidates
     }
 
     /// Find all matching rules for a widget, sorted by specificity.
@@ -229,7 +321,11 @@ impl StyleSheet {
         id: Option<&str>,
         state: Option<PseudoState>,
     ) -> Vec<&StyleRule> {
-        self.rules.iter().filter(|r| r.selector.matches(kind, class, id, state)).collect()
+        self.candidate_indices(kind, class, id)
+            .into_iter()
+            .filter_map(|position| self.rules.get(position))
+            .filter(|rule| rule.selector.matches(kind, class, id, state))
+            .collect()
     }
 
     /// Find all matching rules for an element **with its ancestor chain**, sorted by
@@ -243,7 +339,11 @@ impl StyleSheet {
         element: ElementRef<'_>,
         ancestors: &[ElementRef<'_>],
     ) -> Vec<&StyleRule> {
-        self.rules.iter().filter(|rule| rule.selector.matches_in(element, ancestors)).collect()
+        self.candidate_indices(element.kind, element.class, element.id)
+            .into_iter()
+            .filter_map(|position| self.rules.get(position))
+            .filter(|rule| rule.selector.matches_in(element, ancestors))
+            .collect()
     }
 
     /// Returns the stored rules in cascade order (ascending specificity;
@@ -337,6 +437,45 @@ mod tests {
         ss.add_rule(StyleRule::new(Selector::Class("primary".to_string()), "primary"));
         let matched = ss.match_rules(WidgetKind::Button, Some("primary"), None, None);
         assert_eq!(matched.len(), 2);
+    }
+
+    /// The inverted index must find class/id/compound/combinator rules just as the old linear
+    /// scan did, and still return them in cascade order (G-22).
+    #[test]
+    fn the_indexed_match_returns_every_rule_the_linear_scan_would() {
+        let mut ss = StyleSheet::new();
+        ss.add_rule(StyleRule::new(Selector::Universal, "universal"));
+        ss.add_rule(StyleRule::new(
+            Selector::And(vec![
+                Selector::Kind(WidgetKind::Button),
+                Selector::Class("primary".to_string()),
+            ]),
+            "button.primary",
+        ));
+        ss.add_rule(StyleRule::new(Selector::Id("submit".to_string()), "id"));
+        ss.add_rule(StyleRule::new(
+            Selector::Descendant {
+                ancestor: Box::new(Selector::Kind(WidgetKind::Panel)),
+                subject: Box::new(Selector::Class("primary".to_string())),
+            },
+            "panel primary",
+        ));
+        ss.add_rule(StyleRule::new(Selector::Kind(WidgetKind::Label), "label"));
+
+        let matched = ss.match_rules(WidgetKind::Button, Some("primary"), Some("submit"), None);
+        let names: Vec<&str> = matched.iter().map(|rule| rule.name.as_str()).collect();
+        assert_eq!(names, vec!["universal", "button.primary", "id"]);
+
+        let button = ElementRef {
+            kind: WidgetKind::Button,
+            class: Some("primary"),
+            id: Some("submit"),
+            state: None,
+        };
+        let panel = ElementRef { kind: WidgetKind::Panel, ..button };
+        let matched = ss.match_rules_in(button, &[panel]);
+        assert!(matched.iter().any(|rule| rule.name == "panel primary"));
+        assert!(!matched.iter().any(|rule| rule.name == "label"));
     }
 
     #[test]

@@ -7,7 +7,7 @@ use crate::event::{key_codes, Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
-use crate::signal::GenericSignal;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -21,6 +21,10 @@ const FLOATING_CORNER_RADIUS: u32 = 8;
 const FLOATING_SHADOW_BLUR: u32 = 12;
 /// The floating chrome's shadow offset below the popup, in logical pixels.
 const FLOATING_SHADOW_OFFSET_Y: i32 = 4;
+/// Side length of the bottom-right resize grip, in logical pixels.
+const RESIZE_GRIP_SIZE: u32 = 14;
+/// The smallest size a resize gesture may produce, in logical pixels.
+const MIN_RESIZE: u32 = 32;
 
 /// Popup window widget.
 pub struct PopupWindow {
@@ -52,6 +56,17 @@ pub struct PopupWindow {
     drag_origin: Option<Point>,
     /// The popup's geometry at the moment that drag began.
     drag_geometry: Option<Rect>,
+    /// Whether the bottom-right grip resizes the popup.
+    ///
+    /// Off by default, so a popup that never asks for it keeps the fixed-size behaviour it
+    /// has always had.
+    resizable: bool,
+    /// Pointer position where a grip resize began, in window coordinates.
+    resize_origin: Option<Point>,
+    /// The popup's geometry at the moment that resize began.
+    resize_geometry: Option<Rect>,
+    /// Emitted with the new size whenever a resize gesture changes it.
+    pub resized: Signal1<Size>,
 }
 impl PopupWindow {
     /// Creates a popup window with geometry and no title.
@@ -72,6 +87,10 @@ impl PopupWindow {
             floating_chrome: false,
             drag_origin: None,
             drag_geometry: None,
+            resizable: false,
+            resize_origin: None,
+            resize_geometry: None,
+            resized: Signal1::new(),
         }
     }
 
@@ -150,6 +169,61 @@ impl PopupWindow {
         self.drag_origin.is_some()
     }
 
+    /// Whether the popup can be resized by its grip. Defaults to `false`.
+    pub fn is_resizable(&self) -> bool {
+        self.resizable
+    }
+
+    /// Enables or disables the resize grip.
+    ///
+    /// Disabling it also ends an in-flight resize, so a gesture cannot continue after the
+    /// permission was withdrawn.
+    pub fn set_resizable(&mut self, resizable: bool) {
+        if self.resizable == resizable {
+            return;
+        }
+        self.resizable = resizable;
+        if !resizable {
+            self.resize_origin = None;
+            self.resize_geometry = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// The bottom-right resize grip's box, or `None` when the popup is not resizable.
+    ///
+    /// The grip is a real hit target, not just ink: a press inside it starts a resize instead
+    /// of reaching the content underneath.
+    pub fn resize_grip_rect(&self) -> Option<Rect> {
+        if !self.resizable {
+            return None;
+        }
+        let rect = self.base.geometry();
+        let side = RESIZE_GRIP_SIZE.min(rect.width).min(rect.height);
+        if side == 0 {
+            return None;
+        }
+        Some(Rect::new(
+            rect.x + rect.width as i32 - side as i32,
+            rect.y + rect.height as i32 - side as i32,
+            side,
+            side,
+        ))
+    }
+
+    /// Whether a grip resize is in flight.
+    pub fn is_resizing(&self) -> bool {
+        self.resize_origin.is_some()
+    }
+
+    /// Ends an in-flight resize without changing the size further.
+    pub fn end_resize(&mut self) {
+        if self.resize_origin.take().is_some() {
+            self.resize_geometry = None;
+            self.base.request_redraw();
+        }
+    }
+
     /// Ends a title-bar drag without moving the popup further.
     pub fn end_drag(&mut self) {
         if self.drag_origin.take().is_some() {
@@ -176,6 +250,41 @@ impl PopupWindow {
             return;
         }
         self.base.set_geometry(next);
+        self.base.request_redraw();
+    }
+
+    /// Advances an in-flight grip resize to `pos` (window coordinates).
+    ///
+    /// The size is recomputed from the gesture's origin rather than accumulated, so moving
+    /// the pointer back restores the original size exactly. The top-left corner is fixed and
+    /// both dimensions are clamped to [`MIN_RESIZE`].
+    pub fn resize_to(&mut self, pos: Point) {
+        let (Some(origin), Some(start)) = (self.resize_origin, self.resize_geometry) else {
+            return;
+        };
+        let width = (start.width as i32 + (pos.x - origin.x)).max(MIN_RESIZE as i32) as u32;
+        let height = (start.height as i32 + (pos.y - origin.y)).max(MIN_RESIZE as i32) as u32;
+        self.apply_size(start, width, height);
+    }
+
+    /// Sets the popup's size and emits `resized` when it changes.
+    ///
+    /// This is the programmatic counterpart of the grip gesture: a host that recomputes a
+    /// popup's size from its content does not have to fake a pointer drag. Both dimensions are
+    /// clamped to [`MIN_RESIZE`].
+    pub fn set_size(&mut self, size: Size) {
+        let rect = self.base.geometry();
+        self.apply_size(rect, size.width.max(MIN_RESIZE), size.height.max(MIN_RESIZE));
+    }
+
+    /// Writes a new size anchored at `anchor`'s top-left corner and reports a real change.
+    fn apply_size(&mut self, anchor: Rect, width: u32, height: u32) {
+        let next = Rect::new(anchor.x, anchor.y, width, height);
+        if self.base.geometry() == next {
+            return;
+        }
+        self.base.set_geometry(next);
+        self.resized.emit(Size::new(width, height));
         self.base.request_redraw();
     }
 
@@ -283,6 +392,12 @@ impl Widget for PopupWindow {
         match name {
             "opened" => Some(EventSignalRef::unit("opened", &self.opened)),
             "closed" => Some(EventSignalRef::unit("closed", &self.closed)),
+            "resized" => Some(EventSignalRef::mapped("resized", &self.resized, |size| {
+                CapabilityValue::Tuple(vec![
+                    CapabilityValue::UInt(size.width as u64),
+                    CapabilityValue::UInt(size.height as u64),
+                ])
+            })),
             _ => None,
         }
     }
@@ -303,6 +418,7 @@ impl WidgetProperties for PopupWindow {
             // property route as well as through the setter.
             "transient_parent" => Ok(CapabilityValue::UInt(self.transient_parent().unwrap_or(0))),
             "floating_chrome" => Ok(CapabilityValue::Bool(self.is_floating_chrome())),
+            "resizable" => Ok(CapabilityValue::Bool(self.is_resizable())),
             _ => base_property_get(self, name),
         }
     }
@@ -329,6 +445,10 @@ impl WidgetProperties for PopupWindow {
                 self.set_floating_chrome(expect_bool(value)?);
                 Ok(())
             }
+            "resizable" => {
+                self.set_resizable(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -340,6 +460,7 @@ impl WidgetProperties for PopupWindow {
             "modal",
             "transient_parent",
             "floating_chrome",
+            "resizable",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -455,6 +576,27 @@ impl Draw for PopupWindow {
             context.draw_rect(rect, border);
         }
 
+        // The resize grip is painted even for a titleless popup, which is why it sits before
+        // the title-bar early return. Three short diagonals are the conventional "drag this
+        // corner" mark and need no font glyph.
+        if let Some(grip) = self.resize_grip_rect() {
+            let ink = border.with_alpha(170);
+            for step in 1..=3 {
+                let offset = (step * 4) as i32;
+                context.draw_line(
+                    Point::new(
+                        grip.x + grip.width as i32 - offset,
+                        grip.y + grip.height as i32 - 2,
+                    ),
+                    Point::new(
+                        grip.x + grip.width as i32 - 2,
+                        grip.y + grip.height as i32 - offset,
+                    ),
+                    ink,
+                );
+            }
+        }
+
         if self.title.is_empty() {
             return;
         }
@@ -529,6 +671,7 @@ impl EventHandler for PopupWindow {
             }
             Event::MouseLeave { .. } => {
                 self.end_drag();
+                self.end_resize();
                 self.set_pointer_hovered(false);
             }
             _ => {}
@@ -548,6 +691,13 @@ impl EventHandler for PopupWindow {
                     self.close();
                     return;
                 }
+                // The grip wins over the title bar and over the content: it is the only
+                // affordance that says "this corner resizes me".
+                if self.resize_grip_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.resize_origin = Some(*pos);
+                    self.resize_geometry = Some(self.base.geometry());
+                    return;
+                }
                 // A press on the title bar starts moving the window; a press in the body is
                 // the content's business.
                 if self.is_in_title_bar(*pos) {
@@ -556,11 +706,16 @@ impl EventHandler for PopupWindow {
                 }
             }
             Event::MouseMove { pos } => {
-                self.drag_to(*pos);
+                if self.is_resizing() {
+                    self.resize_to(*pos);
+                } else {
+                    self.drag_to(*pos);
+                }
             }
             Event::MouseRelease { button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
                 self.end_drag();
+                self.end_resize();
             }
             // Escape is the keyboard's close affordance. A popup is a floating surface with
             // no other keyboard exit, so the key goes through the same `close` path as the
@@ -801,5 +956,57 @@ mod tests {
         popup.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
         assert!(!popup.is_hovered());
         assert_eq!(resting, crate::widget::svg::render_to_svg(&mut popup));
+    }
+
+    /// The resize grip is opt-in, changes the size, and reports the new size.
+    #[test]
+    fn popup_resize_grip_changes_the_size_and_emits_resized() {
+        let mut popup = PopupWindow::new(Rect::new(0, 0, 160, 100));
+        assert!(!popup.is_resizable());
+        assert!(popup.resize_grip_rect().is_none(), "a fixed popup advertises no grip");
+
+        let sizes = Arc::new(Mutex::new(Vec::new()));
+        popup.resized.connect({
+            let sink = Arc::clone(&sizes);
+            move |size| sink.lock().expect("sizes").push(*size)
+        });
+        popup.set_resizable(true);
+        let grip = popup.resize_grip_rect().expect("a resizable popup has a grip");
+        assert_eq!(grip.x + grip.width as i32, 160);
+        assert_eq!(grip.y + grip.height as i32, 100);
+
+        popup.handle_event(&Event::MousePress {
+            pos: Point::new(grip.x + 2, grip.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(popup.is_resizing());
+        popup.handle_event(&Event::MouseMove { pos: Point::new(grip.x + 32, grip.y + 22) });
+        assert_eq!(popup.geometry(), Rect::new(0, 0, 190, 120));
+        assert_eq!(&*sizes.lock().expect("sizes"), &[Size::new(190, 120)]);
+
+        popup.handle_event(&Event::MouseRelease {
+            pos: Point::new(grip.x + 32, grip.y + 22),
+            button: 1,
+        });
+        assert!(!popup.is_resizing());
+
+        // A shrink is clamped to the minimum, not to zero or a negative size.
+        popup.set_resizable(false);
+        popup.set_resizable(true);
+        let grip = popup.resize_grip_rect().expect("grip");
+        popup.handle_event(&Event::MousePress {
+            pos: Point::new(grip.x + 2, grip.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        popup.handle_event(&Event::MouseMove { pos: Point::new(-400, -400) });
+        assert_eq!(popup.geometry().width, MIN_RESIZE);
+        assert_eq!(popup.geometry().height, MIN_RESIZE);
+
+        // The programmatic size setter is the same change, reported the same way.
+        popup.set_size(Size::new(200, 150));
+        assert_eq!(popup.geometry(), Rect::new(0, 0, 200, 150));
+        assert_eq!(sizes.lock().expect("sizes").last(), Some(&Size::new(200, 150)));
     }
 }

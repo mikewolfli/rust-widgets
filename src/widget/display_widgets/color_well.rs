@@ -13,7 +13,7 @@ use crate::core::{Color, Point, Rect};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::GenericSignal;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -50,6 +50,11 @@ pub struct ColorWell {
     /// This is the gesture that opens a color chooser. The control does not open
     /// one itself: the host owns the picker, so the signal is the request.
     pub picker_requested: GenericSignal,
+    /// Emitted with the new colour whenever [`ColorWell::set_color`] changes it.
+    ///
+    /// Every colour-changing path — the property route, a drop, and the host's own
+    /// calls — ends in `set_color`, so a mirrored copy of the well sees them all.
+    pub color_changed: Signal1<Color>,
 }
 
 impl ColorWell {
@@ -64,6 +69,7 @@ impl ColorWell {
             last_press: None,
             clicked: GenericSignal::new(),
             picker_requested: GenericSignal::new(),
+            color_changed: Signal1::new(),
         }
     }
 
@@ -79,6 +85,7 @@ impl ColorWell {
         }
         self.color = color;
         self.base.request_redraw();
+        self.color_changed.emit(color);
     }
 
     /// Returns whether the border is visible.
@@ -154,6 +161,11 @@ impl Widget for ColorWell {
             "picker_requested" => {
                 Some(EventSignalRef::unit("picker_requested", &self.picker_requested))
             }
+            "color_changed" => Some(EventSignalRef::mapped(
+                "color_changed",
+                &self.color_changed,
+                |color: &Color| CapabilityValue::String(color.to_hex_rgba()),
+            )),
             _ => None,
         }
     }

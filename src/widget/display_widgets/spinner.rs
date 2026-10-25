@@ -10,7 +10,8 @@
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_u32};
+use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -77,6 +78,8 @@ pub struct Spinner {
     speed: f32,
     /// The drawn shape: one sweeping arc or a ring of fading spokes.
     style: SpinnerStyle,
+    /// Emitted with the new flag when [`Spinner::set_active`] actually changes it.
+    pub active_changed: Signal1<bool>,
 }
 
 impl Spinner {
@@ -92,6 +95,7 @@ impl Spinner {
             size_ratio: 0.8,
             speed: 1.0,
             style: SpinnerStyle::default(),
+            active_changed: Signal1::new(),
         }
     }
 
@@ -107,6 +111,7 @@ impl Spinner {
         }
         self.active = active;
         self.base.request_redraw();
+        self.active_changed.emit(active);
     }
 
     /// Sets the line/arc thickness in pixels (minimum 1).
@@ -310,6 +315,19 @@ impl Widget for Spinner {
     fn is_animating(&self) -> bool {
         self.active
     }
+
+    /// Resolves a published event name to the signal the spinner emits.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "active_changed" => {
+                Some(EventSignalRef::mapped("active_changed", &self.active_changed, |value| {
+                    CapabilityValue::Bool(*value)
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `Spinner`'s property contract.
@@ -320,6 +338,7 @@ impl WidgetProperties for Spinner {
             "thickness" => Ok(CapabilityValue::UInt(self.thickness() as u64)),
             "speed" => Ok(CapabilityValue::Float(self.speed() as f64)),
             "size_ratio" => Ok(CapabilityValue::Float(self.size_ratio() as f64)),
+            "style" => Ok(CapabilityValue::String(self.spinner_style().token().into())),
             _ => base_property_get(self, name),
         }
     }
@@ -342,22 +361,38 @@ impl WidgetProperties for Spinner {
                 self.set_size_ratio(expect_f32(value)?);
                 Ok(())
             }
+            "style" => {
+                let token = expect_string(value)?;
+                let style =
+                    SpinnerStyle::from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_spinner_style(style);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        // Mirrors `SPINNER_PROPERTIES`.
-        property_names_of!["active", "thickness", "speed", "size_ratio", BASE_PROPERTY_NAMES]
+        // Mirrors `SPINNER_PROPERTIES`; `style` is the drawn shape selector that previously had
+        // no property route at all.
+        property_names_of![
+            "active",
+            "thickness",
+            "speed",
+            "size_ratio",
+            "style",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `spinner` publishes.
     ///
     /// All four assign state — the running flag, the rotation speed, the stroke width
     /// and the diameter ratio — so each needs an argument a command carries none of.
-    /// They are refused as [`CapabilityAccessError::OutOfRange`] (use the property
-    /// route `set("active", ..)` / `set("speed", ..)` / `set("thickness", ..)` /
-    /// `set("size_ratio", ..)`) rather than reported as unknown.
+    /// They are refused as [`CapabilityAccessError::OutOfRange`] (use the property route
+    /// `set("active", ..)` / `set("speed", ..)` / `set("thickness", ..)` /
+    /// `set("size_ratio", ..)`) rather than reported as unknown. The drawn style is a
+    /// property (`set("style", ..)`) but is not part of the published command list.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "set_active" | "set_speed" | "set_thickness" | "set_size_ratio" => {

@@ -3,7 +3,7 @@
 
 //! Chip widget.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -13,8 +13,47 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// A chip's leading avatar content.
+///
+/// A chip label is often an identity (a person, a tag, a filter), and the baseline chip
+/// carries a small visual token beside it. The three variants are the three things a chip
+/// can show without a decoded image: initials, a colour swatch, or a built-in icon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChipAvatar {
+    /// One or two letters drawn in the avatar slot.
+    Initials(String),
+    /// A filled colour swatch.
+    Color(Color),
+    /// A built-in vector icon.
+    Icon(IconName),
+}
+
+impl ChipAvatar {
+    /// The record-token spelling, so the avatar survives a property round trip.
+    fn as_token(&self) -> String {
+        match self {
+            ChipAvatar::Initials(text) => format!("initials:{text}"),
+            ChipAvatar::Color(color) => format!("color:{}", color.to_hex_rgba()),
+            ChipAvatar::Icon(icon) => format!("icon:{}", icon.as_str()),
+        }
+    }
+
+    fn from_token(token: &str) -> Option<Self> {
+        if let Some(text) = token.strip_prefix("initials:") {
+            return Some(ChipAvatar::Initials(text.to_string()));
+        }
+        if let Some(raw) = token.strip_prefix("color:") {
+            return Color::parse_hex(raw).map(ChipAvatar::Color);
+        }
+        if let Some(name) = token.strip_prefix("icon:") {
+            return IconName::from_name(name).map(ChipAvatar::Icon);
+        }
+        None
+    }
+}
 
 /// One chip item.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,12 +64,20 @@ pub struct ChipItem {
     pub label: String,
     /// Whether the chip is selected.
     pub selected: bool,
+    /// Optional leading avatar, shown in the same slot as the typed icon.
+    pub avatar: Option<ChipAvatar>,
 }
 
 impl ChipItem {
     /// Creates a new chip item.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into(), selected: false }
+        Self { id: id.into(), label: label.into(), selected: false, avatar: None }
+    }
+
+    /// Sets the item's leading avatar.
+    pub fn with_avatar(mut self, avatar: ChipAvatar) -> Self {
+        self.avatar = Some(avatar);
+        self
     }
 }
 
@@ -70,6 +117,12 @@ pub const CHIP_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
                 "icon_source",
                 crate::widget::capability::PropertyValueKind::IconSpec,
             ),
+            // A chip's leading avatar (initials, colour swatch or icon), encoded as a string
+            // token so every property value kind the record layer knows can carry it.
+            crate::widget::capability::RecordField::optional(
+                "avatar",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
         ],
         id_field: "id",
         ids_unique: true,
@@ -89,6 +142,9 @@ fn chip_item_record(
         .with("id", CapabilityValue::String(item.id.clone()))
         .with("label", CapabilityValue::String(item.label.clone()))
         .with("selected", CapabilityValue::Bool(item.selected));
+    if let Some(avatar) = item.avatar.as_ref() {
+        record = record.with("avatar", CapabilityValue::String(avatar.as_token()));
+    }
     match icon_source {
         // A chip with no icon is the normal case, and "no `icon_source` field" is how a document
         // says so; the `set` half reads the missing field the same way.
@@ -139,7 +195,14 @@ fn chip_item_from_record(
         Some(CapabilityValue::Bool(flag)) => *flag,
         Some(_) => return Err(CapabilityAccessError::TypeMismatch),
     };
-    Ok((ChipItem { id: text("id")?, label: text("label")?, selected }, icon_source))
+    let avatar = match record.get("avatar") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::String(token)) => {
+            Some(ChipAvatar::from_token(token).ok_or(CapabilityAccessError::TypeMismatch)?)
+        }
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok((ChipItem { id: text("id")?, label: text("label")?, selected, avatar }, icon_source))
 }
 
 /// Square side of a chip item's leading icon slot, in logical pixels.
@@ -150,6 +213,40 @@ const CHIP_ICON_GAP: u32 = 4;
 const CHIP_CLOSE_SLOT: i32 = 14;
 /// Width of the `+N` summary cell that stands in for chips that do not fit.
 const CHIP_OVERFLOW_WIDTH: i32 = 34;
+
+/// The laid-out chips and the inputs the layout was derived from.
+///
+/// `chip_layout` used to re-measure every label on each call, and a single `draw` alone calls it
+/// three times (chips, overflow cell, drag marker) on top of every pointer hit test. A chips row
+/// is a pure function of the items, the band it occupies and the resolved font, so it is computed
+/// once and reused until one of those changes.
+struct ChipLayout {
+    band: Rect,
+    font: Font,
+    show_close: bool,
+    padding: i32,
+    spacing: i32,
+    chips: Vec<(usize, Rect)>,
+    overflow: Option<(Rect, usize)>,
+}
+
+impl ChipLayout {
+    /// Whether this layout still describes the inputs in hand.
+    fn matches(
+        &self,
+        band: Rect,
+        font: &Font,
+        show_close: bool,
+        padding: i32,
+        spacing: i32,
+    ) -> bool {
+        self.band == band
+            && &self.font == font
+            && self.show_close == show_close
+            && self.padding == padding
+            && self.spacing == spacing
+    }
+}
 
 /// Horizontal chip list with single or multi select mode.
 pub struct Chip {
@@ -172,6 +269,8 @@ pub struct Chip {
     pub chip_removed: Signal1<String>,
     /// Emitted with the id of a chip whose position the user changed.
     pub chip_reordered: Signal1<String>,
+    /// Emitted with the number of chips folded into the `+N` summary cell when it is pressed.
+    pub overflow_activated: Signal1<usize>,
     /// The chip under the pointer.
     hovered_index: Option<usize>,
     /// Whether each chip paints a close affordance.
@@ -186,6 +285,8 @@ pub struct Chip {
     /// The sliding pill's progress and the chip it started from.
     pill_slide: PropertyDriver,
     pill_from: usize,
+    /// The cached row layout, rebuilt when the items, band, font or chrome inputs change.
+    layout_cache: Option<ChipLayout>,
 }
 
 impl Chip {
@@ -202,6 +303,7 @@ impl Chip {
             chip_toggled: Signal1::new(),
             chip_removed: Signal1::new(),
             chip_reordered: Signal1::new(),
+            overflow_activated: Signal1::new(),
             hovered_index: None,
             show_close: false,
             reorder_enabled: false,
@@ -210,6 +312,7 @@ impl Chip {
             animate_selection: false,
             pill_slide: PropertyDriver::at(1.0, MotionSlot::Normal),
             pill_from: 0,
+            layout_cache: None,
         }
     }
 
@@ -278,6 +381,7 @@ impl Chip {
             if self.items.is_empty() { None } else { Some(index.min(self.items.len() - 1)) };
         self.hovered_index = None;
         crate::style::reapply_active_theme_state(self);
+        self.layout_cache = None;
         self.chip_removed.emit(removed.id);
         self.base.request_layout();
         self.base.request_redraw();
@@ -295,6 +399,7 @@ impl Chip {
         let id = item.id.clone();
         self.items.insert(to, item);
         self.focused_index = Some(to);
+        self.layout_cache = None;
         self.chip_reordered.emit(id);
         self.base.request_redraw();
         true
@@ -326,6 +431,7 @@ impl Chip {
             }
         }
         crate::style::reapply_active_theme_state(self);
+        self.layout_cache = None;
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -363,6 +469,7 @@ impl Chip {
             self.item_icon_sources.push((String::from(id), source));
         }
         // An icon is part of the chip's box, so the row has to be measured again, not just redrawn.
+        self.layout_cache = None;
         self.base.request_layout();
         self.base.request_redraw();
         Ok(())
@@ -386,6 +493,7 @@ impl Chip {
         self.item_icon_sources = sources;
         let live: Vec<String> = self.items.iter().map(|item| item.id.clone()).collect();
         self.item_icon_sources.retain(|(id, _)| live.contains(id));
+        self.layout_cache = None;
     }
 
     /// Enables/disables multi-select mode.
@@ -496,16 +604,17 @@ impl Chip {
     /// estimated box was then clipped/fitted earlier than necessary. Measuring with
     /// [`estimate_text_width`] — the same ruler `implicit_size` and the painter share — makes the box
     /// fit the text it actually draws.
-    fn chip_width(&self, item: &ChipItem, padding: i32) -> i32 {
+    fn chip_width(&self, item: &ChipItem, padding: i32, font: &Font) -> i32 {
         // The **effective font** — the resolved theme/caller font — so the chip box and the label are
-        // measured with the same font the row paints with (D09-STYLE-01 / D09-STYLE-02).
-        let icon =
-            if self.icon_source_of(item).is_some() { CHIP_ICON_SIDE + CHIP_ICON_GAP } else { 0 };
+        // measured with the same font the row paints with (D09-STYLE-01 / D09-STYLE-02). The caller
+        // resolved it once for the whole row, so a layout pass no longer re-resolves it per item.
+        let icon = if self.icon_source_of(item).is_some() || item.avatar.is_some() {
+            CHIP_ICON_SIDE + CHIP_ICON_GAP
+        } else {
+            0
+        };
         let close = if self.show_close { CHIP_CLOSE_SLOT } else { 0 };
-        estimate_text_width(&item.label, effective_font(self.style()), 1.0) as i32
-            + padding * 2
-            + icon as i32
-            + close
+        estimate_text_width(&item.label, font, 1.0) as i32 + padding * 2 + icon as i32 + close
     }
 
     /// The band the chip row occupies: full width, `CHIP_HEIGHT` tall, centred in the
@@ -523,30 +632,39 @@ impl Chip {
         ControlMetrics::full_width_band(self.geometry(), dimensions::CHIP_HEIGHT)
     }
 
-    /// The laid-out chips: `(item index, pill rectangle)`, in row order.
+    /// Rebuilds the cached layout when its inputs have changed.
     ///
-    /// Computed once per paint and once per hit test. `chip_rect` used to re-walk (and re-measure)
-    /// the prefix for every index, so painting N chips measured N(N+1)/2 labels; a chips row is a
-    /// linear strip, so a single pass is enough. Chips that would start past the band's right edge
-    /// are omitted rather than painted outside the control.
-    fn chip_layout(&self) -> Vec<(usize, Rect)> {
-        self.chip_layout_with_overflow().0
+    /// Called before any read. Keeping "refresh" and "read" separate is what lets the read take
+    /// `&self`: the row is then evaluated once per frame instead of once per chip, per overflow
+    /// cell and per hit test.
+    fn ensure_layout(&mut self) {
+        let band = self.row_band();
+        let font = effective_font(self.style()).clone();
+        let fresh = self.layout_cache.as_ref().is_some_and(|cache| {
+            cache.matches(band, &font, self.show_close, self.chip_padding, self.chip_spacing)
+        });
+        if !fresh {
+            self.layout_cache = Some(self.build_layout(band, font));
+        }
     }
 
-    /// The laid-out chips plus, when the row overflows, the trailing `+N` cell.
+    /// The cached layout. [`Self::ensure_layout`] must have run first.
+    fn cached_layout(&self) -> &ChipLayout {
+        self.layout_cache.as_ref().expect("ensure_layout() populates the layout cache")
+    }
+
+    /// Lays the row out once.
     ///
-    /// A chips row is a linear strip, so the chips that do not fit are folded into one summary
-    /// cell rather than being silently dropped: the previous layout stopped at the right edge,
-    /// so an item past it existed in the model and was unpaintable and unclickable. The summary
-    /// cell is returned separately because it is not an item index.
-    fn chip_layout_with_overflow(&self) -> (Vec<(usize, Rect)>, Option<(Rect, usize)>) {
-        let band = self.row_band();
+    /// A chips row is a linear strip, so a single pass is enough. Chips that would start past the
+    /// band's right edge are folded into the summary cell rather than painted outside the control.
+    fn build_layout(&self, band: Rect, font: Font) -> ChipLayout {
         let mut layout = Vec::with_capacity(self.items.len());
         let mut x = band.x + dimensions::CHIP_PADDING_H as i32;
         let right = band.x + band.width as i32;
         let mut overflow = None;
         for (index, item) in self.items.iter().enumerate() {
-            let width = (self.chip_width(item, self.chip_padding).max(10) as u32).min(band.width);
+            let width =
+                (self.chip_width(item, self.chip_padding, &font).max(10) as u32).min(band.width);
             if x + width as i32 > right {
                 overflow = Some((index, (right - x).max(0) as u32));
                 break;
@@ -573,54 +691,83 @@ impl Chip {
             let hidden = self.items.len() - layout.len();
             Some((Rect::new(start, band.y, width, band.height), hidden))
         });
-        (layout, overflow_cell)
+        ChipLayout {
+            band,
+            font,
+            show_close: self.show_close,
+            padding: self.chip_padding,
+            spacing: self.chip_spacing,
+            chips: layout,
+            overflow: overflow_cell,
+        }
     }
 
     #[cfg(test)]
-    fn chip_rect(&self, index: usize) -> Option<Rect> {
-        self.chip_layout().into_iter().find(|(item, _)| *item == index).map(|(_, rect)| rect)
+    fn chip_rect(&mut self, index: usize) -> Option<Rect> {
+        self.ensure_layout();
+        self.cached_layout().chips.iter().find(|(item, _)| *item == index).map(|(_, rect)| *rect)
     }
 
-    fn hit_index(&self, pos: Point) -> Option<usize> {
-        self.chip_layout()
-            .into_iter()
+    /// The cached row in the shape the layout tests read it.
+    #[cfg(test)]
+    fn chip_layout_with_overflow(&mut self) -> (Vec<(usize, Rect)>, Option<(Rect, usize)>) {
+        self.ensure_layout();
+        let layout = self.cached_layout();
+        (layout.chips.clone(), layout.overflow)
+    }
+
+    fn hit_index(&mut self, pos: Point) -> Option<usize> {
+        self.ensure_layout();
+        self.cached_layout()
+            .chips
+            .iter()
             .find(|(_, chip)| {
                 pos.x >= chip.x
                     && pos.x < chip.x + chip.width as i32
                     && pos.y >= chip.y
                     && pos.y < chip.y + chip.height as i32
             })
-            .map(|(index, _)| index)
+            .map(|(index, _)| *index)
+    }
+
+    /// Returns the hidden count when the pointer is on the `+N` summary cell.
+    fn hit_overflow(&mut self, pos: Point) -> Option<usize> {
+        self.ensure_layout();
+        self.cached_layout()
+            .overflow
+            .and_then(|(cell, hidden)| cell.contains_point(pos).then_some(hidden))
     }
 
     /// Returns the chip whose close affordance is under the pointer.
-    fn hit_close(&self, pos: Point) -> Option<usize> {
+    fn hit_close(&mut self, pos: Point) -> Option<usize> {
         if !self.show_close {
             return None;
         }
-        self.chip_layout().into_iter().find_map(|(index, chip)| {
+        self.ensure_layout();
+        self.cached_layout().chips.iter().find_map(|(index, chip)| {
             let close = Rect::new(
                 chip.x + chip.width as i32 - CHIP_CLOSE_SLOT,
                 chip.y,
                 CHIP_CLOSE_SLOT as u32,
                 chip.height,
             );
-            (close.contains_point(pos) && chip.contains_point(pos)).then_some(index)
+            (close.contains_point(pos) && chip.contains_point(pos)).then_some(*index)
         })
     }
 
     /// Returns the item position the pointer would drop a dragged chip into.
-    fn drop_target(&self, pos: Point) -> Option<usize> {
-        let layout = self.chip_layout();
-        if layout.is_empty() {
+    fn drop_target(&mut self, pos: Point) -> Option<usize> {
+        self.ensure_layout();
+        let layout = self.cached_layout();
+        if layout.chips.is_empty() {
             return None;
         }
-        for (index, chip) in &layout {
+        for (index, chip) in &layout.chips {
             if pos.x < chip.x + chip.width as i32 / 2 {
                 return Some(*index);
             }
         }
-        Some(layout.len().saturating_sub(1))
+        Some(layout.chips.len().saturating_sub(1))
     }
 }
 
@@ -729,6 +876,11 @@ impl Widget for Chip {
             "chip_reordered" => {
                 Some(EventSignalRef::mapped("chip_reordered", &self.chip_reordered, |v| {
                     crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
+            "overflow_activated" => {
+                Some(EventSignalRef::mapped("overflow_activated", &self.overflow_activated, |v| {
+                    crate::widget::capability::CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,
@@ -881,6 +1033,10 @@ impl EventHandler for Chip {
                 }
             }
             Event::MousePress { pos, button: 1, .. } => {
+                if let Some(hidden) = self.hit_overflow(*pos) {
+                    self.overflow_activated.emit(hidden);
+                    return;
+                }
                 if let Some(index) = self.hit_close(*pos) {
                     let _ = self.remove_index(index);
                     return;
@@ -935,6 +1091,9 @@ impl EventHandler for Chip {
 
 impl Draw for Chip {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Measure the row once, before any style borrow is taken: the same layout serves the chip
+        // loop, the overflow summary and the drag marker, instead of three full passes per frame.
+        self.ensure_layout();
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then fall back to a literal. The theme
         // step is what makes a light/dark switch visible here; without it every
@@ -992,7 +1151,7 @@ impl Draw for Chip {
         // child, which is not what a chip row looks like. Each chip paints its own pill instead;
         // a chip is a rounded pill by definition, and a square box read as a table cell.
 
-        for (index, chip_rect) in self.chip_layout_with_overflow().0 {
+        for &(index, chip_rect) in &self.cached_layout().chips {
             let Some(item) = self.items.get(index) else {
                 continue;
             };
@@ -1038,11 +1197,10 @@ impl Draw for Chip {
             let pill_radius = (chip_rect.height / 2).max(1);
             context.fill_rounded_rect(chip_rect, pill_radius, bg);
             context.draw_rounded_rect_stroke(chip_rect, pill_radius, border, 1);
-            // ── Icon ──
+            // ── Avatar ──
             //
-            // A chip with typed content reserves a leading square, and the label band starts after
-            // it. `chip_width` charges exactly `CHIP_ICON_SIDE + CHIP_ICON_GAP`, so the room the
-            // box was measured with and the room the glyph occupies cannot disagree.
+            // A typed icon wins; otherwise an avatar fills the same leading slot. Both are
+            // charged in `chip_width`, so the label box and the slot cannot disagree.
             let mut label_box = chip_rect;
             if let Some(source) = self.icon_source_of(item) {
                 let side = CHIP_ICON_SIDE.min(chip_rect.height.saturating_sub(4)).max(1);
@@ -1056,6 +1214,48 @@ impl Draw for Chip {
                     crate::widget::paint_icon(context, source.into(), icon_rect, label_ink)
                 {
                     log::warn!("chip item '{}' icon failed: {error:?}", item.id);
+                }
+                label_box.x += (CHIP_ICON_SIDE + CHIP_ICON_GAP) as i32;
+                label_box.width = label_box.width.saturating_sub(CHIP_ICON_SIDE + CHIP_ICON_GAP);
+            } else if let Some(avatar) = item.avatar.as_ref() {
+                let side = CHIP_ICON_SIDE.min(chip_rect.height.saturating_sub(4)).max(1);
+                let avatar_rect = Rect::new(
+                    chip_rect.x + CHIP_ICON_GAP as i32,
+                    chip_rect.y + (chip_rect.height.saturating_sub(side) / 2) as i32,
+                    side,
+                    side,
+                );
+                match avatar {
+                    ChipAvatar::Initials(text) => {
+                        context.fill_circle(
+                            crate::core::Point::new(
+                                avatar_rect.x + side as i32 / 2,
+                                avatar_rect.y + side as i32 / 2,
+                            ),
+                            side / 2,
+                            label_ink.with_alpha(60),
+                        );
+                        context.draw_text_fitted_cow(
+                            avatar_rect,
+                            text,
+                            effective_font(style),
+                            label_ink,
+                            HorizontalAlignment::Center,
+                        );
+                    }
+                    ChipAvatar::Color(color) => {
+                        context.fill_circle(
+                            crate::core::Point::new(
+                                avatar_rect.x + side as i32 / 2,
+                                avatar_rect.y + side as i32 / 2,
+                            ),
+                            side / 2,
+                            *color,
+                        );
+                    }
+                    ChipAvatar::Icon(icon) => {
+                        crate::widget::draw_icon_at(context, avatar_rect, label_ink, *icon);
+                    }
                 }
                 label_box.x += (CHIP_ICON_SIDE + CHIP_ICON_GAP) as i32;
                 label_box.width = label_box.width.saturating_sub(CHIP_ICON_SIDE + CHIP_ICON_GAP);
@@ -1099,7 +1299,7 @@ impl Draw for Chip {
         }
 
         // ── Overflow summary ──
-        if let Some((cell, hidden)) = self.chip_layout_with_overflow().1 {
+        if let Some((cell, hidden)) = self.cached_layout().overflow {
             let radius = (cell.height / 2).max(1);
             let fill = background.blend(&text_color, 0.06);
             context.fill_rounded_rect(cell, radius, fill);
@@ -1111,7 +1311,9 @@ impl Draw for Chip {
 
         // ── Drag insertion marker ──
         if let Some(target) = self.drag_target {
-            if let Some((_, rect)) = self.chip_layout().into_iter().find(|(i, _)| *i == target) {
+            if let Some((_, rect)) =
+                self.cached_layout().chips.iter().find(|(i, _)| *i == target).copied()
+            {
                 let marker = Rect::new(rect.x.saturating_sub(2), rect.y, 2, rect.height);
                 context.fill_rect(marker, text_color.with_alpha(200));
             }
@@ -1124,7 +1326,7 @@ impl Draw for Chip {
         // moves and the frame its progress settles, which is why it can never alter a resting
         // snapshot.
         if self.animate_selection && self.pill_slide.is_moving() {
-            let layout = self.chip_layout();
+            let layout = &self.cached_layout().chips;
             let selected = self.items.iter().position(|item| item.selected);
             if let (Some(from), Some(to)) = (
                 layout.iter().find(|(i, _)| *i == self.pill_from),
@@ -1773,7 +1975,7 @@ mod tests {
         assert!(schema.readable && schema.writable);
         let record_schema = schema.record_schema.expect("a `Records` schema names its shape");
         assert_eq!(record_schema.id_field, "id");
-        assert_eq!(record_schema.names(), vec!["id", "label", "selected", "icon_source"]);
+        assert_eq!(record_schema.names(), vec!["id", "label", "selected", "icon_source", "avatar"]);
         assert!(record_schema.ids_unique && record_schema.ids_required);
         // The control itself carries the same schema, so the two cannot drift.
         assert_eq!(record_schema, &CHIP_ITEM_SCHEMA);
@@ -1812,6 +2014,46 @@ mod tests {
         // The click target is that same box, so a press in its right-hand part still hits.
         let inside = Point::new(rect.x + rect.width as i32 - 1, rect.y + rect.height as i32 / 2);
         assert_eq!(chip.hit_index(inside), Some(0));
+    }
+
+    /// The summary cell is a control: pressing it reports how many chips are hidden.
+    #[test]
+    fn pressing_the_overflow_summary_emits_the_hidden_count() {
+        use crate::event::EventHandler;
+        let mut chip = Chip::new(Rect::new(0, 0, 90, 24));
+        chip.set_items(
+            (0..6).map(|index| ChipItem::new(format!("c{index}"), "Wide label")).collect(),
+        );
+        let (_, overflow) = chip.chip_layout_with_overflow();
+        let (cell, hidden) = overflow.expect("a summary cell when the row overflows");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        chip.overflow_activated.connect(move |value| sink.lock().unwrap().push(*value));
+
+        chip.handle_event(&Event::mouse_press(cell.x + 2, cell.y + 2, 1));
+        assert_eq!(*seen.lock().unwrap(), vec![hidden]);
+    }
+
+    /// A chip avatar survives the `items` property round trip in all three forms.
+    #[test]
+    fn a_chip_avatar_round_trips_through_the_items_property() {
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 24));
+        chip.set_items(vec![
+            ChipItem::new("a", "Alice").with_avatar(ChipAvatar::Initials("A".to_string())),
+            ChipItem::new("b", "Bob").with_avatar(ChipAvatar::Color(Color::rgb(10, 20, 30))),
+            ChipItem::new("c", "Carol").with_avatar(ChipAvatar::Icon(IconName::User)),
+        ]);
+
+        let records = match chip.get("items").expect("items is readable") {
+            CapabilityValue::Records(records) => records,
+            other => panic!("items should read back as Records, got {other:?}"),
+        };
+        assert!(records.items()[0].get("avatar").is_some());
+
+        chip.set("items", CapabilityValue::Records(records)).expect("a read-back list is writable");
+        assert_eq!(chip.items()[0].avatar, Some(ChipAvatar::Initials("A".to_string())));
+        assert_eq!(chip.items()[1].avatar, Some(ChipAvatar::Color(Color::rgb(10, 20, 30))));
+        assert_eq!(chip.items()[2].avatar, Some(ChipAvatar::Icon(IconName::User)));
     }
 
     #[test]

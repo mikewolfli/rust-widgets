@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Render commands for composing widget visuals.
-use crate::compat::{String, Vec};
+use crate::compat::{Arc, String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 #[cfg(feature = "3d")]
 use crate::render::math3d::Mat4;
@@ -16,8 +16,8 @@ use crate::style::Gradient;
 /// every range so render backends can consume the shape without revalidating it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompoundPath {
-    points: Vec<Point>,
-    contours: Vec<(usize, usize)>,
+    points: Arc<[Point]>,
+    contours: Arc<[(usize, usize)]>,
 }
 
 /// Why a compound path could not be constructed.
@@ -37,7 +37,7 @@ impl CompoundPath {
         contours: Vec<(usize, usize)>,
     ) -> Result<Self, CompoundPathError> {
         Self::validate_ranges(points.len(), &contours)?;
-        Ok(Self { points, contours })
+        Ok(Self { points: points.into(), contours: contours.into() })
     }
 
     /// Checks contour ranges without taking ownership of the geometry.
@@ -270,7 +270,10 @@ pub enum RenderCommand {
         /// Source image height in pixels.
         height: u32,
         /// RGBA pixel data (4 bytes per pixel).
-        data: Vec<u8>,
+        ///
+        /// Shared rather than owned so replaying a recorded batch can hand the same pixels to
+        /// the backend without copying them (G-02).
+        data: Arc<[u8]>,
     },
     /// Outline the rectangle `rect` with a one-pixel-wide stroke.
     DrawRect {
@@ -455,8 +458,8 @@ pub enum RenderCommand {
         width: u32,
         /// Image height in logical pixels.
         height: u32,
-        /// RGBA pixel data (4 bytes per pixel).
-        data: Vec<u8>,
+        /// RGBA pixel data (4 bytes per pixel), shared so replay does not copy it (G-02).
+        data: Arc<[u8]>,
     },
     /// Push a clipping rectangle onto the clip stack.
     PushClip {

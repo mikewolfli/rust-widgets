@@ -899,6 +899,12 @@ pub fn normalize_key(input: &str) -> String {
 /// identical by construction: the filter and the lower-casing are the operations `normalize_key`
 /// performs, applied in the same order, without the `collect`.
 pub fn same_key(left: &str, right: &str) -> bool {
+    // The caller almost always passes the schema's own spelling, so an exact match avoids
+    // normalising both sides per property scanned. Property lookup walks the whole schema table on
+    // every read/write, which made this the inner loop of property access (G-35).
+    if left == right {
+        return true;
+    }
     fn stream(text: &str) -> impl Iterator<Item = char> + '_ {
         text.chars().filter(|ch| !matches!(*ch, '_' | '-' | ' ')).flat_map(char::to_lowercase)
     }

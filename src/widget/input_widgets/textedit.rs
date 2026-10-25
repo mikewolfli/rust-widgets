@@ -8,7 +8,7 @@ use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
     expect_horizontal_alignment, horizontal_alignment_to_str,
@@ -126,6 +126,13 @@ pub struct TextEdit {
     /// Emitted after the text changes: on edits, and after an undo/redo restore.
     /// Not emitted when a `set_text` is given the text the widget already holds.
     pub text_changed: Signal1<String>,
+    /// Emitted when the selected range changes.
+    pub selection_changed: GenericSignal,
+    /// Emitted with the new caret byte offset whenever it moves.
+    pub cursor_position_changed: Signal1<usize>,
+    /// Last caret offset and range announced, so both signals are edge-triggered.
+    caret_cursor_announced: usize,
+    caret_selection_announced: Option<(usize, usize)>,
     /// The last wrap table, keyed by the inputs the wrapping reads.
     ///
     /// `layout_rows` is called by the paint path **and** by every caret/hit-test answer; before
@@ -175,6 +182,10 @@ impl TextEdit {
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
             text_changed: Signal1::new(),
+            selection_changed: GenericSignal::new(),
+            cursor_position_changed: Signal1::new(),
+            caret_cursor_announced: 0,
+            caret_selection_announced: None,
             row_cache: RefCell::new(None),
             spans: Vec::new(),
             revision: 0,
@@ -239,10 +250,10 @@ impl TextEdit {
             self.cursor = clamped;
             self.selection_anchor = None;
             self.scroll_caret_into_view();
+            self.notify_caret_change();
             self.base.request_redraw();
         }
     }
-
     /// The selected range as ordered `(start, end)` byte offsets, or `None` when nothing is selected.
     ///
     /// The single derivation every reader goes through — [`Self::selected_text`], the paint and the
@@ -274,6 +285,7 @@ impl TextEdit {
     /// Drops any selection, leaving the caret where it is.
     pub fn clear_selection(&mut self) {
         if self.selection_anchor.take().is_some() {
+            self.notify_caret_change();
             self.base.request_redraw();
         }
     }
@@ -283,6 +295,7 @@ impl TextEdit {
         self.selection_anchor = Some(0);
         self.cursor = self.text.len();
         self.scroll_caret_into_view();
+        self.notify_caret_change();
         self.base.request_redraw();
     }
 
@@ -312,6 +325,7 @@ impl TextEdit {
         }
         self.normalize_selection();
         self.scroll_caret_into_view();
+        self.notify_caret_change();
         self.base.request_redraw();
     }
 
@@ -319,6 +333,22 @@ impl TextEdit {
     fn normalize_selection(&mut self) {
         if self.selection_anchor == Some(self.cursor) {
             self.selection_anchor = None;
+        }
+    }
+
+    /// Reports a caret/selection change to the host when either actually moved.
+    ///
+    /// Edge-triggered against the value last announced, so every entry point that moves the caret
+    /// (keyboard, pointer, edit and history paths) can call this unconditionally.
+    fn notify_caret_change(&mut self) {
+        let selection = self.selection_range();
+        if self.cursor != self.caret_cursor_announced {
+            self.caret_cursor_announced = self.cursor;
+            self.cursor_position_changed.emit(self.cursor);
+        }
+        if selection != self.caret_selection_announced {
+            self.caret_selection_announced = selection;
+            self.selection_changed.emit();
         }
     }
 
@@ -340,6 +370,7 @@ impl TextEdit {
         }
         self.dragging_selection = true;
         self.scroll_caret_into_view();
+        self.notify_caret_change();
         self.base.request_redraw();
     }
 
@@ -351,6 +382,7 @@ impl TextEdit {
         self.cursor = floor_char_boundary(&self.text, offset.min(self.text.len()));
         self.normalize_selection();
         self.scroll_caret_into_view();
+        self.notify_caret_change();
         self.base.request_redraw();
     }
 
@@ -360,6 +392,7 @@ impl TextEdit {
         let was_dragging = std::mem::replace(&mut self.dragging_selection, false);
         if was_dragging {
             self.normalize_selection();
+            self.notify_caret_change();
         }
         was_dragging
     }
@@ -491,6 +524,7 @@ impl TextEdit {
             "text_edit_text",
         )));
         self.text_changed.emit(self.text.clone());
+        self.notify_caret_change();
     }
 
     /// How each line of the document is aligned within the editor's interior.
@@ -559,6 +593,7 @@ impl TextEdit {
         self.selection_anchor = None;
         self.first_visible_row = 0;
         self.text_changed.emit(self.text.clone());
+        self.notify_caret_change();
         self.base.request_redraw();
     }
 
@@ -1014,6 +1049,7 @@ impl TextEdit {
         self.selection_anchor = None;
         self.restoring_history = false;
         self.text_changed.emit(self.text.clone());
+        self.notify_caret_change();
         self.base.request_redraw();
     }
 
@@ -1119,6 +1155,14 @@ impl Widget for TextEdit {
                     CapabilityValue::String(v.clone())
                 }))
             }
+            "selection_changed" => {
+                Some(EventSignalRef::unit("selection_changed", &self.selection_changed))
+            }
+            "cursor_position_changed" => Some(EventSignalRef::mapped(
+                "cursor_position_changed",
+                &self.cursor_position_changed,
+                |v| CapabilityValue::UInt(*v as u64),
+            )),
             _ => None,
         }
     }
@@ -1291,6 +1335,7 @@ impl EventHandler for TextEdit {
                 self.selection_anchor = Some(start);
                 self.cursor = end;
                 self.dragging_selection = false;
+                self.notify_caret_change();
                 self.base.request_redraw();
             }
             // A release anywhere ends the gesture: the anchor stays where the press put it, so the

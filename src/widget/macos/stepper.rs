@@ -48,6 +48,16 @@ pub struct MacStepper {
     wraps: bool,
     hovered: Option<StepperZone>,
     pressed: Option<StepperZone>,
+    /// Whether a press is currently auto-repeating.
+    holding: bool,
+    /// Milliseconds the current hold has lasted.
+    held_ms: u64,
+    /// How many auto-repeats have already fired for this hold.
+    repeats_done: u64,
+    /// Delay before the first auto-repeat, in milliseconds; `0` disables repeating.
+    repeat_delay_ms: u64,
+    /// Interval between auto-repeats after the delay.
+    repeat_interval_ms: u64,
     /// Emitted when the value changes, with the new value.
     pub value_changed: Signal1<i64>,
 }
@@ -64,6 +74,11 @@ impl MacStepper {
             wraps: false,
             hovered: None,
             pressed: None,
+            holding: false,
+            held_ms: 0,
+            repeats_done: 0,
+            repeat_delay_ms: 400,
+            repeat_interval_ms: 80,
             value_changed: Signal1::new(),
         }
     }
@@ -136,6 +151,32 @@ impl MacStepper {
     /// Whether passing an end of the range continues from the other end.
     pub fn wraps(&self) -> bool {
         self.wraps
+    }
+
+    /// The delay before a held zone starts repeating.
+    pub fn repeat_delay_ms(&self) -> u64 {
+        self.repeat_delay_ms
+    }
+
+    /// Sets the auto-repeat delay. Zero disables repeating (a press steps once).
+    pub fn set_repeat_delay_ms(&mut self, delay_ms: u64) {
+        if self.repeat_delay_ms == delay_ms {
+            return;
+        }
+        self.repeat_delay_ms = delay_ms;
+    }
+
+    /// The interval between auto-repeats.
+    pub fn repeat_interval_ms(&self) -> u64 {
+        self.repeat_interval_ms
+    }
+
+    /// Sets the auto-repeat interval. Zero disables repeating.
+    pub fn set_repeat_interval_ms(&mut self, interval_ms: u64) {
+        if self.repeat_interval_ms == interval_ms {
+            return;
+        }
+        self.repeat_interval_ms = interval_ms;
     }
 
     /// Sets whether the value wraps at the ends of its range.
@@ -268,6 +309,44 @@ impl Widget for MacStepper {
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 
+    /// Advances the held-zone auto-repeat clock.
+    ///
+    /// A press steps once immediately (in the event handler); this clock fires only after
+    /// [`Self::repeat_delay_ms`] has elapsed, then once per [`Self::repeat_interval_ms`]. A zero
+    /// delay or interval disables repeating, which preserves the old "one step per press"
+    /// behaviour for a host that wants it.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.holding || self.repeat_delay_ms == 0 || self.repeat_interval_ms == 0 {
+            return false;
+        }
+        self.held_ms = self.held_ms.saturating_add(u64::from(delta_ms));
+        let after_delay = self.held_ms.saturating_sub(self.repeat_delay_ms);
+        let target = after_delay / self.repeat_interval_ms;
+        let mut fired = 0u64;
+        while self.repeats_done < target && fired < 100 {
+            self.repeats_done += 1;
+            fired += 1;
+            match self.pressed {
+                Some(StepperZone::Up) => {
+                    self.increment();
+                }
+                Some(StepperZone::Down) => {
+                    self.decrement();
+                }
+                None => break,
+            }
+        }
+        if fired > 0 {
+            self.base.request_redraw();
+        }
+        fired > 0
+    }
+
+    /// A held zone owes repeat frames until it is released.
+    fn is_animating(&self) -> bool {
+        self.holding && self.repeat_delay_ms > 0 && self.repeat_interval_ms > 0
+    }
+
     /// Resolves a published event name to the control's own signal.
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
@@ -290,6 +369,8 @@ impl WidgetProperties for MacStepper {
             "maximum" => Ok(CapabilityValue::Int(self.maximum())),
             "step" => Ok(CapabilityValue::Int(self.step())),
             "wraps" => Ok(CapabilityValue::Bool(self.wraps())),
+            "repeat_delay_ms" => Ok(CapabilityValue::UInt(self.repeat_delay_ms())),
+            "repeat_interval_ms" => Ok(CapabilityValue::UInt(self.repeat_interval_ms())),
             _ => base_property_get(self, name),
         }
     }
@@ -316,12 +397,37 @@ impl WidgetProperties for MacStepper {
                 self.set_wraps(expect_bool(value)?);
                 Ok(())
             }
+            "repeat_delay_ms" => {
+                let delay = match value {
+                    CapabilityValue::UInt(ms) => ms,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_repeat_delay_ms(delay);
+                Ok(())
+            }
+            "repeat_interval_ms" => {
+                let interval = match value {
+                    CapabilityValue::UInt(ms) => ms,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_repeat_interval_ms(interval);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["value", "minimum", "maximum", "step", "wraps", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "value",
+            "minimum",
+            "maximum",
+            "step",
+            "wraps",
+            "repeat_delay_ms",
+            "repeat_interval_ms",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -386,10 +492,16 @@ impl EventHandler for MacStepper {
                 if self.hovered.take().is_some() {
                     self.base.request_redraw();
                 }
+                self.holding = false;
             }
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(zone) = self.zone_at(*pos) {
                     self.pressed = Some(zone);
+                    // The first step is immediate; the auto-repeat clock starts from here and
+                    // only fires after `repeat_delay_ms`.
+                    self.holding = true;
+                    self.held_ms = 0;
+                    self.repeats_done = 0;
                     match zone {
                         StepperZone::Up => {
                             self.increment();
@@ -402,6 +514,7 @@ impl EventHandler for MacStepper {
                 }
             }
             Event::MouseRelease { .. } => {
+                self.holding = false;
                 if self.pressed.take().is_some() {
                     self.base.request_redraw();
                 }
@@ -412,6 +525,18 @@ impl EventHandler for MacStepper {
                 }
                 Some(crate::shortcut::Key::Down) => {
                     self.decrement();
+                }
+                Some(crate::shortcut::Key::PageUp) => {
+                    self.set_value(self.value.saturating_add(self.step.saturating_mul(10)));
+                }
+                Some(crate::shortcut::Key::PageDown) => {
+                    self.set_value(self.value.saturating_sub(self.step.saturating_mul(10)));
+                }
+                Some(crate::shortcut::Key::Home) => {
+                    self.set_value(self.minimum);
+                }
+                Some(crate::shortcut::Key::End) => {
+                    self.set_value(self.maximum);
                 }
                 _ => {}
             },
@@ -559,5 +684,50 @@ mod tests {
                 assert!(to.x >= 0 && to.x <= 19 && to.y >= 0 && to.y <= 28);
             }
         }
+    }
+
+    #[test]
+    fn holding_a_zone_repeats_after_the_delay_and_stops_on_release() {
+        let mut stepper = sample();
+        stepper.set_value(0);
+        stepper.set_repeat_delay_ms(100);
+        stepper.set_repeat_interval_ms(50);
+        assert_eq!(stepper.repeat_delay_ms(), 100);
+        let up = stepper.zone_rect(StepperZone::Up).center();
+        stepper.handle_event(&Event::MousePress { pos: up, button: 1, modifiers: 0 });
+        assert_eq!(stepper.value(), 1, "the first step is immediate");
+        assert!(stepper.is_animating());
+
+        // Before the delay there is no repeat.
+        assert!(!stepper.tick(50));
+        assert_eq!(stepper.value(), 1);
+        // The delay expiring is not itself a repeat; the first repeat waits one interval.
+        assert!(!stepper.tick(50));
+        assert_eq!(stepper.value(), 1);
+        // After the delay, one repeat per interval.
+        assert!(stepper.tick(50));
+        assert_eq!(stepper.value(), 2);
+        assert!(stepper.tick(100));
+        assert_eq!(stepper.value(), 4);
+
+        stepper.handle_event(&Event::MouseRelease { pos: up, button: 1 });
+        assert!(!stepper.is_animating());
+        assert!(!stepper.tick(500), "a released stepper does not keep stepping");
+        assert_eq!(stepper.value(), 4);
+    }
+
+    #[test]
+    fn page_home_and_end_keys_move_by_larger_steps() {
+        let mut stepper = sample();
+        stepper.set_value(50);
+        // Page Up (33), Page Down (34), Home (36), End (35).
+        stepper.handle_event(&Event::KeyPress { key: 33, modifiers: 0 });
+        assert_eq!(stepper.value(), 60);
+        stepper.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
+        assert_eq!(stepper.value(), 50);
+        stepper.handle_event(&Event::KeyPress { key: 36, modifiers: 0 });
+        assert_eq!(stepper.value(), 0);
+        stepper.handle_event(&Event::KeyPress { key: 35, modifiers: 0 });
+        assert_eq!(stepper.value(), 100);
     }
 }
